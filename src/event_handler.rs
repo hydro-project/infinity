@@ -1,15 +1,15 @@
 use aws_lambda_events::event::sqs::SqsEvent;
 use aws_sdk_dynamodb::{Client as DynamoDbClient, types::AttributeValue};
 use aws_sdk_scheduler::Client as SchedulerClient;
-use aws_sdk_sqs::{Client as SqsClient};
+use aws_sdk_sqs::Client as SqsClient;
 use lambda_runtime::{Error, LambdaEvent, tracing};
 use rig_bedrock::client::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-use crate::tools::{Tool, ToolContext};
-use crate::tools::sleep::SleepTool;
 use crate::tools::lambda_tool::LambdaTool;
+use crate::tools::sleep::SleepTool;
+use crate::tools::{Tool, ToolContext};
 
 use futures_util::StreamExt;
 use rig::{
@@ -40,6 +40,7 @@ struct HistoryManager {
     group_id: String,
     history: Vec<Message>,
     processed_message_ids: std::collections::HashSet<String>,
+    processed_tool_calls: std::collections::HashSet<String>,
     metadata: Option<serde_json::Value>,
 }
 
@@ -57,7 +58,7 @@ impl HistoryManager {
             .send()
             .await;
 
-        let (history, processed_message_ids, metadata) = match result {
+        let (history, processed_message_ids, processed_tool_calls, metadata) = match result {
             Ok(output) => {
                 if let Some(item) = output.item {
                     let history = if let Some(AttributeValue::L(messages)) = item.get("history") {
@@ -82,6 +83,13 @@ impl HistoryManager {
                             HashSet::new()
                         };
 
+                    let processed_tools =
+                        if let Some(AttributeValue::Ss(ids)) = item.get("processed_tool_calls") {
+                            ids.iter().cloned().collect()
+                        } else {
+                            HashSet::new()
+                        };
+
                     let metadata =
                         if let Some(AttributeValue::S(metadata_str)) = item.get("metadata") {
                             serde_json::from_str(metadata_str).ok()
@@ -89,12 +97,12 @@ impl HistoryManager {
                             None
                         };
 
-                    (history, processed_ids, metadata)
+                    (history, processed_ids, processed_tools, metadata)
                 } else {
-                    (vec![], HashSet::new(), None)
+                    (vec![], HashSet::new(), HashSet::new(), None)
                 }
             }
-            Err(_) => (vec![], HashSet::new(), None),
+            Err(_) => (vec![], HashSet::new(), HashSet::new(), None),
         };
 
         Ok(Self {
@@ -103,6 +111,7 @@ impl HistoryManager {
             group_id,
             history,
             processed_message_ids,
+            processed_tool_calls,
             metadata,
         })
     }
@@ -111,11 +120,58 @@ impl HistoryManager {
         &mut self,
         content: UserContent,
         message_id: String,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         // Check if we've already processed this message
         if self.processed_message_ids.contains(&message_id) {
             tracing::info!("Message {} already processed, skipping", message_id);
-            return Ok(());
+            return Ok(false);
+        }
+
+        if let UserContent::ToolResult(ref tool_result) = content {
+            // Check if we've already processed this tool call
+            if self.processed_tool_calls.contains(tool_result.id.as_str()) {
+                tracing::info!(
+                    "Tool call {} already processed, ignoring duplicate result",
+                    tool_result.id
+                );
+                // Still mark the message as processed to avoid reprocessing
+                self.processed_message_ids.insert(message_id.clone());
+                self.update_processed_message_id(message_id).await?;
+                return Ok(false);
+            }
+        } else {
+            if let Some(Message::Assistant { content, .. }) = self.history.last() {
+                if let rig::message::AssistantContent::ToolCall(tool_call) = content.first() {
+                    if !self.processed_tool_calls.contains(tool_call.id.as_str()) {
+                        tracing::info!(
+                            "Tool call {} interrupted by new user message",
+                            tool_call.id
+                        );
+
+                        let synthetic_result = Message::User {
+                            content: OneOrMany::one(UserContent::ToolResult(
+                                rig::message::ToolResult {
+                                    id: tool_call.id.clone(),
+                                    call_id: tool_call.call_id.clone(),
+                                    content: OneOrMany::one(rig::message::ToolResultContent::Text(
+                                        rig::agent::Text {
+                                            text: "Tool call interrupted by user".to_string(),
+                                        },
+                                    )),
+                                },
+                            )),
+                        };
+
+                        self.history.push(synthetic_result.clone());
+                        self.append_to_dynamodb(
+                            synthetic_result,
+                            format!("{}-interrupted", tool_call.id),
+                        )
+                        .await?;
+                        self.mark_tool_call_complete(tool_call.id.clone()).await?;
+                    }
+                }
+            }
         }
 
         let message = Message::User {
@@ -125,7 +181,7 @@ impl HistoryManager {
         self.history.push(message.clone());
         self.append_to_dynamodb(message, message_id.clone()).await?;
         self.processed_message_ids.insert(message_id);
-        Ok(())
+        Ok(true)
     }
 
     async fn handle_completion<R>(
@@ -167,10 +223,14 @@ impl HistoryManager {
         Ok(())
     }
 
-    async fn append_to_dynamodb(&self, message: Message, message_id: String) -> Result<(), Error> {
+    async fn append_to_dynamodb(
+        &mut self,
+        message: Message,
+        message_id: String,
+    ) -> Result<(), Error> {
         let message_json = serde_json::to_string(&message)?;
 
-        // Build the update expression based on whether metadata exists
+        // Build the update expression
         let (update_expr, update_builder) = if self.metadata.is_some() {
             let metadata_json = serde_json::to_string(&self.metadata)?;
             let expr = "SET history = list_append(if_not_exists(history, :empty_list), :new_message), metadata = :metadata ADD processed_message_ids :message_id";
@@ -204,6 +264,41 @@ impl HistoryManager {
         };
 
         update_builder.update_expression(update_expr).send().await?;
+
+        // If this is a tool result, mark the tool call as complete
+        if let Message::User { content } = &message {
+            if let UserContent::ToolResult(result) = content.first() {
+                self.mark_tool_call_complete(result.id.clone()).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn update_processed_message_id(&self, message_id: String) -> Result<(), Error> {
+        self.dynamodb_client
+            .update_item()
+            .table_name(&self.table_name)
+            .key("session", AttributeValue::S(self.group_id.clone()))
+            .update_expression("ADD processed_message_ids :message_id")
+            .expression_attribute_values(":message_id", AttributeValue::Ss(vec![message_id]))
+            .send()
+            .await?;
+
+        Ok(())
+    }
+
+    async fn mark_tool_call_complete(&mut self, call_id: String) -> Result<(), Error> {
+        self.processed_tool_calls.insert(call_id.clone());
+
+        self.dynamodb_client
+            .update_item()
+            .table_name(&self.table_name)
+            .key("session", AttributeValue::S(self.group_id.clone()))
+            .update_expression("ADD processed_tool_calls :call_id")
+            .expression_attribute_values(":call_id", AttributeValue::Ss(vec![call_id]))
+            .send()
+            .await?;
 
         Ok(())
     }
@@ -296,23 +391,29 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         let message_id = record.message_id.unwrap_or_default();
         let body = record.body.unwrap();
 
-        // Parse the input message to extract metadata
         let input_msg: InputMessage = serde_json::from_str(&body)?;
 
-        let mut current_history =
-            HistoryManager::new_with_history(dynamodb_client.clone(), table_name.clone(), input_msg.group_id.clone())
-                .await?;
+        let mut current_history = HistoryManager::new_with_history(
+            dynamodb_client.clone(),
+            table_name.clone(),
+            input_msg.group_id.clone(),
+        )
+        .await?;
 
         // Update metadata if provided (for first message in conversation)
         if let Some(metadata) = input_msg.metadata {
             current_history.update_metadata(metadata).await?;
         }
 
-        current_history
+        let is_new = current_history
             .handle_user_content(input_msg.content, message_id.clone())
             .await?;
 
-        // Create tool context for execution
+        if !is_new {
+            tracing::info!("Message was duplicate or ignored, skipping agent processing");
+            continue;
+        }
+
         let tool_context = ToolContext {
             sqs_client: sqs_client.clone(),
             group_id: input_msg.group_id.clone(),
@@ -339,7 +440,10 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
 
         while let Some(Ok(chunk)) = completion_result.next().await {
             // Generate a unique ID for each completion chunk
-            let completion_id = format!("{}-{}-completion-{}", input_msg.group_id, message_id, completion_counter);
+            let completion_id = format!(
+                "{}-{}-completion-{}",
+                input_msg.group_id, message_id, completion_counter
+            );
             completion_counter += 1;
 
             current_history
@@ -381,7 +485,6 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             };
         }
 
-        tracing::info!("Finished streaming assistant content");
         tracing::info!(
             "Sending accumulated response to output queue {} {}",
             &accumulated_text,

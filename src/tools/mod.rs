@@ -1,9 +1,9 @@
 use async_trait::async_trait;
-use lambda_runtime::Error;
 use aws_sdk_sqs::Client as SqsClient;
+use lambda_runtime::Error;
 
-pub mod sleep;
 pub mod lambda_tool;
+pub mod sleep;
 
 // Context passed to tool implementations
 pub struct ToolContext {
