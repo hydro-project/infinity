@@ -18,8 +18,6 @@ struct InputMessage {
 // Sleep tool implementation
 pub struct SleepTool {
     pub scheduler_client: SchedulerClient,
-    pub input_queue_url: String,
-    pub input_queue_arn: String,
     pub scheduler_role_arn: String,
 }
 
@@ -64,7 +62,7 @@ impl Tool for SleepTool {
                     text: format!("Slept for {} seconds", seconds)
                 })),
             }),
-            metadata: context.metadata.clone(),
+            metadata: None,
         };
 
         // SQS supports delays up to 900 seconds (15 minutes)
@@ -73,7 +71,7 @@ impl Tool for SleepTool {
             // Use SQS delay for short sleeps
             context.sqs_client
                 .send_message()
-                .queue_url(&self.input_queue_url)
+                .queue_url(&context.input_queue_url)
                 .message_body(serde_json::to_string(&tool_result_msg)?)
                 .message_attributes(
                     "ConversationGroupId",
@@ -103,7 +101,7 @@ impl Tool for SleepTool {
                 )
                 .target(
                     Target::builder()
-                        .arn(&self.input_queue_arn)
+                        .arn(&context.input_queue_arn)
                         .role_arn(&self.scheduler_role_arn)
                         .input(serde_json::to_string(&tool_result_msg)?)
                         .build()?

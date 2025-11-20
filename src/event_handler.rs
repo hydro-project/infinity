@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tools::{Tool, ToolContext};
 use crate::tools::sleep::SleepTool;
+use crate::tools::lambda_tool::LambdaTool;
 
 use futures_util::StreamExt;
 use rig::{
@@ -279,12 +280,27 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     }
 
     // Register tools
-    let tool_impls: Vec<Box<dyn Tool>> = vec![Box::new(SleepTool {
-        scheduler_client: scheduler_client.clone(),
-        input_queue_url: std::env::var("INPUT_QUEUE_URL").unwrap_or_default(),
-        input_queue_arn: std::env::var("INPUT_QUEUE_ARN").unwrap_or_default(),
-        scheduler_role_arn: scheduler_role_arn.clone(),
-    })];
+    let tool_impls: Vec<Box<dyn Tool>> = vec![
+        Box::new(SleepTool {
+            scheduler_client: scheduler_client.clone(),
+            scheduler_role_arn: scheduler_role_arn.clone(),
+        }),
+        Box::new(LambdaTool {
+            name: "get_time".to_string(),
+            description: "Get the current time in a specified timezone or UTC.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "timezone": {
+                        "type": "string",
+                        "description": "IANA timezone name (e.g., 'America/New_York', 'Europe/London'). Defaults to UTC if not specified."
+                    }
+                },
+                "required": []
+            }),
+            queue_url: std::env::var("GET_TIME_TOOL_QUEUE_URL").unwrap_or_default(),
+        }),
+    ];
 
     let tool_registry: HashMap<String, &Box<dyn Tool>> = tool_impls
         .iter()
@@ -304,7 +320,8 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     let tool_context = ToolContext {
         sqs_client: sqs_client.clone(),
         group_id: group_id.clone(),
-        metadata: current_history.get_metadata(),
+        input_queue_url: std::env::var("INPUT_QUEUE_URL").unwrap_or_default(),
+        input_queue_arn: std::env::var("INPUT_QUEUE_ARN").unwrap_or_default(),
     };
 
     let client = Client::from_env();

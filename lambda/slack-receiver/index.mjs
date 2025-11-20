@@ -41,6 +41,7 @@ export const handler = async (event) => {
           type: 'text',
           text: text,
         },
+        group_id: group_id,
         metadata: {
           channel: channel,
           thread_ts: threadTs,
@@ -53,12 +54,6 @@ export const handler = async (event) => {
       const command = new SendMessageCommand({
         QueueUrl: AGENT_INPUT_QUEUE_URL,
         MessageBody: JSON.stringify(agentMessage),
-        MessageAttributes: {
-          ConversationGroupId: {
-            DataType: 'String',
-            StringValue: messageGroupId,
-          },
-        },
       });
 
       try {
