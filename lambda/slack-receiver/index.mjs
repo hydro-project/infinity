@@ -37,8 +37,10 @@ export const handler = async (event) => {
 
       // Create the message for the agent
       const agentMessage = {
-        type: 'text',
-        text: text,
+        content: {
+          type: 'text',
+          text: text,
+        },
         metadata: {
           channel: channel,
           thread_ts: threadTs,
@@ -47,12 +49,16 @@ export const handler = async (event) => {
         },
       };
 
-      // Send to agent input queue
+      // Send to agent input queue with conversation group ID as message attribute
       const command = new SendMessageCommand({
         QueueUrl: AGENT_INPUT_QUEUE_URL,
         MessageBody: JSON.stringify(agentMessage),
-        MessageGroupId: messageGroupId,
-        MessageDeduplicationId: slackEvent.client_msg_id || slackEvent.ts,
+        MessageAttributes: {
+          ConversationGroupId: {
+            DataType: 'String',
+            StringValue: messageGroupId,
+          },
+        },
       });
 
       try {

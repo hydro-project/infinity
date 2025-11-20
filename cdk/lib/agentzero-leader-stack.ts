@@ -26,18 +26,13 @@ export class AgentZeroLeaderStack extends cdk.Stack {
 
     // Dead Letter Queue for failed messages
     const deadLetterQueue = new sqs.Queue(this, 'AgentZeroDeadLetterQueue', {
-      queueName: 'agentzero-leader-dlq.fifo',
-      fifo: true,
+      queueName: 'agentzero-leader-dlq',
       retentionPeriod: cdk.Duration.days(14),
     });
 
-    // SQS FIFO Queue for incoming messages (agent input)
+    // SQS Standard Queue for incoming messages (agent input)
     const messageQueue = new sqs.Queue(this, 'AgentZeroMessageQueue', {
-      queueName: 'agentzero-leader.fifo',
-      fifo: true,
-      contentBasedDeduplication: false,
-      deduplicationScope: sqs.DeduplicationScope.MESSAGE_GROUP,
-      fifoThroughputLimit: sqs.FifoThroughputLimit.PER_MESSAGE_GROUP_ID,
+      queueName: 'agentzero-leader',
       visibilityTimeout: cdk.Duration.minutes(15),
       retentionPeriod: cdk.Duration.days(4),
       deadLetterQueue: {
@@ -48,18 +43,13 @@ export class AgentZeroLeaderStack extends cdk.Stack {
 
     // Dead Letter Queue for output messages
     const outputDeadLetterQueue = new sqs.Queue(this, 'AgentZeroOutputDeadLetterQueue', {
-      queueName: 'agentzero-output-dlq.fifo',
-      fifo: true,
+      queueName: 'agentzero-output-dlq',
       retentionPeriod: cdk.Duration.days(14),
     });
 
-    // SQS FIFO Queue for agent outputs
+    // SQS Standard Queue for agent outputs
     const outputQueue = new sqs.Queue(this, 'AgentZeroOutputQueue', {
-      queueName: 'agentzero-output.fifo',
-      fifo: true,
-      contentBasedDeduplication: false,
-      deduplicationScope: sqs.DeduplicationScope.MESSAGE_GROUP,
-      fifoThroughputLimit: sqs.FifoThroughputLimit.PER_MESSAGE_GROUP_ID,
+      queueName: 'agentzero-output',
       visibilityTimeout: cdk.Duration.minutes(5),
       retentionPeriod: cdk.Duration.days(4),
       deadLetterQueue: {
@@ -67,6 +57,12 @@ export class AgentZeroLeaderStack extends cdk.Stack {
         maxReceiveCount: 3,
       },
     });
+
+    // IAM Role for EventBridge Scheduler to send messages to SQS
+    const schedulerRole = new iam.Role(this, 'SchedulerRole', {
+      assumedBy: new iam.ServicePrincipal('scheduler.amazonaws.com'),
+    });
+    messageQueue.grantSendMessages(schedulerRole);
 
     // Lambda function - using placeholder initially, then deploy with cargo lambda
     const lambdaFunction = new lambda.Function(this, 'AgentZeroLeaderFunction', {
@@ -80,6 +76,9 @@ export class AgentZeroLeaderStack extends cdk.Stack {
       environment: {
         DYNAMODB_TABLE_NAME: historyTable.tableName,
         OUTPUT_QUEUE_URL: outputQueue.queueUrl,
+        INPUT_QUEUE_URL: messageQueue.queueUrl,
+        INPUT_QUEUE_ARN: messageQueue.queueArn,
+        SCHEDULER_ROLE_ARN: schedulerRole.roleArn,
         RUST_BACKTRACE: '1',
       },
     });
@@ -99,6 +98,27 @@ export class AgentZeroLeaderStack extends cdk.Stack {
       })
     );
 
+    // Grant Lambda permissions to create EventBridge Scheduler schedules
+    lambdaFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'scheduler:CreateSchedule',
+          'scheduler:DeleteSchedule',
+        ],
+        resources: ['*'],
+      })
+    );
+
+    // Grant Lambda permission to pass the scheduler role
+    lambdaFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['iam:PassRole'],
+        resources: [schedulerRole.roleArn],
+      })
+    );
+
     // Add SQS as event source for Lambda
     lambdaFunction.addEventSource(
       new SqsEventSource(messageQueue, {
@@ -109,6 +129,9 @@ export class AgentZeroLeaderStack extends cdk.Stack {
 
     // Grant Lambda permission to send to output queue
     outputQueue.grantSendMessages(lambdaFunction);
+
+    // Grant Lambda permission to send to input queue (for sleep tool)
+    messageQueue.grantSendMessages(lambdaFunction);
 
     // Slack Receiver Lambda (receives Slack events, sends to agent input queue)
     const slackReceiverFunction = new lambda.Function(this, 'SlackReceiverFunction', {
