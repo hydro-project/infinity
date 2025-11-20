@@ -1,24 +1,21 @@
-use async_trait::async_trait;
 use aws_lambda_events::event::sqs::SqsEvent;
 use aws_sdk_dynamodb::{Client as DynamoDbClient, types::AttributeValue};
-use aws_sdk_scheduler::{
-    Client as SchedulerClient,
-    types::{FlexibleTimeWindow, FlexibleTimeWindowMode, Target},
-};
+use aws_sdk_scheduler::Client as SchedulerClient;
 use aws_sdk_sqs::{Client as SqsClient, types::MessageAttributeValue};
-use chrono::{Duration, Utc};
 use lambda_runtime::{Error, LambdaEvent, tracing};
 use rig_bedrock::client::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+use crate::tools::{Tool, ToolContext};
+use crate::tools::sleep::SleepTool;
+
 use futures_util::StreamExt;
 use rig::{
     OneOrMany,
-    agent::Text,
     client::{CompletionClient, ProviderClient},
     completion::{CompletionModel, CompletionRequest, ToolDefinition},
-    message::{Message, ToolResult, ToolResultContent, UserContent},
+    message::{Message, UserContent},
     streaming::StreamedAssistantContent,
 };
 
@@ -33,136 +30,6 @@ struct InputMessage {
 struct OutputMessage {
     text: String,
     metadata: serde_json::Value,
-}
-
-// Context passed to tool implementations
-struct ToolContext {
-    sqs_client: SqsClient,
-    group_id: String,
-    metadata: Option<serde_json::Value>,
-}
-
-// Trait for tool implementations
-#[async_trait]
-trait Tool: Send + Sync {
-    fn name(&self) -> &str;
-    fn description(&self) -> &str;
-    fn parameters(&self) -> serde_json::Value;
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        id: String,
-        call_id: Option<String>,
-        context: &ToolContext,
-    ) -> Result<(), Error>;
-}
-
-// Sleep tool implementation
-struct SleepTool {
-    scheduler_client: SchedulerClient,
-    input_queue_url: String,
-    input_queue_arn: String,
-    scheduler_role_arn: String,
-}
-
-#[async_trait]
-impl Tool for SleepTool {
-    fn name(&self) -> &str {
-        "sleep"
-    }
-
-    fn description(&self) -> &str {
-        "Sleep for a specified number of seconds before continuing. Useful for waiting or delaying actions."
-    }
-
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "seconds": {
-                    "type": "number",
-                    "description": "Number of seconds to sleep"
-                }
-            },
-            "required": ["seconds"]
-        })
-    }
-
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        id: String,
-        call_id: Option<String>,
-        context: &ToolContext,
-    ) -> Result<(), Error> {
-        let seconds = args["seconds"].as_f64().unwrap_or(0.0) as i64;
-
-        // Create tool result message to be sent after sleep
-        let tool_result_msg = InputMessage {
-            content: UserContent::ToolResult(ToolResult {
-                id,
-                call_id,
-                content: OneOrMany::one(ToolResultContent::Text(Text {
-                    text: format!("Slept for {} seconds", seconds),
-                })),
-            }),
-            metadata: context.metadata.clone(),
-        };
-
-        // SQS supports delays up to 900 seconds (15 minutes)
-        // For longer delays, use EventBridge Scheduler
-        if seconds <= 900 {
-            // Use SQS delay for short sleeps
-            context
-                .sqs_client
-                .send_message()
-                .queue_url(&self.input_queue_url)
-                .message_body(serde_json::to_string(&tool_result_msg)?)
-                .message_attributes(
-                    "ConversationGroupId",
-                    MessageAttributeValue::builder()
-                        .data_type("String")
-                        .string_value(&context.group_id)
-                        .build()?,
-                )
-                .delay_seconds(seconds as i32)
-                .send()
-                .await?;
-
-            tracing::info!("Scheduled sleep for {} seconds using SQS delay", seconds);
-        } else {
-            // Use EventBridge Scheduler for longer sleeps
-            let schedule_time = Utc::now() + Duration::seconds(seconds);
-            let schedule_name = format!("sleep-{}", chrono::Utc::now().timestamp_millis());
-
-            self.scheduler_client
-                .create_schedule()
-                .name(&schedule_name)
-                .schedule_expression(format!("at({})", schedule_time.format("%Y-%m-%dT%H:%M:%S")))
-                .flexible_time_window(
-                    FlexibleTimeWindow::builder()
-                        .mode(FlexibleTimeWindowMode::Off)
-                        .build()?,
-                )
-                .target(
-                    Target::builder()
-                        .arn(&self.input_queue_arn)
-                        .role_arn(&self.scheduler_role_arn)
-                        .input(serde_json::to_string(&tool_result_msg)?)
-                        .build()?,
-                )
-                .send()
-                .await?;
-
-            tracing::info!(
-                "Scheduled sleep for {} seconds using EventBridge Scheduler",
-                seconds
-            );
-        }
-
-        tracing::info!("Sleep scheduled for {} seconds", seconds);
-        Ok(())
-    }
 }
 
 struct HistoryManager {
