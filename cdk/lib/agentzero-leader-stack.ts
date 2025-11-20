@@ -4,6 +4,8 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { Construct } from 'constructs';
 import * as path from 'path';
@@ -181,38 +183,6 @@ export class AgentZeroLeaderStack extends cdk.Stack {
       })
     );
 
-    // IAM user for cargo lambda deployment (optional - comment out if not needed)
-    // const deployUser = new iam.User(this, 'lambda-deploy-user');
-    // const accessKey = new iam.AccessKey(this, 'lambda-deploy-access-key', {
-    //   user: deployUser,
-    // });
-
-    // const deployPolicy = new iam.Policy(this, 'lambda-deploy-policy', {
-    //   statements: [
-    //     new iam.PolicyStatement({
-    //       sid: 'EnableLambdaDeployPermissions',
-    //       effect: iam.Effect.ALLOW,
-    //       actions: [
-    //         'lambda:GetFunction',
-    //         'lambda:GetLayerVersion',
-    //         'lambda:CreateFunction',
-    //         'lambda:UpdateFunctionCode',
-    //         'lambda:UpdateFunctionConfiguration',
-    //         'lambda:PublishVersion',
-    //         'lambda:TagResource',
-    //       ],
-    //       resources: [lambdaFunction.functionArn],
-    //     }),
-    //     new iam.PolicyStatement({
-    //       sid: 'EnableIAMPassRole',
-    //       effect: iam.Effect.ALLOW,
-    //       actions: ['iam:PassRole'],
-    //       resources: [lambdaFunction.role!.roleArn],
-    //     }),
-    //   ],
-    // });
-    // deployPolicy.attachToUser(deployUser);
-
     // Outputs
     new cdk.CfnOutput(this, 'QueueUrl', {
       value: messageQueue.queueUrl,
@@ -233,16 +203,6 @@ export class AgentZeroLeaderStack extends cdk.Stack {
       value: lambdaFunction.functionArn,
       description: 'Lambda Function ARN',
     });
-
-    // new cdk.CfnOutput(this, 'DeployAccessKeyId', {
-    //   value: accessKey.accessKeyId,
-    //   description: 'Access Key ID for cargo lambda deployment',
-    // });
-
-    // new cdk.CfnOutput(this, 'DeploySecretAccessKey', {
-    //   value: accessKey.secretAccessKey.unsafeUnwrap(),
-    //   description: 'Secret Access Key for cargo lambda deployment',
-    // });
 
     new cdk.CfnOutput(this, 'OutputQueueUrl', {
       value: outputQueue.queueUrl,
@@ -300,6 +260,101 @@ export class AgentZeroLeaderStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'GetTimeToolQueueUrl', {
       value: getTimeToolQueue.queueUrl,
       description: 'Get Time Tool Queue URL',
+    });
+
+    // Create EC2 Tool Queue
+    const createEc2ToolQueue = new sqs.Queue(this, 'CreateEc2ToolQueue', {
+      queueName: 'agentzero-create-ec2-tool',
+      visibilityTimeout: cdk.Duration.seconds(60),
+      retentionPeriod: cdk.Duration.days(4),
+    });
+
+    // Create EC2 Tool Lambda
+    const createEc2ToolFunction = new lambda.Function(this, 'CreateEc2ToolFunction', {
+      functionName: 'agentzero-create-ec2-tool',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../../lambda/create-ec2-tool')),
+      timeout: cdk.Duration.seconds(60),
+    });
+
+    // Grant Create EC2 Tool Lambda permissions to send to input queue
+    messageQueue.grantSendMessages(createEc2ToolFunction);
+    
+    createEc2ToolFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'ec2:RunInstances',
+          'ec2:CreateTags',
+          'ec2:DescribeInstances',
+        ],
+        resources: ['*'],
+      })
+    );
+
+
+
+    // Add queue as event source for Create EC2 Tool Lambda
+    createEc2ToolFunction.addEventSource(
+      new SqsEventSource(createEc2ToolQueue, {
+        batchSize: 1,
+        reportBatchItemFailures: true,
+      })
+    );
+
+    // Update main Lambda environment with Create EC2 Tool queue URL
+    lambdaFunction.addEnvironment('CREATE_EC2_TOOL_QUEUE_URL', createEc2ToolQueue.queueUrl);
+
+    // Grant main Lambda permission to send to Create EC2 Tool queue
+    createEc2ToolQueue.grantSendMessages(lambdaFunction);
+
+    new cdk.CfnOutput(this, 'CreateEc2ToolQueueUrl', {
+      value: createEc2ToolQueue.queueUrl,
+      description: 'Create EC2 Tool Queue URL',
+    });
+
+    // EC2 State Monitor Lambda - processes EventBridge EC2 state change events
+    const ec2StateMonitorFunction = new lambda.Function(this, 'Ec2StateMonitorFunction', {
+      functionName: 'agentzero-ec2-state-monitor',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../../lambda/ec2-state-monitor')),
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        INPUT_QUEUE_URL: messageQueue.queueUrl,
+      },
+    });
+
+    // Grant EC2 State Monitor permission to read EC2 tags and send to input queue
+    messageQueue.grantSendMessages(ec2StateMonitorFunction);
+    ec2StateMonitorFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['ec2:DescribeTags', 'ec2:DescribeInstances'],
+        resources: ['*'],
+      })
+    );
+
+    // EventBridge Rule for EC2 state changes to "running" (for AgentZero-created instances)
+    const ec2StateRule = new events.Rule(this, 'Ec2StateChangeRule', {
+      ruleName: 'agentzero-ec2-running',
+      description: 'Monitors EC2 instances created by AgentZero reaching running state',
+      eventPattern: {
+        source: ['aws.ec2'],
+        detailType: ['EC2 Instance State-change Notification'],
+        detail: {
+          state: ['running'],
+        },
+      },
+    });
+
+    // Add Lambda as target for the EventBridge rule
+    ec2StateRule.addTarget(new targets.LambdaFunction(ec2StateMonitorFunction));
+
+    new cdk.CfnOutput(this, 'Ec2StateMonitorFunctionArn', {
+      value: ec2StateMonitorFunction.functionArn,
+      description: 'EC2 State Monitor Lambda ARN',
     });
   }
 }

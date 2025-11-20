@@ -11,6 +11,7 @@ struct LambdaToolRequest {
     id: String,
     call_id: Option<String>,
     input_queue_url: String,
+    input_queue_arn: String,
     group_id: String,
 }
 
@@ -49,6 +50,7 @@ impl Tool for LambdaTool {
             id,
             call_id,
             input_queue_url: context.input_queue_url.clone(),
+            input_queue_arn: context.input_queue_arn.clone(),
             group_id: context.group_id.clone(),
         };
 
