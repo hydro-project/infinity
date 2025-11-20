@@ -368,6 +368,33 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             }),
             queue_url: std::env::var("GET_TIME_TOOL_QUEUE_URL").unwrap_or_default(),
         }),
+        Box::new(LambdaTool {
+            name: "create_ec2".to_string(),
+            description: "Create an EC2 instance. You will be notified when the instance is running.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "instance_type": {
+                        "type": "string",
+                        "description": "EC2 instance type (e.g., 't3.micro', 't3.small')."
+                    },
+                    "ami_id": {
+                        "type": "string",
+                        "description": "AMI ID to use for the instance."
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Name tag for the instance."
+                    },
+                    "key_name": {
+                        "type": "string",
+                        "description": "SSH key pair name for accessing the instance. Optional."
+                    }
+                },
+                "required": ["instance_type", "ami_id", "name"]
+            }),
+            queue_url: std::env::var("CREATE_EC2_TOOL_QUEUE_URL").unwrap_or_default(),
+        }),
     ];
 
     let tool_registry: HashMap<String, &Box<dyn Tool>> = tool_impls

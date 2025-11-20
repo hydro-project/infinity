@@ -26,18 +26,24 @@ export const handler = async (event) => {
         : `Current UTC time: ${timeString}`;
 
       // Create tool result message in the same format as sleep tool
+      const toolResultContent = {
+        type: "toolresult",
+        id: id,
+        content: [
+          {
+            type: "text",
+            text: resultText,
+          }
+        ]
+      };
+
+      // Only add call_id if it exists
+      if (call_id) {
+        toolResultContent.call_id = call_id;
+      }
+
       const toolResultMessage = {
-        content: {
-          type: "toolresult",
-          id: id,
-          call_id: call_id,
-          content: [
-            {
-              type: "text",
-              text: resultText,
-            }
-          ]
-        },
+        content: toolResultContent,
         group_id: group_id,
       };
 
