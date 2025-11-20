@@ -32,16 +32,13 @@ export const handler = async (event) => {
       const threadTs = slackEvent.thread_ts || slackEvent.ts;
       const channel = slackEvent.channel;
 
-      // Use thread_ts as the message group ID for conversation continuity
-      const messageGroupId = `slack-${channel}-${threadTs}`;
-
-      // Create the message for the agent
       const agentMessage = {
         content: {
           type: 'text',
           text: text,
         },
-        group_id: group_id,
+        // Use thread_ts as the message group ID for conversation continuity
+        group_id: `slack-${channel}-${threadTs}`,
         metadata: {
           channel: channel,
           thread_ts: threadTs,
@@ -58,7 +55,7 @@ export const handler = async (event) => {
 
       try {
         await sqsClient.send(command);
-        console.log('Message sent to agent input queue:', messageGroupId);
+        console.log('Message sent to agent input queue:', agentMessage.group_id);
       } catch (error) {
         console.error('Error sending to SQS:', error);
         return {
