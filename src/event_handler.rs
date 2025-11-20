@@ -2,9 +2,11 @@ use lambda_runtime::{tracing, Error, LambdaEvent};
 use aws_lambda_events::event::sqs::SqsEvent;
 use rig_bedrock::client::Client;
 use aws_sdk_dynamodb::{Client as DynamoDbClient, types::AttributeValue};
-use aws_sdk_sqs::Client as SqsClient;
+use aws_sdk_sqs::{Client as SqsClient, types::MessageAttributeValue};
+use aws_sdk_scheduler::{Client as SchedulerClient, types::{FlexibleTimeWindow, FlexibleTimeWindowMode, Target}};
 use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
+use chrono::{Utc, Duration};
 
 use futures_util::StreamExt;
 use rig::{
@@ -18,9 +20,7 @@ use rig::{
 
 #[derive(Debug, Deserialize, Serialize)]
 struct InputMessage {
-    #[serde(rename = "type")]
-    msg_type: String,
-    text: String,
+    content: UserContent,
     #[serde(default)]
     metadata: Option<serde_json::Value>,
 }
@@ -217,18 +217,26 @@ pub(crate)async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), 
     let payload = event.payload;
     tracing::info!("Payload: {:?}", payload);
 
-    // Get the message group ID from the first record
+    // Get the conversation group ID from message attributes
     let group_id = payload.records.first()
-        .and_then(|r| r.attributes.get("MessageGroupId"))
-        .ok_or("No MessageGroupId found")?
+        .unwrap()
+        .message_attributes
+        .get("ConversationGroupId")
+        .unwrap()
+        .string_value
+        .as_ref()
+        .unwrap()
         .clone();
 
     // Initialize AWS clients
     let config = aws_config::load_from_env().await;
     let dynamodb_client = DynamoDbClient::new(&config);
     let sqs_client = SqsClient::new(&config);
+    let scheduler_client = SchedulerClient::new(&config);
     let table_name = "AgentZeroState".to_string();
     let output_queue_url = std::env::var("OUTPUT_QUEUE_URL")
+        .unwrap_or_else(|_| "".to_string());
+    let scheduler_role_arn = std::env::var("SCHEDULER_ROLE_ARN")
         .unwrap_or_else(|_| "".to_string());
 
     let mut current_history = HistoryManager::new_with_history(
@@ -249,10 +257,7 @@ pub(crate)async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), 
             current_history.update_metadata(metadata).await?;
         }
         
-        let user_message = UserContent::Text(Text {
-            text: input_msg.text
-        });
-        current_history.handle_user_content(user_message, message_id).await?;
+        current_history.handle_user_content(input_msg.content, message_id).await?;
     }
 
     let tools = vec![
@@ -268,6 +273,20 @@ pub(crate)async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), 
                     }
                 },
                 "required": ["location"]
+            }),
+        },
+        ToolDefinition {
+            name: "sleep".to_string(),
+            description: "Sleep for a specified number of seconds before continuing. Useful for waiting or delaying actions.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "seconds": {
+                        "type": "number",
+                        "description": "Number of seconds to sleep"
+                    }
+                },
+                "required": ["seconds"]
             }),
         }
     ];
@@ -315,6 +334,77 @@ pub(crate)async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), 
                     call.function.arguments
                 );
 
+                // Handle sleep tool
+                if call.function.name == "sleep" {
+                    let seconds = call.function.arguments["seconds"].as_f64().unwrap_or(0.0) as i64;
+                    
+                    // Create tool result message to be sent after sleep
+                    let tool_result_msg = InputMessage {
+                        content: UserContent::ToolResult(ToolResult {
+                            id: call.id.clone(),
+                            call_id: call.call_id.clone(),
+                            content: OneOrMany::one(ToolResultContent::Text(Text{
+                                text: format!("Slept for {} seconds", seconds)
+                            })),
+                        }),
+                        metadata: current_history.get_metadata(),
+                    };
+
+                    // SQS supports delays up to 900 seconds (15 minutes)
+                    // For longer delays, use EventBridge Scheduler
+                    if seconds <= 900 {
+                        // Use SQS delay for short sleeps
+                        let input_queue_url = std::env::var("INPUT_QUEUE_URL")
+                            .unwrap_or_else(|_| "".to_string());
+                        
+                        sqs_client
+                            .send_message()
+                            .queue_url(&input_queue_url)
+                            .message_body(serde_json::to_string(&tool_result_msg)?)
+                            .message_attributes(
+                                "ConversationGroupId",
+                                MessageAttributeValue::builder()
+                                    .data_type("String")
+                                    .string_value(&group_id)
+                                    .build()?
+                            )
+                            .delay_seconds(seconds as i32)
+                            .send()
+                            .await?;
+
+                        tracing::info!("Scheduled sleep for {} seconds using SQS delay", seconds);
+                    } else {
+                        // Use EventBridge Scheduler for longer sleeps
+                        let schedule_time = Utc::now() + Duration::seconds(seconds);
+                        let schedule_name = format!("sleep-{}", call.id.replace("/", "-").replace(":", "-"));
+                        
+                        // Get the queue ARN from environment
+                        let input_queue_arn = std::env::var("INPUT_QUEUE_ARN")
+                            .unwrap_or_else(|_| "".to_string());
+                        
+                        scheduler_client
+                            .create_schedule()
+                            .name(&schedule_name)
+                            .schedule_expression(format!("at({})", schedule_time.format("%Y-%m-%dT%H:%M:%S")))
+                            .flexible_time_window(
+                                FlexibleTimeWindow::builder()
+                                    .mode(FlexibleTimeWindowMode::Off)
+                                    .build()?
+                            )
+                            .target(
+                                Target::builder()
+                                    .arn(&input_queue_arn)
+                                    .role_arn(&scheduler_role_arn)
+                                    .input(serde_json::to_string(&tool_result_msg)?)
+                                    .build()?
+                            )
+                            .send()
+                            .await?;
+
+                        tracing::info!("Scheduled sleep for {} seconds using EventBridge Scheduler", seconds);
+                    }
+                }
+
                 break;
             }
             StreamedAssistantContent::ToolCallDelta { .. } => {
@@ -344,8 +434,13 @@ pub(crate)async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), 
             .send_message()
             .queue_url(&output_queue_url)
             .message_body(serde_json::to_string(&output_msg)?)
-            .message_group_id(&group_id)
-            .message_deduplication_id(&format!("{}-output-{}", group_id, chrono::Utc::now().timestamp_millis()))
+            .message_attributes(
+                "ConversationGroupId",
+                MessageAttributeValue::builder()
+                    .data_type("String")
+                    .string_value(&group_id)
+                    .build()?
+            )
             .send()
             .await?;
 
