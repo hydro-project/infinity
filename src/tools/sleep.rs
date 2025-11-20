@@ -1,19 +1,12 @@
 use async_trait::async_trait;
 use lambda_runtime::{tracing, Error};
-use aws_sdk_sqs::types::MessageAttributeValue;
 use aws_sdk_scheduler::{Client as SchedulerClient, types::{FlexibleTimeWindow, FlexibleTimeWindowMode, Target}};
 use chrono::{Utc, Duration};
 use rig::{OneOrMany, agent::Text, message::{ToolResult, ToolResultContent, UserContent}};
-use serde::{Deserialize, Serialize};
+
+use crate::event_handler::InputMessage;
 
 use super::{Tool, ToolContext};
-
-#[derive(Debug, Deserialize, Serialize)]
-struct InputMessage {
-    content: UserContent,
-    #[serde(default)]
-    metadata: Option<serde_json::Value>,
-}
 
 // Sleep tool implementation
 pub struct SleepTool {
@@ -62,6 +55,7 @@ impl Tool for SleepTool {
                     text: format!("Slept for {} seconds", seconds)
                 })),
             }),
+            group_id: context.group_id.clone(),
             metadata: None,
         };
 
@@ -73,13 +67,6 @@ impl Tool for SleepTool {
                 .send_message()
                 .queue_url(&context.input_queue_url)
                 .message_body(serde_json::to_string(&tool_result_msg)?)
-                .message_attributes(
-                    "ConversationGroupId",
-                    MessageAttributeValue::builder()
-                        .data_type("String")
-                        .string_value(&context.group_id)
-                        .build()?
-                )
                 .delay_seconds(seconds as i32)
                 .send()
                 .await?;
