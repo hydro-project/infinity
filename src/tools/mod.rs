@@ -3,12 +3,14 @@ use lambda_runtime::Error;
 use aws_sdk_sqs::Client as SqsClient;
 
 pub mod sleep;
+pub mod lambda_tool;
 
 // Context passed to tool implementations
 pub struct ToolContext {
     pub sqs_client: SqsClient,
     pub group_id: String,
-    pub metadata: Option<serde_json::Value>,
+    pub input_queue_url: String,
+    pub input_queue_arn: String,
 }
 
 // Trait for tool implementations
