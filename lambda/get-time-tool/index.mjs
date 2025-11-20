@@ -8,7 +8,7 @@ export const handler = async (event) => {
   for (const record of event.Records) {
     try {
       const request = JSON.parse(record.body);
-      const { arguments: args, id, call_id, input_queue_url, group_id, metadata } = request;
+      const { arguments: args, id, call_id, input_queue_url, group_id } = request;
 
       console.log('Processing get_time request:', { args, id, call_id });
 

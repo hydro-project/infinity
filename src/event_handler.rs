@@ -1,7 +1,7 @@
 use aws_lambda_events::event::sqs::SqsEvent;
 use aws_sdk_dynamodb::{Client as DynamoDbClient, types::AttributeValue};
 use aws_sdk_scheduler::Client as SchedulerClient;
-use aws_sdk_sqs::{Client as SqsClient, types::MessageAttributeValue};
+use aws_sdk_sqs::{Client as SqsClient};
 use lambda_runtime::{Error, LambdaEvent, tracing};
 use rig_bedrock::client::Client;
 use serde::{Deserialize, Serialize};
@@ -21,10 +21,11 @@ use rig::{
 };
 
 #[derive(Debug, Deserialize, Serialize)]
-struct InputMessage {
-    content: UserContent,
+pub struct InputMessage {
+    pub content: UserContent,
+    pub group_id: String,
     #[serde(default)]
-    metadata: Option<serde_json::Value>,
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -132,6 +133,12 @@ impl HistoryManager {
         completion: &StreamedAssistantContent<R>,
         completion_id: String,
     ) -> Result<(), Error> {
+        // Check if we've already processed this message
+        if self.processed_message_ids.contains(&completion_id) {
+            tracing::info!("Completion {} already processed, skipping", completion_id);
+            return Ok(());
+        }
+
         let message = match completion {
             StreamedAssistantContent::Text(text) => Message::Assistant {
                 id: None,
@@ -236,19 +243,6 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     let payload = event.payload;
     tracing::info!("Payload: {:?}", payload);
 
-    // Get the conversation group ID from message attributes
-    let group_id = payload
-        .records
-        .first()
-        .unwrap()
-        .message_attributes
-        .get("ConversationGroupId")
-        .unwrap()
-        .string_value
-        .as_ref()
-        .unwrap()
-        .clone();
-
     // Initialize AWS clients
     let config = aws_config::load_from_env().await;
     let dynamodb_client = DynamoDbClient::new(&config);
@@ -257,27 +251,6 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     let table_name = "AgentZeroState".to_string();
     let output_queue_url = std::env::var("OUTPUT_QUEUE_URL").unwrap_or_else(|_| "".to_string());
     let scheduler_role_arn = std::env::var("SCHEDULER_ROLE_ARN").unwrap_or_else(|_| "".to_string());
-
-    let mut current_history =
-        HistoryManager::new_with_history(dynamodb_client.clone(), table_name, group_id.clone())
-            .await?;
-
-    for record in payload.records {
-        let message_id = record.message_id.unwrap_or_default();
-        let body = record.body.unwrap();
-
-        // Parse the input message to extract metadata
-        let input_msg: InputMessage = serde_json::from_str(&body)?;
-
-        // Update metadata if provided (for first message in conversation)
-        if let Some(metadata) = input_msg.metadata {
-            current_history.update_metadata(metadata).await?;
-        }
-
-        current_history
-            .handle_user_content(input_msg.content, message_id)
-            .await?;
-    }
 
     // Register tools
     let tool_impls: Vec<Box<dyn Tool>> = vec![
@@ -316,112 +289,126 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         })
         .collect();
 
-    // Create tool context for execution
-    let tool_context = ToolContext {
-        sqs_client: sqs_client.clone(),
-        group_id: group_id.clone(),
-        input_queue_url: std::env::var("INPUT_QUEUE_URL").unwrap_or_default(),
-        input_queue_arn: std::env::var("INPUT_QUEUE_ARN").unwrap_or_default(),
-    };
-
     let client = Client::from_env();
     let model = client.completion_model("global.anthropic.claude-haiku-4-5-20251001-v1:0");
 
-    let mut completion_result = model
-        .stream(CompletionRequest {
-            preamble: None,
-            chat_history: current_history.get_history(),
-            documents: vec![],
-            tools: tools.clone(),
-            temperature: None,
-            max_tokens: None,
-            tool_choice: None,
-            additional_params: None,
-        })
-        .await
-        .unwrap();
+    for record in payload.records {
+        let message_id = record.message_id.unwrap_or_default();
+        let body = record.body.unwrap();
 
-    let mut completion_counter = 0;
-    let mut accumulated_text = String::new();
+        // Parse the input message to extract metadata
+        let input_msg: InputMessage = serde_json::from_str(&body)?;
 
-    while let Some(Ok(chunk)) = completion_result.next().await {
-        // Generate a unique ID for each completion chunk
-        let completion_id = format!("{}-completion-{}", group_id, completion_counter);
-        completion_counter += 1;
+        let mut current_history =
+            HistoryManager::new_with_history(dynamodb_client.clone(), table_name.clone(), input_msg.group_id.clone())
+                .await?;
+
+        // Update metadata if provided (for first message in conversation)
+        if let Some(metadata) = input_msg.metadata {
+            current_history.update_metadata(metadata).await?;
+        }
 
         current_history
-            .handle_completion(&chunk, completion_id)
+            .handle_user_content(input_msg.content, message_id.clone())
             .await?;
 
-        match chunk {
-            StreamedAssistantContent::Text(text) => {
-                tracing::info!("{}", text.text);
-                accumulated_text.push_str(&text.text);
-            }
-            StreamedAssistantContent::ToolCall(call) => {
-                tracing::info!(
-                    "\n[Tool Call: {} with arguments {}]\n",
-                    &call.function.name,
-                    &call.function.arguments
-                );
+        // Create tool context for execution
+        let tool_context = ToolContext {
+            sqs_client: sqs_client.clone(),
+            group_id: input_msg.group_id.clone(),
+            input_queue_url: std::env::var("INPUT_QUEUE_URL").unwrap_or_default(),
+            input_queue_arn: std::env::var("INPUT_QUEUE_ARN").unwrap_or_default(),
+        };
 
-                // Look up and execute tool
-                if let Some(tool) = tool_registry.get(&call.function.name) {
-                    tool.execute(
-                        call.function.arguments,
-                        call.id,
-                        call.call_id,
-                        &tool_context,
-                    )
-                    .await?
-                } else {
-                    tracing::warn!("Unknown tool called: {}", call.function.name);
+        let mut completion_result = model
+            .stream(CompletionRequest {
+                preamble: None,
+                chat_history: current_history.get_history(),
+                documents: vec![],
+                tools: tools.clone(),
+                temperature: None,
+                max_tokens: None,
+                tool_choice: None,
+                additional_params: None,
+            })
+            .await
+            .unwrap();
+
+        let mut completion_counter = 0;
+        let mut accumulated_text = String::new();
+
+        while let Some(Ok(chunk)) = completion_result.next().await {
+            // Generate a unique ID for each completion chunk
+            let completion_id = format!("{}-{}-completion-{}", input_msg.group_id, message_id, completion_counter);
+            completion_counter += 1;
+
+            current_history
+                .handle_completion(&chunk, completion_id)
+                .await?;
+
+            match chunk {
+                StreamedAssistantContent::Text(text) => {
+                    tracing::info!("{}", text.text);
+                    accumulated_text.push_str(&text.text);
                 }
+                StreamedAssistantContent::ToolCall(call) => {
+                    tracing::info!(
+                        "\n[Tool Call: {} with arguments {}]\n",
+                        &call.function.name,
+                        &call.function.arguments
+                    );
 
-                break;
-            }
-            StreamedAssistantContent::ToolCallDelta { .. } => {}
-            StreamedAssistantContent::Reasoning(reasoning) => {
-                tracing::info!("\n[Reasoning: {:?}]\n", reasoning.reasoning);
-            }
-            StreamedAssistantContent::Final(_) => {}
-        };
-    }
+                    // Look up and execute tool
+                    if let Some(tool) = tool_registry.get(&call.function.name) {
+                        tool.execute(
+                            call.function.arguments,
+                            call.id,
+                            call.call_id,
+                            &tool_context,
+                        )
+                        .await?
+                    } else {
+                        tracing::warn!("Unknown tool called: {}", call.function.name);
+                    }
 
-    tracing::info!("Finished streaming assistant content");
-    tracing::info!(
-        "Sending accumulated response to output queue {} {}",
-        &accumulated_text,
-        &output_queue_url
-    );
+                    break;
+                }
+                StreamedAssistantContent::ToolCallDelta { .. } => {}
+                StreamedAssistantContent::Reasoning(reasoning) => {
+                    tracing::info!("\n[Reasoning: {:?}]\n", reasoning.reasoning);
+                }
+                StreamedAssistantContent::Final(_) => {}
+            };
+        }
 
-    // Send accumulated response to output queue
-    if !accumulated_text.is_empty() && !output_queue_url.is_empty() {
-        // Retrieve metadata from DynamoDB (stored from previous messages)
-        let metadata = current_history
-            .get_metadata()
-            .unwrap_or(serde_json::json!({}));
+        tracing::info!("Finished streaming assistant content");
+        tracing::info!(
+            "Sending accumulated response to output queue {} {}",
+            &accumulated_text,
+            &output_queue_url
+        );
 
-        let output_msg = OutputMessage {
-            text: accumulated_text,
-            metadata,
-        };
+        // Send accumulated response to output queue
+        if !accumulated_text.is_empty() && !output_queue_url.is_empty() {
+            // Retrieve metadata from DynamoDB (stored from previous messages)
+            let metadata = current_history
+                .get_metadata()
+                .unwrap_or(serde_json::json!({}));
 
-        sqs_client
-            .send_message()
-            .queue_url(&output_queue_url)
-            .message_body(serde_json::to_string(&output_msg)?)
-            .message_attributes(
-                "ConversationGroupId",
-                MessageAttributeValue::builder()
-                    .data_type("String")
-                    .string_value(&group_id)
-                    .build()?,
-            )
-            .send()
-            .await?;
+            let output_msg = OutputMessage {
+                text: accumulated_text,
+                metadata,
+            };
 
-        tracing::info!("Sent response to output queue");
+            sqs_client
+                .send_message()
+                .queue_url(&output_queue_url)
+                .message_body(serde_json::to_string(&output_msg)?)
+                .send()
+                .await?;
+
+            tracing::info!("Sent response to output queue");
+        }
     }
 
     Ok(())
