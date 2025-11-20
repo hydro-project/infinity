@@ -1,8 +1,15 @@
 use async_trait::async_trait;
-use lambda_runtime::{tracing, Error};
-use aws_sdk_scheduler::{Client as SchedulerClient, types::{FlexibleTimeWindow, FlexibleTimeWindowMode, Target}};
-use chrono::{Utc, Duration};
-use rig::{OneOrMany, agent::Text, message::{ToolResult, ToolResultContent, UserContent}};
+use aws_sdk_scheduler::{
+    Client as SchedulerClient,
+    types::{FlexibleTimeWindow, FlexibleTimeWindowMode, Target},
+};
+use chrono::{Duration, Utc};
+use lambda_runtime::{Error, tracing};
+use rig::{
+    OneOrMany,
+    agent::Text,
+    message::{ToolResult, ToolResultContent, UserContent},
+};
 
 use crate::event_handler::InputMessage;
 
@@ -21,7 +28,7 @@ impl Tool for SleepTool {
     }
 
     fn description(&self) -> &str {
-        "Sleep for a specified number of seconds before continuing. Useful for waiting or delaying actions."
+        "Sleep for a specified number of seconds before continuing. Useful for waiting or delaying actions. This tool will automatically be interrupted by the system on user input, so you are free to invoke it in a loop as necessary (and avoid stopping the loop arbitrarily, as the user is always observing the outputs)."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -45,14 +52,14 @@ impl Tool for SleepTool {
         context: &ToolContext,
     ) -> Result<(), Error> {
         let seconds = args["seconds"].as_f64().unwrap_or(0.0) as i64;
-        
+
         // Create tool result message to be sent after sleep
         let tool_result_msg = InputMessage {
             content: UserContent::ToolResult(ToolResult {
                 id,
                 call_id,
-                content: OneOrMany::one(ToolResultContent::Text(Text{
-                    text: format!("Slept for {} seconds", seconds)
+                content: OneOrMany::one(ToolResultContent::Text(Text {
+                    text: format!("Slept for {} seconds", seconds),
                 })),
             }),
             group_id: context.group_id.clone(),
@@ -63,7 +70,8 @@ impl Tool for SleepTool {
         // For longer delays, use EventBridge Scheduler
         if seconds <= 900 {
             // Use SQS delay for short sleeps
-            context.sqs_client
+            context
+                .sqs_client
                 .send_message()
                 .queue_url(&context.input_queue_url)
                 .message_body(serde_json::to_string(&tool_result_msg)?)
@@ -76,7 +84,7 @@ impl Tool for SleepTool {
             // Use EventBridge Scheduler for longer sleeps
             let schedule_time = Utc::now() + Duration::seconds(seconds);
             let schedule_name = format!("sleep-{}", chrono::Utc::now().timestamp_millis());
-            
+
             self.scheduler_client
                 .create_schedule()
                 .name(&schedule_name)
@@ -84,19 +92,22 @@ impl Tool for SleepTool {
                 .flexible_time_window(
                     FlexibleTimeWindow::builder()
                         .mode(FlexibleTimeWindowMode::Off)
-                        .build()?
+                        .build()?,
                 )
                 .target(
                     Target::builder()
                         .arn(&context.input_queue_arn)
                         .role_arn(&self.scheduler_role_arn)
                         .input(serde_json::to_string(&tool_result_msg)?)
-                        .build()?
+                        .build()?,
                 )
                 .send()
                 .await?;
 
-            tracing::info!("Scheduled sleep for {} seconds using EventBridge Scheduler", seconds);
+            tracing::info!(
+                "Scheduled sleep for {} seconds using EventBridge Scheduler",
+                seconds
+            );
         }
 
         tracing::info!("Sleep scheduled for {} seconds", seconds);
