@@ -395,6 +395,62 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             }),
             queue_url: std::env::var("CREATE_EC2_TOOL_QUEUE_URL").unwrap_or_default(),
         }),
+        Box::new(LambdaTool {
+            name: "wait_github_actions_result".to_string(),
+            description: "Blocks until a GitHub actions event is received. Use this to wait on the result of some check instead of repeatedly polling.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "owner": {
+                        "type": "string",
+                        "description": "GitHub repository owner (username or organization)."
+                    },
+                    "repo": {
+                        "type": "string",
+                        "description": "GitHub repository name."
+                    },
+                    "ref": {
+                        "type": "string",
+                        "description": "Git reference (commit SHA, branch name, or tag) to monitor."
+                    },
+                    "check_name": {
+                        "type": "string",
+                        "description": "Optional: specific check/workflow name to wait for. If omitted, waits for any check to complete."
+                    }
+                },
+                "required": ["owner", "repo", "ref"]
+            }),
+            queue_url: std::env::var("CHECK_GITHUB_ACTIONS_TOOL_QUEUE_URL").unwrap_or_default(),
+        }),
+        Box::new(LambdaTool {
+            name: "github_list_tools".to_string(),
+            description: "List all available GitHub API tools from the MCP server.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+            queue_url: std::env::var("MCP_GITHUB_QUEUE_URL").unwrap_or_default(),
+        }),
+        Box::new(LambdaTool {
+            name: "github_invoke_tool".to_string(),
+            description: "Invoke a GitHub API tool (e.g., create_issue, create_pull_request, fork_repository, etc.). Use github_list_tools first to see available tools.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "tool_name": {
+                        "type": "string",
+                        "description": "Name of the GitHub tool to invoke (e.g., 'create_issue', 'create_pull_request')."
+                    },
+                    "arguments": {
+                        "type": "object",
+                        "description": "Arguments to pass to the tool as a JSON object. Structure depends on the specific tool."
+                    }
+                },
+                "required": ["tool_name"]
+            }),
+            queue_url: std::env::var("MCP_GITHUB_QUEUE_URL").unwrap_or_default(),
+        }),
     ];
 
     let tool_registry: HashMap<String, &Box<dyn Tool>> = tool_impls
@@ -488,6 +544,11 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                         &call.function.name,
                         &call.function.arguments
                     );
+
+                    accumulated_text.push_str(&format!(
+                        "\n[Tool Call: {} with arguments {}]\n",
+                        &call.function.name, &call.function.arguments
+                    ));
 
                     // Look up and execute tool
                     if let Some(tool) = tool_registry.get(&call.function.name) {

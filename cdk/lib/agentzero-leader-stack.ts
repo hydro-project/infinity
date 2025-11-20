@@ -356,5 +356,142 @@ export class AgentZeroLeaderStack extends cdk.Stack {
       value: ec2StateMonitorFunction.functionArn,
       description: 'EC2 State Monitor Lambda ARN',
     });
+
+    // DynamoDB table for GitHub Actions check mappings
+    const githubChecksTable = new dynamodb.Table(this, 'GitHubChecksTable', {
+      tableName: 'AgentZeroGitHubChecks',
+      partitionKey: {
+        name: 'pk',
+        type: dynamodb.AttributeType.STRING,
+      },
+      sortKey: {
+        name: 'sk',
+        type: dynamodb.AttributeType.STRING,
+      },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      timeToLiveAttribute: 'ttl',
+    });
+
+    // GitHub Actions Check Tool Queue
+    const checkGithubActionsToolQueue = new sqs.Queue(this, 'CheckGithubActionsToolQueue', {
+      queueName: 'agentzero-check-github-actions-tool',
+      visibilityTimeout: cdk.Duration.seconds(30),
+      retentionPeriod: cdk.Duration.days(4),
+    });
+
+    // GitHub Actions Check Tool Lambda
+    const checkGithubActionsToolFunction = new lambda.Function(this, 'CheckGithubActionsToolFunction', {
+      functionName: 'agentzero-check-github-actions-tool',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../../lambda/check-github-actions-tool')),
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        GITHUB_CHECKS_TABLE: githubChecksTable.tableName,
+      },
+    });
+
+    // Grant GitHub Actions Check Tool Lambda permissions
+    githubChecksTable.grantWriteData(checkGithubActionsToolFunction);
+    messageQueue.grantSendMessages(checkGithubActionsToolFunction);
+
+    // Add queue as event source for GitHub Actions Check Tool Lambda
+    checkGithubActionsToolFunction.addEventSource(
+      new SqsEventSource(checkGithubActionsToolQueue, {
+        batchSize: 1,
+        reportBatchItemFailures: true,
+      })
+    );
+
+    // Update main Lambda environment with GitHub Actions Check Tool queue URL
+    lambdaFunction.addEnvironment('CHECK_GITHUB_ACTIONS_TOOL_QUEUE_URL', checkGithubActionsToolQueue.queueUrl);
+
+    // Grant main Lambda permission to send to GitHub Actions Check Tool queue
+    checkGithubActionsToolQueue.grantSendMessages(lambdaFunction);
+
+    new cdk.CfnOutput(this, 'CheckGithubActionsToolQueueUrl', {
+      value: checkGithubActionsToolQueue.queueUrl,
+      description: 'GitHub Actions Check Tool Queue URL',
+    });
+
+    // GitHub Webhook Receiver Lambda
+    const githubWebhookReceiverFunction = new lambda.Function(this, 'GithubWebhookReceiverFunction', {
+      functionName: 'agentzero-github-webhook-receiver',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../../lambda/github-webhook-receiver')),
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        GITHUB_CHECKS_TABLE: githubChecksTable.tableName,
+        GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET || '',
+      },
+    });
+
+    // Grant GitHub Webhook Receiver permissions
+    githubChecksTable.grantReadWriteData(githubWebhookReceiverFunction);
+    messageQueue.grantSendMessages(githubWebhookReceiverFunction);
+
+    // API Gateway endpoint for GitHub webhooks
+    const githubWebhookIntegration = new apigateway.LambdaIntegration(githubWebhookReceiverFunction);
+    api.root.addResource('github').addResource('webhook').addMethod('POST', githubWebhookIntegration);
+
+    new cdk.CfnOutput(this, 'GithubWebhookUrl', {
+      value: api.url + 'github/webhook',
+      description: 'GitHub Webhook URL',
+    });
+
+    new cdk.CfnOutput(this, 'GithubWebhookReceiverFunctionArn', {
+      value: githubWebhookReceiverFunction.functionArn,
+      description: 'GitHub Webhook Receiver Lambda ARN',
+    });
+
+    new cdk.CfnOutput(this, 'GitHubChecksTableName', {
+      value: githubChecksTable.tableName,
+      description: 'GitHub Checks DynamoDB Table Name',
+    });
+
+    // GitHub MCP Server
+    const mcpGithubQueue = new sqs.Queue(this, 'McpGithubQueue', {
+      queueName: 'agentzero-mcp-github',
+      visibilityTimeout: cdk.Duration.seconds(60),
+      retentionPeriod: cdk.Duration.days(4),
+    });
+
+    const mcpGithubEnv: Record<string, string> = {};
+    if (process.env.GITHUB_PERSONAL_ACCESS_TOKEN) {
+      mcpGithubEnv.GITHUB_PERSONAL_ACCESS_TOKEN = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+    }
+
+    const mcpGithubFunction = new lambda.Function(this, 'McpGithubFunction', {
+      functionName: 'agentzero-mcp-github',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../../lambda/mcp-server-proxy')),
+      timeout: cdk.Duration.seconds(60),
+      memorySize: 512,
+      environment: {
+        MCP_SERVER_COMMAND: 'npx',
+        MCP_SERVER_ARGS: JSON.stringify(['-y', '@modelcontextprotocol/server-github']),
+        MCP_SERVER_ENV: JSON.stringify(mcpGithubEnv),
+      },
+    });
+
+    messageQueue.grantSendMessages(mcpGithubFunction);
+
+    mcpGithubFunction.addEventSource(
+      new SqsEventSource(mcpGithubQueue, {
+        batchSize: 1,
+        reportBatchItemFailures: true,
+      })
+    );
+
+    lambdaFunction.addEnvironment('MCP_GITHUB_QUEUE_URL', mcpGithubQueue.queueUrl);
+    mcpGithubQueue.grantSendMessages(lambdaFunction);
+
+    new cdk.CfnOutput(this, 'McpGithubQueueUrl', {
+      value: mcpGithubQueue.queueUrl,
+      description: 'GitHub MCP Server Queue URL',
+    });
   }
 }
