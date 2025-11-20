@@ -1,7 +1,7 @@
 use lambda_runtime::{Error, run, service_fn, tracing};
 
-mod tools;
 mod event_handler;
+mod tools;
 use event_handler::function_handler;
 
 #[tokio::main]

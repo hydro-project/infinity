@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use lambda_runtime::{tracing, Error};
 use aws_sdk_sqs::types::MessageAttributeValue;
+use lambda_runtime::{Error, tracing};
 use serde::Serialize;
 
 use super::{Tool, ToolContext};
@@ -53,7 +53,8 @@ impl Tool for LambdaTool {
         };
 
         // Send to the tool's SQS queue
-        context.sqs_client
+        context
+            .sqs_client
             .send_message()
             .queue_url(&self.queue_url)
             .message_body(serde_json::to_string(&request)?)
@@ -62,7 +63,7 @@ impl Tool for LambdaTool {
                 MessageAttributeValue::builder()
                     .data_type("String")
                     .string_value(&self.name)
-                    .build()?
+                    .build()?,
             )
             .send()
             .await?;
