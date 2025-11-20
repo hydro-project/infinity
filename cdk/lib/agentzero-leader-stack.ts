@@ -263,5 +263,43 @@ export class AgentZeroLeaderStack extends cdk.Stack {
       value: slackResponderFunction.functionArn,
       description: 'Slack Responder Lambda ARN',
     });
+
+    // Get Time Tool Queue
+    const getTimeToolQueue = new sqs.Queue(this, 'GetTimeToolQueue', {
+      queueName: 'agentzero-get-time-tool',
+      visibilityTimeout: cdk.Duration.seconds(30),
+      retentionPeriod: cdk.Duration.days(4),
+    });
+
+    // Get Time Tool Lambda
+    const getTimeToolFunction = new lambda.Function(this, 'GetTimeToolFunction', {
+      functionName: 'agentzero-get-time-tool',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../../lambda/get-time-tool')),
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    // Grant Get Time Tool Lambda permission to send to input queue
+    messageQueue.grantSendMessages(getTimeToolFunction);
+
+    // Add queue as event source for Get Time Tool Lambda
+    getTimeToolFunction.addEventSource(
+      new SqsEventSource(getTimeToolQueue, {
+        batchSize: 1,
+        reportBatchItemFailures: true,
+      })
+    );
+
+    // Update main Lambda environment with Get Time Tool queue URL
+    lambdaFunction.addEnvironment('GET_TIME_TOOL_QUEUE_URL', getTimeToolQueue.queueUrl);
+
+    // Grant main Lambda permission to send to Get Time Tool queue
+    getTimeToolQueue.grantSendMessages(lambdaFunction);
+
+    new cdk.CfnOutput(this, 'GetTimeToolQueueUrl', {
+      value: getTimeToolQueue.queueUrl,
+      description: 'Get Time Tool Queue URL',
+    });
   }
 }
