@@ -1,0 +1,10 @@
+{
+  "name": "create-ec2-tool",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@aws-sdk/client-ec2": "^3.0.0",
+    "@aws-sdk/client-eventbridge": "^3.0.0",
+    "@aws-sdk/client-sqs": "^3.0.0"
+  }
+}
