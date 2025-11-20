@@ -1,0 +1,2 @@
+#!/bin/sh
+echo "Placeholder Lambda - deploy actual code with cargo lambda"
