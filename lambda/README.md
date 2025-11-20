@@ -1,128 +1,49 @@
-# Slack Integration Lambdas
+# Lambda Functions
 
-This directory contains the Node.js Lambda functions for Slack integration.
+This directory contains Lambda functions for AgentZero tools and integrations.
 
-## Architecture
+## Tool Lambdas
 
-```
-Slack Event → API Gateway → slack-receiver → Agent Input Queue (FIFO)
-                                                      ↓
-                                              Agent Lambda (Rust)
-                                                      ↓
-                                              Agent Output Queue (FIFO)
-                                                      ↓
-                                              slack-responder → Slack Thread
-```
+### get-time-tool
+Simple tool that returns the current time in a specified timezone.
 
-## slack-receiver
+### create-ec2-tool
+Creates an EC2 instance and waits for it to reach running state via EventBridge.
 
-Receives Slack events via API Gateway and forwards them to the agent input queue.
+**Flow**: Tool → EC2 API → EventBridge → ec2-state-monitor → Agent
 
-**Input**: Slack event payload
-**Output**: SQS message with format:
-```json
-{
-  "type": "text",
-  "text": "user message text",
-  "metadata": {
-    "channel": "C123456",
-    "thread_ts": "1234567890.123456",
-    "user": "U123456",
-    "ts": "1234567890.123456"
-  }
-}
-```
+### check-github-actions-tool
+Monitors GitHub Actions workflow/check status and waits for completion via webhooks.
 
-**Message Group ID**: `slack-{channel}-{thread_ts}` - ensures messages in the same thread are processed in order
+**Flow**: Tool → DynamoDB → GitHub Webhook → github-webhook-receiver → Agent
 
-## slack-responder
+## Integration Lambdas
 
-Receives agent outputs from the output queue and posts them to Slack threads.
+### slack-receiver
+Receives Slack events via webhook and forwards to agent input queue.
 
-**Input**: SQS message with format:
-```json
-{
-  "text": "agent response text",
-  "metadata": {
-    "channel": "C123456",
-    "thread_ts": "1234567890.123456"
-  }
-}
-```
+### slack-responder
+Receives agent outputs from SQS and posts to Slack.
 
-**Output**: Posts message to Slack using the Bot Token
+### ec2-state-monitor
+Monitors EC2 state changes via EventBridge and notifies agent when instances reach running state.
 
-## Setup
+### github-webhook-receiver
+Receives GitHub webhooks and completes pending GitHub Actions check tool calls.
 
-### 1. Install dependencies
+## Pattern: Async Tool with External Event
 
-```bash
-cd lambda/slack-receiver
-npm install
+Both EC2 and GitHub Actions tools follow the same pattern for async operations:
 
-cd ../slack-responder
-npm install
-```
+1. **Tool Lambda**: Initiates operation and stores metadata
+   - EC2: Tags on instance
+   - GitHub: DynamoDB entry
+2. **Event Source**: External system sends events
+   - EC2: EventBridge state changes
+   - GitHub: Webhooks
+3. **Monitor Lambda**: Receives events and completes tool calls
+   - Looks up metadata
+   - Sends result to agent input queue
+   - Cleans up metadata
 
-### 2. Set environment variables
-
-Before deploying, set these environment variables:
-
-```bash
-export SLACK_SIGNING_SECRET=your_slack_signing_secret
-export SLACK_BOT_TOKEN=xoxb-your-bot-token
-```
-
-### 3. Deploy
-
-```bash
-cd cdk
-npx cdk deploy
-```
-
-### 4. Configure Slack App
-
-1. Create a Slack App at https://api.slack.com/apps
-2. Add Bot Token Scopes:
-   - `app_mentions:read`
-   - `chat:write`
-   - `channels:history`
-   - `groups:history`
-   - `im:history`
-   - `mpim:history`
-3. Enable Event Subscriptions:
-   - Request URL: Use the `SlackWebhookUrl` from CDK outputs
-   - Subscribe to bot events: `app_mention`, `message.channels`, `message.groups`, `message.im`, `message.mpim`
-4. Install the app to your workspace
-5. Copy the Bot Token and Signing Secret to your environment variables
-
-## Testing
-
-Send a message in Slack:
-- Mention your bot: `@YourBot what's the weather in Seattle?`
-- Or send a DM to the bot
-
-The bot will respond in a thread with the AI-generated response.
-
-## Message Flow
-
-1. User mentions bot or sends DM in Slack
-2. Slack sends event to API Gateway webhook
-3. `slack-receiver` Lambda:
-   - Validates the event
-   - Extracts message text and metadata
-   - Sends to agent input queue with thread-based message group ID
-4. Agent Lambda (Rust):
-   - Processes message with conversation history (keyed by message group ID)
-   - Streams response from Bedrock
-   - Sends complete response to output queue
-5. `slack-responder` Lambda:
-   - Receives agent output
-   - Posts response to Slack thread using metadata
-
-## Conversation Continuity
-
-- Each Slack thread has a unique message group ID: `slack-{channel}-{thread_ts}`
-- DynamoDB stores conversation history keyed by this group ID
-- Messages in the same thread are processed sequentially (FIFO queue)
-- The agent maintains context across the entire thread
+This pattern allows the agent to continue processing while waiting for long-running operations.

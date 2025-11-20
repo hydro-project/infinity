@@ -74,12 +74,6 @@ export const handler = async (event) => {
         const sendCommand = new SendMessageCommand({
             QueueUrl: INPUT_QUEUE_URL,
             MessageBody: JSON.stringify(toolResultMessage),
-            MessageAttributes: {
-                ConversationGroupId: {
-                    DataType: 'String',
-                    StringValue: groupId,
-                },
-            },
         });
 
         await sqsClient.send(sendCommand);
