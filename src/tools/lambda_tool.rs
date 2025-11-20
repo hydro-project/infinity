@@ -7,6 +7,7 @@ use super::{Tool, ToolContext};
 
 #[derive(Debug, Serialize)]
 struct LambdaToolRequest {
+    operation: String,
     arguments: serde_json::Value,
     id: String,
     call_id: Option<String>,
@@ -46,6 +47,7 @@ impl Tool for LambdaTool {
     ) -> Result<(), Error> {
         // Create request with all necessary context for the Lambda to respond
         let request = LambdaToolRequest {
+            operation: self.name.clone(),
             arguments: args,
             id,
             call_id,
