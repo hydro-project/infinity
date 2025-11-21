@@ -21,9 +21,10 @@ export const handler = async (event) => {
             const checkName = args.check_name; // optional: specific check/workflow name to wait for
 
             // Store mapping in DynamoDB
+            // Use toolCallId in the sort key to allow multiple listeners for the same sha/check combination
             const item = {
                 pk: { S: `${owner}/${repo}/${sha}` },
-                sk: { S: checkName || 'ALL' },
+                sk: { S: `${checkName || 'ALL'}#${id}` },
                 toolCallId: { S: id },
                 callId: { S: call_id || '' },
                 groupId: { S: group_id },
