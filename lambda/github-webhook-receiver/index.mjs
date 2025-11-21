@@ -128,8 +128,8 @@ async function handleStatusEvent(body) {
     await processCompletedCheck(owner, repo, sha, context, state, body);
 }
 
-async function processCompletedCheck(owner, repo, ref, checkName, conclusion, checkData) {
-    const pk = `${owner}/${repo}/${ref}`;
+async function processCompletedCheck(owner, repo, sha, checkName, conclusion, checkData) {
+    const pk = `${owner}/${repo}/${sha}`;
 
     // Query for matching entries (both specific check name and ALL)
     const queryCommand = new QueryCommand({
@@ -159,7 +159,7 @@ async function processCompletedCheck(owner, repo, ref, checkName, conclusion, ch
             const inputQueueUrl = item.inputQueueUrl.S;
 
             // Create tool result message
-            const resultText = formatCheckResult(owner, repo, ref, checkName, conclusion, checkData);
+            const resultText = formatCheckResult(owner, repo, sha, checkName, conclusion, checkData);
 
             const toolResultContent = {
                 type: 'toolresult',
@@ -202,9 +202,9 @@ async function processCompletedCheck(owner, repo, ref, checkName, conclusion, ch
     }
 }
 
-function formatCheckResult(owner, repo, ref, checkName, conclusion, checkData) {
+function formatCheckResult(owner, repo, sha, checkName, conclusion, checkData) {
     const repoUrl = `https://github.com/${owner}/${repo}`;
-    const commitUrl = `${repoUrl}/commit/${ref}`;
+    const commitUrl = `${repoUrl}/commit/${sha}`;
     
     let status = conclusion;
     if (conclusion === 'success') {
@@ -219,7 +219,7 @@ function formatCheckResult(owner, repo, ref, checkName, conclusion, checkData) {
 
     let result = `GitHub Actions check completed!\n\n`;
     result += `Repository: ${owner}/${repo}\n`;
-    result += `Commit: ${ref}\n`;
+    result += `Commit SHA: ${sha}\n`;
     result += `Check: ${checkName}\n`;
     result += `Status: ${status}\n`;
     
