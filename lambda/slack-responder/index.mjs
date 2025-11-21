@@ -1,4 +1,5 @@
 import { SQSClient, DeleteMessageCommand } from '@aws-sdk/client-sqs';
+import { markdownToSlack } from 'md-to-slack';
 
 const sqsClient = new SQSClient({});
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
@@ -16,6 +17,9 @@ export const handler = async (event) => {
         continue;
       }
 
+      // Convert markdown to Slack's mrkdwn format
+      const slackText = markdownToSlack(text);
+
       // Post message to Slack thread
       // If thread_ts equals the original message ts, it means the message wasn't in a thread
       // In that case, we create a thread by replying to that message
@@ -28,7 +32,8 @@ export const handler = async (event) => {
         body: JSON.stringify({
           channel: metadata.channel,
           thread_ts: metadata.thread_ts,
-          text: text,
+          text: slackText,
+          mrkdwn: true,
         }),
       });
 

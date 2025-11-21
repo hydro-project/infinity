@@ -148,9 +148,12 @@ async function processCompletedCheck(owner, repo, sha, checkName, conclusion, ch
     for (const item of items) {
         const sk = item.sk.S;
         const storedCheckName = item.checkName?.S || '';
+        
+        // Extract the check name from the sort key (format: "checkName#toolCallId")
+        const skCheckName = sk.split('#')[0];
 
         // Match if waiting for ALL checks or specific check name matches
-        if (sk === 'ALL' || sk === checkName || storedCheckName === checkName) {
+        if (skCheckName === 'ALL' || skCheckName === checkName || storedCheckName === checkName) {
             console.log(`Matched check: ${checkName}, sending result to agent`);
 
             const toolCallId = item.toolCallId.S;
@@ -178,15 +181,6 @@ async function processCompletedCheck(owner, repo, sha, checkName, conclusion, ch
                 group_id: groupId,
             };
 
-            // Send result to agent input queue
-            const sendCommand = new SendMessageCommand({
-                QueueUrl: inputQueueUrl,
-                MessageBody: JSON.stringify(toolResultMessage),
-            });
-
-            await sqsClient.send(sendCommand);
-            console.log('Sent tool result to input queue');
-
             // Delete the entry from DynamoDB
             const deleteCommand = new DeleteItemCommand({
                 TableName: GITHUB_CHECKS_TABLE,
@@ -198,6 +192,15 @@ async function processCompletedCheck(owner, repo, sha, checkName, conclusion, ch
 
             await dynamoClient.send(deleteCommand);
             console.log('Deleted entry from DynamoDB');
+
+            // Send result to agent input queue
+            const sendCommand = new SendMessageCommand({
+                QueueUrl: inputQueueUrl,
+                MessageBody: JSON.stringify(toolResultMessage),
+            });
+
+            await sqsClient.send(sendCommand);
+            console.log('Sent tool result to input queue');
         }
     }
 }

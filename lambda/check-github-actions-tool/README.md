@@ -89,10 +89,12 @@ Or wait for any check to complete on a commit:
 Table: `AgentZeroGitHubChecks`
 
 - **pk** (String): `owner/repo/sha` (where sha is the commit SHA)
-- **sk** (String): check name or "ALL"
+- **sk** (String): `checkName#toolCallId` (e.g., "CI Tests#abc123" or "ALL#abc123")
+  - This allows multiple tool calls to listen for the same sha/check combination
 - **toolCallId** (String): Tool call ID for response
 - **callId** (String): Optional call ID
 - **groupId** (String): Conversation group ID
 - **inputQueueUrl** (String): SQS queue URL for responses
 - **sha** (String): The commit SHA being monitored (matched against head_sha from webhooks)
+- **checkName** (String): The check name being monitored (or empty for ALL)
 - **ttl** (Number): 24-hour TTL for automatic cleanup
