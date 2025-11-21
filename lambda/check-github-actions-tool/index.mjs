@@ -17,12 +17,12 @@ export const handler = async (event) => {
             // Extract parameters
             const owner = args.owner;
             const repo = args.repo;
-            const ref = args.ref; // commit SHA, branch, or tag
+            const sha = args.sha; // commit SHA to match against head_sha from webhook
             const checkName = args.check_name; // optional: specific check/workflow name to wait for
 
             // Store mapping in DynamoDB
             const item = {
-                pk: { S: `${owner}/${repo}/${ref}` },
+                pk: { S: `${owner}/${repo}/${sha}` },
                 sk: { S: checkName || 'ALL' },
                 toolCallId: { S: id },
                 callId: { S: call_id || '' },
@@ -30,7 +30,7 @@ export const handler = async (event) => {
                 inputQueueUrl: { S: input_queue_url },
                 owner: { S: owner },
                 repo: { S: repo },
-                ref: { S: ref },
+                sha: { S: sha },
                 checkName: { S: checkName || '' },
                 createdAt: { N: Date.now().toString() },
                 ttl: { N: Math.floor(Date.now() / 1000 + 86400).toString() }, // 24 hour TTL

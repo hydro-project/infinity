@@ -397,7 +397,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         }),
         Box::new(LambdaTool {
             name: "wait_github_actions_result".to_string(),
-            description: "Blocks until a GitHub actions event is received. Use this to wait on the result of some check instead of repeatedly polling.".to_string(),
+            description: "Blocks until a GitHub actions event is received. Use this to wait on the result of some check instead of repeatedly polling. The SHA is compared against head_sha from GitHub webhook events.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -409,16 +409,16 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                         "type": "string",
                         "description": "GitHub repository name."
                     },
-                    "ref": {
+                    "sha": {
                         "type": "string",
-                        "description": "Git reference (commit SHA, branch name, or tag) to monitor."
+                        "description": "Commit SHA to monitor. This must be a full commit SHA (not a branch or tag) as it will be matched against head_sha from GitHub webhook events."
                     },
                     "check_name": {
                         "type": "string",
-                        "description": "Optional: specific check/workflow name to wait for. If omitted, waits for any check to complete."
+                        "description": "Optional: specific check/workflow name to wait for. If omitted, waits for the next event for any check related to that commit."
                     }
                 },
-                "required": ["owner", "repo", "ref"]
+                "required": ["owner", "repo", "sha"]
             }),
             queue_url: std::env::var("CHECK_GITHUB_ACTIONS_TOOL_QUEUE_URL").unwrap_or_default(),
         }),

@@ -4,13 +4,16 @@ This tool allows the agent to monitor GitHub Actions workflow runs and check sta
 
 ## How It Works
 
-1. **Tool Invocation**: Agent calls `check_github_actions` with repository info and a git reference (commit SHA, branch, or tag)
+1. **Tool Invocation**: Agent calls `wait_github_actions_result` with repository info and a commit SHA
 2. **Storage**: The tool stores a mapping in DynamoDB with:
-   - Primary key: `owner/repo/ref`
+   - Primary key: `owner/repo/sha`
    - Sort key: check name (or "ALL" to match any check)
    - Tool call metadata (id, group_id, input_queue_url)
 3. **Webhook**: GitHub sends webhooks to the receiver Lambda when checks complete
-4. **Completion**: The webhook receiver finds matching entries, sends results to the agent input queue, and deletes the DynamoDB entry
+4. **Matching**: The webhook receiver compares the `head_sha` from GitHub events against the stored SHA
+5. **Completion**: The webhook receiver finds matching entries, sends results to the agent input queue, and deletes the DynamoDB entry
+
+**Important**: The `sha` parameter must be a full commit SHA (not a branch or tag name) because it's matched against the `head_sha` field from GitHub webhook events.
 
 ## Setup
 
@@ -58,33 +61,38 @@ The tool monitors these GitHub webhook events:
 
 ## Usage Example
 
+Wait for a specific check on a commit:
+
 ```json
 {
   "owner": "myorg",
   "repo": "myrepo",
-  "ref": "abc123def456",
+  "sha": "abc123def456789",
   "check_name": "CI Tests"
 }
 ```
 
-Or wait for any check to complete:
+Or wait for any check to complete on a commit:
 
 ```json
 {
   "owner": "myorg",
   "repo": "myrepo",
-  "ref": "main"
+  "sha": "abc123def456789"
 }
 ```
+
+**Note**: The `sha` must be a full commit SHA, not a branch name or tag.
 
 ## DynamoDB Schema
 
 Table: `AgentZeroGitHubChecks`
 
-- **pk** (String): `owner/repo/ref`
+- **pk** (String): `owner/repo/sha` (where sha is the commit SHA)
 - **sk** (String): check name or "ALL"
 - **toolCallId** (String): Tool call ID for response
 - **callId** (String): Optional call ID
 - **groupId** (String): Conversation group ID
 - **inputQueueUrl** (String): SQS queue URL for responses
+- **sha** (String): The commit SHA being monitored (matched against head_sha from webhooks)
 - **ttl** (Number): 24-hour TTL for automatic cleanup
