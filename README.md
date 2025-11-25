@@ -1,52 +1,39 @@
-# Introduction
+# Infinity Agents
 
-agentzero-leader is a Rust project that implements an AWS Lambda function in Rust.
+This project is a proof-of-concept of Infinity Agents: a new runtime and architecture for agents that can run indefinitely with zero resource usage when they are idle.
 
 ## Prerequisites
 
 - [Rust](https://www.rust-lang.org/tools/install)
 - [Cargo Lambda](https://www.cargo-lambda.info/guide/installation.html)
+- [Node.js](https://nodejs.org/) (for CDK deployment)
+- [AWS CDK](https://docs.aws.amazon.com/cdk/v2/guide/getting_started.html)
 
-## Building
+## Deployment
 
-To build the project for production, run `cargo lambda build --release`. Remove the `--release` flag to build for development.
+This project uses AWS CDK for infrastructure deployment. See the [CDK README](cdk/README.md) for detailed setup and deployment instructions.
 
-Read more about building your lambda function in [the Cargo Lambda documentation](https://www.cargo-lambda.info/commands/build.html).
+Quick start:
 
-## Testing
-
-You can run regular Rust unit tests with `cargo test`.
-
-If you want to run integration tests locally, you can use the `cargo lambda watch` and `cargo lambda invoke` commands to do it.
-
-First, run `cargo lambda watch` to start a local server. When you make changes to the code, the server will automatically restart.
-
-Second, you'll need a way to pass the event data to the lambda function.
-
-You can use the existent [event payloads](https://github.com/awslabs/aws-lambda-rust-runtime/tree/main/lambda-events/src/fixtures) in the Rust Runtime repository if your lambda function is using one of the supported event types.
-
-You can use those examples directly with the `--data-example` flag, where the value is the name of the file in the [lambda-events](https://github.com/awslabs/aws-lambda-rust-runtime/tree/main/lambda-events/src/fixtures) repository without the `example_` prefix and the `.json` extension.
-
+1. Configure environment variables:
 ```bash
-cargo lambda invoke --data-example apigw-request
+cp cdk/.env.example cdk/.env
+# Edit cdk/.env with your credentials
 ```
 
-For generic events, where you define the event data structure, you can create a JSON file with the data you want to test with. For example:
+2. Build and deploy:
+```bash
+# Build the Rust Lambda
+cargo lambda build --release --arm64
 
-```json
-{
-    "command": "test"
-}
+# Deploy infrastructure (fish shell)
+cd cdk
+chmod +x deploy.fish
+./deploy.fish
+
+# Or for bash/zsh
+cd cdk
+source ../.env && npx cdk deploy
 ```
 
-Then, run `cargo lambda invoke --data-file ./data.json` to invoke the function with the data in `data.json`.
-
-
-Read more about running the local server in [the Cargo Lambda documentation for the `watch` command](https://www.cargo-lambda.info/commands/watch.html).
-Read more about invoking the function in [the Cargo Lambda documentation for the `invoke` command](https://www.cargo-lambda.info/commands/invoke.html).
-
-## Deploying
-
-To deploy the project, run `cargo lambda deploy`. This will create an IAM role and a Lambda function in your AWS account.
-
-Read more about deploying your lambda function in [the Cargo Lambda documentation](https://www.cargo-lambda.info/commands/deploy.html).
+For more details on the infrastructure, configuration, and testing, see the [CDK README](cdk/README.md).
