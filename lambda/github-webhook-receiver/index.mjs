@@ -161,13 +161,13 @@ async function processCompletedCheck(owner, repo, sha, checkName, conclusion, ch
             const groupId = item.groupId.S;
             const inputQueueUrl = item.inputQueueUrl.S;
 
-            // Create tool result message
+            // Create synthetic tool result message
             const resultText = formatCheckResult(owner, repo, sha, checkName, conclusion, checkData);
 
             const toolResultContent = {
                 type: 'toolresult',
-                id: toolCallId,
-                call_id: callId,
+                id: '', // Empty ID for synthetic results
+                call_id: null,
                 content: [
                     {
                         type: 'text',
@@ -179,19 +179,8 @@ async function processCompletedCheck(owner, repo, sha, checkName, conclusion, ch
             const toolResultMessage = {
                 content: toolResultContent,
                 group_id: groupId,
+                synthetic: toolCallId, // Mark as synthetic with original tool call ID
             };
-
-            // Delete the entry from DynamoDB
-            const deleteCommand = new DeleteItemCommand({
-                TableName: GITHUB_CHECKS_TABLE,
-                Key: {
-                    pk: { S: pk },
-                    sk: { S: sk },
-                },
-            });
-
-            await dynamoClient.send(deleteCommand);
-            console.log('Deleted entry from DynamoDB');
 
             // Send result to agent input queue
             const sendCommand = new SendMessageCommand({

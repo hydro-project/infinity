@@ -75,6 +75,7 @@ export class AgentZeroLeaderStack extends cdk.Stack {
       code: lambda.Code.fromAsset(path.join(__dirname, '../../target/lambda/agentzero-leader')),
       timeout: cdk.Duration.minutes(15),
       memorySize: 512,
+      reservedConcurrentExecutions: 1,
       environment: {
         DYNAMODB_TABLE_NAME: historyTable.tableName,
         OUTPUT_QUEUE_URL: outputQueue.queueUrl,

@@ -26,6 +26,8 @@ pub struct InputMessage {
     pub group_id: String,
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    pub synthetic: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,9 +118,9 @@ impl HistoryManager {
         })
     }
 
-    async fn handle_user_content(
+    async fn handle_content(
         &mut self,
-        content: UserContent,
+        message: Message,
         message_id: String,
     ) -> Result<bool, Error> {
         // Check if we've already processed this message
@@ -127,7 +129,9 @@ impl HistoryManager {
             return Ok(false);
         }
 
-        if let UserContent::ToolResult(ref tool_result) = content {
+        if let Message::User { content } = &message
+            && let UserContent::ToolResult(ref tool_result) = content.first()
+        {
             // Check if we've already processed this tool call
             if self.processed_tool_calls.contains(tool_result.id.as_str()) {
                 tracing::info!(
@@ -173,10 +177,6 @@ impl HistoryManager {
                 }
             }
         }
-
-        let message = Message::User {
-            content: OneOrMany::one(content),
-        };
 
         self.history.push(message.clone());
         self.append_to_dynamodb(message, message_id.clone()).await?;
@@ -396,8 +396,8 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             queue_url: std::env::var("CREATE_EC2_TOOL_QUEUE_URL").unwrap_or_default(),
         }),
         Box::new(LambdaTool {
-            name: "wait_github_actions_result".to_string(),
-            description: "Blocks until a GitHub actions event is received. Use this to wait on the result of some check instead of repeatedly polling. The SHA is compared against head_sha from GitHub webhook events.".to_string(),
+            name: "subscribe_github_actions_result".to_string(),
+            description: "Subscribes to GitHub actions events. The SHA is compared against head_sha from GitHub webhook events. If there is nothing to do until an event arrives, you may want to use the sleep tool to hibernate until you are woken up by an event. DO NOT re-subscribe after an `interrupt`, the subscription remains active automatically.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -416,6 +416,10 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                     "check_name": {
                         "type": "string",
                         "description": "Optional: specific check/workflow name to wait for. If omitted, waits for the next event for any check related to that commit."
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": "The invocation style: `subscribe` when subscribing to events and `interrupt` when an event arrives."
                     }
                 },
                 "required": ["owner", "repo", "sha"]
@@ -488,8 +492,87 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             current_history.update_metadata(metadata).await?;
         }
 
+        // Handle synthetic tool results
+        let content = if let Some(original_tool_call_id) = input_msg.synthetic {
+            tracing::info!(
+                "Processing synthetic tool result for tool call: {}",
+                original_tool_call_id
+            );
+
+            // Look up the original tool call from conversation history
+            let original_call = current_history
+                .history
+                .iter()
+                .find_map(|msg| {
+                    if let Message::Assistant { content, .. } = msg {
+                        content.iter().find_map(|c| {
+                            if let rig::message::AssistantContent::ToolCall(call) = c {
+                                if call.id == original_tool_call_id {
+                                    Some(call.clone())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .unwrap();
+
+            // Generate a new random tool call ID
+            let new_tool_call_id = uuid::Uuid::new_v4().to_string();
+
+            // Extract the tool result content
+            if let UserContent::ToolResult(mut tool_result) = input_msg.content {
+                // Create a synthetic tool call with kind: "interrupt" added to original arguments
+                let mut synthetic_args = original_call.function.arguments.clone();
+                synthetic_args
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("kind".to_string(), serde_json::json!("interrupt"));
+
+                let synthetic_tool_call = Message::Assistant {
+                    id: None,
+                    content: OneOrMany::one(rig::message::AssistantContent::ToolCall(
+                        rig::message::ToolCall {
+                            id: new_tool_call_id.clone(),
+                            call_id: None,
+                            function: rig::message::ToolFunction {
+                                name: original_call.function.name.clone(),
+                                arguments: synthetic_args,
+                            },
+                        },
+                    )),
+                };
+
+                // Insert the synthetic tool call into history
+                current_history
+                    .handle_content(
+                        synthetic_tool_call,
+                        format!("{}-synthetic-call", new_tool_call_id),
+                    )
+                    .await?;
+
+                // Update the tool result with the new generated ID
+                tool_result.id = new_tool_call_id;
+                UserContent::ToolResult(tool_result)
+            } else {
+                panic!("Synthetic message is not a tool result")
+            }
+        } else {
+            input_msg.content
+        };
+
         let is_new = current_history
-            .handle_user_content(input_msg.content, message_id.clone())
+            .handle_content(
+                Message::User {
+                    content: OneOrMany::one(content),
+                },
+                message_id.clone(),
+            )
             .await?;
 
         if !is_new {
