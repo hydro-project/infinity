@@ -64,6 +64,7 @@ impl Tool for SleepTool {
             }),
             group_id: context.group_id.clone(),
             metadata: None,
+            synthetic: None,
         };
 
         // SQS supports delays up to 900 seconds (15 minutes)

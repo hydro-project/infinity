@@ -46,6 +46,35 @@ export const handler = async (event) => {
 
             console.log('Stored GitHub check mapping in DynamoDB');
             console.log('Waiting for GitHub webhook to notify when check completes');
+
+            // Send immediate subscription confirmation
+            const { SQSClient, SendMessageCommand } = await import('@aws-sdk/client-sqs');
+            const sqsClient = new SQSClient({});
+
+            const subscriptionContent = {
+                type: 'toolresult',
+                id: id,
+                call_id: call_id,
+                content: [
+                    {
+                        type: 'text',
+                        text: `Subscription ID: ${id}`,
+                    },
+                ],
+            };
+
+            const subscriptionMessage = {
+                content: subscriptionContent,
+                group_id: group_id,
+            };
+
+            const sendCommand = new SendMessageCommand({
+                QueueUrl: input_queue_url,
+                MessageBody: JSON.stringify(subscriptionMessage),
+            });
+
+            await sqsClient.send(sendCommand);
+            console.log('Sent subscription confirmation to input queue');
         } catch (error) {
             console.error('Error storing GitHub check mapping:', error);
 
