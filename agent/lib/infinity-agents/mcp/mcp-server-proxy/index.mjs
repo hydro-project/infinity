@@ -4,8 +4,7 @@ import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 const sqsClient = new SQSClient({});
 
 // MCP server configuration from environment
-const MCP_SERVER_COMMAND = process.env.MCP_SERVER_COMMAND;
-const MCP_SERVER_ARGS = process.env.MCP_SERVER_ARGS ? JSON.parse(process.env.MCP_SERVER_ARGS) : [];
+const MCP_SERVER_COMMAND = process.env.MCP_SERVER_COMMAND ? JSON.parse(process.env.MCP_SERVER_COMMAND) : [];
 const MCP_SERVER_ENV = process.env.MCP_SERVER_ENV ? JSON.parse(process.env.MCP_SERVER_ENV) : {};
 
 // Pre-install MCP server during Lambda initialization (cold start)
@@ -24,13 +23,12 @@ async function ensureServerInstalled() {
 
     console.log('=== MCP Server Installation Starting ===');
     console.log('Command:', MCP_SERVER_COMMAND);
-    console.log('Args:', MCP_SERVER_ARGS);
 
     try {
         // If using npx, pre-install the package
-        if (MCP_SERVER_COMMAND === 'npx') {
+        if (MCP_SERVER_COMMAND[0] === 'npx') {
             // Extract package name from args (skip -y flag)
-            const packageName = MCP_SERVER_ARGS.find(arg => !arg.startsWith('-'));
+            const packageName = MCP_SERVER_COMMAND.slice(1).find(arg => !arg.startsWith('-'));
             
             if (packageName) {
                 console.log(`Installing ${packageName}...`);
@@ -81,9 +79,10 @@ class MCPClient {
     async start() {
         await installPromise;
         return new Promise((resolve, reject) => {
-            console.log('Starting MCP server:', MCP_SERVER_COMMAND, MCP_SERVER_ARGS);
+            const [cmd, ...args] = MCP_SERVER_COMMAND;
+            console.log('Starting MCP server:', cmd, args);
             
-            this.process = spawn(MCP_SERVER_COMMAND, MCP_SERVER_ARGS, {
+            this.process = spawn(cmd, args, {
                 env: {
                     ...process.env,
                     ...MCP_SERVER_ENV,

@@ -97,7 +97,6 @@ import { CustomToolSet, LambdaTool, InfinityAgent } from '../../infinity-agents'
 export class WeatherToolSet extends CustomToolSet {
   constructor(agent: InfinityAgent, id: string) {
     const weatherFunction = new lambda.Function(agent, 'WeatherFunction', {
-      functionName: 'infinity-agents-weather-tool',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, 'weather-lambda')),

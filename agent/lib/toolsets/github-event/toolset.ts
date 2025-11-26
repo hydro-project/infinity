@@ -11,7 +11,7 @@ export interface GitHubToolSetProps {
   /**
    * API Gateway to add the webhook endpoint to
    */
-  api: apigateway.RestApi;
+  webhookGateway: apigateway.RestApi;
 }
 
 /**
@@ -38,7 +38,6 @@ export class GitHubEventToolSet extends CustomToolSet {
     });
 
     const checkGithubActionsToolFunction = new lambda.Function(agent, 'CheckActionsFunction', {
-      functionName: 'infinity-agents-check-github-actions-tool',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, 'check-github-actions-tool')),
@@ -90,7 +89,6 @@ export class GitHubEventToolSet extends CustomToolSet {
 
     // GitHub Webhook Receiver
     const githubWebhookReceiverFunction = new lambda.Function(agent, 'WebhookReceiverFunction', {
-      functionName: 'infinity-agents-github-webhook-receiver',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, 'github-webhook-receiver')),
@@ -104,10 +102,10 @@ export class GitHubEventToolSet extends CustomToolSet {
     agent.inputQueue.grantSendMessages(githubWebhookReceiverFunction);
 
     const githubWebhookIntegration = new apigateway.LambdaIntegration(githubWebhookReceiverFunction);
-    props.api.root.addResource('github').addResource('webhook').addMethod('POST', githubWebhookIntegration);
+    props.webhookGateway.root.addResource('github').addResource('webhook').addMethod('POST', githubWebhookIntegration);
 
     super(agent, id, [subscribeGithubActionsTool]);
 
-    this.webhookUrl = props.api.url + 'github/webhook';
+    this.webhookUrl = props.webhookGateway.url + 'github/webhook';
   }
 }

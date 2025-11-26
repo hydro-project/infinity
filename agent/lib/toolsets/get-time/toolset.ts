@@ -11,7 +11,6 @@ import { CustomToolSet, LambdaTool } from '../../infinity-agents/tools';
 export class GetTimeToolSet extends CustomToolSet {
   constructor(agent: InfinityAgent, id: string) {
     const getTimeToolFunction = new lambda.Function(agent, 'GetTimeFunction', {
-      functionName: 'infinity-agents-get-time-tool',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, 'get-time-tool')),
