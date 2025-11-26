@@ -1,4 +1,3 @@
-import { Construct } from 'constructs';
 import { ToolSet, ToolSetConfig } from './tool-set';
 import { Tool } from './tool';
 import { AgentZero } from './agent-zero';
