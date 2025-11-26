@@ -7,5 +7,4 @@ if test -f ../.env
     end
 end
 
-# Deploy the CDK stack with --method=direct to bypass changeset validation
-npx cdk deploy --method=direct $argv
+npx cdk deploy $argv
