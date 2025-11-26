@@ -2,8 +2,8 @@ import * as cdk from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
-import { ToolSet, ToolSetConfig } from './tool-set';
-import { InfinityAgents } from './infinity-agents';
+import { ToolSet, ToolSetConfig } from '../tools/tool-set';
+import { InfinityAgent } from '..';
 import * as path from 'path';
 
 export interface LambdaMCPToolSetProps {
@@ -46,7 +46,7 @@ export class LambdaMCPToolSet extends ToolSet {
   public readonly handler: lambda.Function;
   private readonly name: string;
 
-  constructor(agent: InfinityAgents, id: string, props: LambdaMCPToolSetProps) {
+  constructor(agent: InfinityAgent, id: string, props: LambdaMCPToolSetProps) {
     super(agent, id);
     this.name = props.name;
 
@@ -55,7 +55,7 @@ export class LambdaMCPToolSet extends ToolSet {
       functionName: `infinity-agents-mcp-${props.name}`,
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../../lambda/mcp-server-proxy')),
+      code: lambda.Code.fromAsset(path.join(__dirname, 'mcp-server-proxy')),
       timeout: cdk.Duration.seconds(60),
       memorySize: 512,
       environment: {

@@ -1,14 +1,16 @@
 import * as cdk from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as path from 'path';
-import { CustomToolSet, LambdaTool, InfinityAgents } from '../../tools';
+
+import { InfinityAgent } from '../../infinity-agents';  
+import { CustomToolSet, LambdaTool } from '../../infinity-agents/tools';
 
 /**
  * Miscellaneous utility tools
  */
-export class MiscToolSet extends CustomToolSet {
-  constructor(agent: InfinityAgents, id: string) {
-    const getTimeToolFunction = new lambda.Function(agent, `${id}GetTimeFunction`, {
+export class GetTimeToolSet extends CustomToolSet {
+  constructor(agent: InfinityAgent, id: string) {
+    const getTimeToolFunction = new lambda.Function(agent, 'GetTimeFunction', {
       functionName: 'infinity-agents-get-time-tool',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
@@ -16,7 +18,7 @@ export class MiscToolSet extends CustomToolSet {
       timeout: cdk.Duration.seconds(30),
     });
 
-    const getTimeTool = new LambdaTool(agent, `${id}GetTimeTool`, {
+    const getTimeTool = new LambdaTool(agent, 'GetTimeTool', {
       name: 'get_time',
       description: 'Get the current time in a specified timezone or UTC.',
       parameters: {
