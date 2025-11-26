@@ -1,13 +1,13 @@
-# AgentZero Leader CDK Stack
+# InfinityAgents Leader CDK Stack
 
-This CDK stack deploys the infrastructure for the AgentZero Leader Lambda function.
+This CDK stack deploys the infrastructure for the InfinityAgents Leader Lambda function.
 
 ## Infrastructure
 
-- **DynamoDB Table**: `AgentZeroState` - Stores conversation history with deduplication
-- **SQS FIFO Queue**: `agentzero-leader.fifo` - Receives incoming messages with message group IDs
-- **Dead Letter Queue**: `agentzero-leader-dlq.fifo` - Captures failed messages
-- **Lambda Function**: `agentzero-leader` - Processes messages and manages conversations
+- **DynamoDB Table**: `InfinityAgentsState` - Stores conversation history with deduplication
+- **SQS FIFO Queue**: `infinity-agents-leader.fifo` - Receives incoming messages with message group IDs
+- **Dead Letter Queue**: `infinity-agents-leader-dlq.fifo` - Captures failed messages
+- **Lambda Function**: `infinity-agents-leader` - Processes messages and manages conversations
 - **IAM User**: For cargo lambda deployment
 
 ## Setup
@@ -56,7 +56,7 @@ After the initial CDK deployment, you can update just the Lambda function code u
 
 ```bash
 cargo lambda build --release --arm64
-cargo lambda deploy agentzero-leader
+cargo lambda deploy infinity-agents-leader
 ```
 
 Configure AWS credentials from the CDK outputs:
@@ -79,7 +79,7 @@ aws sqs send-message \
 ## Configuration
 
 The Lambda function uses these environment variables:
-- `DYNAMODB_TABLE_NAME`: Set automatically to `AgentZeroState`
+- `DYNAMODB_TABLE_NAME`: Set automatically to `InfinityAgentsState`
 - `RUST_BACKTRACE`: Set to `1` for debugging
 
 ## Architecture

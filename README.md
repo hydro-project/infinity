@@ -22,9 +22,9 @@ npx cdk deploy
 ## CDK Usage
 
 ```typescript
-import { AgentZero, LambdaMCPToolSet } from './tools';
+import { InfinityAgents, LambdaMCPToolSet } from './tools';
 
-const agent = new AgentZero(this, 'Agent');
+const agent = new InfinityAgents(this, 'Agent');
 
 // Add MCP servers
 new LambdaMCPToolSet(agent, 'GithubMcp', {

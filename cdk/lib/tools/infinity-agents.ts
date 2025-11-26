@@ -9,7 +9,7 @@ import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { ToolSetConfig } from './tool-set';
 import * as path from 'path';
 
-export interface AgentZeroProps {
+export interface InfinityAgentsProps {
   /**
    * Path to the Lambda code
    */
@@ -22,9 +22,9 @@ export interface AgentZeroProps {
 }
 
 /**
- * The main AgentZero construct that manages the leader Lambda and tools
+ * The main InfinityAgents construct that manages the leader Lambda and tools
  */
-export class AgentZero extends Construct {
+export class InfinityAgents extends Construct {
   public readonly lambdaFunction: lambda.Function;
   public readonly inputQueue: sqs.Queue;
   public readonly outputQueue: sqs.Queue;
@@ -32,12 +32,12 @@ export class AgentZero extends Construct {
   private readonly schedulerRole: iam.Role;
   private readonly toolSetConfigs: ToolSetConfig[] = [];
 
-  constructor(scope: Construct, id: string, props: AgentZeroProps = {}) {
+  constructor(scope: Construct, id: string, props: InfinityAgentsProps = {}) {
     super(scope, id);
 
     // DynamoDB table for conversation history
     this.historyTable = new dynamodb.Table(this, 'StateTable', {
-      tableName: 'AgentZeroState',
+      tableName: 'InfinityAgentsState',
       partitionKey: {
         name: 'session',
         type: dynamodb.AttributeType.STRING,
@@ -49,13 +49,13 @@ export class AgentZero extends Construct {
 
     // Dead Letter Queue for failed messages
     const deadLetterQueue = new sqs.Queue(this, 'DeadLetterQueue', {
-      queueName: 'agentzero-leader-dlq',
+      queueName: 'infinity-agents-leader-dlq',
       retentionPeriod: cdk.Duration.days(14),
     });
 
     // SQS Standard Queue for incoming messages (agent input)
     this.inputQueue = new sqs.Queue(this, 'InputQueue', {
-      queueName: 'agentzero-leader',
+      queueName: 'infinity-agents-leader',
       visibilityTimeout: cdk.Duration.minutes(15),
       retentionPeriod: cdk.Duration.days(4),
       deadLetterQueue: {
@@ -66,13 +66,13 @@ export class AgentZero extends Construct {
 
     // Dead Letter Queue for output messages
     const outputDeadLetterQueue = new sqs.Queue(this, 'OutputDeadLetterQueue', {
-      queueName: 'agentzero-output-dlq',
+      queueName: 'infinity-agents-output-dlq',
       retentionPeriod: cdk.Duration.days(14),
     });
 
     // SQS Standard Queue for agent outputs
     this.outputQueue = new sqs.Queue(this, 'OutputQueue', {
-      queueName: 'agentzero-output',
+      queueName: 'infinity-agents-output',
       visibilityTimeout: cdk.Duration.minutes(5),
       retentionPeriod: cdk.Duration.days(4),
       deadLetterQueue: {
@@ -89,12 +89,12 @@ export class AgentZero extends Construct {
 
     // Create the leader Lambda function
     this.lambdaFunction = new lambda.Function(this, 'LeaderFunction', {
-      functionName: 'agentzero-leader',
+      functionName: 'infinity-agents-leader',
       runtime: lambda.Runtime.PROVIDED_AL2023,
       handler: 'bootstrap',
       architecture: lambda.Architecture.ARM_64,
       code: lambda.Code.fromAsset(
-        props.codePath || path.join(__dirname, '../../../target/lambda/agentzero-leader')
+        props.codePath || path.join(__dirname, '../../../target/lambda/infinity-agents-leader')
       ),
       timeout: cdk.Duration.minutes(15),
       memorySize: 512,
@@ -185,7 +185,7 @@ export class AgentZero extends Construct {
   setupSlackIntegration(scope: Construct, api: apigateway.RestApi): string {
     // Slack Receiver Lambda (receives Slack events, sends to agent input queue)
     const slackReceiverFunction = new lambda.Function(scope, 'SlackReceiverFunction', {
-      functionName: 'agentzero-slack-receiver',
+      functionName: 'infinity-agents-slack-receiver',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../../../lambda/slack-receiver')),
@@ -204,7 +204,7 @@ export class AgentZero extends Construct {
 
     // Slack Responder Lambda (receives agent outputs, posts to Slack)
     const slackResponderFunction = new lambda.Function(scope, 'SlackResponderFunction', {
-      functionName: 'agentzero-slack-responder',
+      functionName: 'infinity-agents-slack-responder',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../../../lambda/slack-responder')),

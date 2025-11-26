@@ -1,6 +1,6 @@
 # Lambda Functions
 
-This directory contains Lambda functions for AgentZero tools and integrations.
+This directory contains Lambda functions for InfinityAgents tools and integrations.
 
 ## Tool Lambdas
 

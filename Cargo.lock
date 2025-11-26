@@ -3,27 +3,6 @@
 version = 4
 
 [[package]]
-name = "agentzero-leader"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "aws-config",
- "aws-sdk-dynamodb",
- "aws-sdk-scheduler",
- "aws-sdk-sqs",
- "aws_lambda_events",
- "chrono",
- "futures-util",
- "lambda_runtime",
- "rig-bedrock",
- "rig-core",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1506,6 +1485,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "79cf5c93f93228cf8efb3ba362535fb11199ac548a09ce117c9b1adc3030d706"
 dependencies = [
  "rustversion",
+]
+
+[[package]]
+name = "infinity-agents-leader"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "aws-config",
+ "aws-sdk-dynamodb",
+ "aws-sdk-scheduler",
+ "aws-sdk-sqs",
+ "aws_lambda_events",
+ "chrono",
+ "futures-util",
+ "lambda_runtime",
+ "rig-bedrock",
+ "rig-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
