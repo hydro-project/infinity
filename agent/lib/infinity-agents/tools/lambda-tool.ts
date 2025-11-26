@@ -48,8 +48,7 @@ export class LambdaTool extends Tool {
     this.parameters = props.parameters;
 
     // Create SQS queue for this tool
-    this.queue = new sqs.Queue(this, 'Queue', {
-      queueName: `infinity-agents-${props.name.replace(/_/g, '-')}`,
+    this.queue = new sqs.Queue(this, 'RequestQueue', {
       visibilityTimeout: cdk.Duration.seconds(60),
       retentionPeriod: cdk.Duration.days(4),
       ...props.queueProps,

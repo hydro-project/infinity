@@ -4,6 +4,7 @@ import { Construct } from 'constructs';
 
 import { InfinityAgent } from './infinity-agents';
 import { LambdaMCPToolSet } from './infinity-agents/mcp';
+import { SlackIntegration } from './infinity-agents/slack';
 import { GetTimeToolSet, Ec2ToolSet, GitHubEventToolSet } from './toolsets';
 
 export class ExampleAgent extends InfinityAgent {
@@ -11,9 +12,8 @@ export class ExampleAgent extends InfinityAgent {
     super(scope, id);
 
     // API Gateway for webhooks
-    const api = new apigateway.RestApi(this, 'WebhookApi', {
+    const gateway = new apigateway.RestApi(this, 'WebhookApi', {
       restApiName: 'InfinityAgents Webhooks',
-      description: 'Receives webhook events and forwards to agent',
       deployOptions: {
         stageName: 'prod',
       },
@@ -22,8 +22,7 @@ export class ExampleAgent extends InfinityAgent {
     // MCP tool sets
     new LambdaMCPToolSet(this, 'GithubMcp', {
       name: 'github',
-      command: 'npx',
-      args: ['-y', '@modelcontextprotocol/server-github'],
+      command: ['npx', '-y', '@modelcontextprotocol/server-github'],
       env: {
         GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN,
       },
@@ -33,16 +32,15 @@ export class ExampleAgent extends InfinityAgent {
     new GetTimeToolSet(this, 'GetTimeToolSet');
     new Ec2ToolSet(this, 'Ec2ToolSet');
 
-    const githubToolSet = new GitHubEventToolSet(this, 'GitHubEventToolSet', { api: api });
+    const githubToolSet = new GitHubEventToolSet(this, 'GitHubEventToolSet', { webhookGateway: gateway });
     new cdk.CfnOutput(this, 'GithubWebhookUrl', {
       value: githubToolSet.webhookUrl,
       description: 'GitHub Webhook URL',
     });
 
-    const slackWebhookUrl = this.setupSlackIntegration(this, api);
-
+    const slack = new SlackIntegration(this, 'SlackIntegration', { webhookGateway: gateway });
     new cdk.CfnOutput(this, 'SlackWebhookUrl', {
-      value: slackWebhookUrl,
+      value: slack.webhookUrl,
       description: 'Slack Event Subscription URL',
     });
   }
