@@ -4,15 +4,17 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as path from 'path';
-import { CustomToolSet, LambdaTool, InfinityAgents } from '../../tools';
+
+import { InfinityAgent } from '../../infinity-agents';  
+import { CustomToolSet, LambdaTool } from '../../infinity-agents/tools';
 
 /**
  * EC2 management tools
  */
 export class Ec2ToolSet extends CustomToolSet {
-  constructor(agent: InfinityAgents, id: string) {
+  constructor(agent: InfinityAgent, id: string) {
     // Create EC2 Tool Lambda
-    const createEc2ToolFunction = new lambda.Function(agent, `${id}CreateEc2Function`, {
+    const createEc2ToolFunction = new lambda.Function(agent, 'CreateEc2Function', {
       functionName: 'infinity-agents-create-ec2-tool',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
@@ -27,7 +29,7 @@ export class Ec2ToolSet extends CustomToolSet {
       })
     );
 
-    const createEc2Tool = new LambdaTool(agent, `${id}CreateEc2Tool`, {
+    const createEc2Tool = new LambdaTool(agent, 'CreateEc2Tool', {
       name: 'create_ec2',
       description: 'Create an EC2 instance. You will be notified when the instance is running.',
       parameters: {
@@ -56,7 +58,7 @@ export class Ec2ToolSet extends CustomToolSet {
     });
 
     // EC2 State Monitor Lambda
-    const ec2StateMonitorFunction = new lambda.Function(agent, `${id}StateMonitorFunction`, {
+    const ec2StateMonitorFunction = new lambda.Function(agent, 'StateMonitorFunction', {
       functionName: 'infinity-agents-ec2-state-monitor',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
@@ -75,7 +77,7 @@ export class Ec2ToolSet extends CustomToolSet {
       })
     );
 
-    const ec2StateRule = new events.Rule(agent, `${id}StateChangeRule`, {
+    const ec2StateRule = new events.Rule(agent, 'StateChangeRule', {
       ruleName: 'infinity-agents-ec2-running',
       description: 'Monitors EC2 instances created by InfinityAgents reaching running state',
       eventPattern: {

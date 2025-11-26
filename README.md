@@ -51,8 +51,7 @@ See [docs/cdk-usage.md](docs/cdk-usage.md) for complete CDK documentation.
 - **Conversation state** - DynamoDB stores durable conversation history to ensure fault tolerance
 
 ## Project Structure
-
-- `src/` - Rust leader Lambda (Bedrock streaming, tool orchestration)
-- `cdk/` - CDK infrastructure and tool abstractions
-- `lambda/` - Tool implementations (Node.js)
+- `src/` - Infinity Agent Leader (Rust, Bedrock streaming, tool orchestration)
+- `agent/lib/infinity-agents` - Infinity Agents SDK
+- `agent/lib/{example-agent.ts, toolsets}` - Example Agent and Custom Tools
 - `docs/` - Architecture and usage documentation

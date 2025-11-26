@@ -6,7 +6,7 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
-import { ToolSetConfig } from './tool-set';
+import { ToolSetConfig } from './tools/tool-set';
 import * as path from 'path';
 
 export interface InfinityAgentsProps {
@@ -22,9 +22,9 @@ export interface InfinityAgentsProps {
 }
 
 /**
- * The main InfinityAgents construct that manages the leader Lambda and tools
+ * The main InfinityAgent construct that manages the leader Lambda and tools
  */
-export class InfinityAgents extends Construct {
+export class InfinityAgent extends Construct {
   public readonly lambdaFunction: lambda.Function;
   public readonly inputQueue: sqs.Queue;
   public readonly outputQueue: sqs.Queue;
@@ -188,7 +188,7 @@ export class InfinityAgents extends Construct {
       functionName: 'infinity-agents-slack-receiver',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../../lambda/slack-receiver')),
+      code: lambda.Code.fromAsset(path.join(__dirname, 'slack/slack-receiver')),
       timeout: cdk.Duration.seconds(30),
       environment: {
         AGENT_INPUT_QUEUE_URL: this.inputQueue.queueUrl,
@@ -207,7 +207,7 @@ export class InfinityAgents extends Construct {
       functionName: 'infinity-agents-slack-responder',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../../lambda/slack-responder')),
+      code: lambda.Code.fromAsset(path.join(__dirname, 'slack/slack-responder')),
       timeout: cdk.Duration.seconds(30),
       environment: {
         SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN || '',

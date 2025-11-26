@@ -3,7 +3,9 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as path from 'path';
-import { CustomToolSet, LambdaTool, InfinityAgents } from '../../tools';
+
+import { InfinityAgent } from '../../infinity-agents';  
+import { CustomToolSet, LambdaTool } from '../../infinity-agents/tools';
 
 export interface GitHubToolSetProps {
   /**
@@ -15,12 +17,12 @@ export interface GitHubToolSetProps {
 /**
  * GitHub Actions subscription tools
  */
-export class GitHubToolSet extends CustomToolSet {
+export class GitHubEventToolSet extends CustomToolSet {
   public readonly webhookUrl: string;
 
-  constructor(agent: InfinityAgents, id: string, props: GitHubToolSetProps) {
+  constructor(agent: InfinityAgent, id: string, props: GitHubToolSetProps) {
     // GitHub Actions Check Tool
-    const githubChecksTable = new dynamodb.Table(agent, `${id}ChecksTable`, {
+    const githubChecksTable = new dynamodb.Table(agent, 'GitHubChecksTable', {
       tableName: 'InfinityAgentsGitHubChecks',
       partitionKey: {
         name: 'pk',
@@ -35,7 +37,7 @@ export class GitHubToolSet extends CustomToolSet {
       timeToLiveAttribute: 'ttl',
     });
 
-    const checkGithubActionsToolFunction = new lambda.Function(agent, `${id}CheckActionsFunction`, {
+    const checkGithubActionsToolFunction = new lambda.Function(agent, 'CheckActionsFunction', {
       functionName: 'infinity-agents-check-github-actions-tool',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
@@ -47,7 +49,7 @@ export class GitHubToolSet extends CustomToolSet {
     });
     githubChecksTable.grantWriteData(checkGithubActionsToolFunction);
 
-    const subscribeGithubActionsTool = new LambdaTool(agent, `${id}SubscribeTool`, {
+    const subscribeGithubActionsTool = new LambdaTool(agent, 'SubscribeTool', {
       name: 'subscribe_github_actions_result',
       description:
         'Subscribes to GitHub actions events. The SHA is compared against head_sha from GitHub webhook events. If there is nothing to do until an event arrives, you may want to use the sleep tool to hibernate until you are woken up by an event. DO NOT re-subscribe after an `interrupt`, the subscription remains active automatically.',
@@ -87,7 +89,7 @@ export class GitHubToolSet extends CustomToolSet {
     });
 
     // GitHub Webhook Receiver
-    const githubWebhookReceiverFunction = new lambda.Function(agent, `${id}WebhookReceiverFunction`, {
+    const githubWebhookReceiverFunction = new lambda.Function(agent, 'WebhookReceiverFunction', {
       functionName: 'infinity-agents-github-webhook-receiver',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
