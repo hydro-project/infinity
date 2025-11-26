@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use aws_sdk_sqs::Client as SqsClient;
 use lambda_runtime::Error;
 
+pub mod config;
 pub mod lambda_tool;
 pub mod lambda_mcp;
 pub mod sleep;

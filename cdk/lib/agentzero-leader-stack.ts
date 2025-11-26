@@ -66,7 +66,7 @@ export class AgentZeroLeaderStack extends cdk.Stack {
     });
     messageQueue.grantSendMessages(schedulerRole);
 
-    // Lambda function - using placeholder initially, then deploy with cargo lambda
+    // We'll add the tools config after creating all the queues
     const lambdaFunction = new lambda.Function(this, 'AgentZeroLeaderFunction', {
       functionName: 'agentzero-leader',
       runtime: lambda.Runtime.PROVIDED_AL2023,
@@ -153,9 +153,9 @@ export class AgentZeroLeaderStack extends cdk.Stack {
     messageQueue.grantSendMessages(slackReceiverFunction);
 
     // API Gateway for Slack webhook
-    const api = new apigateway.RestApi(this, 'SlackWebhookApi', {
-      restApiName: 'AgentZero Slack Webhook',
-      description: 'Receives Slack events and forwards to agent',
+    const api = new apigateway.RestApi(this, 'ExternalGateway', {
+      restApiName: 'Infinity Agents Webhook Gateway',
+      description: 'Receives webhook events and forwards to agent',
       deployOptions: {
         stageName: 'prod',
       },
@@ -185,44 +185,9 @@ export class AgentZeroLeaderStack extends cdk.Stack {
     );
 
     // Outputs
-    new cdk.CfnOutput(this, 'QueueUrl', {
-      value: messageQueue.queueUrl,
-      description: 'SQS Queue URL',
-    });
-
-    new cdk.CfnOutput(this, 'QueueArn', {
-      value: messageQueue.queueArn,
-      description: 'SQS Queue ARN',
-    });
-
-    new cdk.CfnOutput(this, 'DynamoDBTableName', {
-      value: historyTable.tableName,
-      description: 'DynamoDB Table Name',
-    });
-
-    new cdk.CfnOutput(this, 'LambdaFunctionArn', {
-      value: lambdaFunction.functionArn,
-      description: 'Lambda Function ARN',
-    });
-
-    new cdk.CfnOutput(this, 'OutputQueueUrl', {
-      value: outputQueue.queueUrl,
-      description: 'Agent Output Queue URL',
-    });
-
     new cdk.CfnOutput(this, 'SlackWebhookUrl', {
       value: api.url + 'slack/events',
       description: 'Slack Event Subscription URL',
-    });
-
-    new cdk.CfnOutput(this, 'SlackReceiverFunctionArn', {
-      value: slackReceiverFunction.functionArn,
-      description: 'Slack Receiver Lambda ARN',
-    });
-
-    new cdk.CfnOutput(this, 'SlackResponderFunctionArn', {
-      value: slackResponderFunction.functionArn,
-      description: 'Slack Responder Lambda ARN',
     });
 
     // Get Time Tool Queue
@@ -252,16 +217,8 @@ export class AgentZeroLeaderStack extends cdk.Stack {
       })
     );
 
-    // Update main Lambda environment with Get Time Tool queue URL
-    lambdaFunction.addEnvironment('GET_TIME_TOOL_QUEUE_URL', getTimeToolQueue.queueUrl);
-
     // Grant main Lambda permission to send to Get Time Tool queue
     getTimeToolQueue.grantSendMessages(lambdaFunction);
-
-    new cdk.CfnOutput(this, 'GetTimeToolQueueUrl', {
-      value: getTimeToolQueue.queueUrl,
-      description: 'Get Time Tool Queue URL',
-    });
 
     // Create EC2 Tool Queue
     const createEc2ToolQueue = new sqs.Queue(this, 'CreateEc2ToolQueue', {
@@ -304,16 +261,8 @@ export class AgentZeroLeaderStack extends cdk.Stack {
       })
     );
 
-    // Update main Lambda environment with Create EC2 Tool queue URL
-    lambdaFunction.addEnvironment('CREATE_EC2_TOOL_QUEUE_URL', createEc2ToolQueue.queueUrl);
-
     // Grant main Lambda permission to send to Create EC2 Tool queue
     createEc2ToolQueue.grantSendMessages(lambdaFunction);
-
-    new cdk.CfnOutput(this, 'CreateEc2ToolQueueUrl', {
-      value: createEc2ToolQueue.queueUrl,
-      description: 'Create EC2 Tool Queue URL',
-    });
 
     // EC2 State Monitor Lambda - processes EventBridge EC2 state change events
     const ec2StateMonitorFunction = new lambda.Function(this, 'Ec2StateMonitorFunction', {
@@ -352,11 +301,6 @@ export class AgentZeroLeaderStack extends cdk.Stack {
 
     // Add Lambda as target for the EventBridge rule
     ec2StateRule.addTarget(new targets.LambdaFunction(ec2StateMonitorFunction));
-
-    new cdk.CfnOutput(this, 'Ec2StateMonitorFunctionArn', {
-      value: ec2StateMonitorFunction.functionArn,
-      description: 'EC2 State Monitor Lambda ARN',
-    });
 
     // DynamoDB table for GitHub Actions check mappings
     const githubChecksTable = new dynamodb.Table(this, 'GitHubChecksTable', {
@@ -405,16 +349,8 @@ export class AgentZeroLeaderStack extends cdk.Stack {
       })
     );
 
-    // Update main Lambda environment with GitHub Actions Check Tool queue URL
-    lambdaFunction.addEnvironment('CHECK_GITHUB_ACTIONS_TOOL_QUEUE_URL', checkGithubActionsToolQueue.queueUrl);
-
     // Grant main Lambda permission to send to GitHub Actions Check Tool queue
     checkGithubActionsToolQueue.grantSendMessages(lambdaFunction);
-
-    new cdk.CfnOutput(this, 'CheckGithubActionsToolQueueUrl', {
-      value: checkGithubActionsToolQueue.queueUrl,
-      description: 'GitHub Actions Check Tool Queue URL',
-    });
 
     // GitHub Webhook Receiver Lambda
     const githubWebhookReceiverFunction = new lambda.Function(this, 'GithubWebhookReceiverFunction', {
@@ -440,16 +376,6 @@ export class AgentZeroLeaderStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'GithubWebhookUrl', {
       value: api.url + 'github/webhook',
       description: 'GitHub Webhook URL',
-    });
-
-    new cdk.CfnOutput(this, 'GithubWebhookReceiverFunctionArn', {
-      value: githubWebhookReceiverFunction.functionArn,
-      description: 'GitHub Webhook Receiver Lambda ARN',
-    });
-
-    new cdk.CfnOutput(this, 'GitHubChecksTableName', {
-      value: githubChecksTable.tableName,
-      description: 'GitHub Checks DynamoDB Table Name',
     });
 
     // GitHub MCP Server
@@ -487,12 +413,115 @@ export class AgentZeroLeaderStack extends cdk.Stack {
       })
     );
 
-    lambdaFunction.addEnvironment('MCP_GITHUB_QUEUE_URL', mcpGithubQueue.queueUrl);
     mcpGithubQueue.grantSendMessages(lambdaFunction);
 
-    new cdk.CfnOutput(this, 'McpGithubQueueUrl', {
-      value: mcpGithubQueue.queueUrl,
-      description: 'GitHub MCP Server Queue URL',
-    });
+    // Build tools configuration and add to Lambda environment
+    const toolsConfig = {
+      tool_sets: [
+        {
+          type: 'vec',
+          tools: [
+            {
+              type: 'lambda',
+              name: 'create_ec2',
+              description: 'Create an EC2 instance. You will be notified when the instance is running.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  instance_type: {
+                    type: 'string',
+                    description: "EC2 instance type (e.g., 't3.micro', 't3.small').",
+                  },
+                  ami_id: {
+                    type: 'string',
+                    description: 'AMI ID to use for the instance.',
+                  },
+                  name: {
+                    type: 'string',
+                    description: 'Name tag for the instance.',
+                  },
+                  key_name: {
+                    type: 'string',
+                    description: 'SSH key pair name for accessing the instance. Optional.',
+                  },
+                },
+                required: ['instance_type', 'ami_id', 'name'],
+              },
+              queue_url: createEc2ToolQueue.queueUrl,
+            },
+          ],
+        },
+        {
+          type: 'vec',
+          tools: [
+            {
+              type: 'lambda',
+              name: 'subscribe_github_actions_result',
+              description:
+                'Subscribes to GitHub actions events. The SHA is compared against head_sha from GitHub webhook events. If there is nothing to do until an event arrives, you may want to use the sleep tool to hibernate until you are woken up by an event. DO NOT re-subscribe after an `interrupt`, the subscription remains active automatically.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  owner: {
+                    type: 'string',
+                    description: 'GitHub repository owner (username or organization).',
+                  },
+                  repo: {
+                    type: 'string',
+                    description: 'GitHub repository name.',
+                  },
+                  sha: {
+                    type: 'string',
+                    description:
+                      'Commit SHA to monitor. This must be a full commit SHA (not a branch or tag) as it will be matched against head_sha from GitHub webhook events.',
+                  },
+                  check_name: {
+                    type: 'string',
+                    description:
+                      'Optional: specific check/workflow name to wait for. If omitted, waits for the next event for any check related to that commit.',
+                  },
+                  kind: {
+                    type: 'string',
+                    description:
+                      'The invocation style: `subscribe` when subscribing to events and `interrupt` when an event arrives.',
+                  },
+                },
+                required: ['owner', 'repo', 'sha'],
+              },
+              queue_url: checkGithubActionsToolQueue.queueUrl,
+            },
+          ],
+        },
+        {
+          type: 'mcp',
+          name: 'github',
+          queue_url: mcpGithubQueue.queueUrl,
+        },
+        {
+          type: 'vec',
+          tools: [
+            {
+              type: 'lambda',
+              name: 'get_time',
+              description: 'Get the current time in a specified timezone or UTC.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  timezone: {
+                    type: 'string',
+                    description:
+                      "IANA timezone name (e.g., 'America/New_York', 'Europe/London'). Defaults to UTC if not specified.",
+                  },
+                },
+                required: [],
+              },
+              queue_url: getTimeToolQueue.queueUrl,
+            },
+          ],
+        },
+      ],
+    };
+
+    lambdaFunction.addEnvironment('TOOLS_CONFIG', JSON.stringify(toolsConfig));
   }
 }
