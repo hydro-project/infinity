@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use crate::tools::lambda_tool::LambdaTool;
+use crate::tools::lambda_mcp::LambdaMCP;
 use crate::tools::sleep::SleepTool;
-use crate::tools::{Tool, ToolContext};
+use crate::tools::{Tool, ToolContext, ToolSet, VecToolSet};
 
 use futures_util::StreamExt;
 use rig::{
@@ -347,28 +348,15 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     let output_queue_url = std::env::var("OUTPUT_QUEUE_URL").unwrap_or_else(|_| "".to_string());
     let scheduler_role_arn = std::env::var("SCHEDULER_ROLE_ARN").unwrap_or_else(|_| "".to_string());
 
-    // Register tools
-    let tool_impls: Vec<Box<dyn Tool>> = vec![
-        Box::new(SleepTool {
+    // Register tool sets
+    let tool_sets: Vec<Box<dyn ToolSet>> = vec![
+        // Sleep tool set
+        Box::new(VecToolSet::new(vec![Box::new(SleepTool {
             scheduler_client: scheduler_client.clone(),
             scheduler_role_arn: scheduler_role_arn.clone(),
-        }),
-        Box::new(LambdaTool {
-            name: "get_time".to_string(),
-            description: "Get the current time in a specified timezone or UTC.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "timezone": {
-                        "type": "string",
-                        "description": "IANA timezone name (e.g., 'America/New_York', 'Europe/London'). Defaults to UTC if not specified."
-                    }
-                },
-                "required": []
-            }),
-            queue_url: std::env::var("GET_TIME_TOOL_QUEUE_URL").unwrap_or_default(),
-        }),
-        Box::new(LambdaTool {
+        })])),
+        // EC2 tool set
+        Box::new(VecToolSet::new(vec![Box::new(LambdaTool {
             name: "create_ec2".to_string(),
             description: "Create an EC2 instance. You will be notified when the instance is running.".to_string(),
             parameters: serde_json::json!({
@@ -394,68 +382,69 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 "required": ["instance_type", "ami_id", "name"]
             }),
             queue_url: std::env::var("CREATE_EC2_TOOL_QUEUE_URL").unwrap_or_default(),
-        }),
-        Box::new(LambdaTool {
-            name: "subscribe_github_actions_result".to_string(),
-            description: "Subscribes to GitHub actions events. The SHA is compared against head_sha from GitHub webhook events. If there is nothing to do until an event arrives, you may want to use the sleep tool to hibernate until you are woken up by an event. DO NOT re-subscribe after an `interrupt`, the subscription remains active automatically.".to_string(),
+        })])),
+        // GitHub tool set (includes both MCP tools and webhook subscription)
+        Box::new(VecToolSet::new(vec![
+            Box::new(LambdaTool {
+                name: "subscribe_github_actions_result".to_string(),
+                description: "Subscribes to GitHub actions events. The SHA is compared against head_sha from GitHub webhook events. If there is nothing to do until an event arrives, you may want to use the sleep tool to hibernate until you are woken up by an event. DO NOT re-subscribe after an `interrupt`, the subscription remains active automatically.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "owner": {
+                            "type": "string",
+                            "description": "GitHub repository owner (username or organization)."
+                        },
+                        "repo": {
+                            "type": "string",
+                            "description": "GitHub repository name."
+                        },
+                        "sha": {
+                            "type": "string",
+                            "description": "Commit SHA to monitor. This must be a full commit SHA (not a branch or tag) as it will be matched against head_sha from GitHub webhook events."
+                        },
+                        "check_name": {
+                            "type": "string",
+                            "description": "Optional: specific check/workflow name to wait for. If omitted, waits for the next event for any check related to that commit."
+                        },
+                        "kind": {
+                            "type": "string",
+                            "description": "The invocation style: `subscribe` when subscribing to events and `interrupt` when an event arrives."
+                        }
+                    },
+                    "required": ["owner", "repo", "sha"]
+                }),
+                queue_url: std::env::var("CHECK_GITHUB_ACTIONS_TOOL_QUEUE_URL").unwrap_or_default(),
+            }),
+        ])),
+        // GitHub MCP server
+        Box::new(LambdaMCP::new(
+            "github",
+            std::env::var("MCP_GITHUB_QUEUE_URL").unwrap_or_default(),
+        )),
+        // Misc tools
+        Box::new(VecToolSet::new(vec![Box::new(LambdaTool {
+            name: "get_time".to_string(),
+            description: "Get the current time in a specified timezone or UTC.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "owner": {
+                    "timezone": {
                         "type": "string",
-                        "description": "GitHub repository owner (username or organization)."
-                    },
-                    "repo": {
-                        "type": "string",
-                        "description": "GitHub repository name."
-                    },
-                    "sha": {
-                        "type": "string",
-                        "description": "Commit SHA to monitor. This must be a full commit SHA (not a branch or tag) as it will be matched against head_sha from GitHub webhook events."
-                    },
-                    "check_name": {
-                        "type": "string",
-                        "description": "Optional: specific check/workflow name to wait for. If omitted, waits for the next event for any check related to that commit."
-                    },
-                    "kind": {
-                        "type": "string",
-                        "description": "The invocation style: `subscribe` when subscribing to events and `interrupt` when an event arrives."
+                        "description": "IANA timezone name (e.g., 'America/New_York', 'Europe/London'). Defaults to UTC if not specified."
                     }
                 },
-                "required": ["owner", "repo", "sha"]
-            }),
-            queue_url: std::env::var("CHECK_GITHUB_ACTIONS_TOOL_QUEUE_URL").unwrap_or_default(),
-        }),
-        Box::new(LambdaTool {
-            name: "github_list_tools".to_string(),
-            description: "List all available GitHub API tools from the MCP server.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {},
                 "required": []
             }),
-            queue_url: std::env::var("MCP_GITHUB_QUEUE_URL").unwrap_or_default(),
-        }),
-        Box::new(LambdaTool {
-            name: "github_invoke_tool".to_string(),
-            description: "Invoke a GitHub API tool (e.g., create_issue, create_pull_request, fork_repository, etc.). Use github_list_tools first to see available tools.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "tool_name": {
-                        "type": "string",
-                        "description": "Name of the GitHub tool to invoke (e.g., 'create_issue', 'create_pull_request')."
-                    },
-                    "arguments": {
-                        "type": "object",
-                        "description": "Arguments to pass to the tool as a JSON object. Structure depends on the specific tool."
-                    }
-                },
-                "required": ["tool_name"]
-            }),
-            queue_url: std::env::var("MCP_GITHUB_QUEUE_URL").unwrap_or_default(),
-        }),
+            queue_url: std::env::var("GET_TIME_TOOL_QUEUE_URL").unwrap_or_default(),
+        })])),
     ];
+
+    // Concatenate all tools from tool sets
+    let mut tool_impls: Vec<Box<dyn Tool>> = Vec::new();
+    for tool_set in tool_sets {
+        tool_impls.extend(tool_set.into_tools());
+    }
 
     let tool_registry: HashMap<String, &Box<dyn Tool>> = tool_impls
         .iter()
