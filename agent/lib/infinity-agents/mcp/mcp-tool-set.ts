@@ -34,8 +34,7 @@ export class MCPToolSet extends ToolSet {
     this.name = props.name;
 
     // Create SQS queue for this MCP server
-    this.queue = new sqs.Queue(this, 'Queue', {
-      queueName: `infinity-agents-mcp-${props.name}`,
+    this.queue = new sqs.Queue(this, 'RequestQueue', {
       visibilityTimeout: cdk.Duration.seconds(60),
       retentionPeriod: cdk.Duration.days(4),
       ...props.queueProps,

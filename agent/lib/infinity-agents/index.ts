@@ -4,7 +4,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { ToolSetConfig } from './tools/tool-set';
 import * as path from 'path';
@@ -49,13 +49,11 @@ export class InfinityAgent extends Construct {
 
     // Dead Letter Queue for failed messages
     const deadLetterQueue = new sqs.Queue(this, 'DeadLetterQueue', {
-      queueName: 'infinity-agents-leader-dlq',
       retentionPeriod: cdk.Duration.days(14),
     });
 
     // SQS Standard Queue for incoming messages (agent input)
     this.inputQueue = new sqs.Queue(this, 'InputQueue', {
-      queueName: 'infinity-agents-leader',
       visibilityTimeout: cdk.Duration.minutes(15),
       retentionPeriod: cdk.Duration.days(4),
       deadLetterQueue: {
@@ -66,13 +64,11 @@ export class InfinityAgent extends Construct {
 
     // Dead Letter Queue for output messages
     const outputDeadLetterQueue = new sqs.Queue(this, 'OutputDeadLetterQueue', {
-      queueName: 'infinity-agents-output-dlq',
       retentionPeriod: cdk.Duration.days(14),
     });
 
     // SQS Standard Queue for agent outputs
     this.outputQueue = new sqs.Queue(this, 'OutputQueue', {
-      queueName: 'infinity-agents-output',
       visibilityTimeout: cdk.Duration.minutes(5),
       retentionPeriod: cdk.Duration.days(4),
       deadLetterQueue: {
@@ -89,7 +85,6 @@ export class InfinityAgent extends Construct {
 
     // Create the leader Lambda function
     this.lambdaFunction = new lambda.Function(this, 'LeaderFunction', {
-      functionName: 'infinity-agents-leader',
       runtime: lambda.Runtime.PROVIDED_AL2023,
       handler: 'bootstrap',
       architecture: lambda.Architecture.ARM_64,
@@ -174,53 +169,4 @@ export class InfinityAgent extends Construct {
     this.lambdaFunction.addEnvironment('TOOLS_CONFIG', JSON.stringify(toolsConfig));
   }
 
-  /**
-   * Setup Slack integration for the agent
-   * Creates receiver and responder Lambda functions and API Gateway endpoint
-   * 
-   * @param scope - The construct scope for creating resources
-   * @param api - The API Gateway to add the Slack webhook endpoint to
-   * @returns The Slack webhook URL
-   */
-  setupSlackIntegration(scope: Construct, api: apigateway.RestApi): string {
-    // Slack Receiver Lambda (receives Slack events, sends to agent input queue)
-    const slackReceiverFunction = new lambda.Function(scope, 'SlackReceiverFunction', {
-      functionName: 'infinity-agents-slack-receiver',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, 'slack/slack-receiver')),
-      timeout: cdk.Duration.seconds(30),
-      environment: {
-        AGENT_INPUT_QUEUE_URL: this.inputQueue.queueUrl,
-        SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET || '',
-      },
-    });
-
-    this.inputQueue.grantSendMessages(slackReceiverFunction);
-
-    // Add Slack webhook endpoint to API Gateway
-    const slackIntegration = new apigateway.LambdaIntegration(slackReceiverFunction);
-    api.root.addResource('slack').addResource('events').addMethod('POST', slackIntegration);
-
-    // Slack Responder Lambda (receives agent outputs, posts to Slack)
-    const slackResponderFunction = new lambda.Function(scope, 'SlackResponderFunction', {
-      functionName: 'infinity-agents-slack-responder',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, 'slack/slack-responder')),
-      timeout: cdk.Duration.seconds(30),
-      environment: {
-        SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN || '',
-      },
-    });
-
-    slackResponderFunction.addEventSource(
-      new SqsEventSource(this.outputQueue, {
-        batchSize: 1,
-        reportBatchItemFailures: true,
-      })
-    );
-
-    return api.url + 'slack/events';
-  }
 }
