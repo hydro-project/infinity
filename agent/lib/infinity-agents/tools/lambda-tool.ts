@@ -2,17 +2,27 @@ import * as cdk from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
-import { ToolSet, ToolSetConfig } from './tool-set';
-import { InfinityAgents } from './infinity-agents';
+import { Tool, ToolConfig } from './tool';
+import { InfinityAgent } from '..';
 
-export interface MCPToolSetProps {
+export interface LambdaToolProps {
   /**
-   * Name of the MCP server (e.g., 'github', 'slack')
+   * Tool name
    */
   readonly name: string;
 
   /**
-   * Lambda function that proxies to the MCP server
+   * Tool description
+   */
+  readonly description: string;
+
+  /**
+   * JSON Schema for tool parameters
+   */
+  readonly parameters: any;
+
+  /**
+   * Lambda function that implements this tool
    */
   readonly handler: lambda.IFunction;
 
@@ -23,19 +33,23 @@ export interface MCPToolSetProps {
 }
 
 /**
- * An MCP server that automatically creates list_tools and invoke_tool methods
+ * A tool that forwards requests to a Lambda function via SQS
  */
-export class MCPToolSet extends ToolSet {
+export class LambdaTool extends Tool {
   public readonly queue: sqs.Queue;
   private readonly name: string;
+  private readonly description: string;
+  private readonly parameters: any;
 
-  constructor(agent: InfinityAgents, id: string, props: MCPToolSetProps) {
+  constructor(agent: InfinityAgent, id: string, props: LambdaToolProps) {
     super(agent, id);
     this.name = props.name;
+    this.description = props.description;
+    this.parameters = props.parameters;
 
-    // Create SQS queue for this MCP server
+    // Create SQS queue for this tool
     this.queue = new sqs.Queue(this, 'Queue', {
-      queueName: `infinity-agents-mcp-${props.name}`,
+      queueName: `infinity-agents-${props.name.replace(/_/g, '-')}`,
       visibilityTimeout: cdk.Duration.seconds(60),
       retentionPeriod: cdk.Duration.days(4),
       ...props.queueProps,
@@ -54,15 +68,14 @@ export class MCPToolSet extends ToolSet {
 
     // Grant the handler permission to send to the agent's input queue
     agent.inputQueue.grantSendMessages(props.handler);
-
-    // Register this tool set with the agent
-    agent.registerToolSet(this.toConfig());
   }
 
-  toConfig(): ToolSetConfig {
+  toConfig(): ToolConfig {
     return {
-      type: 'mcp',
+      type: 'lambda',
       name: this.name,
+      description: this.description,
+      parameters: this.parameters,
       queue_url: this.queue.queueUrl,
     };
   }

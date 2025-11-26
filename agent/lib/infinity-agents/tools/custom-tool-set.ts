@@ -1,15 +1,15 @@
 import { ToolSet, ToolSetConfig } from './tool-set';
 import { Tool } from './tool';
-import { InfinityAgents } from './infinity-agents';
+import { InfinityAgent } from '..';
 
 /**
  * A collection of individual tools
  */
 export class CustomToolSet extends ToolSet {
-  private readonly agent: InfinityAgents;
+  private readonly agent: InfinityAgent;
   private readonly tools: Tool[];
 
-  constructor(agent: InfinityAgents, id: string, tools: Tool[]) {
+  constructor(agent: InfinityAgent, id: string, tools: Tool[]) {
     super(agent, id);
     this.agent = agent;
     this.tools = tools;
