@@ -17,63 +17,25 @@ export class ExampleAgentStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // Create the AgentZero construct (creates all internal resources)
     this.agent = new AgentZero(this, 'AgentZero');
 
-    // Slack Receiver Lambda (receives Slack events, sends to agent input queue)
-    const slackReceiverFunction = new lambda.Function(this, 'SlackReceiverFunction', {
-      functionName: 'agentzero-slack-receiver',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../lambda/slack-receiver')),
-      timeout: cdk.Duration.seconds(30),
-      environment: {
-        AGENT_INPUT_QUEUE_URL: this.agent.inputQueue.queueUrl,
-        SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET || '',
-      },
-    });
-
-    this.agent.inputQueue.grantSendMessages(slackReceiverFunction);
-
-    // API Gateway for Slack webhook
-    this.api = new apigateway.RestApi(this, 'SlackWebhookApi', {
-      restApiName: 'AgentZero Slack Webhook',
-      description: 'Receives Slack events and forwards to agent',
+    // API Gateway for webhooks
+    this.api = new apigateway.RestApi(this, 'WebhookApi', {
+      restApiName: 'AgentZero Webhooks',
+      description: 'Receives webhook events and forwards to agent',
       deployOptions: {
         stageName: 'prod',
       },
     });
 
-    const slackIntegration = new apigateway.LambdaIntegration(slackReceiverFunction);
-    this.api.root.addResource('slack').addResource('events').addMethod('POST', slackIntegration);
+    const slackWebhookUrl = this.agent.setupSlackIntegration(this, this.api);
 
-    // Slack Responder Lambda (receives agent outputs, posts to Slack)
-    const slackResponderFunction = new lambda.Function(this, 'SlackResponderFunction', {
-      functionName: 'agentzero-slack-responder',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../lambda/slack-responder')),
-      timeout: cdk.Duration.seconds(30),
-      environment: {
-        SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN!,
-      },
-    });
-
-    slackResponderFunction.addEventSource(
-      new SqsEventSource(this.agent.outputQueue, {
-        batchSize: 1,
-        reportBatchItemFailures: true,
-      })
-    );
-
-    // Setup tool sets
     this.setupMiscTools();
     this.setupEc2Tools();
     this.setupGithubTools();
 
-    // Outputs
     new cdk.CfnOutput(this, 'SlackWebhookUrl', {
-      value: this.api.url + 'slack/events',
+      value: slackWebhookUrl,
       description: 'Slack Event Subscription URL',
     });
 
