@@ -7,20 +7,20 @@ import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import { Construct } from 'constructs';
 import * as path from 'path';
-import { AgentZero, LambdaTool, CustomToolSet, LambdaMCPToolSet } from './tools';
+import { InfinityAgents, LambdaTool, CustomToolSet, LambdaMCPToolSet } from './tools';
 
 export class ExampleAgentStack extends cdk.Stack {
-  private agent: AgentZero;
+  private agent: InfinityAgents;
   private api: apigateway.RestApi;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    this.agent = new AgentZero(this, 'AgentZero');
+    this.agent = new InfinityAgents(this, 'InfinityAgents');
 
     // API Gateway for webhooks
     this.api = new apigateway.RestApi(this, 'WebhookApi', {
-      restApiName: 'AgentZero Webhooks',
+      restApiName: 'InfinityAgents Webhooks',
       description: 'Receives webhook events and forwards to agent',
       deployOptions: {
         stageName: 'prod',
@@ -55,7 +55,7 @@ export class ExampleAgentStack extends cdk.Stack {
 
   private setupMiscTools(): void {
     const getTimeToolFunction = new lambda.Function(this, 'GetTimeToolFunction', {
-      functionName: 'agentzero-get-time-tool',
+      functionName: 'infinity-agents-get-time-tool',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../../lambda/get-time-tool')),
@@ -88,7 +88,7 @@ export class ExampleAgentStack extends cdk.Stack {
   private setupEc2Tools(): void {
     // Create EC2 Tool Lambda
     const createEc2ToolFunction = new lambda.Function(this, 'CreateEc2ToolFunction', {
-      functionName: 'agentzero-create-ec2-tool',
+      functionName: 'infinity-agents-create-ec2-tool',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../../lambda/create-ec2-tool')),
@@ -132,7 +132,7 @@ export class ExampleAgentStack extends cdk.Stack {
 
     // EC2 State Monitor Lambda
     const ec2StateMonitorFunction = new lambda.Function(this, 'Ec2StateMonitorFunction', {
-      functionName: 'agentzero-ec2-state-monitor',
+      functionName: 'infinity-agents-ec2-state-monitor',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../../lambda/ec2-state-monitor')),
@@ -151,8 +151,8 @@ export class ExampleAgentStack extends cdk.Stack {
     );
 
     const ec2StateRule = new events.Rule(this, 'Ec2StateChangeRule', {
-      ruleName: 'agentzero-ec2-running',
-      description: 'Monitors EC2 instances created by AgentZero reaching running state',
+      ruleName: 'infinity-agents-ec2-running',
+      description: 'Monitors EC2 instances created by InfinityAgents reaching running state',
       eventPattern: {
         source: ['aws.ec2'],
         detailType: ['EC2 Instance State-change Notification'],
@@ -169,7 +169,7 @@ export class ExampleAgentStack extends cdk.Stack {
   private githubSubscriptionTool(): string {
     // GitHub Actions Check Tool
     const githubChecksTable = new dynamodb.Table(this, 'GitHubChecksTable', {
-      tableName: 'AgentZeroGitHubChecks',
+      tableName: 'InfinityAgentsGitHubChecks',
       partitionKey: {
         name: 'pk',
         type: dynamodb.AttributeType.STRING,
@@ -184,7 +184,7 @@ export class ExampleAgentStack extends cdk.Stack {
     });
 
     const checkGithubActionsToolFunction = new lambda.Function(this, 'CheckGithubActionsToolFunction', {
-      functionName: 'agentzero-check-github-actions-tool',
+      functionName: 'infinity-agents-check-github-actions-tool',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../../lambda/check-github-actions-tool')),
@@ -236,7 +236,7 @@ export class ExampleAgentStack extends cdk.Stack {
 
     // GitHub Webhook Receiver
     const githubWebhookReceiverFunction = new lambda.Function(this, 'GithubWebhookReceiverFunction', {
-      functionName: 'agentzero-github-webhook-receiver',
+      functionName: 'infinity-agents-github-webhook-receiver',
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../../lambda/github-webhook-receiver')),

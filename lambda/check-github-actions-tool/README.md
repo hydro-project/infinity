@@ -86,7 +86,7 @@ Or wait for any check to complete on a commit:
 
 ## DynamoDB Schema
 
-Table: `AgentZeroGitHubChecks`
+Table: `InfinityAgentsGitHubChecks`
 
 - **pk** (String): `owner/repo/sha` (where sha is the commit SHA)
 - **sk** (String): `checkName#toolCallId` (e.g., "CI Tests#abc123" or "ALL#abc123")

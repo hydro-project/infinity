@@ -119,7 +119,7 @@ class MCPClient {
                     sampling: {},
                 },
                 clientInfo: {
-                    name: 'agentzero-mcp-proxy',
+                    name: 'infinity-agents-mcp-proxy',
                     version: '1.0.0',
                 },
             }).then(() => {

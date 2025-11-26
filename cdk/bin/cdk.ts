@@ -4,7 +4,7 @@ import * as cdk from 'aws-cdk-lib';
 import { ExampleAgentStack } from '../lib/example-agent';
 
 const app = new cdk.App();
-new ExampleAgentStack(app, 'AgentZeroLeaderStack', {
+new ExampleAgentStack(app, 'InfinityAgentsLeaderStack', {
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION,

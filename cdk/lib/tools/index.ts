@@ -1,4 +1,4 @@
-export * from './agent-zero';
+export * from './infinity-agents';
 export * from './tool';
 export * from './tool-set';
 export * from './lambda-tool';

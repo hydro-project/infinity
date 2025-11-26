@@ -3,7 +3,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { Tool, ToolConfig } from './tool';
-import { AgentZero } from './agent-zero';
+import { InfinityAgents } from './infinity-agents';
 
 export interface LambdaToolProps {
   /**
@@ -41,7 +41,7 @@ export class LambdaTool extends Tool {
   private readonly description: string;
   private readonly parameters: any;
 
-  constructor(agent: AgentZero, id: string, props: LambdaToolProps) {
+  constructor(agent: InfinityAgents, id: string, props: LambdaToolProps) {
     super(agent, id);
     this.name = props.name;
     this.description = props.description;
@@ -49,7 +49,7 @@ export class LambdaTool extends Tool {
 
     // Create SQS queue for this tool
     this.queue = new sqs.Queue(this, 'Queue', {
-      queueName: `agentzero-${props.name.replace(/_/g, '-')}`,
+      queueName: `infinity-agents-${props.name.replace(/_/g, '-')}`,
       visibilityTimeout: cdk.Duration.seconds(60),
       retentionPeriod: cdk.Duration.days(4),
       ...props.queueProps,

@@ -39,9 +39,9 @@ export const handler = async (event) => {
 
         console.log('Instance tags:', tags);
 
-        // Check if this instance was created by AgentZero
-        if (tags.CreatedBy !== 'AgentZero') {
-            console.log('Instance not created by AgentZero, ignoring');
+        // Check if this instance was created by InfinityAgents
+        if (tags.CreatedBy !== 'InfinityAgents') {
+            console.log('Instance not created by InfinityAgents, ignoring');
             return { statusCode: 200, body: 'OK' };
         }
 

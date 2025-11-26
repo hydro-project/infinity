@@ -1,17 +1,17 @@
 # CDK Usage Guide
 
-This guide explains how to use the AgentZero CDK constructs to deploy your own AI agent infrastructure.
+This guide explains how to use the InfinityAgents CDK constructs to deploy your own AI agent infrastructure.
 
 ## Quick Start
 
 ```typescript
-import { AgentZero, LambdaTool, CustomToolSet, LambdaMCPToolSet } from './tools';
+import { InfinityAgents, LambdaTool, CustomToolSet, LambdaMCPToolSet } from './tools';
 
-const agent = new AgentZero(this, 'AgentZero');
+const agent = new InfinityAgents(this, 'InfinityAgents');
 
 // Add Slack integration
 const api = new apigateway.RestApi(this, 'WebhookApi', {
-  restApiName: 'AgentZero Webhooks',
+  restApiName: 'InfinityAgents Webhooks',
   deployOptions: { stageName: 'prod' },
 });
 const slackWebhookUrl = agent.setupSlackIntegration(this, api);
@@ -27,12 +27,12 @@ new LambdaMCPToolSet(agent, 'GithubMcp', {
 
 ## Core Constructs
 
-### AgentZero
+### InfinityAgents
 
 The main construct that creates the AI agent infrastructure.
 
 ```typescript
-const agent = new AgentZero(this, 'AgentZero', {
+const agent = new InfinityAgents(this, 'InfinityAgents', {
   codePath: './custom/path/to/lambda',  // Optional
   lambdaProps: {                         // Optional
     memorySize: 1024,
@@ -137,7 +137,7 @@ new MCPToolSet(agent, 'CustomMcp', {
 
 ```typescript
 const api = new apigateway.RestApi(this, 'WebhookApi', {
-  restApiName: 'AgentZero Webhooks',
+  restApiName: 'InfinityAgents Webhooks',
   deployOptions: { stageName: 'prod' },
 });
 
@@ -162,7 +162,7 @@ export class MyAgentStack extends cdk.Stack {
     super(scope, id, props);
 
     // Create agent
-    const agent = new AgentZero(this, 'AgentZero');
+    const agent = new InfinityAgents(this, 'InfinityAgents');
 
     // Setup Slack
     const api = new apigateway.RestApi(this, 'WebhookApi', {
@@ -228,7 +228,7 @@ npx cdk deploy
 3. Update Lambda code only:
 ```bash
 cargo lambda build --release --arm64
-cargo lambda deploy agentzero-leader
+cargo lambda deploy infinity-agents-leader
 ```
 
 ## Tool Implementation

@@ -32,7 +32,7 @@ export const handler = async (event) => {
                         ResourceType: 'instance',
                         Tags: [
                             { Key: 'Name', Value: instanceName },
-                            { Key: 'CreatedBy', Value: 'AgentZero' },
+                            { Key: 'CreatedBy', Value: 'InfinityAgents' },
                             { Key: 'ToolCallId', Value: id },
                             ...(call_id ? [{ Key: 'CallId', Value: call_id }] : []),
                             { Key: 'GroupId', Value: group_id },

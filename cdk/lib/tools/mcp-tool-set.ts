@@ -3,7 +3,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { ToolSet, ToolSetConfig } from './tool-set';
-import { AgentZero } from './agent-zero';
+import { InfinityAgents } from './infinity-agents';
 
 export interface MCPToolSetProps {
   /**
@@ -29,7 +29,7 @@ export class MCPToolSet extends ToolSet {
   public readonly queue: sqs.Queue;
   private readonly name: string;
 
-  constructor(agent: AgentZero, id: string, props: MCPToolSetProps) {
+  constructor(agent: InfinityAgents, id: string, props: MCPToolSetProps) {
     super(agent, id);
     this.name = props.name;
 
