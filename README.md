@@ -2,38 +2,57 @@
 
 This project is a proof-of-concept of Infinity Agents: a new runtime and architecture for agents that can run indefinitely with zero resource usage when they are idle.
 
-## Prerequisites
+## Architecture
 
-- [Rust](https://www.rust-lang.org/tools/install)
-- [Cargo Lambda](https://www.cargo-lambda.info/guide/installation.html)
-- [Node.js](https://nodejs.org/) (for CDK deployment)
-- [AWS CDK](https://docs.aws.amazon.com/cdk/v2/guide/getting_started.html)
+This prototype uses Lambda + SQS + EventBridge to enable agents that can sleep for arbitrary durations without consuming resources. When an agent needs to wait (for CI/CD subscriptions, long tool calls, user input, rate limits, etc.), it can immediately hibernate and consume zero resources. The agent resumes exactly where it left off when woken.
 
-## Deployment
+See [docs/architecture.md](docs/architecture.md) for details on the hibernation mechanism and system design.
 
-This project uses AWS CDK for infrastructure deployment. See the [CDK README](cdk/README.md) for detailed setup and deployment instructions.
+## Quick Start
 
-Quick start:
-
-1. Configure environment variables:
 ```bash
-cp cdk/.env.example cdk/.env
-# Edit cdk/.env with your credentials
-```
-
-2. Build and deploy:
-```bash
-# Build the Rust Lambda
+# Build Lambda
 cargo lambda build --release --arm64
 
-# Deploy infrastructure (fish shell)
+# Deploy
 cd cdk
-chmod +x deploy.fish
-./deploy.fish
-
-# Or for bash/zsh
-cd cdk
-source ../.env && npx cdk deploy
+npx cdk deploy
 ```
 
-For more details on the infrastructure, configuration, and testing, see the [CDK README](cdk/README.md).
+## CDK Usage
+
+```typescript
+import { AgentZero, LambdaMCPToolSet } from './tools';
+
+const agent = new AgentZero(this, 'Agent');
+
+// Add MCP servers
+new LambdaMCPToolSet(agent, 'GithubMcp', {
+  name: 'github',
+  command: 'npx',
+  args: ['-y', '@modelcontextprotocol/server-github'],
+  env: { GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN },
+});
+
+// Setup Slack
+const api = new apigateway.RestApi(this, 'Api', { /* ... */ });
+agent.setupSlackIntegration(this, api);
+```
+
+See [docs/cdk-usage.md](docs/cdk-usage.md) for complete CDK documentation.
+
+## Key Features
+
+- **Zero idle cost** - Lambda only runs when processing messages
+- **Infinite sleep** - Agents can hibernate for hours/days/months via EventBridge Scheduler
+- **Interruption handling** - User messages and subscription events wake sleeping agents immediately (in milliseconds)
+- **Tool abstraction** - Each tool is an independent Lambda with its own queue
+- **MCP support** - Wrap any MCP server as a tool set
+- **Conversation state** - DynamoDB stores durable conversation history to ensure fault tolerance
+
+## Project Structure
+
+- `src/` - Rust leader Lambda (Bedrock streaming, tool orchestration)
+- `cdk/` - CDK infrastructure and tool abstractions
+- `lambda/` - Tool implementations (Node.js)
+- `docs/` - Architecture and usage documentation

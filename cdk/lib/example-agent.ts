@@ -5,10 +5,9 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
-import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { Construct } from 'constructs';
 import * as path from 'path';
-import { AgentZero, LambdaTool, CustomToolSet, MCPToolSet } from './tools';
+import { AgentZero, LambdaTool, CustomToolSet, LambdaMCPToolSet } from './tools';
 
 export class ExampleAgentStack extends cdk.Stack {
   private agent: AgentZero;
@@ -32,7 +31,16 @@ export class ExampleAgentStack extends cdk.Stack {
 
     this.setupMiscTools();
     this.setupEc2Tools();
-    this.setupGithubTools();
+    const githubWebhookUrl = this.githubSubscriptionTool();
+
+    new LambdaMCPToolSet(this.agent, 'GithubMcp', {
+      name: 'github',
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-github'],
+      env: {
+        GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN
+      },
+    });
 
     new cdk.CfnOutput(this, 'SlackWebhookUrl', {
       value: slackWebhookUrl,
@@ -40,7 +48,7 @@ export class ExampleAgentStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, 'GithubWebhookUrl', {
-      value: this.api.url + 'github/webhook',
+      value: githubWebhookUrl,
       description: 'GitHub Webhook URL',
     });
   }
@@ -158,7 +166,7 @@ export class ExampleAgentStack extends cdk.Stack {
     new CustomToolSet(this.agent, 'Ec2ToolSet', [createEc2Tool]);
   }
 
-  private setupGithubTools(): void {
+  private githubSubscriptionTool(): string {
     // GitHub Actions Check Tool
     const githubChecksTable = new dynamodb.Table(this, 'GitHubChecksTable', {
       tableName: 'AgentZeroGitHubChecks',
@@ -246,29 +254,6 @@ export class ExampleAgentStack extends cdk.Stack {
 
     new CustomToolSet(this.agent, 'GithubActionsToolSet', [subscribeGithubActionsTool]);
 
-    // GitHub MCP Server
-    const mcpGithubEnv: Record<string, string> = {};
-    if (process.env.GITHUB_PERSONAL_ACCESS_TOKEN) {
-      mcpGithubEnv.GITHUB_PERSONAL_ACCESS_TOKEN = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
-    }
-
-    const mcpGithubFunction = new lambda.Function(this, 'McpGithubFunction', {
-      functionName: 'agentzero-mcp-github',
-      runtime: lambda.Runtime.NODEJS_20_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../../lambda/mcp-server-proxy')),
-      timeout: cdk.Duration.seconds(60),
-      memorySize: 512,
-      environment: {
-        MCP_SERVER_COMMAND: 'npx',
-        MCP_SERVER_ARGS: JSON.stringify(['-y', '@modelcontextprotocol/server-github']),
-        MCP_SERVER_ENV: JSON.stringify(mcpGithubEnv),
-      },
-    });
-
-    new MCPToolSet(this.agent, 'GithubMcp', {
-      name: 'github',
-      handler: mcpGithubFunction,
-    });
+    return this.api.url + 'github/webhook';
   }
 }
