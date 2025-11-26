@@ -4,6 +4,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { ToolSetConfig } from './tool-set';
 import * as path from 'path';
@@ -171,5 +172,55 @@ export class AgentZero extends Construct {
     };
 
     this.lambdaFunction.addEnvironment('TOOLS_CONFIG', JSON.stringify(toolsConfig));
+  }
+
+  /**
+   * Setup Slack integration for the agent
+   * Creates receiver and responder Lambda functions and API Gateway endpoint
+   * 
+   * @param scope - The construct scope for creating resources
+   * @param api - The API Gateway to add the Slack webhook endpoint to
+   * @returns The Slack webhook URL
+   */
+  setupSlackIntegration(scope: Construct, api: apigateway.RestApi): string {
+    // Slack Receiver Lambda (receives Slack events, sends to agent input queue)
+    const slackReceiverFunction = new lambda.Function(scope, 'SlackReceiverFunction', {
+      functionName: 'agentzero-slack-receiver',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../../../lambda/slack-receiver')),
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        AGENT_INPUT_QUEUE_URL: this.inputQueue.queueUrl,
+        SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET || '',
+      },
+    });
+
+    this.inputQueue.grantSendMessages(slackReceiverFunction);
+
+    // Add Slack webhook endpoint to API Gateway
+    const slackIntegration = new apigateway.LambdaIntegration(slackReceiverFunction);
+    api.root.addResource('slack').addResource('events').addMethod('POST', slackIntegration);
+
+    // Slack Responder Lambda (receives agent outputs, posts to Slack)
+    const slackResponderFunction = new lambda.Function(scope, 'SlackResponderFunction', {
+      functionName: 'agentzero-slack-responder',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../../../lambda/slack-responder')),
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN || '',
+      },
+    });
+
+    slackResponderFunction.addEventSource(
+      new SqsEventSource(this.outputQueue, {
+        batchSize: 1,
+        reportBatchItemFailures: true,
+      })
+    );
+
+    return api.url + 'slack/events';
   }
 }
