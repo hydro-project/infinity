@@ -4,41 +4,59 @@ This guide explains how to use the InfinityAgents CDK constructs to deploy your 
 
 ## Quick Start
 
+The simplest way to create an agent is to extend `InfinityAgent`:
+
 ```typescript
-import { InfinityAgents, LambdaTool, CustomToolSet, LambdaMCPToolSet } from './tools';
+import * as cdk from 'aws-cdk-lib';
+import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import { Construct } from 'constructs';
+import { InfinityAgent } from './infinity-agents';
+import { LambdaMCPToolSet } from './infinity-agents/mcp';
 
-const agent = new InfinityAgents(this, 'InfinityAgents');
+export class MyAgent extends InfinityAgent {
+  constructor(scope: Construct, id: string) {
+    super(scope, id);
 
-// Add Slack integration
-const api = new apigateway.RestApi(this, 'WebhookApi', {
-  restApiName: 'InfinityAgents Webhooks',
-  deployOptions: { stageName: 'prod' },
-});
-const slackWebhookUrl = agent.setupSlackIntegration(this, api);
+    // Add MCP tools
+    new LambdaMCPToolSet(this, 'GithubMcp', {
+      name: 'github',
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-github'],
+      env: { GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN },
+    });
 
-// Add tools
-new LambdaMCPToolSet(agent, 'GithubMcp', {
-  name: 'github',
-  command: 'npx',
-  args: ['-y', '@modelcontextprotocol/server-github'],
-  env: { GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN },
-});
+    // Add Slack integration
+    const api = new apigateway.RestApi(this, 'WebhookApi', {
+      restApiName: 'My Agent Webhooks',
+      deployOptions: { stageName: 'prod' },
+    });
+    const slackWebhookUrl = this.setupSlackIntegration(this, api);
+
+    new cdk.CfnOutput(this, 'SlackWebhookUrl', { value: slackWebhookUrl });
+  }
+}
+
+export class MyAgentStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+    new MyAgent(this, 'MyAgent');
+  }
+}
 ```
 
 ## Core Constructs
 
-### InfinityAgents
+### InfinityAgent
 
-The main construct that creates the AI agent infrastructure.
+The base class for creating agents. Extend this to configure your agent with tools.
 
 ```typescript
-const agent = new InfinityAgents(this, 'InfinityAgents', {
-  codePath: './custom/path/to/lambda',  // Optional
-  lambdaProps: {                         // Optional
-    memorySize: 1024,
-    timeout: cdk.Duration.minutes(10),
-  },
-});
+export class MyAgent extends InfinityAgent {
+  constructor(scope: Construct, id: string) {
+    super(scope, id);
+    // Add tools here
+  }
+}
 ```
 
 **Creates:**
@@ -53,6 +71,68 @@ const agent = new InfinityAgents(this, 'InfinityAgents', {
 - `agent.outputQueue` - SQS queue for agent responses
 - `agent.historyTable` - DynamoDB table for conversation state
 
+### Creating Custom Tool Sets
+
+Organize tools into toolsets by creating a folder structure:
+
+```
+agent/lib/toolsets/
+├── index.ts                    # Exports all toolsets
+├── my-tools/
+│   ├── toolset.ts              # ToolSet class
+│   └── my-lambda/              # Lambda code
+│       ├── index.mjs
+│       └── package.json
+```
+
+Example toolset:
+
+```typescript
+// agent/lib/toolsets/weather/toolset.ts
+import * as cdk from 'aws-cdk-lib';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as path from 'path';
+import { CustomToolSet, LambdaTool, InfinityAgent } from '../../infinity-agents';
+
+export class WeatherToolSet extends CustomToolSet {
+  constructor(agent: InfinityAgent, id: string) {
+    const weatherFunction = new lambda.Function(agent, 'WeatherFunction', {
+      functionName: 'infinity-agents-weather-tool',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, 'weather-lambda')),
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const weatherTool = new LambdaTool(agent, 'WeatherTool', {
+      name: 'get_weather',
+      description: 'Get current weather for a location',
+      parameters: {
+        type: 'object',
+        properties: {
+          location: { type: 'string', description: 'City name' },
+        },
+        required: ['location'],
+      },
+      handler: weatherFunction,
+    });
+
+    super(agent, id, [weatherTool]);
+  }
+}
+```
+
+Then use it in your agent:
+
+```typescript
+export class MyAgent extends InfinityAgent {
+  constructor(scope: Construct, id: string) {
+    super(scope, id);
+    new WeatherToolSet(this, 'WeatherToolSet');
+  }
+}
+```
+
 ### LambdaTool
 
 A tool that forwards requests to a Lambda function via SQS.
@@ -64,10 +144,7 @@ const weatherTool = new LambdaTool(agent, 'WeatherTool', {
   parameters: {
     type: 'object',
     properties: {
-      location: {
-        type: 'string',
-        description: 'City name or coordinates',
-      },
+      location: { type: 'string', description: 'City name' },
     },
     required: ['location'],
   },
@@ -104,12 +181,6 @@ new LambdaMCPToolSet(agent, 'SlackMcp', {
   env: {
     SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN,
   },
-  queueProps: {                          // Optional
-    visibilityTimeout: cdk.Duration.seconds(60),
-  },
-  lambdaProps: {                         // Optional
-    memorySize: 1024,
-  },
 });
 ```
 
@@ -120,28 +191,15 @@ new LambdaMCPToolSet(agent, 'SlackMcp', {
 - Grants permissions
 - Generates `{name}_list_tools` and `{name}_invoke_tool` methods
 
-### MCPToolSet
-
-Uses an existing Lambda handler for an MCP server.
-
-```typescript
-new MCPToolSet(agent, 'CustomMcp', {
-  name: 'custom',
-  handler: existingLambdaFunction,
-});
-```
-
-## Utilities
-
-### Slack Integration
+## Slack Integration
 
 ```typescript
 const api = new apigateway.RestApi(this, 'WebhookApi', {
-  restApiName: 'InfinityAgents Webhooks',
+  restApiName: 'My Agent Webhooks',
   deployOptions: { stageName: 'prod' },
 });
 
-const slackWebhookUrl = agent.setupSlackIntegration(this, api);
+const slackWebhookUrl = this.setupSlackIntegration(this, api);
 
 new cdk.CfnOutput(this, 'SlackWebhookUrl', {
   value: slackWebhookUrl,
@@ -154,63 +212,6 @@ new cdk.CfnOutput(this, 'SlackWebhookUrl', {
 - Slack responder Lambda (agent output queue → Slack)
 - API Gateway endpoint for Slack webhooks
 
-## Example: Complete Stack
-
-```typescript
-export class MyAgentStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
-    super(scope, id, props);
-
-    // Create agent
-    const agent = new InfinityAgents(this, 'InfinityAgents');
-
-    // Setup Slack
-    const api = new apigateway.RestApi(this, 'WebhookApi', {
-      restApiName: 'My Agent Webhooks',
-      deployOptions: { stageName: 'prod' },
-    });
-    const slackWebhookUrl = agent.setupSlackIntegration(this, api);
-
-    // Add a custom tool
-    const weatherFunction = new lambda.Function(this, 'WeatherFunction', {
-      runtime: lambda.Runtime.NODEJS_20_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset('./lambda/weather-tool'),
-    });
-
-    const weatherTool = new LambdaTool(agent, 'WeatherTool', {
-      name: 'get_weather',
-      description: 'Get weather for a location',
-      parameters: {
-        type: 'object',
-        properties: {
-          location: { type: 'string', description: 'City name' },
-        },
-        required: ['location'],
-      },
-      handler: weatherFunction,
-    });
-
-    new CustomToolSet(agent, 'WeatherToolSet', [weatherTool]);
-
-    // Add MCP servers
-    new LambdaMCPToolSet(agent, 'GithubMcp', {
-      name: 'github',
-      command: 'npx',
-      args: ['-y', '@modelcontextprotocol/server-github'],
-      env: {
-        GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN,
-      },
-    });
-
-    // Outputs
-    new cdk.CfnOutput(this, 'SlackWebhookUrl', {
-      value: slackWebhookUrl,
-    });
-  }
-}
-```
-
 ## Deployment
 
 1. Build the Rust Lambda:
@@ -220,7 +221,7 @@ cargo lambda build --release --arm64
 
 2. Deploy the CDK stack:
 ```bash
-cd cdk
+cd agent
 npx cdk bootstrap  # First time only
 npx cdk deploy
 ```
@@ -263,28 +264,3 @@ await sqs.sendMessage({
   }),
 }).promise();
 ```
-
-## Best Practices
-
-1. **Organize tools by feature** - Group related tools into CustomToolSets
-2. **Use LambdaMCPToolSet for MCP servers** - Simplest way to add MCP functionality
-3. **Set appropriate timeouts** - Match queue visibility timeout to Lambda timeout
-4. **Use environment variables** - Keep secrets in environment variables, not code
-5. **Monitor dead letter queues** - Check DLQs regularly for failed messages
-
-## Troubleshooting
-
-**Tools not appearing:**
-- Check CloudWatch logs for the leader Lambda
-- Verify `TOOLS_CONFIG` environment variable is set
-- Ensure tool Lambda has permission to send to agent input queue
-
-**Messages stuck in queue:**
-- Check Lambda concurrency limits
-- Verify queue visibility timeout is appropriate
-- Check dead letter queue for failed messages
-
-**Permission errors:**
-- Ensure agent has permission to send to tool queues
-- Ensure tool Lambdas have permission to send to agent input queue
-- Check IAM roles in CloudWatch logs
