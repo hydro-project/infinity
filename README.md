@@ -15,28 +15,34 @@ See [docs/architecture.md](docs/architecture.md) for details on the hibernation 
 cargo lambda build --release --arm64
 
 # Deploy
-cd cdk
+cd agent
 npx cdk deploy
 ```
 
-## CDK Usage
+## Creating Agents
+Infinity Agents are created using the CDK, with a special Infinity Agents framework:
 
 ```typescript
-import { InfinityAgents, LambdaMCPToolSet } from './tools';
+import { InfinityAgent } from './infinity-agents';
+import { LambdaMCPToolSet } from './infinity-agents/mcp';
 
-const agent = new InfinityAgents(this, 'Agent');
+export class MyAgent extends InfinityAgent {
+  constructor(scope: Construct, id: string) {
+    super(scope, id);
 
-// Add MCP servers
-new LambdaMCPToolSet(agent, 'GithubMcp', {
-  name: 'github',
-  command: 'npx',
-  args: ['-y', '@modelcontextprotocol/server-github'],
-  env: { GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN },
-});
+    // Add MCP servers
+    new LambdaMCPToolSet(this, 'GithubMcp', {
+      name: 'github',
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-github'],
+      env: { GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN },
+    });
 
-// Setup Slack
-const api = new apigateway.RestApi(this, 'Api', { /* ... */ });
-agent.setupSlackIntegration(this, api);
+    // Setup Slack
+    const api = new apigateway.RestApi(this, 'Api', { /* ... */ });
+    this.setupSlackIntegration(this, api);
+  }
+}
 ```
 
 See [docs/cdk-usage.md](docs/cdk-usage.md) for complete CDK documentation.
