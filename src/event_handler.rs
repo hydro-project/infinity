@@ -343,7 +343,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     let dynamodb_client = DynamoDbClient::new(&config);
     let sqs_client = SqsClient::new(&config);
     let scheduler_client = SchedulerClient::new(&config);
-    let table_name = "AgentZeroState".to_string();
+    let table_name = "InfinityAgentsState".to_string();
     let output_queue_url = std::env::var("OUTPUT_QUEUE_URL").unwrap_or_else(|_| "".to_string());
     let scheduler_role_arn = std::env::var("SCHEDULER_ROLE_ARN").unwrap_or_else(|_| "".to_string());
 

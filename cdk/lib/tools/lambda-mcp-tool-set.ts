@@ -3,7 +3,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { ToolSet, ToolSetConfig } from './tool-set';
-import { AgentZero } from './agent-zero';
+import { InfinityAgents } from './infinity-agents';
 import * as path from 'path';
 
 export interface LambdaMCPToolSetProps {
@@ -46,7 +46,7 @@ export class LambdaMCPToolSet extends ToolSet {
   public readonly handler: lambda.Function;
   private readonly name: string;
 
-  constructor(agent: AgentZero, id: string, props: LambdaMCPToolSetProps) {
+  constructor(agent: InfinityAgents, id: string, props: LambdaMCPToolSetProps) {
     super(agent, id);
     this.name = props.name;
 

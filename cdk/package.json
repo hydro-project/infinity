@@ -1,5 +1,5 @@
 {
-  "name": "agentzero-leader-cdk",
+  "name": "infinity-agents-leader-cdk",
   "version": "0.1.0",
   "bin": {
     "cdk": "bin/cdk.js"
