@@ -48,10 +48,10 @@ export class GitHubEventToolSet extends CustomToolSet {
     });
     githubChecksTable.grantWriteData(checkGithubActionsToolFunction);
 
-    const subscribeGithubActionsTool = new LambdaTool(agent, 'SubscribeTool', {
-      name: 'subscribe_github_actions_result',
+    const subscribeGithubEventTool = new LambdaTool(agent, 'SubscribeTool', {
+      name: 'subscribe_github_event',
       description:
-        'Subscribes to GitHub actions events. The SHA is compared against head_sha from GitHub webhook events. If there is nothing to do until an event arrives, you may want to use the sleep tool to hibernate until you are woken up by an event. DO NOT re-subscribe after an `interrupt`, the subscription remains active automatically.',
+        'Subscribes to GitHub webhook events. Use filters to match specific events. If there is nothing to do until an event arrives, you may want to use the sleep tool to hibernate until you are woken up by an event. DO NOT re-subscribe after an `interrupt`, the subscription remains active automatically.',
       parameters: {
         type: 'object',
         properties: {
@@ -63,23 +63,43 @@ export class GitHubEventToolSet extends CustomToolSet {
             type: 'string',
             description: 'GitHub repository name.',
           },
+          event_type: {
+            type: 'string',
+            description:
+              'Optional: GitHub event type to filter on (e.g., "pull_request", "issue_comment", "push", "check_run", "workflow_run", "issues", "pull_request_review", "pull_request_review_comment"). If omitted, matches all events.',
+          },
           sha: {
             type: 'string',
             description:
-              'Commit SHA to monitor. This must be a full commit SHA (not a branch or tag) as it will be matched against head_sha from GitHub webhook events.',
+              'Optional: Commit SHA to filter on. Matched against head_sha, after, or sha fields in webhook payloads.',
           },
-          check_name: {
+          pr_number: {
+            type: 'number',
+            description:
+              'Optional: Pull request number to filter on. Matches events related to this PR (comments, reviews, etc.).',
+          },
+          issue_number: {
+            type: 'number',
+            description:
+              'Optional: Issue number to filter on. Matches events related to this issue (comments, state changes, etc.).',
+          },
+          action: {
             type: 'string',
             description:
-              'Optional: specific check/workflow name to wait for. If omitted, waits for the next event for any check related to that commit.',
+              'Optional: Event action to filter on (e.g., "opened", "closed", "created", "completed"). Most GitHub events include an action field.',
           },
-          kind: {
+          branch: {
             type: 'string',
             description:
-              'The invocation style: `subscribe` when subscribing to events and `interrupt` when an event arrives.',
+              'Optional: Branch name to filter on. Matched against ref, head_ref, or base_ref fields.',
+          },
+          actor: {
+            type: 'string',
+            description:
+              'Optional: GitHub username to filter on. Matches the sender/actor of the event.',
           },
         },
-        required: ['owner', 'repo', 'sha'],
+        required: ['owner', 'repo'],
       },
       handler: checkGithubActionsToolFunction,
       queueProps: {
@@ -104,7 +124,7 @@ export class GitHubEventToolSet extends CustomToolSet {
     const githubWebhookIntegration = new apigateway.LambdaIntegration(githubWebhookReceiverFunction);
     props.webhookGateway.root.addResource('github').addResource('webhook').addMethod('POST', githubWebhookIntegration);
 
-    super(agent, id, [subscribeGithubActionsTool]);
+    super(agent, id, [subscribeGithubEventTool]);
 
     this.webhookUrl = props.webhookGateway.url + 'github/webhook';
   }

@@ -1,6 +1,7 @@
+use aws_sdk_ssm::Client as SsmClient;
 use serde::{Deserialize, Serialize};
 
-use super::{lambda_tool::LambdaTool, lambda_mcp::LambdaMCP, Tool, ToolSet, VecToolSet};
+use super::{lambda_mcp::LambdaMCP, lambda_tool::LambdaTool, Tool, ToolSet, VecToolSet};
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -65,6 +66,25 @@ impl ToolsConfig {
     pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let content = std::fs::read_to_string(path)?;
         let config = serde_json::from_str(&content)?;
+        Ok(config)
+    }
+
+    pub async fn from_ssm(
+        ssm_client: &SsmClient,
+        param_name: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let response = ssm_client
+            .get_parameter()
+            .name(param_name)
+            .send()
+            .await?;
+
+        let value = response
+            .parameter()
+            .and_then(|p| p.value())
+            .ok_or("SSM parameter value not found")?;
+
+        let config = serde_json::from_str(value)?;
         Ok(config)
     }
 

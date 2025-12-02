@@ -371,23 +371,45 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     let output_queue_url = std::env::var("OUTPUT_QUEUE_URL").unwrap_or_else(|_| "".to_string());
     let scheduler_role_arn = std::env::var("SCHEDULER_ROLE_ARN").unwrap_or_else(|_| "".to_string());
 
-    // Load tool sets from configuration (env var or file)
-    let mut tool_sets: Vec<Box<dyn ToolSet>> = match ToolsConfig::from_env() {
-        Ok(config) => {
-            tracing::info!("Loaded tools configuration from TOOLS_CONFIG environment variable");
-            config.into_tool_sets()
+    // Load tool sets from configuration (SSM preferred, then file, then env var)
+    let mut tool_sets: Vec<Box<dyn ToolSet>> = if let Ok(ssm_param) =
+        std::env::var("TOOLS_CONFIG_SSM_PARAM")
+    {
+        let ssm_client = aws_sdk_ssm::Client::new(&config);
+        match ToolsConfig::from_ssm(&ssm_client, &ssm_param).await {
+            Ok(config) => {
+                tracing::info!("Loaded tools configuration from SSM parameter {}", ssm_param);
+                config.into_tool_sets()
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load tools config from SSM: {}. Using empty tool set.", e);
+                vec![]
+            }
         }
-        Err(_) => {
-            // Fallback to file-based config for local development
-            let config_path = std::env::var("TOOLS_CONFIG_PATH").unwrap_or_else(|_| "tools.json".to_string());
-            match ToolsConfig::from_file(&config_path) {
-                Ok(config) => {
-                    tracing::info!("Loaded tools configuration from {}", config_path);
-                    config.into_tool_sets()
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to load tools config: {}. Using empty tool set.", e);
-                    vec![]
+    } else {
+        let config_path =
+            std::env::var("TOOLS_CONFIG_PATH").unwrap_or_else(|_| "tools.json".to_string());
+        match ToolsConfig::from_file(&config_path) {
+            Ok(config) => {
+                tracing::info!("Loaded tools configuration from {}", config_path);
+                config.into_tool_sets()
+            }
+            Err(_) => {
+                // Fallback to env var for backwards compatibility
+                match ToolsConfig::from_env() {
+                    Ok(config) => {
+                        tracing::info!(
+                            "Loaded tools configuration from TOOLS_CONFIG environment variable"
+                        );
+                        config.into_tool_sets()
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to load tools config: {}. Using empty tool set.",
+                            e
+                        );
+                        vec![]
+                    }
                 }
             }
         }
