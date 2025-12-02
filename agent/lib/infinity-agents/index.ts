@@ -4,6 +4,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { ToolSetConfig } from './tools/tool-set';
@@ -31,6 +32,7 @@ export class InfinityAgent extends Construct {
   public readonly historyTable: dynamodb.Table;
   private readonly schedulerRole: iam.Role;
   private readonly toolSetConfigs: ToolSetConfig[] = [];
+  private toolsConfigParam?: ssm.StringParameter;
 
   constructor(scope: Construct, id: string, props: InfinityAgentsProps = {}) {
     super(scope, id);
@@ -156,17 +158,33 @@ export class InfinityAgent extends Construct {
 
   /**
    * Register a tool set configuration (called by tool sets during construction)
-   * Automatically updates the TOOLS_CONFIG environment variable
+   * Stores config in SSM Parameter Store to avoid Lambda env var size limits
    */
   registerToolSet(config: ToolSetConfig): void {
     this.toolSetConfigs.push(config);
 
-    // Update the environment variable with the current config
     const toolsConfig = {
       tool_sets: this.toolSetConfigs,
     };
 
-    this.lambdaFunction.addEnvironment('TOOLS_CONFIG', JSON.stringify(toolsConfig));
+    // Create or update SSM parameter with tools config
+    // We use a single parameter that gets updated as tool sets are registered
+    if (!this.toolsConfigParam) {
+      this.toolsConfigParam = new ssm.StringParameter(this, 'ToolsConfigParam', {
+        parameterName: `/infinity-agents/${this.node.id}/tools-config`,
+        stringValue: JSON.stringify(toolsConfig),
+        description: 'Tools configuration for InfinityAgent',
+      });
+      
+      // Grant read access to the Lambda
+      this.toolsConfigParam.grantRead(this.lambdaFunction);
+      
+      // Set env var with parameter name
+      this.lambdaFunction.addEnvironment('TOOLS_CONFIG_SSM_PARAM', this.toolsConfigParam.parameterName);
+    } else {
+      // Update the parameter value using escape hatch since CDK doesn't support updating
+      const cfnParam = this.toolsConfigParam.node.defaultChild as ssm.CfnParameter;
+      cfnParam.value = JSON.stringify(toolsConfig);
+    }
   }
-
 }
