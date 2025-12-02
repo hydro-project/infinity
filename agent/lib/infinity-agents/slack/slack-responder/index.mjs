@@ -10,15 +10,22 @@ export const handler = async (event) => {
   for (const record of event.Records) {
     try {
       const message = JSON.parse(record.body);
-      const { text, metadata } = message;
+      const { text, metadata, type: messageType, auth_url } = message;
 
       if (!metadata || !metadata.channel || !metadata.thread_ts) {
         console.error('Missing metadata in message:', message);
         continue;
       }
 
-      // Convert markdown to Slack's mrkdwn format
-      const slackText = markdownToSlack(text);
+      let slackText;
+
+      // Handle OAuth required messages specially
+      if (messageType === 'oauth_required' && auth_url) {
+        slackText = `🔐 *Authorization Required*\n\nPlease click the link below to authorize access:\n<${auth_url}|Authorize>`;
+      } else {
+        // Convert markdown to Slack's mrkdwn format
+        slackText = markdownToSlack(text);
+      }
 
       // Post message to Slack thread
       // If thread_ts equals the original message ts, it means the message wasn't in a thread

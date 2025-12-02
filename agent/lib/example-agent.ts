@@ -3,7 +3,7 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import { Construct } from 'constructs';
 
 import { InfinityAgent } from './infinity-agents';
-import { LambdaMCPToolSet } from './infinity-agents/mcp';
+import { HTTPMCPToolSet } from './infinity-agents/mcp';
 import { SlackIntegration } from './infinity-agents/slack';
 import { GetTimeToolSet, Ec2ToolSet, GitHubEventToolSet } from './toolsets';
 
@@ -19,13 +19,22 @@ export class ExampleAgent extends InfinityAgent {
       },
     });
 
-    // MCP tool sets
-    new LambdaMCPToolSet(this, 'GithubMcp', {
+    // MCP tool sets - GitHub Copilot MCP with OAuth
+    // Requires GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET environment variables
+    const githubMcp = new HTTPMCPToolSet(this, 'GithubMcp', {
       name: 'github',
-      command: ['npx', '-y', '@modelcontextprotocol/server-github'],
-      env: {
-        GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN,
+      url: 'https://api.githubcopilot.com/mcp/',
+      oauth: {
+        callbackGateway: gateway,
+        stageName: 'prod',
+        clientId: process.env.GITHUB_OAUTH_CLIENT_ID,
+        clientSecret: process.env.GITHUB_OAUTH_CLIENT_SECRET,
       },
+    });
+
+    new cdk.CfnOutput(this, 'GithubOAuthCallbackUrl', {
+      value: githubMcp.oauthCallbackUrl || 'N/A',
+      description: 'GitHub MCP OAuth Callback URL',
     });
 
     // Custom tool sets

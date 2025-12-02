@@ -21,8 +21,24 @@ use rig::{
 };
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum InputMessageContent {
+    OAuth(OAuthRequired),
+    User(UserContent),
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct OAuthRequired {
+    #[serde(rename = "type")]
+    pub content_type: String, // "oauth_required"
+    pub id: String,
+    pub call_id: Option<String>,
+    pub auth_url: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct InputMessage {
-    pub content: UserContent,
+    pub content: InputMessageContent,
     pub group_id: String,
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
@@ -33,6 +49,14 @@ pub struct InputMessage {
 #[derive(Debug, Serialize)]
 struct OutputMessage {
     text: String,
+    metadata: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+struct OAuthOutputMessage {
+    #[serde(rename = "type")]
+    message_type: String,
+    auth_url: String,
     metadata: serde_json::Value,
 }
 
@@ -419,6 +443,40 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             current_history.update_metadata(metadata).await?;
         }
 
+        // Handle OAuth required messages - forward to output queue without adding to history
+        if let InputMessageContent::OAuth(oauth) = &input_msg.content {
+            if oauth.content_type == "oauth_required" {
+                tracing::info!("Received OAuth required message, forwarding to output queue");
+                
+                let metadata = current_history
+                    .get_metadata()
+                    .unwrap_or(serde_json::json!({}));
+
+                let oauth_msg = OAuthOutputMessage {
+                    message_type: "oauth_required".to_string(),
+                    auth_url: oauth.auth_url.clone(),
+                    metadata,
+                };
+
+                if !output_queue_url.is_empty() {
+                    sqs_client
+                        .send_message()
+                        .queue_url(&output_queue_url)
+                        .message_body(serde_json::to_string(&oauth_msg)?)
+                        .send()
+                        .await?;
+                    tracing::info!("Sent OAuth URL to output queue");
+                }
+                continue;
+            }
+        }
+
+        // Extract UserContent from the message
+        let user_content = match input_msg.content {
+            InputMessageContent::User(content) => content,
+            InputMessageContent::OAuth(_) => continue, // Already handled above
+        };
+
         // Handle synthetic tool results
         let content = if let Some(original_tool_call_id) = input_msg.synthetic {
             tracing::info!(
@@ -453,7 +511,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             let new_tool_call_id = uuid::Uuid::new_v4().to_string();
 
             // Extract the tool result content
-            if let UserContent::ToolResult(mut tool_result) = input_msg.content {
+            if let UserContent::ToolResult(mut tool_result) = user_content {
                 // Create a synthetic tool call with kind: "interrupt" added to original arguments
                 let mut synthetic_args = original_call.function.arguments.clone();
                 synthetic_args
@@ -490,7 +548,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 panic!("Synthetic message is not a tool result")
             }
         } else {
-            input_msg.content
+            user_content
         };
 
         let is_new = current_history
