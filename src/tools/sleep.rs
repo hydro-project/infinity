@@ -11,7 +11,7 @@ use rig::{
     message::{ToolResult, ToolResultContent, UserContent},
 };
 
-use crate::event_handler::InputMessage;
+use crate::event_handler::{InputMessage, InputMessageContent};
 
 use super::{Tool, ToolContext};
 
@@ -55,13 +55,13 @@ impl Tool for SleepTool {
 
         // Create tool result message to be sent after sleep
         let tool_result_msg = InputMessage {
-            content: UserContent::ToolResult(ToolResult {
+            content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                 id,
                 call_id,
                 content: OneOrMany::one(ToolResultContent::Text(Text {
                     text: format!("Slept for {} seconds", seconds),
                 })),
-            }),
+            })),
             group_id: context.group_id.clone(),
             metadata: None,
             synthetic: None,
