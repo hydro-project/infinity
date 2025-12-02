@@ -44,6 +44,8 @@ export const handler = async (event) => {
           thread_ts: threadTs,
           user: slackEvent.user,
           ts: slackEvent.ts,
+          // User ID for cross-session identity (prefixed with provider for future OAuth support)
+          user_id: `slack:${slackEvent.user}`,
         },
       };
 

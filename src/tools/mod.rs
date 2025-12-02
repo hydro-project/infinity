@@ -13,6 +13,7 @@ pub struct ToolContext {
     pub group_id: String,
     pub input_queue_url: String,
     pub input_queue_arn: String,
+    pub user_id: Option<String>,
 }
 
 // Trait for tool implementations

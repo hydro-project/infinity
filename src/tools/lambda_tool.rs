@@ -14,6 +14,8 @@ struct LambdaToolRequest {
     input_queue_url: String,
     input_queue_arn: String,
     group_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_id: Option<String>,
 }
 
 // Generic Lambda tool that forwards requests to another Lambda via SQS
@@ -54,6 +56,7 @@ impl Tool for LambdaTool {
             input_queue_url: context.input_queue_url.clone(),
             input_queue_arn: context.input_queue_arn.clone(),
             group_id: context.group_id.clone(),
+            user_id: context.user_id.clone(),
         };
 
         // Send to the tool's SQS queue

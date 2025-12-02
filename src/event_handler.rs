@@ -507,11 +507,17 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             continue;
         }
 
+        // Extract user_id from metadata (stored in history)
+        let user_id = current_history
+            .get_metadata()
+            .and_then(|m| m.get("user_id").and_then(|v| v.as_str()).map(String::from));
+
         let tool_context = ToolContext {
             sqs_client: sqs_client.clone(),
             group_id: input_msg.group_id.clone(),
             input_queue_url: std::env::var("INPUT_QUEUE_URL").unwrap_or_default(),
             input_queue_arn: std::env::var("INPUT_QUEUE_ARN").unwrap_or_default(),
+            user_id,
         };
 
         let mut completion_result = model

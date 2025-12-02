@@ -6,6 +6,8 @@ const sqsClient = new SQSClient({});
 // MCP server configuration from environment
 const MCP_SERVER_COMMAND = process.env.MCP_SERVER_COMMAND ? JSON.parse(process.env.MCP_SERVER_COMMAND) : [];
 const MCP_SERVER_ENV = process.env.MCP_SERVER_ENV ? JSON.parse(process.env.MCP_SERVER_ENV) : {};
+const MCP_SERVER_URL = process.env.MCP_SERVER_URL || null;
+const MCP_SERVER_HEADERS = process.env.MCP_SERVER_HEADERS ? JSON.parse(process.env.MCP_SERVER_HEADERS) : {};
 
 // Pre-install MCP server during Lambda initialization (cold start)
 // This happens outside the handler so it doesn't count against request timeout
@@ -204,13 +206,200 @@ class MCPClient {
     }
 }
 
+/**
+ * HTTP-based MCP client using Streamable HTTP transport
+ * See: https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http
+ */
+class HTTPMCPClient {
+    constructor(url, headers = {}) {
+        this.url = url;
+        this.headers = headers;
+        this.messageId = 0;
+        this.sessionId = null;
+    }
+
+    async start() {
+        // Initialize the MCP connection
+        const result = await this.sendRequest('initialize', {
+            protocolVersion: '2024-11-05',
+            capabilities: {
+                roots: { listChanged: false },
+                sampling: {},
+            },
+            clientInfo: {
+                name: 'infinity-agents-mcp-proxy',
+                version: '1.0.0',
+            },
+        });
+        console.log('HTTP MCP server initialized:', result);
+        
+        // Send initialized notification
+        await this.sendNotification('notifications/initialized', {});
+        return result;
+    }
+
+    async sendRequest(method, params) {
+        const id = ++this.messageId;
+        const request = {
+            jsonrpc: '2.0',
+            id,
+            method,
+            params,
+        };
+
+        console.log('Sending HTTP MCP request:', JSON.stringify(request));
+
+        const headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/event-stream',
+            ...this.headers,
+        };
+
+        // Include session ID if we have one
+        if (this.sessionId) {
+            headers['Mcp-Session-Id'] = this.sessionId;
+        }
+
+        const response = await fetch(this.url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(request),
+        });
+
+        // Capture session ID from response if present
+        const newSessionId = response.headers.get('Mcp-Session-Id');
+        if (newSessionId) {
+            this.sessionId = newSessionId;
+        }
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`HTTP MCP request failed: ${response.status} ${response.statusText} - ${errorText}`);
+        }
+
+        const contentType = response.headers.get('Content-Type') || '';
+
+        // Handle SSE response (text/event-stream)
+        if (contentType.includes('text/event-stream')) {
+            return this.handleSSEResponse(response, id);
+        }
+
+        // Handle JSON response
+        const result = await response.json();
+        console.log('Received HTTP MCP response:', JSON.stringify(result));
+
+        if (result.error) {
+            throw new Error(result.error.message || 'MCP error');
+        }
+
+        return result.result;
+    }
+
+    async handleSSEResponse(response, expectedId) {
+        const text = await response.text();
+        const lines = text.split('\n');
+        
+        let result = null;
+        let currentData = '';
+
+        for (const line of lines) {
+            if (line.startsWith('data: ')) {
+                currentData += line.slice(6);
+            } else if (line === '' && currentData) {
+                // End of event
+                try {
+                    const message = JSON.parse(currentData);
+                    console.log('Received SSE message:', JSON.stringify(message));
+                    
+                    if (message.id === expectedId) {
+                        if (message.error) {
+                            throw new Error(message.error.message || 'MCP error');
+                        }
+                        result = message.result;
+                    }
+                } catch (e) {
+                    if (e.message.includes('MCP error')) throw e;
+                    console.error('Failed to parse SSE data:', currentData, e);
+                }
+                currentData = '';
+            }
+        }
+
+        if (result === null) {
+            throw new Error('No response received from SSE stream');
+        }
+
+        return result;
+    }
+
+    async sendNotification(method, params) {
+        const notification = {
+            jsonrpc: '2.0',
+            method,
+            params,
+        };
+
+        console.log('Sending HTTP MCP notification:', JSON.stringify(notification));
+
+        const headers = {
+            'Content-Type': 'application/json',
+            ...this.headers,
+        };
+
+        if (this.sessionId) {
+            headers['Mcp-Session-Id'] = this.sessionId;
+        }
+
+        const response = await fetch(this.url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(notification),
+        });
+
+        // Notifications may return 202 Accepted or 204 No Content
+        if (!response.ok && response.status !== 202 && response.status !== 204) {
+            console.warn('Notification response:', response.status, await response.text());
+        }
+    }
+
+    async listTools() {
+        return this.sendRequest('tools/list', {});
+    }
+
+    async invokeTool(toolName, args) {
+        return this.sendRequest('tools/call', {
+            name: toolName,
+            arguments: args,
+        });
+    }
+
+    stop() {
+        // HTTP client doesn't need cleanup, but we could send a session termination if needed
+    }
+}
+
+/**
+ * Factory function to create the appropriate MCP client
+ */
+function createMCPClient() {
+    if (MCP_SERVER_URL) {
+        console.log('Using HTTP MCP client with URL:', MCP_SERVER_URL);
+        return new HTTPMCPClient(MCP_SERVER_URL, MCP_SERVER_HEADERS);
+    } else {
+        console.log('Using stdio MCP client with command:', MCP_SERVER_COMMAND);
+        return new MCPClient();
+    }
+}
+
 export const handler = async (event) => {
     console.log('Received event:', JSON.stringify(event, null, 2));
 
-    // Ensure installation is complete before processing
-    await ensureServerInstalled();
+    // Only need to install for stdio-based servers
+    if (!MCP_SERVER_URL) {
+        await ensureServerInstalled();
+    }
 
-    const mcpClient = new MCPClient();
+    const mcpClient = createMCPClient();
 
     try {
         await mcpClient.start();
