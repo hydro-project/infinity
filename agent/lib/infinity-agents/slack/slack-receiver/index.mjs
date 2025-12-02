@@ -31,11 +31,12 @@ export const handler = async (event) => {
       const text = slackEvent.text;
       const threadTs = slackEvent.thread_ts || slackEvent.ts;
       const channel = slackEvent.channel;
+      const userMention = `<@${slackEvent.user}>`;
 
       const agentMessage = {
         content: {
           type: 'text',
-          text: text,
+          text: `[From ${userMention}]: ${text}`,
         },
         // Use thread_ts as the message group ID for conversation continuity
         group_id: `slack-${channel}-${threadTs}`,
