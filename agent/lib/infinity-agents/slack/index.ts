@@ -25,7 +25,7 @@ export class SlackIntegration extends Construct {
 
     // Slack Receiver Lambda (receives Slack events, sends to agent input queue)
     const slackReceiverFunction = new lambda.Function(this, 'ReceiverFunction', {
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, 'slack-receiver')),
       timeout: cdk.Duration.seconds(30),
@@ -43,7 +43,7 @@ export class SlackIntegration extends Construct {
 
     // Slack Responder Lambda (receives agent outputs, posts to Slack)
     const slackResponderFunction = new lambda.Function(this, 'ResponderFunction', {
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, 'slack-responder')),
       timeout: cdk.Duration.seconds(30),

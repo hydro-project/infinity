@@ -96,7 +96,7 @@ export class HTTPMCPToolSet extends MCPToolSet {
 
     // Create the MCP proxy Lambda function
     const handler = new lambda.Function(agent, `${id}Handler`, {
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, 'mcp-server-proxy')),
       timeout: cdk.Duration.seconds(60),

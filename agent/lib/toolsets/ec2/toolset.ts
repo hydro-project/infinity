@@ -15,7 +15,7 @@ export class Ec2ToolSet extends CustomToolSet {
   constructor(agent: InfinityAgent, id: string) {
     // Create EC2 Tool Lambda
     const createEc2ToolFunction = new lambda.Function(agent, 'CreateEc2Function', {
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, 'create-ec2-tool')),
       timeout: cdk.Duration.seconds(60),
@@ -58,7 +58,7 @@ export class Ec2ToolSet extends CustomToolSet {
 
     // EC2 State Monitor Lambda
     const ec2StateMonitorFunction = new lambda.Function(agent, 'StateMonitorFunction', {
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, 'ec2-state-monitor')),
       timeout: cdk.Duration.seconds(30),

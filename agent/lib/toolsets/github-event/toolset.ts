@@ -38,7 +38,7 @@ export class GitHubEventToolSet extends CustomToolSet {
     });
 
     const checkGithubActionsToolFunction = new lambda.Function(agent, 'CheckActionsFunction', {
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, 'check-github-actions-tool')),
       timeout: cdk.Duration.seconds(30),
@@ -109,7 +109,7 @@ export class GitHubEventToolSet extends CustomToolSet {
 
     // GitHub Webhook Receiver
     const githubWebhookReceiverFunction = new lambda.Function(agent, 'WebhookReceiverFunction', {
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, 'github-webhook-receiver')),
       timeout: cdk.Duration.seconds(30),
