@@ -613,7 +613,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                     original_tool_call_id
                 );
 
-                user_content
+                continue;
             }
         } else {
             user_content
