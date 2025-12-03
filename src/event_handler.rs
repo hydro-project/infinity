@@ -60,6 +60,11 @@ struct OAuthOutputMessage {
     metadata: serde_json::Value,
 }
 
+struct PendingItem {
+    message: Message,
+    message_id: String,
+}
+
 struct HistoryManager {
     dynamodb_client: DynamoDbClient,
     table_name: String,
@@ -68,6 +73,8 @@ struct HistoryManager {
     processed_message_ids: std::collections::HashSet<String>,
     processed_tool_calls: std::collections::HashSet<String>,
     metadata: Option<serde_json::Value>,
+    pending_items: Vec<PendingItem>,
+    pending_complete_tool_calls: Vec<String>,
 }
 
 impl HistoryManager {
@@ -139,6 +146,8 @@ impl HistoryManager {
             processed_message_ids,
             processed_tool_calls,
             metadata,
+            pending_items: Vec::new(),
+            pending_complete_tool_calls: Vec::new(),
         })
     }
 
@@ -191,32 +200,31 @@ impl HistoryManager {
                         };
 
                         self.history.push(synthetic_result.clone());
-                        self.append_to_dynamodb(
+                        self.append_pending(
                             synthetic_result,
                             format!("{}-interrupted", tool_call.id),
-                        )
-                        .await?;
-                        self.mark_tool_call_complete(tool_call.id.clone()).await?;
+                        );
+                        self.mark_tool_call_complete(tool_call.id.clone());
                     }
                 }
             }
         }
 
         self.history.push(message.clone());
-        self.append_to_dynamodb(message, message_id.clone()).await?;
+        self.append_pending(message, message_id.clone());
         self.processed_message_ids.insert(message_id);
         Ok(true)
     }
 
-    async fn handle_completion<R>(
+    fn handle_completion<R>(
         &mut self,
         completion: &StreamedAssistantContent<R>,
         completion_id: String,
-    ) -> Result<(), Error> {
+    ) {
         // Check if we've already processed this message
         if self.processed_message_ids.contains(&completion_id) {
             tracing::info!("Completion {} already processed, skipping", completion_id);
-            return Ok(());
+            return;
         }
 
         let message = match completion {
@@ -235,66 +243,95 @@ impl HistoryManager {
                 content: OneOrMany::one(rig::message::AssistantContent::ToolCall(call.clone())),
             },
             StreamedAssistantContent::ToolCallDelta { .. } => {
-                return Ok(());
+                return;
             }
             StreamedAssistantContent::Final(_) => {
-                return Ok(());
+                return;
             }
         };
 
         self.history.push(message.clone());
-        self.append_to_dynamodb(message, completion_id).await?;
-        Ok(())
+        self.append_pending(message, completion_id);
     }
 
-    async fn append_to_dynamodb(
-        &mut self,
-        message: Message,
-        message_id: String,
-    ) -> Result<(), Error> {
-        let message_json = serde_json::to_string(&message)?;
-
-        // Build the update expression
-        let (update_expr, update_builder) = if self.metadata.is_some() {
-            let metadata_json = serde_json::to_string(&self.metadata)?;
-            let expr = "SET history = list_append(if_not_exists(history, :empty_list), :new_message), metadata = :metadata ADD processed_message_ids :message_id";
-            let builder = self
-                .dynamodb_client
-                .update_item()
-                .table_name(&self.table_name)
-                .key("session", AttributeValue::S(self.group_id.clone()))
-                .expression_attribute_values(
-                    ":new_message",
-                    AttributeValue::L(vec![AttributeValue::S(message_json)]),
-                )
-                .expression_attribute_values(":empty_list", AttributeValue::L(vec![]))
-                .expression_attribute_values(":message_id", AttributeValue::Ss(vec![message_id]))
-                .expression_attribute_values(":metadata", AttributeValue::S(metadata_json));
-            (expr, builder)
-        } else {
-            let expr = "SET history = list_append(if_not_exists(history, :empty_list), :new_message) ADD processed_message_ids :message_id";
-            let builder = self
-                .dynamodb_client
-                .update_item()
-                .table_name(&self.table_name)
-                .key("session", AttributeValue::S(self.group_id.clone()))
-                .expression_attribute_values(
-                    ":new_message",
-                    AttributeValue::L(vec![AttributeValue::S(message_json)]),
-                )
-                .expression_attribute_values(":empty_list", AttributeValue::L(vec![]))
-                .expression_attribute_values(":message_id", AttributeValue::Ss(vec![message_id]));
-            (expr, builder)
-        };
-
-        update_builder.update_expression(update_expr).send().await?;
-
+    fn append_pending(&mut self, message: Message, message_id: String) {
         // If this is a tool result, mark the tool call as complete
         if let Message::User { content } = &message {
             if let UserContent::ToolResult(result) = content.first() {
-                self.mark_tool_call_complete(result.id.clone()).await?;
+                self.mark_tool_call_complete(result.id.clone());
             }
         }
+
+        self.pending_items.push(PendingItem { message, message_id });
+    }
+
+    fn mark_tool_call_complete(&mut self, call_id: String) {
+        self.processed_tool_calls.insert(call_id.clone());
+        self.pending_complete_tool_calls.push(call_id);
+    }
+
+    async fn sync(&mut self) -> Result<(), Error> {
+        if self.pending_items.is_empty() && self.pending_complete_tool_calls.is_empty() {
+            return Ok(());
+        }
+
+        // Collect all pending messages and IDs
+        let messages: Vec<AttributeValue> = self
+            .pending_items
+            .iter()
+            .filter_map(|item| serde_json::to_string(&item.message).ok())
+            .map(AttributeValue::S)
+            .collect();
+
+        let message_ids: Vec<String> = self
+            .pending_items
+            .iter()
+            .map(|item| item.message_id.clone())
+            .collect();
+
+        let tool_call_ids: Vec<String> = self.pending_complete_tool_calls.clone();
+
+        // Build the update expression
+        let mut update_parts = Vec::new();
+        let mut builder = self
+            .dynamodb_client
+            .update_item()
+            .table_name(&self.table_name)
+            .key("session", AttributeValue::S(self.group_id.clone()));
+
+        if !messages.is_empty() {
+            update_parts.push("history = list_append(if_not_exists(history, :empty_list), :new_messages)");
+            builder = builder
+                .expression_attribute_values(":new_messages", AttributeValue::L(messages))
+                .expression_attribute_values(":empty_list", AttributeValue::L(vec![]));
+        }
+
+        let mut add_parts = Vec::new();
+        if !message_ids.is_empty() {
+            add_parts.push("processed_message_ids :message_ids");
+            builder = builder.expression_attribute_values(":message_ids", AttributeValue::Ss(message_ids));
+        }
+
+        if !tool_call_ids.is_empty() {
+            add_parts.push("processed_tool_calls :tool_call_ids");
+            builder = builder.expression_attribute_values(":tool_call_ids", AttributeValue::Ss(tool_call_ids));
+        }
+
+        let update_expr = if !update_parts.is_empty() && !add_parts.is_empty() {
+            format!("SET {} ADD {}", update_parts.join(", "), add_parts.join(", "))
+        } else if !update_parts.is_empty() {
+            format!("SET {}", update_parts.join(", "))
+        } else if !add_parts.is_empty() {
+            format!("ADD {}", add_parts.join(", "))
+        } else {
+            return Ok(());
+        };
+
+        builder.update_expression(update_expr).send().await?;
+
+        // Clear pending items
+        self.pending_items.clear();
+        self.pending_complete_tool_calls.clear();
 
         Ok(())
     }
@@ -306,21 +343,6 @@ impl HistoryManager {
             .key("session", AttributeValue::S(self.group_id.clone()))
             .update_expression("ADD processed_message_ids :message_id")
             .expression_attribute_values(":message_id", AttributeValue::Ss(vec![message_id]))
-            .send()
-            .await?;
-
-        Ok(())
-    }
-
-    async fn mark_tool_call_complete(&mut self, call_id: String) -> Result<(), Error> {
-        self.processed_tool_calls.insert(call_id.clone());
-
-        self.dynamodb_client
-            .update_item()
-            .table_name(&self.table_name)
-            .key("session", AttributeValue::S(self.group_id.clone()))
-            .update_expression("ADD processed_tool_calls :call_id")
-            .expression_attribute_values(":call_id", AttributeValue::Ss(vec![call_id]))
             .send()
             .await?;
 
@@ -625,13 +647,10 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             );
             completion_counter += 1;
 
-            current_history
-                .handle_completion(&chunk, completion_id)
-                .await?;
+            current_history.handle_completion(&chunk, completion_id);
 
             match chunk {
                 StreamedAssistantContent::Text(text) => {
-                    tracing::info!("{}", text.text);
                     accumulated_text.push_str(&text.text);
                 }
                 StreamedAssistantContent::ToolCall(call) => {
@@ -645,6 +664,9 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                         "\n[Tool Call: {} with arguments {}]\n",
                         &call.function.name, &call.function.arguments
                     ));
+
+                    // Sync pending items to DynamoDB before executing tool
+                    current_history.sync().await?;
 
                     // Look up and execute tool
                     if let Some(tool) = tool_registry.get(&call.function.name) {
@@ -668,6 +690,9 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 StreamedAssistantContent::Final(_) => {}
             };
         }
+
+        // Sync any remaining pending items to DynamoDB after the loop
+        current_history.sync().await?;
 
         tracing::info!(
             "Sending accumulated response to output queue {} {}",
