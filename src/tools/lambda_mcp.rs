@@ -1,4 +1,4 @@
-use super::{lambda_tool::LambdaTool, Tool, ToolSet};
+use super::{Tool, ToolSet, lambda_tool::LambdaTool};
 
 /// Abstraction for MCP servers wrapped as Lambda functions
 /// This provides a consistent interface for tools that proxy to MCP servers

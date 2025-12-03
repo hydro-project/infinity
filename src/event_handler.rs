@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use crate::tools::config::ToolsConfig;
-use crate::tools::sleep::SleepTool;
+use crate::tools::sleep::{SleepTool, SleepUntilEventOrInputTool};
 use crate::tools::{Tool, ToolContext, ToolSet, VecToolSet};
 
 use futures_util::StreamExt;
@@ -70,11 +70,11 @@ struct HistoryManager {
     table_name: String,
     group_id: String,
     history: Vec<Message>,
-    processed_message_ids: std::collections::HashSet<String>,
-    processed_tool_calls: std::collections::HashSet<String>,
+    processed_message_ids: HashSet<String>,
+    processed_tool_calls: HashSet<String>,
     metadata: Option<serde_json::Value>,
     pending_items: Vec<PendingItem>,
-    pending_complete_tool_calls: Vec<String>,
+    pending_complete_tool_calls: HashSet<String>,
 }
 
 impl HistoryManager {
@@ -147,7 +147,7 @@ impl HistoryManager {
             processed_tool_calls,
             metadata,
             pending_items: Vec::new(),
-            pending_complete_tool_calls: Vec::new(),
+            pending_complete_tool_calls: HashSet::new(),
         })
     }
 
@@ -175,6 +175,8 @@ impl HistoryManager {
                 self.processed_message_ids.insert(message_id.clone());
                 self.update_processed_message_id(message_id).await?;
                 return Ok(false);
+            } else {
+                tracing::info!("Handling tool call result {}", tool_result.id);
             }
         } else {
             if let Some(Message::Assistant { content, .. }) = self.history.last() {
@@ -262,12 +264,15 @@ impl HistoryManager {
             }
         }
 
-        self.pending_items.push(PendingItem { message, message_id });
+        self.pending_items.push(PendingItem {
+            message,
+            message_id,
+        });
     }
 
     fn mark_tool_call_complete(&mut self, call_id: String) {
         self.processed_tool_calls.insert(call_id.clone());
-        self.pending_complete_tool_calls.push(call_id);
+        self.pending_complete_tool_calls.insert(call_id);
     }
 
     async fn sync(&mut self) -> Result<(), Error> {
@@ -289,7 +294,7 @@ impl HistoryManager {
             .map(|item| item.message_id.clone())
             .collect();
 
-        let tool_call_ids: Vec<String> = self.pending_complete_tool_calls.clone();
+        let tool_call_ids: Vec<String> = self.pending_complete_tool_calls.iter().cloned().collect();
 
         // Build the update expression
         let mut update_parts = Vec::new();
@@ -300,7 +305,8 @@ impl HistoryManager {
             .key("session", AttributeValue::S(self.group_id.clone()));
 
         if !messages.is_empty() {
-            update_parts.push("history = list_append(if_not_exists(history, :empty_list), :new_messages)");
+            update_parts
+                .push("history = list_append(if_not_exists(history, :empty_list), :new_messages)");
             builder = builder
                 .expression_attribute_values(":new_messages", AttributeValue::L(messages))
                 .expression_attribute_values(":empty_list", AttributeValue::L(vec![]));
@@ -309,16 +315,22 @@ impl HistoryManager {
         let mut add_parts = Vec::new();
         if !message_ids.is_empty() {
             add_parts.push("processed_message_ids :message_ids");
-            builder = builder.expression_attribute_values(":message_ids", AttributeValue::Ss(message_ids));
+            builder = builder
+                .expression_attribute_values(":message_ids", AttributeValue::Ss(message_ids));
         }
 
         if !tool_call_ids.is_empty() {
             add_parts.push("processed_tool_calls :tool_call_ids");
-            builder = builder.expression_attribute_values(":tool_call_ids", AttributeValue::Ss(tool_call_ids));
+            builder = builder
+                .expression_attribute_values(":tool_call_ids", AttributeValue::Ss(tool_call_ids));
         }
 
         let update_expr = if !update_parts.is_empty() && !add_parts.is_empty() {
-            format!("SET {} ADD {}", update_parts.join(", "), add_parts.join(", "))
+            format!(
+                "SET {} ADD {}",
+                update_parts.join(", "),
+                add_parts.join(", ")
+            )
         } else if !update_parts.is_empty() {
             format!("SET {}", update_parts.join(", "))
         } else if !add_parts.is_empty() {
@@ -400,11 +412,17 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         let ssm_client = aws_sdk_ssm::Client::new(&config);
         match ToolsConfig::from_ssm(&ssm_client, &ssm_param).await {
             Ok(config) => {
-                tracing::info!("Loaded tools configuration from SSM parameter {}", ssm_param);
+                tracing::info!(
+                    "Loaded tools configuration from SSM parameter {}",
+                    ssm_param
+                );
                 config.into_tool_sets()
             }
             Err(e) => {
-                tracing::warn!("Failed to load tools config from SSM: {}. Using empty tool set.", e);
+                tracing::warn!(
+                    "Failed to load tools config from SSM: {}. Using empty tool set.",
+                    e
+                );
                 vec![]
             }
         }
@@ -426,10 +444,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                         config.into_tool_sets()
                     }
                     Err(e) => {
-                        tracing::warn!(
-                            "Failed to load tools config: {}. Using empty tool set.",
-                            e
-                        );
+                        tracing::warn!("Failed to load tools config: {}. Using empty tool set.", e);
                         vec![]
                     }
                 }
@@ -440,10 +455,13 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     // Add hardcoded sleep tool set
     tool_sets.insert(
         0,
-        Box::new(VecToolSet::new(vec![Box::new(SleepTool {
-            scheduler_client: scheduler_client.clone(),
-            scheduler_role_arn: scheduler_role_arn.clone(),
-        })])),
+        Box::new(VecToolSet::new(vec![
+            Box::new(SleepTool {
+                scheduler_client: scheduler_client.clone(),
+                scheduler_role_arn: scheduler_role_arn.clone(),
+            }),
+            Box::new(SleepUntilEventOrInputTool),
+        ])),
     );
 
     // Concatenate all tools from tool sets
@@ -491,7 +509,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         if let InputMessageContent::OAuth(oauth) = &input_msg.content {
             if oauth.content_type == "oauth_required" {
                 tracing::info!("Received OAuth required message, forwarding to output queue");
-                
+
                 let metadata = current_history
                     .get_metadata()
                     .unwrap_or(serde_json::json!({}));
@@ -529,67 +547,73 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             );
 
             // Look up the original tool call from conversation history
-            let original_call = current_history
-                .history
-                .iter()
-                .find_map(|msg| {
-                    if let Message::Assistant { content, .. } = msg {
-                        content.iter().find_map(|c| {
-                            if let rig::message::AssistantContent::ToolCall(call) = c {
-                                if call.id == original_tool_call_id {
-                                    Some(call.clone())
-                                } else {
-                                    None
-                                }
+            if let Some(original_call) = current_history.history.iter().find_map(|msg| {
+                if let Message::Assistant { content, .. } = msg {
+                    content.iter().find_map(|c| {
+                        if let rig::message::AssistantContent::ToolCall(call) = c {
+                            if call.id == original_tool_call_id {
+                                Some(call.clone())
                             } else {
                                 None
                             }
-                        })
-                    } else {
-                        None
-                    }
-                })
-                .unwrap();
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                }
+            }) {
+                // Generate a new random tool call ID
+                let new_tool_call_id = uuid::Uuid::new_v4().to_string();
 
-            // Generate a new random tool call ID
-            let new_tool_call_id = uuid::Uuid::new_v4().to_string();
+                // Extract the tool result content
+                if let UserContent::ToolResult(mut tool_result) = user_content {
+                    // Create a synthetic tool call with kind: "interrupt" added to original arguments
+                    let mut synthetic_args = original_call.function.arguments.clone();
+                    synthetic_args.as_object_mut().unwrap().insert(
+                        "kind".to_string(),
+                        serde_json::json!(format!(
+                            "interrupt:{} (subscription remains active)",
+                            original_tool_call_id
+                        )),
+                    );
 
-            // Extract the tool result content
-            if let UserContent::ToolResult(mut tool_result) = user_content {
-                // Create a synthetic tool call with kind: "interrupt" added to original arguments
-                let mut synthetic_args = original_call.function.arguments.clone();
-                synthetic_args
-                    .as_object_mut()
-                    .unwrap()
-                    .insert("kind".to_string(), serde_json::json!("interrupt"));
-
-                let synthetic_tool_call = Message::Assistant {
-                    id: None,
-                    content: OneOrMany::one(rig::message::AssistantContent::ToolCall(
-                        rig::message::ToolCall {
-                            id: new_tool_call_id.clone(),
-                            call_id: None,
-                            function: rig::message::ToolFunction {
-                                name: original_call.function.name.clone(),
-                                arguments: synthetic_args,
+                    let synthetic_tool_call = Message::Assistant {
+                        id: None,
+                        content: OneOrMany::one(rig::message::AssistantContent::ToolCall(
+                            rig::message::ToolCall {
+                                id: new_tool_call_id.clone(),
+                                call_id: None,
+                                function: rig::message::ToolFunction {
+                                    name: original_call.function.name.clone(),
+                                    arguments: synthetic_args,
+                                },
                             },
-                        },
-                    )),
-                };
+                        )),
+                    };
 
-                // Insert the synthetic tool call into history
-                current_history
-                    .handle_content(
-                        synthetic_tool_call,
-                        format!("{}-synthetic-call", new_tool_call_id),
-                    )
-                    .await?;
+                    // Insert the synthetic tool call into history
+                    current_history
+                        .handle_content(
+                            synthetic_tool_call,
+                            format!("{}-synthetic-call", new_tool_call_id),
+                        )
+                        .await?;
 
-                // Update the tool result with the new generated ID
-                tool_result.id = new_tool_call_id;
-                UserContent::ToolResult(tool_result)
+                    // Update the tool result with the new generated ID
+                    tool_result.id = new_tool_call_id;
+                    UserContent::ToolResult(tool_result)
+                } else {
+                    panic!("Synthetic message is not a tool result")
+                }
             } else {
-                panic!("Synthetic message is not a tool result")
+                tracing::warn!(
+                    "Could not find original tool call for synthetic message: {}, dropping message",
+                    original_tool_call_id
+                );
+
+                user_content
             }
         } else {
             user_content
@@ -631,7 +655,13 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 temperature: None,
                 max_tokens: None,
                 tool_choice: None,
-                additional_params: None,
+                additional_params: Some(serde_json::json!({
+                    "anthropic_beta": ["interleaved-thinking-2025-05-14"],
+                    "thinking": {
+                        "type": "enabled",
+                        "budget_tokens": 4096,
+                    }
+                })),
             })
             .await
             .unwrap();
@@ -640,6 +670,12 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         let mut accumulated_text = String::new();
 
         while let Some(Ok(chunk)) = completion_result.next().await {
+            if let StreamedAssistantContent::Reasoning(ref r) = chunk
+                && r.signature.is_none()
+            {
+                continue; // incomplete reasoning
+            }
+
             // Generate a unique ID for each completion chunk
             let completion_id = format!(
                 "{}-{}-completion-{}",
@@ -660,10 +696,12 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                         &call.function.arguments
                     );
 
-                    accumulated_text.push_str(&format!(
-                        "\n[Tool Call: {} with arguments {}]\n",
-                        &call.function.name, &call.function.arguments
-                    ));
+                    if call.function.name != "sleep_until_event_or_input" {
+                        accumulated_text.push_str(&format!(
+                            "\n[Tool Call: {} with arguments {}]\n",
+                            &call.function.name, &call.function.arguments
+                        ));
+                    }
 
                     // Sync pending items to DynamoDB before executing tool
                     current_history.sync().await?;
