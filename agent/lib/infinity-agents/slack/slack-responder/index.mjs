@@ -1,7 +1,3 @@
-import { SQSClient, DeleteMessageCommand } from '@aws-sdk/client-sqs';
-import { markdownToSlack } from 'md-to-slack';
-
-const sqsClient = new SQSClient({});
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
 
 export const handler = async (event) => {
@@ -23,20 +19,7 @@ export const handler = async (event) => {
       if (messageType === 'oauth_required' && auth_url) {
         slackText = `🔐 *Authorization Required*\n\nPlease click the link below to authorize access:\n<${auth_url}|Authorize>`;
       } else {
-        // Preserve Slack mentions before markdown conversion (they get escaped otherwise)
-        const mentionPlaceholders = [];
-        const textWithPlaceholders = text.replace(/<@([A-Z0-9]+)>/g, (match) => {
-          mentionPlaceholders.push(match);
-          return `SLACKMENTION${mentionPlaceholders.length - 1}ENDMENTION`;
-        });
-
-        // Convert markdown to Slack's mrkdwn format
-        slackText = markdownToSlack(textWithPlaceholders);
-
-        // Restore Slack mentions
-        slackText = slackText.replace(/SLACKMENTION(\d+)ENDMENTION/g, (_, index) => {
-          return mentionPlaceholders[parseInt(index)];
-        });
+        slackText = text;
       }
 
       // Post message to Slack thread
