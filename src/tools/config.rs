@@ -1,7 +1,7 @@
 use aws_sdk_ssm::Client as SsmClient;
 use serde::{Deserialize, Serialize};
 
-use super::{lambda_mcp::LambdaMCP, lambda_tool::LambdaTool, Tool, ToolSet, VecToolSet};
+use super::{Tool, ToolSet, VecToolSet, lambda_mcp::LambdaMCP, lambda_tool::LambdaTool};
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -73,11 +73,7 @@ impl ToolsConfig {
         ssm_client: &SsmClient,
         param_name: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let response = ssm_client
-            .get_parameter()
-            .name(param_name)
-            .send()
-            .await?;
+        let response = ssm_client.get_parameter().name(param_name).send().await?;
 
         let value = response
             .parameter()

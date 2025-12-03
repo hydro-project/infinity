@@ -94,8 +94,9 @@ export class InfinityAgent extends Construct {
         props.codePath || path.join(__dirname, '../../../target/lambda/infinity-agents-leader')
       ),
       timeout: cdk.Duration.minutes(15),
-      memorySize: 512,
+      memorySize: 128,
       reservedConcurrentExecutions: 1,
+      recursiveLoop: lambda.RecursiveLoop.ALLOW,
       environment: {
         DYNAMODB_TABLE_NAME: this.historyTable.tableName,
         OUTPUT_QUEUE_URL: this.outputQueue.queueUrl,

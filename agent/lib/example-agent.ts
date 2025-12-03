@@ -24,6 +24,9 @@ export class ExampleAgent extends InfinityAgent {
     const githubMcp = new HTTPMCPToolSet(this, 'GithubMcp', {
       name: 'github',
       url: 'https://api.githubcopilot.com/mcp/',
+      headers: {
+        'X-MCP-Toolsets': 'default,actions',
+      },
       oauth: {
         callbackGateway: gateway,
         stageName: 'prod',
