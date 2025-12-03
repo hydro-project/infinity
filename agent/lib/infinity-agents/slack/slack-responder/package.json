@@ -3,7 +3,5 @@
   "version": "1.0.0",
   "type": "module",
   "dependencies": {
-    "@aws-sdk/client-sqs": "^3.0.0",
-    "md-to-slack": "^1.0.0"
   }
 }
