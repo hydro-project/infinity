@@ -1,11 +1,14 @@
 use aws_lambda_events::event::sqs::SqsEvent;
 use aws_sdk_dynamodb::{Client as DynamoDbClient, types::AttributeValue};
+use aws_sdk_dsql::Client as DsqlClient;
 use aws_sdk_scheduler::Client as SchedulerClient;
 use aws_sdk_sqs::Client as SqsClient;
 use lambda_runtime::{Error, LambdaEvent, tracing};
 use rig_bedrock::client::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+
+use crate::conversation_history::ConversationHistoryStore;
 
 use crate::tools::config::ToolsConfig;
 use crate::tools::sleep::{SleepTool, SleepUntilEventOrInputTool};
@@ -67,6 +70,7 @@ struct PendingItem {
 
 struct HistoryManager {
     dynamodb_client: DynamoDbClient,
+    conversation_store: ConversationHistoryStore,
     table_name: String,
     group_id: String,
     history: Vec<Message>,
@@ -80,10 +84,14 @@ struct HistoryManager {
 impl HistoryManager {
     async fn new_with_history(
         dynamodb_client: DynamoDbClient,
+        conversation_store: ConversationHistoryStore,
         table_name: String,
         group_id: String,
     ) -> Result<Self, Error> {
-        // Load existing history from DynamoDB
+        // Load conversation history from DSQL
+        let history = conversation_store.load_history(&group_id).await?;
+
+        // Load metadata and processed IDs from DynamoDB
         let result = dynamodb_client
             .get_item()
             .table_name(&table_name)
@@ -91,24 +99,9 @@ impl HistoryManager {
             .send()
             .await;
 
-        let (history, processed_message_ids, processed_tool_calls, metadata) = match result {
+        let (processed_message_ids, processed_tool_calls, metadata) = match result {
             Ok(output) => {
                 if let Some(item) = output.item {
-                    let history = if let Some(AttributeValue::L(messages)) = item.get("history") {
-                        messages
-                            .iter()
-                            .filter_map(|attr| {
-                                if let AttributeValue::S(json_str) = attr {
-                                    serde_json::from_str::<Message>(json_str).ok()
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect()
-                    } else {
-                        vec![]
-                    };
-
                     let processed_ids =
                         if let Some(AttributeValue::Ss(ids)) = item.get("processed_message_ids") {
                             ids.iter().cloned().collect()
@@ -130,16 +123,17 @@ impl HistoryManager {
                             None
                         };
 
-                    (history, processed_ids, processed_tools, metadata)
+                    (processed_ids, processed_tools, metadata)
                 } else {
-                    (vec![], HashSet::new(), HashSet::new(), None)
+                    (HashSet::new(), HashSet::new(), None)
                 }
             }
-            Err(_) => (vec![], HashSet::new(), HashSet::new(), None),
+            Err(_) => (HashSet::new(), HashSet::new(), None),
         };
 
         Ok(Self {
             dynamodb_client,
+            conversation_store,
             table_name,
             group_id,
             history,
@@ -280,14 +274,20 @@ impl HistoryManager {
             return Ok(());
         }
 
-        // Collect all pending messages and IDs
-        let messages: Vec<AttributeValue> = self
-            .pending_items
-            .iter()
-            .filter_map(|item| serde_json::to_string(&item.message).ok())
-            .map(AttributeValue::S)
-            .collect();
+        // Store conversation messages in DSQL
+        if !self.pending_items.is_empty() {
+            let messages_for_dsql: Vec<(Message, String)> = self
+                .pending_items
+                .iter()
+                .map(|item| (item.message.clone(), item.message_id.clone()))
+                .collect();
 
+            self.conversation_store
+                .append_messages(&self.group_id, messages_for_dsql)
+                .await?;
+        }
+
+        // Store metadata and processed IDs in DynamoDB
         let message_ids: Vec<String> = self
             .pending_items
             .iter()
@@ -296,23 +296,14 @@ impl HistoryManager {
 
         let tool_call_ids: Vec<String> = self.pending_complete_tool_calls.iter().cloned().collect();
 
-        // Build the update expression
-        let mut update_parts = Vec::new();
+        // Build the update expression for DynamoDB (only metadata and processed IDs)
+        let mut add_parts = Vec::new();
         let mut builder = self
             .dynamodb_client
             .update_item()
             .table_name(&self.table_name)
             .key("session", AttributeValue::S(self.group_id.clone()));
 
-        if !messages.is_empty() {
-            update_parts
-                .push("history = list_append(if_not_exists(history, :empty_list), :new_messages)");
-            builder = builder
-                .expression_attribute_values(":new_messages", AttributeValue::L(messages))
-                .expression_attribute_values(":empty_list", AttributeValue::L(vec![]));
-        }
-
-        let mut add_parts = Vec::new();
         if !message_ids.is_empty() {
             add_parts.push("processed_message_ids :message_ids");
             builder = builder
@@ -325,21 +316,10 @@ impl HistoryManager {
                 .expression_attribute_values(":tool_call_ids", AttributeValue::Ss(tool_call_ids));
         }
 
-        let update_expr = if !update_parts.is_empty() && !add_parts.is_empty() {
-            format!(
-                "SET {} ADD {}",
-                update_parts.join(", "),
-                add_parts.join(", ")
-            )
-        } else if !update_parts.is_empty() {
-            format!("SET {}", update_parts.join(", "))
-        } else if !add_parts.is_empty() {
-            format!("ADD {}", add_parts.join(", "))
-        } else {
-            return Ok(());
-        };
-
-        builder.update_expression(update_expr).send().await?;
+        if !add_parts.is_empty() {
+            let update_expr = format!("ADD {}", add_parts.join(", "));
+            builder.update_expression(update_expr).send().await?;
+        }
 
         // Clear pending items
         self.pending_items.clear();
@@ -399,11 +379,17 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     // Initialize AWS clients
     let config = aws_config::load_from_env().await;
     let dynamodb_client = DynamoDbClient::new(&config);
+    let dsql_client = DsqlClient::new(&config);
     let sqs_client = SqsClient::new(&config);
     let scheduler_client = SchedulerClient::new(&config);
     let table_name = "InfinityAgentsState".to_string();
     let output_queue_url = std::env::var("OUTPUT_QUEUE_URL").unwrap_or_else(|_| "".to_string());
     let scheduler_role_arn = std::env::var("SCHEDULER_ROLE_ARN").unwrap_or_else(|_| "".to_string());
+    let dsql_cluster_endpoint = std::env::var("DSQL_CLUSTER_ENDPOINT")
+        .map_err(|_| Error::from("DSQL_CLUSTER_ENDPOINT environment variable is required"))?;
+
+    // Initialize conversation history store
+    let conversation_store = ConversationHistoryStore::new(&dsql_client, &dsql_cluster_endpoint).await?;
 
     // Load tool sets from configuration (SSM preferred, then file, then env var)
     let mut tool_sets: Vec<Box<dyn ToolSet>> = if let Ok(ssm_param) =
@@ -495,6 +481,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
 
         let mut current_history = HistoryManager::new_with_history(
             dynamodb_client.clone(),
+            conversation_store.clone(),
             table_name.clone(),
             input_msg.group_id.clone(),
         )
@@ -646,6 +633,8 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             user_id,
         };
 
+        tracing::info!("History: {:?}", current_history.get_history());
+
         let mut completion_result = model
             .stream(CompletionRequest {
                 preamble: None,
@@ -669,7 +658,9 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         let mut completion_counter = 0;
         let mut accumulated_text = String::new();
 
-        while let Some(Ok(chunk)) = completion_result.next().await {
+        while let Some(res) = completion_result.next().await {
+            let chunk = res?;
+
             if let StreamedAssistantContent::Reasoning(ref r) = chunk
                 && r.signature.is_none()
             {
@@ -758,6 +749,8 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 .await?;
 
             tracing::info!("Sent response to output queue");
+        } else {
+            tracing::info!("Output was empty");
         }
     }
 
