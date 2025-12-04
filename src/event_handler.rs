@@ -658,7 +658,8 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         let mut completion_counter = 0;
         let mut accumulated_text = String::new();
 
-        while let Some(res) = completion_result.next().await {
+        loop {
+            let res = completion_result.next().await.ok_or("unexpected end of stream")?;
             let chunk = res?;
 
             if let StreamedAssistantContent::Reasoning(ref r) = chunk
@@ -678,6 +679,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
 
             match chunk {
                 StreamedAssistantContent::Text(text) => {
+                    tracing::info!("[Text] {}", &text.text);
                     accumulated_text.push_str(&text.text);
                 }
                 StreamedAssistantContent::ToolCall(call) => {
@@ -716,18 +718,15 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 StreamedAssistantContent::Reasoning(reasoning) => {
                     tracing::info!("\n[Reasoning: {:?}]\n", reasoning.reasoning);
                 }
-                StreamedAssistantContent::Final(_) => {}
+                StreamedAssistantContent::Final(_) => {
+                    tracing::info!("Received final message");
+                    break;
+                }
             };
         }
 
         // Sync any remaining pending items to DynamoDB after the loop
         current_history.sync().await?;
-
-        tracing::info!(
-            "Sending accumulated response to output queue {} {}",
-            &accumulated_text,
-            &output_queue_url
-        );
 
         // Send accumulated response to output queue
         if !accumulated_text.is_empty() && !output_queue_url.is_empty() {
