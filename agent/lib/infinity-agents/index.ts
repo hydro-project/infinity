@@ -5,6 +5,7 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import * as dsql from 'aws-cdk-lib/aws-dsql';
 
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { ToolSetConfig } from './tools/tool-set';
@@ -30,6 +31,7 @@ export class InfinityAgent extends Construct {
   public readonly inputQueue: sqs.Queue;
   public readonly outputQueue: sqs.Queue;
   public readonly historyTable: dynamodb.Table;
+  public readonly dsqlCluster: dsql.CfnCluster;
   private readonly schedulerRole: iam.Role;
   private readonly toolSetConfigs: ToolSetConfig[] = [];
   private toolsConfigParam?: ssm.StringParameter;
@@ -37,7 +39,7 @@ export class InfinityAgent extends Construct {
   constructor(scope: Construct, id: string, props: InfinityAgentsProps = {}) {
     super(scope, id);
 
-    // DynamoDB table for conversation history
+    // DynamoDB table for metadata and processed IDs (no longer stores conversation history)
     this.historyTable = new dynamodb.Table(this, 'StateTable', {
       tableName: 'InfinityAgentsState',
       partitionKey: {
@@ -47,6 +49,11 @@ export class InfinityAgent extends Construct {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
       pointInTimeRecovery: true,
+    });
+
+    // Aurora DSQL cluster for conversation history
+    this.dsqlCluster = new dsql.CfnCluster(this, 'ConversationHistoryCluster', {
+      deletionProtectionEnabled: true,
     });
 
     // Dead Letter Queue for failed messages
@@ -103,6 +110,7 @@ export class InfinityAgent extends Construct {
         INPUT_QUEUE_URL: this.inputQueue.queueUrl,
         INPUT_QUEUE_ARN: this.inputQueue.queueArn,
         SCHEDULER_ROLE_ARN: this.schedulerRole.roleArn,
+        DSQL_CLUSTER_ENDPOINT: this.dsqlCluster.attrEndpoint,
         RUST_BACKTRACE: '1',
       },
       ...props.lambdaProps,
@@ -119,6 +127,18 @@ export class InfinityAgent extends Construct {
         effect: iam.Effect.ALLOW,
         actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
         resources: ['*'],
+      })
+    );
+
+    // Grant DSQL permissions
+    this.lambdaFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'dsql:DbConnectAdmin',
+          'dsql:GenerateDbConnectAuthToken',
+        ],
+        resources: [this.dsqlCluster.attrResourceArn],
       })
     );
 

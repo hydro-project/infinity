@@ -2,6 +2,7 @@ use lambda_runtime::{Error, run, service_fn, tracing};
 
 mod event_handler;
 mod tools;
+mod conversation_history;
 use event_handler::function_handler;
 
 #[tokio::main]
