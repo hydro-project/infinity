@@ -37,6 +37,18 @@ export class GitHubEventToolSet extends CustomToolSet {
       timeToLiveAttribute: 'ttl',
     });
 
+    // Subscription lookup table - maps subscription ID to pk/sk for fast cancellation
+    const subscriptionLookupTable = new dynamodb.Table(agent, 'SubscriptionLookupTable', {
+      tableName: 'InfinityAgentsSubscriptionLookup',
+      partitionKey: {
+        name: 'subscriptionId',
+        type: dynamodb.AttributeType.STRING,
+      },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      timeToLiveAttribute: 'ttl',
+    });
+
     const checkGithubActionsToolFunction = new lambda.Function(agent, 'CheckActionsFunction', {
       runtime: lambda.Runtime.NODEJS_24_X,
       handler: 'index.handler',
@@ -44,14 +56,16 @@ export class GitHubEventToolSet extends CustomToolSet {
       timeout: cdk.Duration.seconds(30),
       environment: {
         GITHUB_CHECKS_TABLE: githubChecksTable.tableName,
+        SUBSCRIPTION_LOOKUP_TABLE: subscriptionLookupTable.tableName,
       },
     });
-    githubChecksTable.grantWriteData(checkGithubActionsToolFunction);
+    githubChecksTable.grantReadWriteData(checkGithubActionsToolFunction);
+    subscriptionLookupTable.grantReadWriteData(checkGithubActionsToolFunction);
 
     const subscribeGithubEventTool = new LambdaTool(agent, 'SubscribeTool', {
-      name: 'subscribe_github_event',
+      name: 'subscribe_github_events',
       description:
-        'Subscribes to GitHub webhook events. Use filters to match specific events. If there is nothing to do until an event arrives, you may want to use the sleep tool to hibernate until you are woken up by an event. DO NOT re-subscribe after an `interrupt`, the subscription remains active automatically.',
+        'Subscribes to GitHub webhook events on hydro-project/hydro. Use filters to match specific events. If there is nothing to do until an event arrives, you may want to use the sleep tool to hibernate until you are woken up by an event. DO NOT re-subscribe after an `interrupt`, the subscription remains active automatically.',
       parameters: {
         type: 'object',
         properties: {
@@ -107,6 +121,26 @@ export class GitHubEventToolSet extends CustomToolSet {
       },
     });
 
+    const cancelGithubSubscriptionTool = new LambdaTool(agent, 'CancelSubscriptionTool', {
+      name: 'cancel_github_subscription',
+      description:
+        'Cancels an active GitHub webhook event subscription. Use this when you no longer need to receive events for a particular subscription.',
+      parameters: {
+        type: 'object',
+        properties: {
+          subscription_id: {
+            type: 'string',
+            description: 'The subscription ID returned when you created the subscription.',
+          },
+        },
+        required: ['subscription_id'],
+      },
+      handler: checkGithubActionsToolFunction,
+      queueProps: {
+        visibilityTimeout: cdk.Duration.seconds(30),
+      },
+    });
+
     // GitHub Webhook Receiver
     const githubWebhookReceiverFunction = new lambda.Function(agent, 'WebhookReceiverFunction', {
       runtime: lambda.Runtime.NODEJS_24_X,
@@ -124,7 +158,7 @@ export class GitHubEventToolSet extends CustomToolSet {
     const githubWebhookIntegration = new apigateway.LambdaIntegration(githubWebhookReceiverFunction);
     props.webhookGateway.root.addResource('github').addResource('webhook').addMethod('POST', githubWebhookIntegration);
 
-    super(agent, id, [subscribeGithubEventTool]);
+    super(agent, id, [subscribeGithubEventTool, cancelGithubSubscriptionTool]);
 
     this.webhookUrl = props.webhookGateway.url + 'github/webhook';
   }
