@@ -1,133 +1,164 @@
-import { DynamoDBClient, PutItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, PutItemCommand, GetItemCommand, DeleteItemCommand } from '@aws-sdk/client-dynamodb';
+import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 
 const dynamoClient = new DynamoDBClient({});
+const sqsClient = new SQSClient({});
 
 const GITHUB_CHECKS_TABLE = process.env.GITHUB_CHECKS_TABLE;
+const SUBSCRIPTION_LOOKUP_TABLE = process.env.SUBSCRIPTION_LOOKUP_TABLE;
+
+async function handleSubscribe(args, id, call_id, input_queue_url, group_id) {
+    const owner = args.owner;
+    const repo = args.repo;
+    
+    // Build filters object from optional parameters
+    const filters = {};
+    if (args.event_type) filters.eventType = args.event_type;
+    if (args.sha) filters.sha = args.sha;
+    if (args.pr_number) filters.prNumber = args.pr_number;
+    if (args.issue_number) filters.issueNumber = args.issue_number;
+    if (args.action) filters.action = args.action;
+    if (args.branch) filters.branch = args.branch;
+    if (args.actor) filters.actor = args.actor;
+
+    // Build a filter key for the sort key
+    const filterKey = Object.keys(filters).length > 0 
+        ? Object.entries(filters).map(([k, v]) => `${k}:${v}`).sort().join('|')
+        : 'ALL';
+
+    const pk = `${owner}/${repo}`;
+    const sk = `${filterKey}#${id}`;
+    const ttl = Math.floor(Date.now() / 1000 + 86400); // 24 hour TTL
+
+    // Store subscription in main table
+    const subscriptionItem = {
+        pk: { S: pk },
+        sk: { S: sk },
+        toolCallId: { S: id },
+        callId: { S: call_id || '' },
+        groupId: { S: group_id },
+        inputQueueUrl: { S: input_queue_url },
+        owner: { S: owner },
+        repo: { S: repo },
+        filters: { S: JSON.stringify(filters) },
+        filterKey: { S: filterKey },
+        createdAt: { N: Date.now().toString() },
+        ttl: { N: ttl.toString() },
+    };
+
+    await dynamoClient.send(new PutItemCommand({
+        TableName: GITHUB_CHECKS_TABLE,
+        Item: subscriptionItem,
+    }));
+
+    // Store lookup entry for fast cancellation by subscription ID
+    const lookupItem = {
+        subscriptionId: { S: id },
+        pk: { S: pk },
+        sk: { S: sk },
+        ttl: { N: ttl.toString() },
+    };
+
+    await dynamoClient.send(new PutItemCommand({
+        TableName: SUBSCRIPTION_LOOKUP_TABLE,
+        Item: lookupItem,
+    }));
+
+    console.log('Stored GitHub event subscription:', { pk, sk, filters });
+
+    const filterDescription = Object.keys(filters).length > 0
+        ? `Filters: ${JSON.stringify(filters)}`
+        : 'No filters (will match all events)';
+
+    return `Subscription ID: ${id}\n${filterDescription}`;
+}
+
+async function handleCancelSubscription(args) {
+    const subscriptionId = args.subscription_id;
+    
+    if (!subscriptionId) {
+        return 'Error: subscription_id is required';
+    }
+
+    // Look up the subscription's pk/sk from the lookup table
+    const lookupResult = await dynamoClient.send(new GetItemCommand({
+        TableName: SUBSCRIPTION_LOOKUP_TABLE,
+        Key: {
+            subscriptionId: { S: subscriptionId },
+        },
+    }));
+
+    if (!lookupResult.Item) {
+        return `Subscription not found: ${subscriptionId}. It may have already been cancelled or expired.`;
+    }
+
+    const pk = lookupResult.Item.pk.S;
+    const sk = lookupResult.Item.sk.S;
+
+    // Delete from main subscriptions table
+    await dynamoClient.send(new DeleteItemCommand({
+        TableName: GITHUB_CHECKS_TABLE,
+        Key: {
+            pk: { S: pk },
+            sk: { S: sk },
+        },
+    }));
+
+    // Delete from lookup table
+    await dynamoClient.send(new DeleteItemCommand({
+        TableName: SUBSCRIPTION_LOOKUP_TABLE,
+        Key: {
+            subscriptionId: { S: subscriptionId },
+        },
+    }));
+
+    console.log('Cancelled subscription:', { subscriptionId, pk, sk });
+
+    return `Successfully cancelled subscription: ${subscriptionId}`;
+}
+
+async function sendResponse(input_queue_url, group_id, id, call_id, text) {
+    const responseContent = {
+        type: 'toolresult',
+        id: id,
+        call_id: call_id,
+        content: [{ type: 'text', text }],
+    };
+
+    await sqsClient.send(new SendMessageCommand({
+        QueueUrl: input_queue_url,
+        MessageBody: JSON.stringify({
+            content: responseContent,
+            group_id: group_id,
+        }),
+    }));
+}
 
 export const handler = async (event) => {
     console.log('Received event:', JSON.stringify(event, null, 2));
 
     for (const record of event.Records) {
         const request = JSON.parse(record.body);
-        const { arguments: args, id, call_id, input_queue_url, group_id } = request;
+        const { arguments: args, id, call_id, input_queue_url, group_id, tool_name } = request;
 
-        console.log('Processing subscribe_github_event request:', { args, id, call_id });
+        console.log('Processing request:', { tool_name, args, id, call_id });
 
         try {
-            // Extract parameters
-            const owner = args.owner;
-            const repo = args.repo;
-            
-            // Build filters object from optional parameters
-            const filters = {};
-            if (args.event_type) filters.eventType = args.event_type;
-            if (args.sha) filters.sha = args.sha;
-            if (args.pr_number) filters.prNumber = args.pr_number;
-            if (args.issue_number) filters.issueNumber = args.issue_number;
-            if (args.action) filters.action = args.action;
-            if (args.branch) filters.branch = args.branch;
-            if (args.actor) filters.actor = args.actor;
+            let resultText;
 
-            // Build a filter key for the sort key - use a hash of filters or 'ALL' if no filters
-            const filterKey = Object.keys(filters).length > 0 
-                ? Object.entries(filters).map(([k, v]) => `${k}:${v}`).sort().join('|')
-                : 'ALL';
+            if (tool_name === 'cancel_github_subscription' || args.subscription_id) {
+                resultText = await handleCancelSubscription(args);
+            } else {
+                resultText = await handleSubscribe(args, id, call_id, input_queue_url, group_id);
+            }
 
-            // Store mapping in DynamoDB
-            // pk: owner/repo (to query all subscriptions for a repo)
-            // sk: filterKey#toolCallId (to allow multiple subscriptions with same filters)
-            const item = {
-                pk: { S: `${owner}/${repo}` },
-                sk: { S: `${filterKey}#${id}` },
-                toolCallId: { S: id },
-                callId: { S: call_id || '' },
-                groupId: { S: group_id },
-                inputQueueUrl: { S: input_queue_url },
-                owner: { S: owner },
-                repo: { S: repo },
-                filters: { S: JSON.stringify(filters) },
-                filterKey: { S: filterKey },
-                createdAt: { N: Date.now().toString() },
-                ttl: { N: Math.floor(Date.now() / 1000 + 86400).toString() }, // 24 hour TTL
-            };
-
-            const putCommand = new PutItemCommand({
-                TableName: GITHUB_CHECKS_TABLE,
-                Item: item,
-            });
-
-            await dynamoClient.send(putCommand);
-
-            console.log('Stored GitHub event subscription in DynamoDB:', { filterKey, filters });
-
-            // Send immediate subscription confirmation
-            const { SQSClient, SendMessageCommand } = await import('@aws-sdk/client-sqs');
-            const sqsClient = new SQSClient({});
-
-            const filterDescription = Object.keys(filters).length > 0
-                ? `Filters: ${JSON.stringify(filters)}`
-                : 'No filters (will match all events)';
-
-            const subscriptionContent = {
-                type: 'toolresult',
-                id: id,
-                call_id: call_id,
-                content: [
-                    {
-                        type: 'text',
-                        text: `Subscription ID: ${id}\n${filterDescription}`,
-                    },
-                ],
-            };
-
-            const subscriptionMessage = {
-                content: subscriptionContent,
-                group_id: group_id,
-            };
-
-            const sendCommand = new SendMessageCommand({
-                QueueUrl: input_queue_url,
-                MessageBody: JSON.stringify(subscriptionMessage),
-            });
-
-            await sqsClient.send(sendCommand);
-            console.log('Sent subscription confirmation to input queue');
+            await sendResponse(input_queue_url, group_id, id, call_id, resultText);
+            console.log('Sent response to input queue');
         } catch (error) {
-            console.error('Error storing GitHub event subscription:', error);
-
-            // Send error message directly to input queue
-            const { SQSClient, SendMessageCommand } = await import('@aws-sdk/client-sqs');
-            const sqsClient = new SQSClient({});
-
-            const errorContent = {
-                type: 'toolresult',
-                id: id,
-                call_id: call_id,
-                content: [
-                    {
-                        type: 'text',
-                        text: `Failed to register GitHub event subscription: ${error.message}`,
-                    },
-                ],
-            };
-
-            const errorMessage = {
-                content: errorContent,
-                group_id: group_id,
-            };
-
-            const sendCommand = new SendMessageCommand({
-                QueueUrl: input_queue_url,
-                MessageBody: JSON.stringify(errorMessage),
-            });
-
-            await sqsClient.send(sendCommand);
-            console.log('Sent error message to input queue');
+            console.error('Error processing request:', error);
+            await sendResponse(input_queue_url, group_id, id, call_id, `Error: ${error.message}`);
         }
     }
 
-    return {
-        statusCode: 200,
-        body: JSON.stringify({ ok: true }),
-    };
+    return { statusCode: 200, body: JSON.stringify({ ok: true }) };
 };
