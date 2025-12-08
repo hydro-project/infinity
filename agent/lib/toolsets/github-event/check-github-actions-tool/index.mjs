@@ -28,7 +28,6 @@ async function handleSubscribe(args, id, call_id, input_queue_url, group_id) {
 
     const pk = `${owner}/${repo}`;
     const sk = `${filterKey}#${id}`;
-    const ttl = Math.floor(Date.now() / 1000 + 86400); // 24 hour TTL
 
     // Store subscription in main table
     const subscriptionItem = {
@@ -43,7 +42,6 @@ async function handleSubscribe(args, id, call_id, input_queue_url, group_id) {
         filters: { S: JSON.stringify(filters) },
         filterKey: { S: filterKey },
         createdAt: { N: Date.now().toString() },
-        ttl: { N: ttl.toString() },
     };
 
     await dynamoClient.send(new PutItemCommand({
@@ -56,7 +54,6 @@ async function handleSubscribe(args, id, call_id, input_queue_url, group_id) {
         subscriptionId: { S: id },
         pk: { S: pk },
         sk: { S: sk },
-        ttl: { N: ttl.toString() },
     };
 
     await dynamoClient.send(new PutItemCommand({
