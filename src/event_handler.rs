@@ -633,8 +633,6 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             user_id,
         };
 
-        tracing::info!("History: {:?}", current_history.get_history());
-
         let mut completion_result = model
             .stream(CompletionRequest {
                 preamble: None,
