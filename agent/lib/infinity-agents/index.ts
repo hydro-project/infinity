@@ -64,7 +64,6 @@ export class InfinityAgent extends Construct {
 
     // SQS Standard Queue for incoming messages (agent input)
     this.inputQueue = new sqs.Queue(this, 'InputQueue', {
-      visibilityTimeout: cdk.Duration.minutes(15),
       retentionPeriod: cdk.Duration.days(4),
       deadLetterQueue: {
         queue: deadLetterQueue,
@@ -79,7 +78,6 @@ export class InfinityAgent extends Construct {
 
     // SQS Standard Queue for agent outputs
     this.outputQueue = new sqs.Queue(this, 'OutputQueue', {
-      visibilityTimeout: cdk.Duration.minutes(5),
       retentionPeriod: cdk.Duration.days(4),
       deadLetterQueue: {
         queue: outputDeadLetterQueue,
