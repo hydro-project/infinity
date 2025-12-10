@@ -161,5 +161,10 @@ export class GitHubEventToolSet extends CustomToolSet {
     super(agent, id, [subscribeGithubEventTool, cancelGithubSubscriptionTool]);
 
     this.webhookUrl = props.webhookGateway.url + 'github/webhook';
+
+    new cdk.CfnOutput(this, 'WebhookUrl', {
+      value: this.webhookUrl,
+      description: 'GitHub Events Webhook URL',
+    });
   }
 }

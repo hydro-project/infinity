@@ -22,7 +22,7 @@ impl ToolSet for LambdaMCP {
             Box::new(LambdaTool {
                 name: format!("{}_list_tools", self.name),
                 description: format!(
-                    "List all available tools from the {} MCP server.",
+                    "List all available tools from the {} MCP server. Performs OAuth if required by the server. If you are assigned a task that will require autonomous actions in the future, you should use this tool to get auth before sleeping.",
                     self.name
                 ),
                 parameters: serde_json::json!({

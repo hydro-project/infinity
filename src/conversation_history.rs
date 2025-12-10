@@ -1,5 +1,8 @@
-use aws_sdk_dsql::{Client as DsqlClient, auth_token::{AuthTokenGenerator, Config}};
 use aws_config::BehaviorVersion;
+use aws_sdk_dsql::{
+    Client as DsqlClient,
+    auth_token::{AuthTokenGenerator, Config},
+};
 use aws_types::region::Region;
 use lambda_runtime::{Error, tracing};
 use rig::message::Message;
@@ -18,7 +21,11 @@ impl ConversationHistoryStore {
             .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
             .unwrap_or_else(|_| "us-east-1".to_string());
 
-        tracing::info!("Generating DSQL auth token for cluster: {} in region: {}", cluster_endpoint, region);
+        tracing::info!(
+            "Generating DSQL auth token for cluster: {} in region: {}",
+            cluster_endpoint,
+            region
+        );
 
         // Generate auth token using AuthTokenGenerator
         let sdk_config = aws_config::load_defaults(BehaviorVersion::latest()).await;
@@ -27,7 +34,7 @@ impl ConversationHistoryStore {
             .region(Region::new(region))
             .build()
             .map_err(|e| Error::from(format!("Failed to build DSQL auth config: {}", e)))?;
-        
+
         let signer = AuthTokenGenerator::new(dsql_config);
 
         let password_token = signer

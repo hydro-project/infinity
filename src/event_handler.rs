@@ -1,6 +1,6 @@
 use aws_lambda_events::event::sqs::SqsEvent;
-use aws_sdk_dynamodb::{Client as DynamoDbClient, types::AttributeValue};
 use aws_sdk_dsql::Client as DsqlClient;
+use aws_sdk_dynamodb::{Client as DynamoDbClient, types::AttributeValue};
 use aws_sdk_scheduler::Client as SchedulerClient;
 use aws_sdk_sqs::Client as SqsClient;
 use lambda_runtime::{Error, LambdaEvent, tracing};
@@ -22,6 +22,33 @@ use rig::{
     message::{Message, UserContent},
     streaming::StreamedAssistantContent,
 };
+
+#[derive(Debug)]
+enum CompletionError {
+    UnexpectedEndOfStream,
+    UnknownTool {
+        name: String,
+        id: String,
+        call_id: Option<String>,
+    },
+    Other(Error),
+}
+
+impl From<Error> for CompletionError {
+    fn from(e: Error) -> Self {
+        CompletionError::Other(e)
+    }
+}
+
+impl From<&str> for CompletionError {
+    fn from(s: &str) -> Self {
+        if s == "unexpected end of stream" {
+            CompletionError::UnexpectedEndOfStream
+        } else {
+            CompletionError::Other(Error::from(s))
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -366,6 +393,114 @@ impl HistoryManager {
     }
 }
 
+async fn process_completion_stream<M>(
+    model: &M,
+    current_history: &mut HistoryManager,
+    tool_registry: &HashMap<String, &Box<dyn Tool>>,
+    tool_context: &ToolContext,
+    tools: &[ToolDefinition],
+    group_id: &str,
+    message_id: &str,
+) -> Result<String, CompletionError>
+where
+    M: CompletionModel,
+{
+    let mut completion_result = model
+        .stream(CompletionRequest {
+            preamble: None,
+            chat_history: current_history.get_history(),
+            documents: vec![],
+            tools: tools.to_vec(),
+            temperature: None,
+            max_tokens: None,
+            tool_choice: None,
+            additional_params: Some(serde_json::json!({
+                "anthropic_beta": ["interleaved-thinking-2025-05-14"],
+                "thinking": {
+                    "type": "enabled",
+                    "budget_tokens": 4096,
+                }
+            })),
+        })
+        .await
+        .unwrap();
+
+    let mut completion_counter = 0;
+    let mut accumulated_text = String::new();
+
+    loop {
+        let res = completion_result
+            .next()
+            .await
+            .ok_or(CompletionError::UnexpectedEndOfStream)?;
+        let chunk = res.map_err(|e| CompletionError::Other(e.into()))?;
+
+        if let StreamedAssistantContent::Reasoning(ref r) = chunk
+            && r.signature.is_none()
+        {
+            continue; // incomplete reasoning
+        }
+
+        // Generate a unique ID for each completion chunk
+        let completion_id = format!(
+            "{}-{}-completion-{}",
+            group_id, message_id, completion_counter
+        );
+        completion_counter += 1;
+
+        current_history.handle_completion(&chunk, completion_id);
+
+        match chunk {
+            StreamedAssistantContent::Text(text) => {
+                tracing::info!("[Text] {}", &text.text);
+                accumulated_text.push_str(&text.text);
+            }
+            StreamedAssistantContent::ToolCall(call) => {
+                tracing::info!(
+                    "\n[Tool Call: {} with arguments {}]\n",
+                    &call.function.name,
+                    &call.function.arguments
+                );
+
+                if call.function.name != "sleep_until_event_or_input" {
+                    accumulated_text.push_str(&format!(
+                        "\n[Tool Call: {} with arguments {}]\n",
+                        &call.function.name, &call.function.arguments
+                    ));
+                }
+
+                // Sync pending items to DynamoDB before executing tool
+                current_history.sync().await?;
+
+                // Look up and execute tool
+                if let Some(tool) = tool_registry.get(&call.function.name) {
+                    tool.execute(call.function.arguments, call.id, call.call_id, tool_context)
+                        .await?
+                } else {
+                    tracing::warn!("Unknown tool called: {}", call.function.name);
+                    return Err(CompletionError::UnknownTool {
+                        name: call.function.name,
+                        id: call.id,
+                        call_id: call.call_id,
+                    });
+                }
+
+                break;
+            }
+            StreamedAssistantContent::ToolCallDelta { .. } => {}
+            StreamedAssistantContent::Reasoning(reasoning) => {
+                tracing::info!("\n[Reasoning: {:?}]\n", reasoning.reasoning);
+            }
+            StreamedAssistantContent::Final(_) => {
+                tracing::info!("Received final message");
+                break;
+            }
+        }
+    }
+
+    Ok(accumulated_text)
+}
+
 /// This is the main body for the function.
 /// Write your code inside it.
 /// There are some code example in the following URLs:
@@ -389,7 +524,8 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         .map_err(|_| Error::from("DSQL_CLUSTER_ENDPOINT environment variable is required"))?;
 
     // Initialize conversation history store
-    let conversation_store = ConversationHistoryStore::new(&dsql_client, &dsql_cluster_endpoint).await?;
+    let conversation_store =
+        ConversationHistoryStore::new(&dsql_client, &dsql_cluster_endpoint).await?;
 
     // Load tool sets from configuration (SSM preferred, then file, then env var)
     let mut tool_sets: Vec<Box<dyn ToolSet>> = if let Ok(ssm_param) =
@@ -633,95 +769,49 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             user_id,
         };
 
-        let mut completion_result = model
-            .stream(CompletionRequest {
-                preamble: None,
-                chat_history: current_history.get_history(),
-                documents: vec![],
-                tools: tools.clone(),
-                temperature: None,
-                max_tokens: None,
-                tool_choice: None,
-                additional_params: Some(serde_json::json!({
-                    "anthropic_beta": ["interleaved-thinking-2025-05-14"],
-                    "thinking": {
-                        "type": "enabled",
-                        "budget_tokens": 4096,
-                    }
-                })),
-            })
+        let accumulated_text = loop {
+            match process_completion_stream(
+                &model,
+                &mut current_history,
+                &tool_registry,
+                &tool_context,
+                &tools,
+                &input_msg.group_id,
+                &message_id,
+            )
             .await
-            .unwrap();
-
-        let mut completion_counter = 0;
-        let mut accumulated_text = String::new();
-
-        loop {
-            let res = completion_result.next().await.ok_or("unexpected end of stream")?;
-            let chunk = res?;
-
-            if let StreamedAssistantContent::Reasoning(ref r) = chunk
-                && r.signature.is_none()
             {
-                continue; // incomplete reasoning
+                Ok(text) => break text,
+                Err(CompletionError::UnexpectedEndOfStream) => {
+                    tracing::warn!("Stream ended unexpectedly, retrying...");
+                    continue;
+                }
+                Err(CompletionError::UnknownTool { name, id, call_id }) => {
+                    tracing::warn!("Unknown tool '{}' called, sending error result", name);
+
+                    let tool_result = Message::User {
+                        content: OneOrMany::one(UserContent::ToolResult(
+                            rig::message::ToolResult {
+                                id: id.clone(),
+                                call_id,
+                                content: OneOrMany::one(rig::message::ToolResultContent::Text(
+                                    rig::agent::Text {
+                                        text: format!("Error: tool '{}' does not exist", name),
+                                    },
+                                )),
+                            },
+                        )),
+                    };
+
+                    current_history
+                        .handle_content(tool_result, format!("{}-unknown-tool", id))
+                        .await?;
+
+                    continue;
+                }
+                Err(CompletionError::Other(e)) => return Err(e),
             }
-
-            // Generate a unique ID for each completion chunk
-            let completion_id = format!(
-                "{}-{}-completion-{}",
-                input_msg.group_id, message_id, completion_counter
-            );
-            completion_counter += 1;
-
-            current_history.handle_completion(&chunk, completion_id);
-
-            match chunk {
-                StreamedAssistantContent::Text(text) => {
-                    tracing::info!("[Text] {}", &text.text);
-                    accumulated_text.push_str(&text.text);
-                }
-                StreamedAssistantContent::ToolCall(call) => {
-                    tracing::info!(
-                        "\n[Tool Call: {} with arguments {}]\n",
-                        &call.function.name,
-                        &call.function.arguments
-                    );
-
-                    if call.function.name != "sleep_until_event_or_input" {
-                        accumulated_text.push_str(&format!(
-                            "\n[Tool Call: {} with arguments {}]\n",
-                            &call.function.name, &call.function.arguments
-                        ));
-                    }
-
-                    // Sync pending items to DynamoDB before executing tool
-                    current_history.sync().await?;
-
-                    // Look up and execute tool
-                    if let Some(tool) = tool_registry.get(&call.function.name) {
-                        tool.execute(
-                            call.function.arguments,
-                            call.id,
-                            call.call_id,
-                            &tool_context,
-                        )
-                        .await?
-                    } else {
-                        tracing::warn!("Unknown tool called: {}", call.function.name);
-                    }
-
-                    break;
-                }
-                StreamedAssistantContent::ToolCallDelta { .. } => {}
-                StreamedAssistantContent::Reasoning(reasoning) => {
-                    tracing::info!("\n[Reasoning: {:?}]\n", reasoning.reasoning);
-                }
-                StreamedAssistantContent::Final(_) => {
-                    tracing::info!("Received final message");
-                    break;
-                }
-            };
-        }
+        };
 
         // Sync any remaining pending items to DynamoDB after the loop
         current_history.sync().await?;
