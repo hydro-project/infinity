@@ -6,6 +6,7 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as dsql from 'aws-cdk-lib/aws-dsql';
+import { RustFunction } from 'cargo-lambda-cdk';
 
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { ToolSetConfig } from './tools/tool-set';
@@ -27,7 +28,7 @@ export interface InfinityAgentsProps {
  * The main InfinityAgent construct that manages the leader Lambda and tools
  */
 export class InfinityAgent extends Construct {
-  public readonly lambdaFunction: lambda.Function;
+  public readonly lambdaFunction: RustFunction;
   public readonly inputQueue: sqs.Queue;
   public readonly outputQueue: sqs.Queue;
   public readonly historyTable: dynamodb.Table;
@@ -92,14 +93,11 @@ export class InfinityAgent extends Construct {
     });
     this.inputQueue.grantSendMessages(this.schedulerRole);
 
-    // Create the leader Lambda function
-    this.lambdaFunction = new lambda.Function(this, 'LeaderFunction', {
-      runtime: lambda.Runtime.PROVIDED_AL2023,
-      handler: 'bootstrap',
+    // Create the leader Lambda function using cargo-lambda-cdk
+    this.lambdaFunction = new RustFunction(this, 'LeaderFunction', {
+      manifestPath: props.codePath || path.join(__dirname, '../../..'),
+      binaryName: 'infinity-agents-leader',
       architecture: lambda.Architecture.ARM_64,
-      code: lambda.Code.fromAsset(
-        props.codePath || path.join(__dirname, '../../../target/lambda/infinity-agents-leader')
-      ),
       timeout: cdk.Duration.minutes(15),
       memorySize: 128,
       reservedConcurrentExecutions: 1,
@@ -113,7 +111,6 @@ export class InfinityAgent extends Construct {
         DSQL_CLUSTER_ENDPOINT: this.dsqlCluster.attrEndpoint,
         RUST_BACKTRACE: '1',
       },
-      ...props.lambdaProps,
     });
 
     // Grant permissions

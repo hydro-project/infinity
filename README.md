@@ -11,8 +11,8 @@ See [docs/architecture.md](docs/architecture.md) for details on the hibernation 
 ## Quick Start
 
 ```bash
-# Build Lambda
-cargo lambda build --release --arm64
+# Install cargo-lambda
+brew install cargo-lambda/tap/cargo-lambda
 
 # Deploy
 cd agent
