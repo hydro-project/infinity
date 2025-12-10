@@ -137,5 +137,12 @@ export class HTTPMCPToolSet extends MCPToolSet {
     this.handler = handler;
     this.tokenTable = tokenTable;
     this.oauthCallbackUrl = oauthCallbackUrl;
+
+    if (this.oauthCallbackUrl) {
+      new cdk.CfnOutput(this, 'OAuthCallbackUrl', {
+        value: this.oauthCallbackUrl,
+        description: 'MCP OAuth Callback URL',
+      });
+    }
   }
 }
