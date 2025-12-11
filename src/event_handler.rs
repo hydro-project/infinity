@@ -4,6 +4,7 @@ use aws_sdk_dynamodb::{Client as DynamoDbClient, types::AttributeValue};
 use aws_sdk_scheduler::Client as SchedulerClient;
 use aws_sdk_sqs::Client as SqsClient;
 use lambda_runtime::{Error, LambdaEvent, tracing};
+use rig::message::AssistantContent;
 use rig_bedrock::client::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -195,6 +196,16 @@ impl HistoryManager {
                 // Still mark the message as processed to avoid reprocessing
                 self.processed_message_ids.insert(message_id.clone());
                 self.update_processed_message_id(message_id).await?;
+                return Ok(false);
+            } else if !self.history.last().is_some_and(|l| {
+                if let Message::Assistant { content, .. } = l
+                    && let AssistantContent::ToolCall(c) = content.first() {
+                    c.id == tool_result.id
+                } else {
+                    false
+                }
+            }) {
+                tracing::info!("Got tool call result for wrong call, ignoring {}", tool_result.id);
                 return Ok(false);
             } else {
                 tracing::info!("Handling tool call result {}", tool_result.id);
