@@ -402,6 +402,20 @@ impl HistoryManager {
     fn get_history(&self) -> OneOrMany<Message> {
         OneOrMany::many(self.history.clone()).unwrap()
     }
+
+    /// Remove trailing reasoning elements from history.
+    /// This is needed when Bedrock returns UnexpectedEndOfStream error,
+    /// as it doesn't allow input to end with thinking/reasoning.
+    fn remove_trailing_reasoning(&mut self) {
+        while let Some(Message::Assistant { content, .. }) = self.history.last() {
+            if matches!(content.first(), rig::message::AssistantContent::Reasoning(_)) {
+                tracing::info!("Removing trailing reasoning element from history");
+                self.history.pop();
+            } else {
+                break;
+            }
+        }
+    }
 }
 
 async fn process_completion_stream<M>(
@@ -794,7 +808,8 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             {
                 Ok(text) => break text,
                 Err(CompletionError::UnexpectedEndOfStream) => {
-                    tracing::warn!("Stream ended unexpectedly, retrying...");
+                    tracing::warn!("Stream ended unexpectedly, removing trailing reasoning and retrying...");
+                    current_history.remove_trailing_reasoning();
                     continue;
                 }
                 Err(CompletionError::UnknownTool { name, id, call_id }) => {
