@@ -199,13 +199,17 @@ impl HistoryManager {
                 return Ok(false);
             } else if !self.history.last().is_some_and(|l| {
                 if let Message::Assistant { content, .. } = l
-                    && let AssistantContent::ToolCall(c) = content.first() {
+                    && let AssistantContent::ToolCall(c) = content.first()
+                {
                     c.id == tool_result.id
                 } else {
                     false
                 }
             }) {
-                tracing::info!("Got tool call result for wrong call, ignoring {}", tool_result.id);
+                tracing::info!(
+                    "Got tool call result for wrong call, ignoring {}",
+                    tool_result.id
+                );
                 return Ok(false);
             } else {
                 tracing::info!("Handling tool call result {}", tool_result.id);
@@ -408,7 +412,10 @@ impl HistoryManager {
     /// as it doesn't allow input to end with thinking/reasoning.
     fn remove_trailing_reasoning(&mut self) {
         while let Some(Message::Assistant { content, .. }) = self.history.last() {
-            if matches!(content.first(), rig::message::AssistantContent::Reasoning(_)) {
+            if matches!(
+                content.first(),
+                rig::message::AssistantContent::Reasoning(_)
+            ) {
                 tracing::info!("Removing trailing reasoning element from history");
                 self.history.pop();
             } else {
@@ -420,6 +427,7 @@ impl HistoryManager {
 
 async fn process_completion_stream<M>(
     model: &M,
+    completion_counter: &mut usize,
     current_history: &mut HistoryManager,
     tool_registry: &HashMap<String, &Box<dyn Tool>>,
     tool_context: &ToolContext,
@@ -450,7 +458,6 @@ where
         .await
         .unwrap();
 
-    let mut completion_counter = 0;
     let mut accumulated_text = String::new();
 
     loop {
@@ -471,7 +478,7 @@ where
             "{}-{}-completion-{}",
             group_id, message_id, completion_counter
         );
-        completion_counter += 1;
+        *completion_counter += 1;
 
         current_history.handle_completion(&chunk, completion_id);
 
@@ -794,9 +801,11 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             user_id,
         };
 
+        let mut completion_counter = 0;
         let accumulated_text = loop {
             match process_completion_stream(
                 &model,
+                &mut completion_counter,
                 &mut current_history,
                 &tool_registry,
                 &tool_context,
@@ -808,7 +817,9 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             {
                 Ok(text) => break text,
                 Err(CompletionError::UnexpectedEndOfStream) => {
-                    tracing::warn!("Stream ended unexpectedly, removing trailing reasoning and retrying...");
+                    tracing::warn!(
+                        "Stream ended unexpectedly, removing trailing reasoning and retrying..."
+                    );
                     current_history.remove_trailing_reasoning();
                     continue;
                 }
