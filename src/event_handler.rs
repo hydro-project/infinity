@@ -13,6 +13,7 @@ use crate::conversation_history::ConversationHistoryStore;
 
 use crate::tools::config::ToolsConfig;
 use crate::tools::sleep::{SleepTool, SleepUntilEventOrInputTool};
+use crate::tools::thread::{CloseThreadTool, SpawnThreadTool};
 use crate::tools::{Tool, ToolContext, ToolSet, VecToolSet};
 
 use futures_util::StreamExt;
@@ -100,7 +101,9 @@ struct HistoryManager {
     dynamodb_client: DynamoDbClient,
     conversation_store: ConversationHistoryStore,
     table_name: String,
-    group_id: String,
+    thread_id: String,
+    root_thread_id: String,
+    ancestor_chain: Vec<String>,
     history: Vec<Message>,
     processed_message_ids: HashSet<String>,
     processed_tool_calls: HashSet<String>,
@@ -114,20 +117,57 @@ impl HistoryManager {
         dynamodb_client: DynamoDbClient,
         conversation_store: ConversationHistoryStore,
         table_name: String,
-        group_id: String,
+        thread_id: String,
     ) -> Result<Self, Error> {
-        // Load conversation history from DSQL
-        let history = conversation_store.load_history(&group_id).await?;
+        // Ensure root thread exists (idempotent for root threads, no-op for children)
+        conversation_store.ensure_root_thread(&thread_id).await.ok();
+
+        // Get ancestor chain for nesting prefix
+        let ancestor_chain: Vec<String> = conversation_store
+            .get_ancestor_chain(&thread_id)
+            .await
+            .map(|links| links.iter().map(|(tid, _)| tid.clone()).collect())
+            .unwrap_or_default();
+        let root_thread_id = ancestor_chain
+            .first()
+            .cloned()
+            .unwrap_or_else(|| thread_id.clone());
+
+        // Load conversation history from DSQL with ancestor prefix
+        let history = conversation_store
+            .load_history_with_ancestors(&thread_id)
+            .await?;
 
         // Load metadata and processed IDs from DynamoDB
-        let result = dynamodb_client
+        // Metadata is always keyed by root thread; processed IDs by current thread.
+        let metadata_result = dynamodb_client
             .get_item()
             .table_name(&table_name)
-            .key("session", AttributeValue::S(group_id.clone()))
+            .key("session", AttributeValue::S(root_thread_id.clone()))
             .send()
             .await;
 
-        let (processed_message_ids, processed_tool_calls, metadata) = match result {
+        let metadata = match metadata_result {
+            Ok(output) => output.item.and_then(|item| {
+                item.get("metadata").and_then(|v| {
+                    if let AttributeValue::S(s) = v {
+                        serde_json::from_str(s).ok()
+                    } else {
+                        None
+                    }
+                })
+            }),
+            Err(_) => None,
+        };
+
+        let result = dynamodb_client
+            .get_item()
+            .table_name(&table_name)
+            .key("session", AttributeValue::S(thread_id.clone()))
+            .send()
+            .await;
+
+        let (processed_message_ids, processed_tool_calls) = match result {
             Ok(output) => {
                 if let Some(item) = output.item {
                     let processed_ids =
@@ -144,26 +184,21 @@ impl HistoryManager {
                             HashSet::new()
                         };
 
-                    let metadata =
-                        if let Some(AttributeValue::S(metadata_str)) = item.get("metadata") {
-                            serde_json::from_str(metadata_str).ok()
-                        } else {
-                            None
-                        };
-
-                    (processed_ids, processed_tools, metadata)
+                    (processed_ids, processed_tools)
                 } else {
-                    (HashSet::new(), HashSet::new(), None)
+                    (HashSet::new(), HashSet::new())
                 }
             }
-            Err(_) => (HashSet::new(), HashSet::new(), None),
+            Err(_) => (HashSet::new(), HashSet::new()),
         };
 
         Ok(Self {
             dynamodb_client,
             conversation_store,
             table_name,
-            group_id,
+            thread_id,
+            root_thread_id,
+            ancestor_chain,
             history,
             processed_message_ids,
             processed_tool_calls,
@@ -325,7 +360,7 @@ impl HistoryManager {
                 .collect();
 
             self.conversation_store
-                .append_messages(&self.group_id, messages_for_dsql)
+                .append_messages(&self.thread_id, messages_for_dsql)
                 .await?;
         }
 
@@ -344,7 +379,7 @@ impl HistoryManager {
             .dynamodb_client
             .update_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(self.group_id.clone()));
+            .key("session", AttributeValue::S(self.thread_id.clone()));
 
         if !message_ids.is_empty() {
             add_parts.push("processed_message_ids :message_ids");
@@ -374,7 +409,7 @@ impl HistoryManager {
         self.dynamodb_client
             .update_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(self.group_id.clone()))
+            .key("session", AttributeValue::S(self.thread_id.clone()))
             .update_expression("ADD processed_message_ids :message_id")
             .expression_attribute_values(":message_id", AttributeValue::Ss(vec![message_id]))
             .send()
@@ -390,7 +425,7 @@ impl HistoryManager {
         self.dynamodb_client
             .update_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(self.group_id.clone()))
+            .key("session", AttributeValue::S(self.root_thread_id.clone()))
             .update_expression("SET metadata = :metadata")
             .expression_attribute_values(":metadata", AttributeValue::S(metadata_json))
             .send()
@@ -422,6 +457,30 @@ impl HistoryManager {
                 break;
             }
         }
+    }
+
+    /// Returns the nesting prefix like "[root:nested_1:nested_2]" for non-root threads.
+    /// Returns None for root threads.
+    fn get_thread_nesting_prefix(&self) -> Option<String> {
+        if self.ancestor_chain.is_empty() {
+            return None; // root thread, no prefix
+        }
+        let mut labels: Vec<String> = self
+            .ancestor_chain
+            .iter()
+            .map(|id| {
+                let short = if id.len() > 8 { &id[..8] } else { id };
+                short.to_string()
+            })
+            .collect();
+        // Add the leaf (current thread)
+        let short = if self.thread_id.len() > 8 {
+            &self.thread_id[..8]
+        } else {
+            &self.thread_id
+        };
+        labels.push(short.to_string());
+        Some(format!("[{}]", labels.join(":")))
     }
 }
 
@@ -615,6 +674,12 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 scheduler_role_arn: scheduler_role_arn.clone(),
             }),
             Box::new(SleepUntilEventOrInputTool),
+            Box::new(SpawnThreadTool {
+                conversation_store: conversation_store.clone(),
+            }),
+            Box::new(CloseThreadTool {
+                conversation_store: conversation_store.clone(),
+            }),
         ])),
     );
 
@@ -855,13 +920,19 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
 
         // Send accumulated response to output queue
         if !accumulated_text.is_empty() && !output_queue_url.is_empty() {
-            // Retrieve metadata from DynamoDB (stored from previous messages)
             let metadata = current_history
                 .get_metadata()
                 .unwrap_or(serde_json::json!({}));
 
+            // Prepend thread nesting prefix for non-root threads
+            let output_text = if let Some(prefix) = current_history.get_thread_nesting_prefix() {
+                format!("{} {}", prefix, accumulated_text)
+            } else {
+                accumulated_text
+            };
+
             let output_msg = OutputMessage {
-                text: accumulated_text,
+                text: output_text,
                 metadata,
             };
 
