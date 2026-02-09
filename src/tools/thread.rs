@@ -53,7 +53,7 @@ impl Tool for SpawnThreadTool {
 
         let new_thread_id = self
             .conversation_store
-            .spawn_thread(&context.group_id, spawn_order)
+            .spawn_thread(&context.group_id, spawn_order, &id)
             .await?;
 
         tracing::info!(
@@ -128,7 +128,7 @@ impl Tool for CloseThreadTool {
     }
 
     fn description(&self) -> &str {
-        "Close the specified thread, marking it as complete. Use this from a thread that wants to close itself. Make sure to cancel any subscriptions you own before calling this."
+        "Close the specified thread, marking it as complete. Use this from a thread that wants to close itself. Make sure to cancel any subscriptions you own before calling this. If the thread has something to report or has information that should be remembered for future events handled by the parent or its future children, include it in report_to_parent. Omit report_to_parent if there is nothing worth reporting."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -138,6 +138,10 @@ impl Tool for CloseThreadTool {
                 "thread_id": {
                     "type": "string",
                     "description": "The ID of the thread to close."
+                },
+                "report_to_parent": {
+                    "type": "string",
+                    "description": "Optional report to send to the parent thread. Only include this if the thread has something to report or has information that should be remembered for future events handled by the parent or its future children. Omit if there is nothing worth reporting."
                 }
             },
             "required": ["thread_id"]
@@ -149,18 +153,54 @@ impl Tool for CloseThreadTool {
         args: serde_json::Value,
         _id: String,
         _call_id: Option<String>,
-        _context: &ToolContext,
+        context: &ToolContext,
     ) -> Result<(), Error> {
         let thread_id = args["thread_id"]
             .as_str()
             .ok_or_else(|| Error::from("thread_id is required"))?;
 
+        let report = args.get("report_to_parent").and_then(|v| v.as_str());
+
         self.conversation_store.close_thread(thread_id).await?;
 
         tracing::info!("Closed thread {}", thread_id);
 
-        // We do not send a tool call back because the thread is now closed.
-        // TODO(shadaj): notify the parent that the child was closed, and do not allow closing from the parent
+        // If there's a report, send a synthetic subscription event to the parent
+        if let Some(report_text) = report {
+            if let Some((parent_id, spawn_tool_call_id)) = self
+                .conversation_store
+                .get_thread_parent_info(thread_id)
+                .await?
+            {
+                tracing::info!(
+                    "Sending report from thread {} to parent {} via tool call {}",
+                    thread_id,
+                    parent_id,
+                    spawn_tool_call_id
+                );
+
+                let report_message = InputMessage {
+                    content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                        id: String::new(),
+                        call_id: None,
+                        content: OneOrMany::one(ToolResultContent::Text(Text {
+                            text: format!("Report from child thread :\n{}", report_text),
+                        })),
+                    })),
+                    group_id: parent_id,
+                    metadata: None,
+                    synthetic: Some(spawn_tool_call_id),
+                };
+
+                context
+                    .sqs_client
+                    .send_message()
+                    .queue_url(&context.input_queue_url)
+                    .message_body(serde_json::to_string(&report_message)?)
+                    .send()
+                    .await?;
+            }
+        }
 
         Ok(())
     }
