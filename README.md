@@ -55,6 +55,7 @@ See [docs/cdk-usage.md](docs/cdk-usage.md) for complete CDK documentation.
 - **Tool abstraction** - Each tool is an independent Lambda with its own queue
 - **MCP support** - Wrap any MCP server as a tool set
 - **Conversation state** - DynamoDB stores durable conversation history to ensure fault tolerance
+- **Threaded execution** - Agents can spawn nested child threads to decompose tasks into parallel sub-work, each with inherited context truncated at the spawn point. See [docs/threaded-execution.md](docs/threaded-execution.md) for details.
 
 ## Project Structure
 - `src/` - Infinity Agent Leader (Rust, Bedrock streaming, tool orchestration)
