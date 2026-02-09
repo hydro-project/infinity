@@ -11,7 +11,7 @@ A running agent can call `spawn_thread(instructions)` to create a child thread. 
 
 The child thread sees the full conversation history of all its ancestors, truncated at each spawn point. This means the child sees exactly the context that existed when it was created — not any work the parent does after spawning.
 
-When a child thread finishes its work, it calls `close_thread(thread_id)` to mark itself complete.
+When a child thread finishes its work, it calls `close_thread(thread_id)` to mark itself complete. If the thread has something worth reporting — results, decisions, or information that should be remembered for future events handled by the parent or its future children — it can include a `report_to_parent` string. This sends a synthetic subscription event back to the parent thread (using the same mechanism as GitHub webhook notifications), waking the parent to process the report.
 
 ## History Construction
 

@@ -103,6 +103,7 @@ impl ConversationHistoryStore {
                 parent_thread_id VARCHAR(255),
                 root_thread_id VARCHAR(255) NOT NULL,
                 spawn_message_order BIGINT,
+                spawn_tool_call_id VARCHAR(255),
                 closed BOOLEAN NOT NULL DEFAULT FALSE,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             )
@@ -159,10 +160,13 @@ impl ConversationHistoryStore {
     /// Spawn a child thread. `spawn_message_order` is the message_order in the parent
     /// thread at which the spawn_thread tool call was recorded (i.e. the assistant ToolCall message).
     /// The child will only see parent messages up to and including this index.
+    /// `spawn_tool_call_id` is the tool call ID of the spawn_thread invocation in the parent,
+    /// used for sending synthetic subscription events back to the parent.
     pub async fn spawn_thread(
         &self,
         parent_thread_id: &str,
         spawn_message_order: i64,
+        spawn_tool_call_id: &str,
     ) -> Result<String, Error> {
         let new_thread_id = uuid::Uuid::new_v4().to_string();
 
@@ -177,14 +181,15 @@ impl ConversationHistoryStore {
 
         sqlx::query(
             r#"
-            INSERT INTO thread_hierarchy (thread_id, parent_thread_id, root_thread_id, spawn_message_order)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO thread_hierarchy (thread_id, parent_thread_id, root_thread_id, spawn_message_order, spawn_tool_call_id)
+            VALUES ($1, $2, $3, $4, $5)
             "#,
         )
         .bind(&new_thread_id)
         .bind(parent_thread_id)
         .bind(&root_thread_id)
         .bind(spawn_message_order)
+        .bind(spawn_tool_call_id)
         .execute(&self.pool)
         .await
         .map_err(|e| Error::from(format!("Failed to spawn thread: {}", e)))?;
@@ -200,6 +205,28 @@ impl ConversationHistoryStore {
             .await
             .map_err(|e| Error::from(format!("Failed to close thread: {}", e)))?;
         Ok(())
+    }
+
+    /// Look up a thread's parent and spawn tool call ID.
+    pub async fn get_thread_parent_info(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<(String, String)>, Error> {
+        let row = sqlx::query(
+            r#"SELECT parent_thread_id, spawn_tool_call_id FROM thread_hierarchy WHERE thread_id = $1"#,
+        )
+        .bind(thread_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| Error::from(format!("Failed to get thread info: {}", e)))?;
+
+        let parent: Option<String> = row.get("parent_thread_id");
+        let tool_call_id: Option<String> = row.get("spawn_tool_call_id");
+
+        match (parent, tool_call_id) {
+            (Some(p), Some(t)) => Ok(Some((p, t))),
+            _ => Ok(None),
+        }
     }
 
     /// Get the ancestor chain with truncation info.
