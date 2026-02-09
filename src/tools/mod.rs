@@ -6,6 +6,7 @@ pub mod config;
 pub mod lambda_mcp;
 pub mod lambda_tool;
 pub mod sleep;
+pub mod thread;
 
 // Context passed to tool implementations
 pub struct ToolContext {

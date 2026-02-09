@@ -95,6 +95,23 @@ impl ConversationHistoryStore {
         .await
         .map_err(|e| Error::from(format!("Failed to create index: {}", e)))?;
 
+        // Thread hierarchy table: tracks parent of each thread
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS thread_hierarchy (
+                thread_id VARCHAR(255) PRIMARY KEY,
+                parent_thread_id VARCHAR(255),
+                root_thread_id VARCHAR(255) NOT NULL,
+                spawn_message_order BIGINT,
+                closed BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .map_err(|e| Error::from(format!("Failed to create thread_hierarchy table: {}", e)))?;
+
         Ok(Self { pool })
     }
 
@@ -121,6 +138,173 @@ impl ConversationHistoryStore {
         }
 
         Ok(messages)
+    }
+
+    /// Register a root thread (e.g. a Slack conversation). Idempotent.
+    pub async fn ensure_root_thread(&self, thread_id: &str) -> Result<(), Error> {
+        sqlx::query(
+            r#"
+            INSERT INTO thread_hierarchy (thread_id, parent_thread_id, root_thread_id)
+            VALUES ($1, NULL, $1)
+            ON CONFLICT (thread_id) DO NOTHING
+            "#,
+        )
+        .bind(thread_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Error::from(format!("Failed to ensure root thread: {}", e)))?;
+        Ok(())
+    }
+
+    /// Spawn a child thread. `spawn_message_order` is the message_order in the parent
+    /// thread at which the spawn_thread tool call was recorded (i.e. the assistant ToolCall message).
+    /// The child will only see parent messages up to and including this index.
+    pub async fn spawn_thread(
+        &self,
+        parent_thread_id: &str,
+        spawn_message_order: i64,
+    ) -> Result<String, Error> {
+        let new_thread_id = uuid::Uuid::new_v4().to_string();
+
+        // Look up the root of the parent
+        let root_thread_id: String = sqlx::query_scalar(
+            r#"SELECT root_thread_id FROM thread_hierarchy WHERE thread_id = $1"#,
+        )
+        .bind(parent_thread_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| Error::from(format!("Failed to find parent thread: {}", e)))?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO thread_hierarchy (thread_id, parent_thread_id, root_thread_id, spawn_message_order)
+            VALUES ($1, $2, $3, $4)
+            "#,
+        )
+        .bind(&new_thread_id)
+        .bind(parent_thread_id)
+        .bind(&root_thread_id)
+        .bind(spawn_message_order)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| Error::from(format!("Failed to spawn thread: {}", e)))?;
+
+        Ok(new_thread_id)
+    }
+
+    /// Close a thread.
+    pub async fn close_thread(&self, thread_id: &str) -> Result<(), Error> {
+        sqlx::query(r#"UPDATE thread_hierarchy SET closed = TRUE WHERE thread_id = $1"#)
+            .bind(thread_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::from(format!("Failed to close thread: {}", e)))?;
+        Ok(())
+    }
+
+    /// Get the ancestor chain with truncation info.
+    /// Returns Vec<AncestorLink> from root to the given thread (leaf).
+    /// Get the ancestor chain (excluding the leaf thread itself).
+    /// Returns Vec<(thread_id, spawn_message_order)> from root to the leaf's direct parent.
+    /// Each entry's spawn_message_order is the truncation point for that thread's history.
+    pub async fn get_ancestor_chain(&self, thread_id: &str) -> Result<Vec<(String, i64)>, Error> {
+        let mut result: Vec<(String, i64)> = Vec::new();
+        let mut current = thread_id.to_string();
+
+        loop {
+            let row = sqlx::query(
+                r#"SELECT parent_thread_id, spawn_message_order FROM thread_hierarchy WHERE thread_id = $1"#,
+            )
+            .bind(&current)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| Error::from(format!("Failed to get thread info: {}", e)))?;
+
+            let parent: Option<String> = row.get("parent_thread_id");
+            let spawn_order: Option<i64> = row.get("spawn_message_order");
+
+            match parent {
+                Some(p) => {
+                    // spawn_order is always present for non-root threads
+                    result.push((p.clone(), spawn_order.unwrap_or(0)));
+                    current = p;
+                }
+                None => break,
+            }
+        }
+
+        result.reverse();
+        Ok(result)
+    }
+
+    /// Load history for a thread, with truncated parent histories as prefix.
+    /// The leaf thread's own history is appended untruncated at the end.
+    /// No synthetic messages are injected — the spawn_thread tool naturally produces
+    /// the right tool results in both parent and child threads.
+    pub async fn load_history_with_ancestors(
+        &self,
+        thread_id: &str,
+    ) -> Result<Vec<Message>, Error> {
+        let ancestors = self.get_ancestor_chain(thread_id).await?;
+
+        let mut combined = Vec::new();
+
+        for (tid, cutoff) in &ancestors {
+            combined.extend(self.load_history_up_to(tid, *cutoff).await?);
+        }
+
+        // Leaf thread — full history, no truncation
+        combined.extend(self.load_history(thread_id).await?);
+
+        Ok(combined)
+    }
+
+    /// Load history for a session up to (and including) the given message_order.
+    pub async fn load_history_up_to(
+        &self,
+        session_id: &str,
+        up_to_order: i64,
+    ) -> Result<Vec<Message>, Error> {
+        let rows = sqlx::query(
+            r#"
+            SELECT message_data 
+            FROM conversation_history 
+            WHERE session_id = $1 AND message_order <= $2
+            ORDER BY message_order ASC
+            "#,
+        )
+        .bind(session_id)
+        .bind(up_to_order)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| Error::from(format!("Failed to load history up to order: {}", e)))?;
+
+        let mut messages = Vec::new();
+        for row in rows {
+            let message_json_str: String = row.get("message_data");
+            if let Ok(message) = serde_json::from_str::<Message>(&message_json_str) {
+                messages.push(message);
+            }
+        }
+
+        Ok(messages)
+    }
+
+    /// Get the current max message_order for a session.
+    pub async fn get_current_message_order(&self, session_id: &str) -> Result<i64, Error> {
+        let max_order: Option<i64> = sqlx::query_scalar(
+            r#"
+            SELECT COALESCE(MAX(message_order), 0) 
+            FROM conversation_history 
+            WHERE session_id = $1
+            "#,
+        )
+        .bind(session_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| Error::from(format!("Failed to get current message order: {}", e)))?;
+
+        Ok(max_order.unwrap_or(0))
     }
 
     pub async fn append_messages(
