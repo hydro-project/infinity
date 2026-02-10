@@ -105,6 +105,7 @@ impl ConversationHistoryStore {
                 spawn_message_order BIGINT,
                 spawn_tool_call_id VARCHAR(255),
                 closed BOOLEAN NOT NULL DEFAULT FALSE,
+                is_subscription_event BOOLEAN NOT NULL DEFAULT FALSE,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             )
             "#,
@@ -216,6 +217,36 @@ impl ConversationHistoryStore {
             .execute(&self.pool)
             .await
             .map_err(|e| Error::from(format!("Failed to close thread: {}", e)))?;
+        Ok(())
+    }
+
+    /// Check if a thread was created to handle a subscription event.
+    pub async fn is_subscription_event_thread(&self, thread_id: &str) -> Result<bool, Error> {
+        let row: Option<(bool,)> = sqlx::query_as(
+            r#"SELECT is_subscription_event FROM thread_hierarchy WHERE thread_id = $1"#,
+        )
+        .bind(thread_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Error::from(format!("Failed to check subscription event status: {}", e)))?;
+
+        Ok(row.map(|(v,)| v).unwrap_or(false))
+    }
+
+    /// Mark a thread as having been created for a subscription event.
+    pub async fn mark_as_subscription_event(&self, thread_id: &str) -> Result<(), Error> {
+        sqlx::query(
+            r#"UPDATE thread_hierarchy SET is_subscription_event = TRUE WHERE thread_id = $1"#,
+        )
+        .bind(thread_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            Error::from(format!(
+                "Failed to mark thread as subscription event: {}",
+                e
+            ))
+        })?;
         Ok(())
     }
 
