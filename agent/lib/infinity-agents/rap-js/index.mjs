@@ -20,7 +20,7 @@ const signer = new SignatureV4({
 });
 
 /**
- * Send a tool result to the agent via the RAP receiver.
+ * Send a tool result to the agent.
  *
  * @param {string} rapReceiverUrl - The RAP receiver Function URL
  * @param {string} groupId - Message group ID (thread ID)
@@ -29,56 +29,42 @@ const signer = new SignatureV4({
  * @param {string} text - Result text
  */
 export async function sendToolResult(rapReceiverUrl, groupId, id, callId, text) {
-  const body = {
-    content: {
-      type: 'toolresult',
-      id,
-      ...(callId && { call_id: callId }),
-      content: [{ type: 'text', text }],
-    },
+  await postToRap(rapReceiverUrl, {
+    type: 'tool_result',
     group_id: groupId,
-  };
-
-  await postToRap(rapReceiverUrl, body);
+    id,
+    call_id: callId || null,
+    text,
+  });
 }
 
 /**
- * Send an OAuth URL to the agent via the RAP receiver.
+ * Send an OAuth URL to the agent.
  */
 export async function sendOAuthUrl(rapReceiverUrl, groupId, id, callId, authUrl) {
-  const body = {
-    content: {
-      type: 'oauth_required',
-      id,
-      call_id: callId,
-      auth_url: authUrl,
-    },
+  await postToRap(rapReceiverUrl, {
+    type: 'oauth',
     group_id: groupId,
-  };
-
-  await postToRap(rapReceiverUrl, body);
+    id,
+    call_id: callId || null,
+    auth_url: authUrl,
+  });
 }
 
 /**
- * Send a synthetic event (subscription notification) via the RAP receiver.
+ * Send a subscription event notification.
  */
-export async function sendSyntheticEvent(rapReceiverUrl, groupId, toolCallId, text) {
-  const body = {
-    content: {
-      type: 'toolresult',
-      id: '',
-      call_id: null,
-      content: [{ type: 'text', text }],
-    },
+export async function sendSubscriptionEvent(rapReceiverUrl, groupId, toolCallId, text) {
+  await postToRap(rapReceiverUrl, {
+    type: 'subscription_event',
     group_id: groupId,
-    synthetic: toolCallId,
-  };
-
-  await postToRap(rapReceiverUrl, body);
+    tool_call_id: toolCallId,
+    text,
+  });
 }
 
 /**
- * Post a raw message body to the RAP receiver, signed with SigV4.
+ * Post a message to the RAP receiver, signed with SigV4.
  */
 async function postToRap(rapReceiverUrl, body) {
   const url = new URL(rapReceiverUrl);
