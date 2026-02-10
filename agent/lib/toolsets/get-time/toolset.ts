@@ -15,6 +15,7 @@ export class GetTimeToolSet extends CustomToolSet {
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, 'get-time-tool')),
       timeout: cdk.Duration.seconds(30),
+      recursiveLoop: lambda.RecursiveLoop.ALLOW,
     });
 
     const getTimeTool = new LambdaTool(agent, 'GetTimeTool', {

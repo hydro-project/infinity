@@ -86,7 +86,7 @@ impl Tool for SpawnThreadTool {
                 call_id,
                 content: OneOrMany::one(ToolResultContent::Text(Text {
                     text: format!(
-                        "You are now in the spawned thread. See the instructions in the tool call. Your thread ID is {}",
+                        "You are now INSIDE the thread that you requested to create. Follow the instructions in the tool call. Be careful not to get confused by the context before this call, which is from the parent thread. Your thread ID is {}",
                         new_thread_id
                     ),
                 })),
@@ -109,6 +109,107 @@ impl Tool for SpawnThreadTool {
             .send_message()
             .queue_url(&context.input_queue_url)
             .message_body(serde_json::to_string(&child_result)?)
+            .send()
+            .await?;
+
+        Ok(())
+    }
+}
+
+/// Tool that sends a report to the parent thread without closing the current thread.
+pub struct ReportToParentTool {
+    pub conversation_store: ConversationHistoryStore,
+}
+
+#[async_trait]
+impl Tool for ReportToParentTool {
+    fn name(&self) -> &str {
+        "report_to_parent"
+    }
+
+    fn description(&self) -> &str {
+        "Send a report to the parent thread without closing the current thread. Use this when you have intermediate results, updates, or information the parent should know about while you continue working."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "report": {
+                    "type": "string",
+                    "description": "The report content to send to the parent thread."
+                }
+            },
+            "required": ["report"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        id: String,
+        call_id: Option<String>,
+        context: &ToolContext,
+    ) -> Result<(), Error> {
+        let report_text = args["report"]
+            .as_str()
+            .ok_or_else(|| Error::from("report is required"))?;
+
+        let (parent_id, spawn_tool_call_id) = self
+            .conversation_store
+            .get_thread_parent_info(&context.group_id)
+            .await?
+            .ok_or_else(|| Error::from("No parent thread found — this is a root thread"))?;
+
+        tracing::info!(
+            "Sending report from thread {} to parent {} via tool call {}",
+            context.group_id,
+            parent_id,
+            spawn_tool_call_id
+        );
+
+        let report_message = InputMessage {
+            content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                id: String::new(),
+                call_id: None,
+                content: OneOrMany::one(ToolResultContent::Text(Text {
+                    text: format!("Report from child thread:\n{}", report_text),
+                })),
+            })),
+            group_id: parent_id,
+            metadata: None,
+            synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
+                tool_call_id: spawn_tool_call_id,
+            })),
+        };
+
+        context
+            .sqs_client
+            .send_message()
+            .queue_url(&context.input_queue_url)
+            .message_body(serde_json::to_string(&report_message)?)
+            .send()
+            .await?;
+
+        // Send result back to the current thread so it can continue
+        let tool_result = InputMessage {
+            content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                id,
+                call_id,
+                content: OneOrMany::one(ToolResultContent::Text(Text {
+                    text: "Report sent to parent thread.".to_string(),
+                })),
+            })),
+            group_id: context.group_id.clone(),
+            metadata: None,
+            synthetic: None,
+        };
+
+        context
+            .sqs_client
+            .send_message()
+            .queue_url(&context.input_queue_url)
+            .message_body(serde_json::to_string(&tool_result)?)
             .send()
             .await?;
 
