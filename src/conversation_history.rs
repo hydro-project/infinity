@@ -197,6 +197,18 @@ impl ConversationHistoryStore {
         Ok(new_thread_id)
     }
 
+    /// Check if a thread has been closed.
+    pub async fn is_thread_closed(&self, thread_id: &str) -> Result<bool, Error> {
+        let row: Option<(bool,)> =
+            sqlx::query_as(r#"SELECT closed FROM thread_hierarchy WHERE thread_id = $1"#)
+                .bind(thread_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| Error::from(format!("Failed to check thread closed status: {}", e)))?;
+
+        Ok(row.map(|(closed,)| closed).unwrap_or(false))
+    }
+
     /// Close a thread.
     pub async fn close_thread(&self, thread_id: &str) -> Result<(), Error> {
         sqlx::query(r#"UPDATE thread_hierarchy SET closed = TRUE WHERE thread_id = $1"#)
