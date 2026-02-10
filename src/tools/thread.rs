@@ -7,7 +7,7 @@ use rig::{
 };
 
 use crate::conversation_history::ConversationHistoryStore;
-use crate::event_handler::{InputMessage, InputMessageContent};
+use crate::event_handler::{InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind};
 
 use super::{Tool, ToolContext};
 
@@ -184,12 +184,15 @@ impl Tool for CloseThreadTool {
                         id: String::new(),
                         call_id: None,
                         content: OneOrMany::one(ToolResultContent::Text(Text {
-                            text: format!("Report from child thread :\n{}", report_text),
+                            // TODO(shadaj): models get confused about this when it is for a subscription event, they don't know what a "child thread" is
+                            text: format!("Report from child thread:\n{}", report_text),
                         })),
                     })),
                     group_id: parent_id,
                     metadata: None,
-                    synthetic: Some(spawn_tool_call_id),
+                    synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
+                        tool_call_id: spawn_tool_call_id,
+                    })),
                 };
 
                 context
