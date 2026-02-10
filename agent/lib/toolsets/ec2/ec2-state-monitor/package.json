@@ -4,6 +4,6 @@
   "type": "module",
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.0.0",
-    "@aws-sdk/client-sqs": "^3.0.0"
+    "rap-js": "file:../../../infinity-agents/rap-js"
   }
 }

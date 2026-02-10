@@ -1,17 +1,15 @@
 import { DynamoDBClient, PutItemCommand, GetItemCommand, DeleteItemCommand } from '@aws-sdk/client-dynamodb';
-import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
+import { sendToolResult } from 'rap-js';
 
 const dynamoClient = new DynamoDBClient({});
-const sqsClient = new SQSClient({});
 
 const GITHUB_CHECKS_TABLE = process.env.GITHUB_CHECKS_TABLE;
 const SUBSCRIPTION_LOOKUP_TABLE = process.env.SUBSCRIPTION_LOOKUP_TABLE;
 
-async function handleSubscribe(args, id, call_id, input_queue_url, group_id) {
+async function handleSubscribe(args, id, call_id, rap_receiver_url, group_id) {
     const owner = args.owner;
     const repo = args.repo;
     
-    // Build filters object from optional parameters
     const filters = {};
     if (args.event_type) filters.eventType = args.event_type;
     if (args.sha) filters.sha = args.sha;
@@ -21,7 +19,6 @@ async function handleSubscribe(args, id, call_id, input_queue_url, group_id) {
     if (args.branch) filters.branch = args.branch;
     if (args.actor) filters.actor = args.actor;
 
-    // Build a filter key for the sort key
     const filterKey = Object.keys(filters).length > 0 
         ? Object.entries(filters).map(([k, v]) => `${k}:${v}`).sort().join('|')
         : 'ALL';
@@ -29,14 +26,13 @@ async function handleSubscribe(args, id, call_id, input_queue_url, group_id) {
     const pk = `${owner}/${repo}`;
     const sk = `${filterKey}#${id}`;
 
-    // Store subscription in main table
     const subscriptionItem = {
         pk: { S: pk },
         sk: { S: sk },
         toolCallId: { S: id },
         callId: { S: call_id || '' },
         groupId: { S: group_id },
-        inputQueueUrl: { S: input_queue_url },
+        rapReceiverUrl: { S: rap_receiver_url },
         owner: { S: owner },
         repo: { S: repo },
         filters: { S: JSON.stringify(filters) },
@@ -49,16 +45,13 @@ async function handleSubscribe(args, id, call_id, input_queue_url, group_id) {
         Item: subscriptionItem,
     }));
 
-    // Store lookup entry for fast cancellation by subscription ID
-    const lookupItem = {
-        subscriptionId: { S: id },
-        pk: { S: pk },
-        sk: { S: sk },
-    };
-
     await dynamoClient.send(new PutItemCommand({
         TableName: SUBSCRIPTION_LOOKUP_TABLE,
-        Item: lookupItem,
+        Item: {
+            subscriptionId: { S: id },
+            pk: { S: pk },
+            sk: { S: sk },
+        },
     }));
 
     console.log('Stored GitHub event subscription:', { pk, sk, filters });
@@ -77,12 +70,9 @@ async function handleCancelSubscription(args) {
         return 'Error: subscription_id is required';
     }
 
-    // Look up the subscription's pk/sk from the lookup table
     const lookupResult = await dynamoClient.send(new GetItemCommand({
         TableName: SUBSCRIPTION_LOOKUP_TABLE,
-        Key: {
-            subscriptionId: { S: subscriptionId },
-        },
+        Key: { subscriptionId: { S: subscriptionId } },
     }));
 
     if (!lookupResult.Item) {
@@ -92,45 +82,18 @@ async function handleCancelSubscription(args) {
     const pk = lookupResult.Item.pk.S;
     const sk = lookupResult.Item.sk.S;
 
-    // Delete from main subscriptions table
     await dynamoClient.send(new DeleteItemCommand({
         TableName: GITHUB_CHECKS_TABLE,
-        Key: {
-            pk: { S: pk },
-            sk: { S: sk },
-        },
+        Key: { pk: { S: pk }, sk: { S: sk } },
     }));
 
-    // Delete from lookup table
     await dynamoClient.send(new DeleteItemCommand({
         TableName: SUBSCRIPTION_LOOKUP_TABLE,
-        Key: {
-            subscriptionId: { S: subscriptionId },
-        },
+        Key: { subscriptionId: { S: subscriptionId } },
     }));
 
     console.log('Cancelled subscription:', { subscriptionId, pk, sk });
-
     return `Successfully cancelled subscription: ${subscriptionId}`;
-}
-
-async function sendResponse(input_queue_url, group_id, id, call_id, text) {
-    const responseContent = {
-        type: 'toolresult',
-        id: id,
-        call_id: call_id,
-        content: [{ type: 'text', text }],
-    };
-
-    await sqsClient.send(new SendMessageCommand({
-        QueueUrl: input_queue_url,
-        MessageBody: JSON.stringify({
-            content: responseContent,
-            group_id: group_id,
-        }),
-        MessageGroupId: group_id,
-        MessageDeduplicationId: `${id}-${Date.now()}`,
-    }));
 }
 
 export const handler = async (event) => {
@@ -138,7 +101,7 @@ export const handler = async (event) => {
 
     for (const record of event.Records) {
         const request = JSON.parse(record.body);
-        const { arguments: args, id, call_id, input_queue_url, group_id, tool_name } = request;
+        const { arguments: args, id, call_id, rap_receiver_url, group_id, tool_name } = request;
 
         console.log('Processing request:', { tool_name, args, id, call_id });
 
@@ -148,14 +111,14 @@ export const handler = async (event) => {
             if (tool_name === 'cancel_github_subscription' || args.subscription_id) {
                 resultText = await handleCancelSubscription(args);
             } else {
-                resultText = await handleSubscribe(args, id, call_id, input_queue_url, group_id);
+                resultText = await handleSubscribe(args, id, call_id, rap_receiver_url, group_id);
             }
 
-            await sendResponse(input_queue_url, group_id, id, call_id, resultText);
-            console.log('Sent response to input queue');
+            await sendToolResult(rap_receiver_url, group_id, id, call_id, resultText);
+            console.log('Sent response via RAP');
         } catch (error) {
             console.error('Error processing request:', error);
-            await sendResponse(input_queue_url, group_id, id, call_id, `Error: ${error.message}`);
+            await sendToolResult(rap_receiver_url, group_id, id, call_id, `Error: ${error.message}`);
         }
     }
 

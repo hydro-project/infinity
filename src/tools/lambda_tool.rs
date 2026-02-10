@@ -11,8 +11,7 @@ struct LambdaToolRequest {
     arguments: serde_json::Value,
     id: String,
     call_id: Option<String>,
-    input_queue_url: String,
-    input_queue_arn: String,
+    rap_receiver_url: String,
     group_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     user_id: Option<String>,
@@ -47,14 +46,13 @@ impl Tool for LambdaTool {
         call_id: Option<String>,
         context: &ToolContext,
     ) -> Result<(), Error> {
-        // Create request with all necessary context for the Lambda to respond
+        // Create request with RAP receiver URL for the Lambda to respond through
         let request = LambdaToolRequest {
             operation: self.name.clone(),
             arguments: args,
             id,
             call_id,
-            input_queue_url: context.input_queue_url.clone(),
-            input_queue_arn: context.input_queue_arn.clone(),
+            rap_receiver_url: context.rap_receiver_url.clone(),
             group_id: context.group_id.clone(),
             user_id: context.user_id.clone(),
         };

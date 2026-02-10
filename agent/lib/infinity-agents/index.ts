@@ -34,6 +34,8 @@ export class InfinityAgent extends Construct {
   public readonly delayQueue: sqs.Queue;
   public readonly historyTable: dynamodb.Table;
   public readonly dsqlCluster: dsql.CfnCluster;
+  public rapReceiverUrl: string;
+  public readonly rapReceiverFunction: lambda.Function;
   private readonly schedulerRole: iam.Role;
   private readonly toolSetConfigs: ToolSetConfig[] = [];
   private toolsConfigResource?: cr.AwsCustomResource;
@@ -124,6 +126,29 @@ export class InfinityAgent extends Construct {
       })
     );
 
+    // RAP (Reactive Agent Protocol) HTTP receiver Lambda.
+    // Tool Lambdas POST their results here instead of sending directly to SQS.
+    const rapReceiverFunction = new lambda.Function(this, 'RapReceiverFunction', {
+      runtime: lambda.Runtime.NODEJS_24_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, 'rap-receiver')),
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 128,
+      environment: {
+        INPUT_QUEUE_URL: this.inputQueue.queueUrl,
+      },
+    });
+
+    this.inputQueue.grantSendMessages(rapReceiverFunction);
+    this.rapReceiverFunction = rapReceiverFunction;
+
+    // Expose the receiver via a Function URL with IAM auth (SigV4)
+    const rapReceiverUrl = rapReceiverFunction.addFunctionUrl({
+      authType: lambda.FunctionUrlAuthType.AWS_IAM,
+    });
+
+    this.rapReceiverUrl = rapReceiverUrl.url;
+
     // Create the leader Lambda function using cargo-lambda-cdk
     this.lambdaFunction = new RustFunction(this, 'LeaderFunction', {
       manifestPath: props.codePath || path.join(__dirname, '../../..'),
@@ -140,6 +165,7 @@ export class InfinityAgent extends Construct {
         SCHEDULER_ROLE_ARN: this.schedulerRole.roleArn,
         DELAY_QUEUE_URL: this.delayQueue.queueUrl,
         DSQL_CLUSTER_ENDPOINT: this.dsqlCluster.attrEndpoint,
+        RAP_RECEIVER_URL: this.rapReceiverUrl,
         RUST_BACKTRACE: '1',
       },
     });
@@ -204,6 +230,13 @@ export class InfinityAgent extends Construct {
    */
   grantQueuePermissions(queue: sqs.IQueue): void {
     queue.grantSendMessages(this.lambdaFunction);
+  }
+
+  /**
+   * Grant a Lambda function permission to invoke the RAP receiver Function URL (SigV4).
+   */
+  grantRapAccess(fn: lambda.IFunction): void {
+    this.rapReceiverFunction.grantInvokeUrl(fn);
   }
 
   /**
