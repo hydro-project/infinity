@@ -1,0 +1,10 @@
+{
+  "name": "finance-poller",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.0.0",
+    "@aws-sdk/client-sqs": "^3.0.0",
+    "fast-xml-parser": "^4.5.0"
+  }
+}

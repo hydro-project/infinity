@@ -23,5 +23,6 @@ aws-config = "1"
 aws-types = "1"
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json", "chrono", "uuid"] }
 chrono = "0.4"
+chrono-tz = "0.10"
 async-trait = "0.1"
 uuid = { version = "1", features = ["v4"] }

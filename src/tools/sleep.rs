@@ -3,7 +3,8 @@ use aws_sdk_scheduler::{
     Client as SchedulerClient,
     types::{FlexibleTimeWindow, FlexibleTimeWindowMode, Target},
 };
-use chrono::{Duration, Utc};
+use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use chrono_tz::Tz;
 use lambda_runtime::{Error, tracing};
 use rig::{
     OneOrMany,
@@ -147,6 +148,198 @@ impl Tool for SleepUntilEventOrInputTool {
     ) -> Result<(), Error> {
         // No-op: the agent loop will simply stop after this tool is invoked
         tracing::info!("sleep_until_event_or_input invoked, agent will pause until next input");
+        Ok(())
+    }
+}
+
+/// Sleep until a specific date/time in a given timezone.
+/// Useful for scheduling the agent to wake up at a known wall-clock time
+/// (e.g. when the stock market opens).
+pub struct SleepUntilTool {
+    pub scheduler_client: SchedulerClient,
+    pub scheduler_role_arn: String,
+}
+
+#[async_trait]
+impl Tool for SleepUntilTool {
+    fn name(&self) -> &str {
+        "sleep_until"
+    }
+
+    fn description(&self) -> &str {
+        "Sleep until a specific date and time in a given timezone. The agent will hibernate with zero resource usage and wake up at the specified time. Useful for scheduling wake-ups at known wall-clock times (e.g. 'sleep until 9:30 AM Eastern when the stock market opens'). Use get_time first to know the current time."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "date": {
+                    "type": "string",
+                    "description": "Target date in YYYY-MM-DD format (e.g. '2025-02-10')"
+                },
+                "time": {
+                    "type": "string",
+                    "description": "Target time in HH:MM or HH:MM:SS 24-hour format (e.g. '09:30' or '09:30:00')"
+                },
+                "timezone": {
+                    "type": "string",
+                    "description": "IANA timezone name (e.g. 'America/New_York', 'US/Eastern', 'Europe/London'). Defaults to UTC."
+                }
+            },
+            "required": ["date", "time"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        id: String,
+        call_id: Option<String>,
+        context: &ToolContext,
+    ) -> Result<(), Error> {
+        let date_str = args["date"].as_str().unwrap_or("");
+        let time_str = args["time"].as_str().unwrap_or("");
+        let tz_str = args["timezone"].as_str().unwrap_or("UTC");
+
+        // Parse timezone
+        let tz: Tz = tz_str.parse().map_err(|_| {
+            Error::from(format!(
+                "Invalid timezone: '{}'. Use IANA format like 'America/New_York'",
+                tz_str
+            ))
+        })?;
+
+        // Parse date
+        let date = NaiveDate::parse_from_str(date_str, "%Y-%m-%d").map_err(|e| {
+            Error::from(format!(
+                "Invalid date '{}': {}. Use YYYY-MM-DD format.",
+                date_str, e
+            ))
+        })?;
+
+        // Parse time (support HH:MM and HH:MM:SS)
+        let time = NaiveTime::parse_from_str(time_str, "%H:%M:%S")
+            .or_else(|_| NaiveTime::parse_from_str(time_str, "%H:%M"))
+            .map_err(|e| {
+                Error::from(format!(
+                    "Invalid time '{}': {}. Use HH:MM or HH:MM:SS format.",
+                    time_str, e
+                ))
+            })?;
+
+        let naive_dt = NaiveDateTime::new(date, time);
+
+        // Convert to UTC
+        let local_dt = naive_dt.and_local_timezone(tz).single().ok_or_else(|| {
+            Error::from(format!(
+                "Ambiguous or invalid datetime {} in timezone {}",
+                naive_dt, tz_str
+            ))
+        })?;
+        let target_utc = local_dt.with_timezone(&Utc);
+
+        let now = Utc::now();
+        if target_utc <= now {
+            // Target is in the past — just send an immediate result
+            let tool_result_msg = InputMessage {
+                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                    id,
+                    call_id,
+                    content: OneOrMany::one(ToolResultContent::Text(Text {
+                        text: format!(
+                            "Target time {} {} is in the past (current UTC: {}). Waking immediately.",
+                            date_str,
+                            time_str,
+                            now.format("%Y-%m-%d %H:%M:%S UTC")
+                        ),
+                    })),
+                })),
+                group_id: context.group_id.clone(),
+                metadata: None,
+                synthetic: None,
+            };
+
+            context
+                .sqs_client
+                .send_message()
+                .queue_url(&context.input_queue_url)
+                .message_body(serde_json::to_string(&tool_result_msg)?)
+                .send()
+                .await?;
+
+            tracing::info!("sleep_until target is in the past, waking immediately");
+            return Ok(());
+        }
+
+        let seconds_until = (target_utc - now).num_seconds();
+
+        let tool_result_msg = InputMessage {
+            content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                id,
+                call_id,
+                content: OneOrMany::one(ToolResultContent::Text(Text {
+                    text: format!(
+                        "Woke up at target time: {} {} ({})",
+                        date_str, time_str, tz_str
+                    ),
+                })),
+            })),
+            group_id: context.group_id.clone(),
+            metadata: None,
+            synthetic: None,
+        };
+
+        if seconds_until <= 900 {
+            // Use SQS delay for short waits
+            context
+                .sqs_client
+                .send_message()
+                .queue_url(&context.input_queue_url)
+                .message_body(serde_json::to_string(&tool_result_msg)?)
+                .delay_seconds(seconds_until as i32)
+                .send()
+                .await?;
+
+            tracing::info!(
+                "Scheduled sleep_until for {} seconds using SQS delay (target: {} {} {})",
+                seconds_until,
+                date_str,
+                time_str,
+                tz_str
+            );
+        } else {
+            // Use EventBridge Scheduler
+            let schedule_name = format!("sleep-until-{}", Utc::now().timestamp_millis());
+
+            self.scheduler_client
+                .create_schedule()
+                .name(&schedule_name)
+                .schedule_expression(format!("at({})", target_utc.format("%Y-%m-%dT%H:%M:%S")))
+                .flexible_time_window(
+                    FlexibleTimeWindow::builder()
+                        .mode(FlexibleTimeWindowMode::Off)
+                        .build()?,
+                )
+                .target(
+                    Target::builder()
+                        .arn(&context.input_queue_arn)
+                        .role_arn(&self.scheduler_role_arn)
+                        .input(serde_json::to_string(&tool_result_msg)?)
+                        .build()?,
+                )
+                .send()
+                .await?;
+
+            tracing::info!(
+                "Scheduled sleep_until for {} seconds using EventBridge Scheduler (target: {} {} {})",
+                seconds_until,
+                date_str,
+                time_str,
+                tz_str
+            );
+        }
+
         Ok(())
     }
 }

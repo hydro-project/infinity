@@ -12,8 +12,8 @@ use std::collections::{HashMap, HashSet};
 use crate::conversation_history::ConversationHistoryStore;
 
 use crate::tools::config::ToolsConfig;
-use crate::tools::sleep::{SleepTool, SleepUntilEventOrInputTool};
-use crate::tools::thread::{CloseThreadTool, SpawnThreadTool};
+use crate::tools::sleep::{SleepTool, SleepUntilEventOrInputTool, SleepUntilTool};
+use crate::tools::thread::{CloseThreadTool, ReportToParentTool, SpawnThreadTool};
 use crate::tools::{Tool, ToolContext, ToolSet, VecToolSet};
 
 use futures_util::StreamExt;
@@ -660,10 +660,24 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     let conversation_store =
         ConversationHistoryStore::new(&dsql_client, &dsql_cluster_endpoint).await?;
 
-    // Load tool sets from configuration (SSM preferred, then file, then env var)
-    let mut tool_sets: Vec<Box<dyn ToolSet>> = if let Ok(ssm_param) =
-        std::env::var("TOOLS_CONFIG_SSM_PARAM")
+    // Load tool sets from configuration (DynamoDB preferred, then SSM, then file, then env var)
+    let mut tool_sets: Vec<Box<dyn ToolSet>> = if let Ok(ddb_key) =
+        std::env::var("TOOLS_CONFIG_DDB_KEY")
     {
+        match ToolsConfig::from_dynamodb(&dynamodb_client, &table_name, &ddb_key).await {
+            Ok(config) => {
+                tracing::info!("Loaded tools configuration from DynamoDB key {}", ddb_key);
+                config.into_tool_sets()
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to load tools config from DynamoDB: {}. Using empty tool set.",
+                    e
+                );
+                vec![]
+            }
+        }
+    } else if let Ok(ssm_param) = std::env::var("TOOLS_CONFIG_SSM_PARAM") {
         let ssm_client = aws_sdk_ssm::Client::new(&config);
         match ToolsConfig::from_ssm(&ssm_client, &ssm_param).await {
             Ok(config) => {
@@ -716,7 +730,14 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 scheduler_role_arn: scheduler_role_arn.clone(),
             }),
             Box::new(SleepUntilEventOrInputTool),
+            Box::new(SleepUntilTool {
+                scheduler_client: scheduler_client.clone(),
+                scheduler_role_arn: scheduler_role_arn.clone(),
+            }),
             Box::new(SpawnThreadTool {
+                conversation_store: conversation_store.clone(),
+            }),
+            Box::new(ReportToParentTool {
                 conversation_store: conversation_store.clone(),
             }),
             Box::new(CloseThreadTool {
@@ -934,8 +955,8 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                         call_id: None,
                         content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
                             text: format!(
-                                "You are in a new thread created for processing a subscription event. Your thread ID is {}",
-                                sub_thread_id
+                                "You are in a temporary child thread created for processing a subscription event. Your thread ID is {}, the parent which is still subscribing is {}",
+                                sub_thread_id, input_msg.group_id
                             ),
                         })),
                     })),

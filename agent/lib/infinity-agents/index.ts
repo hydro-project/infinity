@@ -4,8 +4,8 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as dsql from 'aws-cdk-lib/aws-dsql';
+import * as cr from 'aws-cdk-lib/custom-resources';
 import { RustFunction } from 'cargo-lambda-cdk';
 
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
@@ -35,7 +35,7 @@ export class InfinityAgent extends Construct {
   public readonly dsqlCluster: dsql.CfnCluster;
   private readonly schedulerRole: iam.Role;
   private readonly toolSetConfigs: ToolSetConfig[] = [];
-  private toolsConfigParam?: ssm.StringParameter;
+  private toolsConfigResource?: cr.AwsCustomResource;
 
   constructor(scope: Construct, id: string, props: InfinityAgentsProps = {}) {
     super(scope, id);
@@ -174,7 +174,8 @@ export class InfinityAgent extends Construct {
 
   /**
    * Register a tool set configuration (called by tool sets during construction)
-   * Stores config in SSM Parameter Store to avoid Lambda env var size limits
+   * Stores config in a DynamoDB item via a custom resource at deploy time.
+   * No size limits beyond DynamoDB's 400KB item limit.
    */
   registerToolSet(config: ToolSetConfig): void {
     this.toolSetConfigs.push(config);
@@ -183,24 +184,43 @@ export class InfinityAgent extends Construct {
       tool_sets: this.toolSetConfigs,
     };
 
-    // Create or update SSM parameter with tools config
-    // We use a single parameter that gets updated as tool sets are registered
-    if (!this.toolsConfigParam) {
-      this.toolsConfigParam = new ssm.StringParameter(this, 'ToolsConfigParam', {
-        parameterName: `/infinity-agents/${this.node.id}/tools-config`,
-        stringValue: JSON.stringify(toolsConfig),
-        description: 'Tools configuration for InfinityAgent',
-      });
-      
-      // Grant read access to the Lambda
-      this.toolsConfigParam.grantRead(this.lambdaFunction);
-      
-      // Set env var with parameter name
-      this.lambdaFunction.addEnvironment('TOOLS_CONFIG_SSM_PARAM', this.toolsConfigParam.parameterName);
-    } else {
-      // Update the parameter value using escape hatch since CDK doesn't support updating
-      const cfnParam = this.toolsConfigParam.node.defaultChild as ssm.CfnParameter;
-      cfnParam.value = JSON.stringify(toolsConfig);
+    const configKey = `__tools_config__`;
+
+    // Remove previous custom resource if it exists, so we can recreate with updated config
+    if (this.toolsConfigResource) {
+      this.node.tryRemoveChild('ToolsConfigWriter');
     }
+
+    this.toolsConfigResource = new cr.AwsCustomResource(this, 'ToolsConfigWriter', {
+      onCreate: {
+        service: 'DynamoDB',
+        action: 'putItem',
+        parameters: {
+          TableName: this.historyTable.tableName,
+          Item: {
+            session: { S: configKey },
+            config: { S: JSON.stringify(toolsConfig) },
+          },
+        },
+        physicalResourceId: cr.PhysicalResourceId.of('tools-config'),
+      },
+      onUpdate: {
+        service: 'DynamoDB',
+        action: 'putItem',
+        parameters: {
+          TableName: this.historyTable.tableName,
+          Item: {
+            session: { S: configKey },
+            config: { S: JSON.stringify(toolsConfig) },
+          },
+        },
+        physicalResourceId: cr.PhysicalResourceId.of('tools-config'),
+      },
+      policy: cr.AwsCustomResourcePolicy.fromSdkCalls({
+        resources: [this.historyTable.tableArn],
+      }),
+    });
+
+    this.lambdaFunction.addEnvironment('TOOLS_CONFIG_DDB_KEY', configKey);
   }
 }
