@@ -934,6 +934,11 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                     input_msg.group_id
                 );
 
+                // Mark this thread as a subscription event handler
+                conversation_store
+                    .mark_as_subscription_event(&sub_thread_id)
+                    .await?;
+
                 // Build the seed messages for the subthread:
                 // 1. Synthetic spawn_thread tool call (assistant)
                 // 2. Spawn result (user) — "You are in a new thread created for processing a subscription event"
@@ -953,7 +958,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                                 name: "spawn_thread".to_string(),
                                 arguments: serde_json::json!({
                                     "instructions": format!(
-                                        "Process the incoming subscription event for tool call '{}', and close the thread after processing just this event with a report to the parent if appropriate. Only your report will be visible. The subscription will automatically resume after you close the",
+                                        "Process the incoming subscription event for tool call '{}', and close the thread after processing just this event with a report to the parent if appropriate. Only your report will be visible to the parent.",
                                         original_call.function.name
                                     )
                                 }),
@@ -968,7 +973,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                         call_id: None,
                         content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
                             text: format!(
-                                "You are in a temporary child thread created for processing a subscription event. Your thread ID is {}, the parent which is still subscribing is {}",
+                                "You are now INSIDE the thread for processing the single event below. Your thread ID is {}, the parent which is still subscribing is {}.",
                                 sub_thread_id, input_msg.group_id
                             ),
                         })),
