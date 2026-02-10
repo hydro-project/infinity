@@ -21,7 +21,7 @@ use rig::{
     OneOrMany,
     client::{CompletionClient, ProviderClient},
     completion::{CompletionModel, CompletionRequest, ToolDefinition},
-    message::{Message, UserContent},
+    message::{Message, ToolResult, ToolResultContent, UserContent},
     streaming::StreamedAssistantContent,
 };
 
@@ -68,6 +68,48 @@ pub struct OAuthRequired {
     pub auth_url: String,
 }
 
+/// Distinguishes subscription events (which spawn a subthread) from thread reports
+/// (which inject directly into the target thread).
+/// A plain string deserializes as SubscriptionEvent for backward compatibility
+/// with external producers like the GitHub webhook handler.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(untagged)]
+pub enum SyntheticKind {
+    Tagged(TaggedSyntheticKind),
+    /// Backward compat: a bare string is treated as a subscription event
+    SubscriptionEvent(String),
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(tag = "type")]
+pub enum TaggedSyntheticKind {
+    #[serde(rename = "subscription_event")]
+    SubscriptionEvent { tool_call_id: String },
+    #[serde(rename = "thread_report")]
+    ThreadReport { tool_call_id: String },
+}
+
+impl SyntheticKind {
+    pub fn tool_call_id(&self) -> &str {
+        match self {
+            SyntheticKind::Tagged(TaggedSyntheticKind::SubscriptionEvent { tool_call_id }) => {
+                tool_call_id
+            }
+            SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport { tool_call_id }) => {
+                tool_call_id
+            }
+            SyntheticKind::SubscriptionEvent(id) => id,
+        }
+    }
+
+    pub fn is_thread_report(&self) -> bool {
+        matches!(
+            self,
+            SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport { .. })
+        )
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct InputMessage {
     pub content: InputMessageContent,
@@ -75,7 +117,7 @@ pub struct InputMessage {
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
     #[serde(default)]
-    pub synthetic: Option<String>,
+    pub synthetic: Option<SyntheticKind>,
 }
 
 #[derive(Debug, Serialize)]
@@ -760,14 +802,15 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         };
 
         // Handle synthetic tool results
-        let content = if let Some(original_tool_call_id) = input_msg.synthetic {
+        let content = if let Some(synthetic_kind) = input_msg.synthetic {
+            let original_tool_call_id = synthetic_kind.tool_call_id().to_string();
             tracing::info!(
                 "Processing synthetic tool result for tool call: {}",
                 original_tool_call_id
             );
 
             // Look up the original tool call from conversation history
-            if let Some(original_call) = current_history.history.iter().find_map(|msg| {
+            let original_call = current_history.history.iter().find_map(|msg| {
                 if let Message::Assistant { content, .. } = msg {
                     content.iter().find_map(|c| {
                         if let rig::message::AssistantContent::ToolCall(call) = c {
@@ -783,18 +826,26 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 } else {
                     None
                 }
-            }) {
-                // Generate a new random tool call ID
+            });
+
+            let Some(original_call) = original_call else {
+                tracing::warn!(
+                    "Could not find original tool call for synthetic message: {}, dropping message",
+                    original_tool_call_id
+                );
+                continue;
+            };
+
+            if synthetic_kind.is_thread_report() {
+                // Thread reports inject directly into the target thread
                 let new_tool_call_id = uuid::Uuid::new_v4().to_string();
 
-                // Extract the tool result content
                 if let UserContent::ToolResult(mut tool_result) = user_content {
-                    // Create a synthetic tool call with kind: "interrupt" added to original arguments
                     let mut synthetic_args = original_call.function.arguments.clone();
                     synthetic_args.as_object_mut().unwrap().insert(
                         "kind".to_string(),
                         serde_json::json!(format!(
-                            "interrupt:{} (subscription remains active)",
+                            "thread_report:{} (child thread closed)",
                             original_tool_call_id
                         )),
                     );
@@ -813,7 +864,6 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                         )),
                     };
 
-                    // Insert the synthetic tool call into history
                     current_history
                         .handle_content(
                             synthetic_tool_call,
@@ -821,19 +871,132 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                         )
                         .await?;
 
-                    // Update the tool result with the new generated ID
                     tool_result.id = new_tool_call_id;
                     UserContent::ToolResult(tool_result)
                 } else {
                     panic!("Synthetic message is not a tool result")
                 }
             } else {
-                tracing::warn!(
-                    "Could not find original tool call for synthetic message: {}, dropping message",
+                // Subscription events spawn a new subthread to process the event
+                tracing::info!(
+                    "Spawning subthread for subscription event from tool call: {}",
                     original_tool_call_id
                 );
 
-                continue;
+                // Get current message order for the spawn point (truncation point for parent)
+                let spawn_order = conversation_store
+                    .get_current_message_order(&input_msg.group_id)
+                    .await?;
+
+                // Create the subthread — spawn_tool_call_id is the original subscription tool call ID
+                // so that if the subthread closes with a report, it references the right call in the parent
+                let sub_thread_id = conversation_store
+                    .spawn_thread(&input_msg.group_id, spawn_order, &original_tool_call_id)
+                    .await?;
+
+                tracing::info!(
+                    "Created subthread {} for subscription event in parent {}",
+                    sub_thread_id,
+                    input_msg.group_id
+                );
+
+                // Build the seed messages for the subthread:
+                // 1. Synthetic spawn_thread tool call (assistant)
+                // 2. Spawn result (user) — "You are in a new thread created for processing a subscription event"
+                // 3. Synthetic subscription tool call (assistant)
+                // 4. The actual event content (user tool result)
+
+                let spawn_call_id = uuid::Uuid::new_v4().to_string();
+                let event_call_id = uuid::Uuid::new_v4().to_string();
+
+                let spawn_tool_call = Message::Assistant {
+                    id: None,
+                    content: OneOrMany::one(rig::message::AssistantContent::ToolCall(
+                        rig::message::ToolCall {
+                            id: spawn_call_id.clone(),
+                            call_id: None,
+                            function: rig::message::ToolFunction {
+                                name: "spawn_thread".to_string(),
+                                arguments: serde_json::json!({
+                                    "instructions": format!(
+                                        "Process the incoming subscription event for tool call '{}', and close the thread after processing just this event with a report to the parent if appropriate. Only your report will be visible. The subscription will automatically resume after you close the",
+                                        original_call.function.name
+                                    )
+                                }),
+                            },
+                        },
+                    )),
+                };
+
+                let spawn_result = Message::User {
+                    content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+                        id: spawn_call_id.clone(),
+                        call_id: None,
+                        content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                            text: format!(
+                                "You are in a new thread created for processing a subscription event. Your thread ID is {}",
+                                sub_thread_id
+                            ),
+                        })),
+                    })),
+                };
+
+                // Synthetic subscription tool call with the original args + interrupt kind
+                let mut synthetic_args = original_call.function.arguments.clone();
+                synthetic_args.as_object_mut().unwrap().insert(
+                    "kind".to_string(),
+                    serde_json::json!(format!(
+                        "interrupt:{} (subscription remains active)",
+                        original_tool_call_id
+                    )),
+                );
+
+                let event_tool_call = Message::Assistant {
+                    id: None,
+                    content: OneOrMany::one(rig::message::AssistantContent::ToolCall(
+                        rig::message::ToolCall {
+                            id: event_call_id.clone(),
+                            call_id: None,
+                            function: rig::message::ToolFunction {
+                                name: original_call.function.name.clone(),
+                                arguments: synthetic_args,
+                            },
+                        },
+                    )),
+                };
+
+                // Extract the event content from the tool result
+                let event_content = if let UserContent::ToolResult(mut tool_result) = user_content {
+                    tool_result.id = event_call_id.clone();
+                    tool_result.call_id = None;
+                    tool_result
+                } else {
+                    panic!("Synthetic subscription event is not a tool result")
+                };
+
+                // Reload history manager for the subthread so we process inline
+                // instead of paying for another SQS → Lambda round trip.
+                current_history = HistoryManager::new_with_history(
+                    dynamodb_client.clone(),
+                    conversation_store.clone(),
+                    table_name.clone(),
+                    sub_thread_id,
+                )
+                .await?;
+
+                // Seed the 3 messages via handle_content so they get synced to DSQL later
+                current_history
+                    .handle_content(spawn_tool_call, format!("{}-spawn-call", spawn_call_id))
+                    .await?;
+                current_history
+                    .handle_content(spawn_result, format!("{}-spawn-result", spawn_call_id))
+                    .await?;
+                current_history
+                    .handle_content(event_tool_call, format!("{}-event-call", event_call_id))
+                    .await?;
+
+                // The 4th message (event tool result) becomes the content to process normally
+                UserContent::ToolResult(event_content)
             }
         } else {
             user_content
@@ -858,9 +1021,11 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             .get_metadata()
             .and_then(|m| m.get("user_id").and_then(|v| v.as_str()).map(String::from));
 
+        let active_thread_id = current_history.thread_id.clone();
+
         let tool_context = ToolContext {
             sqs_client: sqs_client.clone(),
-            group_id: input_msg.group_id.clone(),
+            group_id: active_thread_id.clone(),
             input_queue_url: std::env::var("INPUT_QUEUE_URL").unwrap_or_default(),
             input_queue_arn: std::env::var("INPUT_QUEUE_ARN").unwrap_or_default(),
             user_id,
@@ -875,7 +1040,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 &tool_registry,
                 &tool_context,
                 &tools,
-                &input_msg.group_id,
+                &active_thread_id,
                 &message_id,
             )
             .await
