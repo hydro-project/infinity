@@ -161,6 +161,12 @@ impl Tool for ReportToParentTool {
             .await?
             .ok_or_else(|| Error::from("No parent thread found — this is a root thread"))?;
 
+        let is_subscription = self
+            .conversation_store
+            .is_subscription_event_thread(&context.group_id)
+            .await
+            .unwrap_or(false);
+
         tracing::info!(
             "Sending report from thread {} to parent {} via tool call {}",
             context.group_id,
@@ -168,12 +174,21 @@ impl Tool for ReportToParentTool {
             spawn_tool_call_id
         );
 
+        let formatted_report = if is_subscription {
+            format!(
+                "Report from temporary child thread created to process a subscription event:\n{}",
+                report_text
+            )
+        } else {
+            format!("Report from child thread:\n{}", report_text)
+        };
+
         let report_message = InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                 id: String::new(),
                 call_id: None,
                 content: OneOrMany::one(ToolResultContent::Text(Text {
-                    text: format!("Report from child thread:\n{}", report_text),
+                    text: formatted_report,
                 })),
             })),
             group_id: parent_id,
@@ -294,48 +309,66 @@ impl Tool for CloseThreadTool {
 
         tracing::info!("Closed thread {}", thread_id);
 
-        // TODO(shadaj): models get confused about this when it is for a subscription event, they don't know what a "child thread" is
-        let report_text = if let Some(report_text) = report {
-            format!(
-                "Child thread with ID {} has shut down. Report from child thread:\n{}",
-                thread_id, report_text
-            )
-        } else {
-            format!("Child thread with ID {} has shut down", thread_id)
-        };
+        let is_subscription = self
+            .conversation_store
+            .is_subscription_event_thread(thread_id)
+            .await
+            .unwrap_or(false);
 
         if let Some((parent_id, spawn_tool_call_id)) = self
             .conversation_store
             .get_thread_parent_info(thread_id)
             .await?
         {
-            tracing::info!(
-                "Sending report from thread {} to parent {} via tool call {}",
-                thread_id,
-                parent_id,
-                spawn_tool_call_id
-            );
-
-            let report_message = InputMessage {
-                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                    id: String::new(),
-                    call_id: None,
-                    content: OneOrMany::one(ToolResultContent::Text(Text { text: report_text })),
-                })),
-                group_id: parent_id,
-                metadata: None,
-                synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
-                    tool_call_id: spawn_tool_call_id,
-                })),
+            let report_text = if is_subscription {
+                if let Some(report_text) = report {
+                    Some(format!(
+                        "An event from your subscription {} was processed by a child thread. The subscription remains active. Report from the child:\n{}",
+                        spawn_tool_call_id, report_text
+                    ))
+                } else {
+                    None
+                }
+            } else if let Some(report_text) = report {
+                Some(format!(
+                    "Child thread with ID {} has shut down. Report from child thread:\n{}",
+                    thread_id, report_text
+                ))
+            } else {
+                Some(format!("Child thread with ID {} has shut down", thread_id))
             };
 
-            context
-                .sqs_client
-                .send_message()
-                .queue_url(&context.input_queue_url)
-                .message_body(serde_json::to_string(&report_message)?)
-                .send()
-                .await?;
+            if let Some(report_text) = report_text {
+                tracing::info!(
+                    "Sending report from thread {} to parent {} via tool call {}",
+                    thread_id,
+                    parent_id,
+                    spawn_tool_call_id
+                );
+
+                let report_message = InputMessage {
+                    content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                        id: String::new(),
+                        call_id: None,
+                        content: OneOrMany::one(ToolResultContent::Text(Text {
+                            text: report_text,
+                        })),
+                    })),
+                    group_id: parent_id,
+                    metadata: None,
+                    synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
+                        tool_call_id: spawn_tool_call_id,
+                    })),
+                };
+
+                context
+                    .sqs_client
+                    .send_message()
+                    .queue_url(&context.input_queue_url)
+                    .message_body(serde_json::to_string(&report_message)?)
+                    .send()
+                    .await?;
+            }
         }
 
         Ok(())
