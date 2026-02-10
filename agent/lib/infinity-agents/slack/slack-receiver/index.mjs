@@ -50,10 +50,13 @@ export const handler = async (event) => {
         },
       };
 
-      // Send to agent input queue with conversation group ID as message attribute
+      // Send to agent input FIFO queue with conversation group ID as message group
+      const groupId = `slack-${channel}-${threadTs}`;
       const command = new SendMessageCommand({
         QueueUrl: AGENT_INPUT_QUEUE_URL,
         MessageBody: JSON.stringify(agentMessage),
+        MessageGroupId: groupId,
+        MessageDeduplicationId: `${channel}-${slackEvent.ts}-${Date.now()}`,
       });
 
       try {

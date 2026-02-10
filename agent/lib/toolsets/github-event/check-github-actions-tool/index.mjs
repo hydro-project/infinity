@@ -128,6 +128,8 @@ async function sendResponse(input_queue_url, group_id, id, call_id, text) {
             content: responseContent,
             group_id: group_id,
         }),
+        MessageGroupId: group_id,
+        MessageDeduplicationId: `${id}-${Date.now()}`,
     }));
 }
 

@@ -19,6 +19,8 @@ async function sendResponse(inputQueueUrl, groupId, id, callId, text) {
   await sqsClient.send(new SendMessageCommand({
     QueueUrl: inputQueueUrl,
     MessageBody: JSON.stringify(msg),
+    MessageGroupId: groupId,
+    MessageDeduplicationId: `${id}-${Date.now()}`,
   }));
 }
 

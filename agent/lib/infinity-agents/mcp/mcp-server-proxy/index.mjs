@@ -631,9 +631,8 @@ async function sendToolResult(inputQueueUrl, groupId, id, callId, text) {
     await sqsClient.send(new SendMessageCommand({
         QueueUrl: inputQueueUrl,
         MessageBody: JSON.stringify(toolResultMessage),
-        MessageAttributes: {
-            ConversationGroupId: { DataType: 'String', StringValue: groupId },
-        },
+        MessageGroupId: groupId,
+        MessageDeduplicationId: `${id}-${Date.now()}`,
     }));
     console.log('Sent tool result to input queue');
 }
@@ -655,9 +654,8 @@ async function sendOAuthUrl(inputQueueUrl, groupId, id, callId, authUrl) {
     await sqsClient.send(new SendMessageCommand({
         QueueUrl: inputQueueUrl,
         MessageBody: JSON.stringify(oauthMessage),
-        MessageAttributes: {
-            ConversationGroupId: { DataType: 'String', StringValue: groupId },
-        },
+        MessageGroupId: groupId,
+        MessageDeduplicationId: `${id}-${Date.now()}`,
     }));
     console.log('Sent OAuth URL to input queue');
 }
