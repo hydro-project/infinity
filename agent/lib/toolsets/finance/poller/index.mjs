@@ -1,9 +1,8 @@
 import { DynamoDBClient, ScanCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
-import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
+import { sendSyntheticEvent } from 'rap-js';
 import { XMLParser } from 'fast-xml-parser';
 
 const dynamoClient = new DynamoDBClient({});
-const sqsClient = new SQSClient({});
 const xmlParser = new XMLParser();
 
 const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE;
@@ -23,7 +22,6 @@ async function fetchPrice(symbol) {
 }
 
 async function processPriceSubscriptions(items) {
-  // Group by symbol to avoid duplicate fetches
   const bySymbol = {};
   for (const item of items) {
     const sym = item.symbol.S;
@@ -44,7 +42,6 @@ async function processPriceSubscriptions(items) {
       const lastPrice = parseFloat(sub.lastPrice?.N || '0');
       const threshold = parseFloat(sub.threshold.N);
 
-      // Update stored price
       await dynamoClient.send(new UpdateItemCommand({
         TableName: SUBSCRIPTIONS_TABLE,
         Key: { pk: { S: sub.pk.S }, sk: { S: sub.sk.S } },
@@ -52,7 +49,6 @@ async function processPriceSubscriptions(items) {
         ExpressionAttributeValues: { ':p': { N: String(price) } },
       }));
 
-      // First poll — just record the price, don't notify
       if (lastPrice === 0) continue;
 
       const change = Math.abs(price - lastPrice);
@@ -68,7 +64,12 @@ async function processPriceSubscriptions(items) {
           threshold,
         });
 
-        await sendSynthetic(sub, text);
+        await sendSyntheticEvent(
+          sub.rapReceiverUrl.S,
+          sub.groupId.S,
+          sub.toolCallId.S,
+          text,
+        );
       }
     }
   }
@@ -90,7 +91,6 @@ async function fetchNews(query) {
 }
 
 async function processNewsSubscriptions(items) {
-  // Group by query
   const byQuery = {};
   for (const item of items) {
     const q = item.query.S;
@@ -113,7 +113,6 @@ async function processNewsSubscriptions(items) {
       const lastId = sub.lastArticleId?.S || '';
       const latestId = articles[0].guid || articles[0].link || articles[0].title || '';
 
-      // Update stored last article
       await dynamoClient.send(new UpdateItemCommand({
         TableName: SUBSCRIPTIONS_TABLE,
         Key: { pk: { S: sub.pk.S }, sk: { S: sub.sk.S } },
@@ -121,11 +120,9 @@ async function processNewsSubscriptions(items) {
         ExpressionAttributeValues: { ':a': { S: latestId } },
       }));
 
-      // First poll — just record, don't notify
       if (!lastId) continue;
       if (lastId === latestId) continue;
 
-      // Find new articles (everything before the last known one)
       const newArticles = [];
       for (const a of articles) {
         const aid = a.guid || a.link || a.title || '';
@@ -135,7 +132,6 @@ async function processNewsSubscriptions(items) {
 
       if (newArticles.length === 0) continue;
 
-      // Send at most 5 newest
       const toSend = newArticles.slice(0, 5);
       const text = JSON.stringify({
         event: 'news_update',
@@ -143,35 +139,17 @@ async function processNewsSubscriptions(items) {
         articles: toSend,
       });
 
-      await sendSynthetic(sub, text);
+      await sendSyntheticEvent(
+        sub.rapReceiverUrl.S,
+        sub.groupId.S,
+        sub.toolCallId.S,
+        text,
+      );
     }
   }
 }
 
-// --- Shared ---
-
-async function sendSynthetic(sub, text) {
-  const msg = {
-    content: {
-      type: 'toolresult',
-      id: '',
-      call_id: null,
-      content: [{ type: 'text', text }],
-    },
-    group_id: sub.groupId.S,
-    synthetic: sub.toolCallId.S,
-  };
-  await sqsClient.send(new SendMessageCommand({
-    QueueUrl: sub.inputQueueUrl.S,
-    MessageBody: JSON.stringify(msg),
-    MessageGroupId: sub.groupId.S,
-    MessageDeduplicationId: `${sub.toolCallId.S}-${Date.now()}`,
-  }));
-  console.log(`Sent notification for ${sub.pk.S} to group ${sub.groupId.S}`);
-}
-
 export const handler = async () => {
-  // Scan all subscriptions (fine for demo scale)
   const result = await dynamoClient.send(new ScanCommand({
     TableName: SUBSCRIPTIONS_TABLE,
   }));

@@ -116,7 +116,6 @@ export class HTTPMCPToolSet extends MCPToolSet {
     // Grant DynamoDB permissions if OAuth is enabled
     if (tokenTable) {
       tokenTable.grantReadWriteData(handler);
-      agent.inputQueue.grantSendMessages(handler);
     }
 
     // Add OAuth callback endpoint to the gateway

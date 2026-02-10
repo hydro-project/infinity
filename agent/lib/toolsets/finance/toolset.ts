@@ -113,13 +113,15 @@ export class FinanceToolSet extends CustomToolSet {
       },
     });
     subscriptionsTable.grantReadWriteData(pollerFunction);
-    agent.inputQueue.grantSendMessages(pollerFunction);
 
     // Run every 2 minutes
     new events.Rule(agent, 'FinancePollerSchedule', {
       schedule: events.Schedule.rate(cdk.Duration.minutes(2)),
       targets: [new targets.LambdaFunction(pollerFunction)],
     });
+
+    // Grant RAP receiver invoke permission (SigV4)
+    agent.grantRapAccess(pollerFunction);
 
     // --- Paper trading Lambda ---
 

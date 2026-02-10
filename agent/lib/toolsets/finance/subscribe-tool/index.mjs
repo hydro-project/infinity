@@ -1,31 +1,12 @@
 import { DynamoDBClient, PutItemCommand, GetItemCommand, DeleteItemCommand } from '@aws-sdk/client-dynamodb';
-import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
+import { sendToolResult } from 'rap-js';
 
 const dynamoClient = new DynamoDBClient({});
-const sqsClient = new SQSClient({});
 
 const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE;
 const LOOKUP_TABLE = process.env.LOOKUP_TABLE;
 
-async function sendResponse(inputQueueUrl, groupId, id, callId, text) {
-  const msg = {
-    content: {
-      type: 'toolresult',
-      id,
-      call_id: callId || undefined,
-      content: [{ type: 'text', text }],
-    },
-    group_id: groupId,
-  };
-  await sqsClient.send(new SendMessageCommand({
-    QueueUrl: inputQueueUrl,
-    MessageBody: JSON.stringify(msg),
-    MessageGroupId: groupId,
-    MessageDeduplicationId: `${id}-${Date.now()}`,
-  }));
-}
-
-async function handlePriceSubscription(args, id, callId, inputQueueUrl, groupId) {
+async function handlePriceSubscription(args, id, callId, rapReceiverUrl, groupId) {
   const { symbol, threshold } = args;
   if (!symbol || threshold == null) {
     return 'Error: symbol and threshold are required';
@@ -46,7 +27,7 @@ async function handlePriceSubscription(args, id, callId, inputQueueUrl, groupId)
       toolCallId: { S: id },
       callId: { S: callId || '' },
       groupId: { S: groupId },
-      inputQueueUrl: { S: inputQueueUrl },
+      rapReceiverUrl: { S: rapReceiverUrl },
       createdAt: { N: Date.now().toString() },
     },
   }));
@@ -60,10 +41,10 @@ async function handlePriceSubscription(args, id, callId, inputQueueUrl, groupId)
     },
   }));
 
-  return `Subscribed to price changes for ${symbol.toUpperCase()} with threshold $${threshold}. Subscription ID: ${id}`;
+  return `Subscribed to price changes for ${symbol.toUpperCase()} with threshold ${threshold}. Subscription ID: ${id}`;
 }
 
-async function handleNewsSubscription(args, id, callId, inputQueueUrl, groupId) {
+async function handleNewsSubscription(args, id, callId, rapReceiverUrl, groupId) {
   const { query } = args;
   if (!query) {
     return 'Error: query is required';
@@ -83,7 +64,7 @@ async function handleNewsSubscription(args, id, callId, inputQueueUrl, groupId) 
       toolCallId: { S: id },
       callId: { S: callId || '' },
       groupId: { S: groupId },
-      inputQueueUrl: { S: inputQueueUrl },
+      rapReceiverUrl: { S: rapReceiverUrl },
       createdAt: { N: Date.now().toString() },
     },
   }));
@@ -131,23 +112,23 @@ async function handleCancel(args) {
 export const handler = async (event) => {
   for (const record of event.Records) {
     const request = JSON.parse(record.body);
-    const { arguments: args, id, call_id, input_queue_url, group_id, operation } = request;
+    const { arguments: args, id, call_id, rap_receiver_url, group_id, operation } = request;
 
     try {
       let result;
       if (operation === 'cancel_finance_subscription') {
         result = await handleCancel(args);
       } else if (operation === 'notify_price_change') {
-        result = await handlePriceSubscription(args, id, call_id, input_queue_url, group_id);
+        result = await handlePriceSubscription(args, id, call_id, rap_receiver_url, group_id);
       } else if (operation === 'notify_news') {
-        result = await handleNewsSubscription(args, id, call_id, input_queue_url, group_id);
+        result = await handleNewsSubscription(args, id, call_id, rap_receiver_url, group_id);
       } else {
         result = `Unknown tool: ${operation}`;
       }
-      await sendResponse(input_queue_url, group_id, id, call_id, result);
+      await sendToolResult(rap_receiver_url, group_id, id, call_id, result);
     } catch (err) {
       console.error('Error:', err);
-      await sendResponse(input_queue_url, group_id, id, call_id, `Error: ${err.message}`);
+      await sendToolResult(rap_receiver_url, group_id, id, call_id, `Error: ${err.message}`);
     }
   }
   return { statusCode: 200 };

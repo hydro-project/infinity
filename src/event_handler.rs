@@ -1067,6 +1067,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             group_id: active_thread_id.clone(),
             input_queue_url: std::env::var("INPUT_QUEUE_URL").unwrap_or_default(),
             input_queue_arn: std::env::var("INPUT_QUEUE_ARN").unwrap_or_default(),
+            rap_receiver_url: std::env::var("RAP_RECEIVER_URL").unwrap_or_default(),
             user_id,
         };
 

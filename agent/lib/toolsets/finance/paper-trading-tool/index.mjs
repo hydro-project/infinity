@@ -1,28 +1,9 @@
 import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
-import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
+import { sendToolResult } from 'rap-js';
 
 const dynamoClient = new DynamoDBClient({});
-const sqsClient = new SQSClient({});
 
 const TRADING_TABLE = process.env.TRADING_TABLE;
-
-async function sendResponse(inputQueueUrl, groupId, id, callId, text) {
-  const msg = {
-    content: {
-      type: 'toolresult',
-      id,
-      call_id: callId || undefined,
-      content: [{ type: 'text', text }],
-    },
-    group_id: groupId,
-  };
-  await sqsClient.send(new SendMessageCommand({
-    QueueUrl: inputQueueUrl,
-    MessageBody: JSON.stringify(msg),
-    MessageGroupId: groupId,
-    MessageDeduplicationId: `${id}-${Date.now()}`,
-  }));
-}
 
 async function fetchPrice(symbol) {
   const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=1d`;
@@ -50,8 +31,6 @@ async function getHolding(accountId, symbol) {
   return result.Item;
 }
 
-// --- Handlers ---
-
 async function handleCreateAccount(args) {
   const { account_id, initial_balance } = args;
   if (!account_id || initial_balance == null) return 'Error: account_id and initial_balance are required';
@@ -69,7 +48,7 @@ async function handleCreateAccount(args) {
     },
   }));
 
-  return `Created paper trading account "${account_id}" with $${initial_balance} balance.`;
+  return `Created paper trading account "${account_id}" with ${initial_balance} balance.`;
 }
 
 async function handleBuyShares(args) {
@@ -85,12 +64,11 @@ async function handleBuyShares(args) {
   const balance = parseFloat(account.balance.N);
 
   if (cost > balance) {
-    return `Insufficient funds. ${quantity} shares of ${sym} @ $${price.toFixed(2)} = $${cost.toFixed(2)}, but balance is $${balance.toFixed(2)}`;
+    return `Insufficient funds. ${quantity} shares of ${sym} @ ${price.toFixed(2)} = ${cost.toFixed(2)}, but balance is ${balance.toFixed(2)}`;
   }
 
   const newBalance = balance - cost;
 
-  // Update balance
   await dynamoClient.send(new UpdateItemCommand({
     TableName: TRADING_TABLE,
     Key: { pk: { S: `ACCOUNT#${account_id}` }, sk: { S: 'META' } },
@@ -98,7 +76,6 @@ async function handleBuyShares(args) {
     ExpressionAttributeValues: { ':b': { N: String(newBalance) } },
   }));
 
-  // Update or create holding
   const holding = await getHolding(account_id, sym);
   const existingQty = holding ? parseFloat(holding.quantity.N) : 0;
   const existingCost = holding ? parseFloat(holding.totalCost.N) : 0;
@@ -114,7 +91,7 @@ async function handleBuyShares(args) {
     },
   }));
 
-  return `Bought ${quantity} shares of ${sym} @ $${price.toFixed(2)} for $${cost.toFixed(2)}. New balance: $${newBalance.toFixed(2)}`;
+  return `Bought ${quantity} shares of ${sym} @ ${price.toFixed(2)} for ${cost.toFixed(2)}. New balance: ${newBalance.toFixed(2)}`;
 }
 
 async function handleSellShares(args) {
@@ -136,7 +113,6 @@ async function handleSellShares(args) {
   const balance = parseFloat(account.balance.N);
   const newBalance = balance + proceeds;
 
-  // Update balance
   await dynamoClient.send(new UpdateItemCommand({
     TableName: TRADING_TABLE,
     Key: { pk: { S: `ACCOUNT#${account_id}` }, sk: { S: 'META' } },
@@ -144,13 +120,11 @@ async function handleSellShares(args) {
     ExpressionAttributeValues: { ':b': { N: String(newBalance) } },
   }));
 
-  // Update holding
   const newQty = heldQty - quantity;
   const costBasis = parseFloat(holding.totalCost.N);
   const newCost = costBasis * (newQty / heldQty);
 
   if (newQty === 0) {
-    // Remove holding entirely
     const { DeleteItemCommand } = await import('@aws-sdk/client-dynamodb');
     await dynamoClient.send(new DeleteItemCommand({
       TableName: TRADING_TABLE,
@@ -170,7 +144,7 @@ async function handleSellShares(args) {
   }
 
   const pnl = proceeds - (costBasis * (quantity / heldQty));
-  return `Sold ${quantity} shares of ${sym} @ $${price.toFixed(2)} for $${proceeds.toFixed(2)}. P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}. New balance: $${newBalance.toFixed(2)}`;
+  return `Sold ${quantity} shares of ${sym} @ ${price.toFixed(2)} for ${proceeds.toFixed(2)}. P&L: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}. New balance: ${newBalance.toFixed(2)}`;
 }
 
 async function handleGetPrice(args) {
@@ -190,7 +164,6 @@ async function handleGetPortfolio(args) {
 
   const balance = parseFloat(account.balance.N);
 
-  // Query all holdings for this account
   const { QueryCommand } = await import('@aws-sdk/client-dynamodb');
   const result = await dynamoClient.send(new QueryCommand({
     TableName: TRADING_TABLE,
@@ -215,7 +188,7 @@ async function handleGetPortfolio(args) {
       currentPrice = await fetchPrice(sym);
       marketValue = currentPrice * qty;
     } catch (err) {
-      marketValue = costBasis; // fallback
+      marketValue = costBasis;
     }
 
     totalValue += marketValue;
@@ -242,7 +215,7 @@ async function handleGetPortfolio(args) {
 export const handler = async (event) => {
   for (const record of event.Records) {
     const request = JSON.parse(record.body);
-    const { arguments: args, id, call_id, input_queue_url, group_id, operation } = request;
+    const { arguments: args, id, call_id, rap_receiver_url, group_id, operation } = request;
 
     try {
       let result;
@@ -254,10 +227,10 @@ export const handler = async (event) => {
         case 'get_portfolio': result = await handleGetPortfolio(args); break;
         default: result = `Unknown tool: ${operation}`;
       }
-      await sendResponse(input_queue_url, group_id, id, call_id, result);
+      await sendToolResult(rap_receiver_url, group_id, id, call_id, result);
     } catch (err) {
       console.error('Error:', err);
-      await sendResponse(input_queue_url, group_id, id, call_id, `Error: ${err.message}`);
+      await sendToolResult(rap_receiver_url, group_id, id, call_id, `Error: ${err.message}`);
     }
   }
   return { statusCode: 200 };

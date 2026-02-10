@@ -1,0 +1,13 @@
+{
+  "name": "rap-js",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.mjs",
+  "description": "RAP (Reactive Agent Protocol) client for sending tool results back to the agent",
+  "dependencies": {
+    "@smithy/signature-v4": "^4.0.0",
+    "@smithy/protocol-http": "^4.0.0",
+    "@aws-crypto/sha256-js": "^5.0.0",
+    "@aws-sdk/credential-provider-node": "^3.0.0"
+  }
+}

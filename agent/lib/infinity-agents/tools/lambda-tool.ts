@@ -65,8 +65,8 @@ export class LambdaTool extends Tool {
     // Grant the agent permission to send to this queue
     agent.grantQueuePermissions(this.queue);
 
-    // Grant the handler permission to send to the agent's input queue
-    agent.inputQueue.grantSendMessages(props.handler);
+    // Grant the tool handler permission to invoke the RAP receiver (SigV4)
+    agent.grantRapAccess(props.handler);
   }
 
   toConfig(): ToolConfig {

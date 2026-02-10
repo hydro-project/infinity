@@ -155,7 +155,9 @@ export class GitHubEventToolSet extends CustomToolSet {
       },
     });
     githubChecksTable.grantReadWriteData(githubWebhookReceiverFunction);
-    agent.inputQueue.grantSendMessages(githubWebhookReceiverFunction);
+
+    // Grant RAP receiver invoke permission (SigV4)
+    agent.grantRapAccess(githubWebhookReceiverFunction);
 
     const githubWebhookIntegration = new apigateway.LambdaIntegration(githubWebhookReceiverFunction);
     props.webhookGateway.root.addResource('github').addResource('webhook').addMethod('POST', githubWebhookIntegration);
