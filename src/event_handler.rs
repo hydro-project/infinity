@@ -939,46 +939,24 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                     .mark_as_subscription_event(&sub_thread_id)
                     .await?;
 
+                // Reload history manager for the subthread so we process inline
+                // instead of paying for another SQS → Lambda round trip.
+                current_history = HistoryManager::new_with_history(
+                    dynamodb_client.clone(),
+                    conversation_store.clone(),
+                    table_name.clone(),
+                    sub_thread_id.clone(),
+                )
+                .await?;
+
                 // Build the seed messages for the subthread:
-                // 1. Synthetic spawn_thread tool call (assistant)
-                // 2. Spawn result (user) — "You are in a new thread created for processing a subscription event"
-                // 3. Synthetic subscription tool call (assistant)
-                // 4. The actual event content (user tool result)
+                // 1. Synthetic subscription tool call (assistant)
+                // 2. The actual event content (user tool result)
+                // 3. Synthetic spawn_thread tool call (assistant)
+                // 4. Spawn result (user) — "You are in a new thread created for processing a subscription event"
 
-                let spawn_call_id = uuid::Uuid::new_v4().to_string();
                 let event_call_id = uuid::Uuid::new_v4().to_string();
-
-                let spawn_tool_call = Message::Assistant {
-                    id: None,
-                    content: OneOrMany::one(rig::message::AssistantContent::ToolCall(
-                        rig::message::ToolCall {
-                            id: spawn_call_id.clone(),
-                            call_id: None,
-                            function: rig::message::ToolFunction {
-                                name: "spawn_thread".to_string(),
-                                arguments: serde_json::json!({
-                                    "instructions": format!(
-                                        "Process the incoming subscription event for tool call '{}', and close the thread after processing just this event with a report to the parent if appropriate. Only your report will be visible to the parent.",
-                                        original_call.function.name
-                                    )
-                                }),
-                            },
-                        },
-                    )),
-                };
-
-                let spawn_result = Message::User {
-                    content: OneOrMany::one(UserContent::ToolResult(ToolResult {
-                        id: spawn_call_id.clone(),
-                        call_id: None,
-                        content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                            text: format!(
-                                "You are now INSIDE the thread for processing the single event below. Your thread ID is {}, the parent which is still subscribing is {}.",
-                                sub_thread_id, input_msg.group_id
-                            ),
-                        })),
-                    })),
-                };
+                let spawn_call_id = uuid::Uuid::new_v4().to_string();
 
                 // Synthetic subscription tool call with the original args + interrupt kind
                 let mut synthetic_args = original_call.function.arguments.clone();
@@ -1013,29 +991,49 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                     panic!("Synthetic subscription event is not a tool result")
                 };
 
-                // Reload history manager for the subthread so we process inline
-                // instead of paying for another SQS → Lambda round trip.
-                current_history = HistoryManager::new_with_history(
-                    dynamodb_client.clone(),
-                    conversation_store.clone(),
-                    table_name.clone(),
-                    sub_thread_id,
-                )
-                .await?;
-
                 // Seed the 3 messages via handle_content so they get synced to DSQL later
-                current_history
-                    .handle_content(spawn_tool_call, format!("{}-spawn-call", spawn_call_id))
-                    .await?;
-                current_history
-                    .handle_content(spawn_result, format!("{}-spawn-result", spawn_call_id))
-                    .await?;
                 current_history
                     .handle_content(event_tool_call, format!("{}-event-call", event_call_id))
                     .await?;
+                current_history
+                    .handle_content(
+                        Message::User {
+                            content: OneOrMany::one(UserContent::ToolResult(event_content)),
+                        },
+                        format!("{}-event-result", event_call_id),
+                    )
+                    .await?;
 
-                // The 4th message (event tool result) becomes the content to process normally
-                UserContent::ToolResult(event_content)
+                current_history
+                    .handle_content(Message::Assistant {
+                        id: None,
+                        content: OneOrMany::one(rig::message::AssistantContent::ToolCall(
+                            rig::message::ToolCall {
+                                id: spawn_call_id.clone(),
+                                call_id: None,
+                                function: rig::message::ToolFunction {
+                                    name: "spawn_thread".to_string(),
+                                    arguments: serde_json::json!({
+                                        "instructions": "Process the single subscription event above, and close the thread after processing this event with a report to the parent if appropriate. Only your report will be visible to the parent."
+                                    }),
+                                },
+                            },
+                        )),
+                    },
+                    format!("{}-spawn-call", spawn_call_id)
+                ).await?;
+
+                // The spawn result becomes the content to process normally
+                UserContent::ToolResult(ToolResult {
+                    id: spawn_call_id.clone(),
+                    call_id: None,
+                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                        text: format!(
+                            "You are now INSIDE the thread for processing the single event above. Your thread ID is {}, the parent which is still subscribing is {}.",
+                            sub_thread_id, input_msg.group_id
+                        ),
+                    })),
+                })
             }
         } else {
             user_content
