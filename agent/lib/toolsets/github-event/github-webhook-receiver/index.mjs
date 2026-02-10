@@ -185,6 +185,8 @@ export const handler = async (event) => {
                 const sendCommand = new SendMessageCommand({
                     QueueUrl: inputQueueUrl,
                     MessageBody: JSON.stringify(toolResultMessage),
+                    MessageGroupId: groupId,
+                    MessageDeduplicationId: `${toolCallId}-${Date.now()}`,
                 });
 
                 await sqsClient.send(sendCommand);

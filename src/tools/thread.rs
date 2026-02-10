@@ -82,7 +82,7 @@ impl Tool for SpawnThreadTool {
         // Result to the NEW thread
         let child_result = InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                id,
+                id: id.clone(),
                 call_id,
                 content: OneOrMany::one(ToolResultContent::Text(Text {
                     text: format!(
@@ -97,19 +97,19 @@ impl Tool for SpawnThreadTool {
         };
 
         context
-            .sqs_client
-            .send_message()
-            .queue_url(&context.input_queue_url)
-            .message_body(serde_json::to_string(&parent_result)?)
-            .send()
+            .send_to_input_queue(
+                &serde_json::to_string(&parent_result)?,
+                &context.group_id,
+                &id,
+            )
             .await?;
 
         context
-            .sqs_client
-            .send_message()
-            .queue_url(&context.input_queue_url)
-            .message_body(serde_json::to_string(&child_result)?)
-            .send()
+            .send_to_input_queue(
+                &serde_json::to_string(&child_result)?,
+                &child_result.group_id,
+                &id,
+            )
             .await?;
 
         Ok(())
@@ -199,17 +199,17 @@ impl Tool for ReportToParentTool {
         };
 
         context
-            .sqs_client
-            .send_message()
-            .queue_url(&context.input_queue_url)
-            .message_body(serde_json::to_string(&report_message)?)
-            .send()
+            .send_to_input_queue(
+                &serde_json::to_string(&report_message)?,
+                &report_message.group_id,
+                &id,
+            )
             .await?;
 
         // Send result back to the current thread so it can continue
         let tool_result = InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                id,
+                id: id.clone(),
                 call_id,
                 content: OneOrMany::one(ToolResultContent::Text(Text {
                     text: "Report sent to parent thread.".to_string(),
@@ -221,11 +221,11 @@ impl Tool for ReportToParentTool {
         };
 
         context
-            .sqs_client
-            .send_message()
-            .queue_url(&context.input_queue_url)
-            .message_body(serde_json::to_string(&tool_result)?)
-            .send()
+            .send_to_input_queue(
+                &serde_json::to_string(&tool_result)?,
+                &context.group_id,
+                &id,
+            )
             .await?;
 
         Ok(())
@@ -278,7 +278,7 @@ impl Tool for CloseThreadTool {
         if thread_id != context.group_id {
             let tool_result = InputMessage {
                 content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                    id,
+                    id: id.clone(),
                     call_id,
                     content: OneOrMany::one(ToolResultContent::Text(Text {
                         text: format!(
@@ -293,11 +293,11 @@ impl Tool for CloseThreadTool {
             };
 
             context
-                .sqs_client
-                .send_message()
-                .queue_url(&context.input_queue_url)
-                .message_body(serde_json::to_string(&tool_result)?)
-                .send()
+                .send_to_input_queue(
+                    &serde_json::to_string(&tool_result)?,
+                    &context.group_id,
+                    &id,
+                )
                 .await?;
 
             return Ok(());
@@ -362,11 +362,11 @@ impl Tool for CloseThreadTool {
                 };
 
                 context
-                    .sqs_client
-                    .send_message()
-                    .queue_url(&context.input_queue_url)
-                    .message_body(serde_json::to_string(&report_message)?)
-                    .send()
+                    .send_to_input_queue(
+                        &serde_json::to_string(&report_message)?,
+                        &report_message.group_id,
+                        &id,
+                    )
                     .await?;
             }
         }
