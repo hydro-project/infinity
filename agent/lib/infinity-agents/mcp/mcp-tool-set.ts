@@ -51,8 +51,8 @@ export class MCPToolSet extends ToolSet {
     // Grant the agent permission to send to this queue
     agent.grantQueuePermissions(this.queue);
 
-    // Grant the handler permission to send to the agent's input queue
-    agent.inputQueue.grantSendMessages(props.handler);
+    // Grant the handler permission to invoke the RAP receiver (SigV4)
+    agent.grantRapAccess(props.handler);
 
     // Register this tool set with the agent
     agent.registerToolSet(this.toConfig());

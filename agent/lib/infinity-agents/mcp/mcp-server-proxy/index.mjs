@@ -1,8 +1,7 @@
 import { spawn, execSync } from 'child_process';
-import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
+import { sendToolResult as rapSendToolResult, sendOAuthUrl as rapSendOAuthUrl } from 'rap-js';
 import { DynamoDBClient, GetItemCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
 
-const sqsClient = new SQSClient({});
 const dynamoClient = new DynamoDBClient({});
 
 // MCP server configuration from environment
@@ -615,49 +614,19 @@ function createMCPClient(accessToken = null) {
 
 
 /**
- * Send a tool result back to the agent
+ * Send a tool result back to the agent via RAP
  */
-async function sendToolResult(inputQueueUrl, groupId, id, callId, text) {
-    const toolResultMessage = {
-        content: {
-            type: 'toolresult',
-            id,
-            call_id: callId,
-            content: [{ type: 'text', text }],
-        },
-        group_id: groupId,
-    };
-
-    await sqsClient.send(new SendMessageCommand({
-        QueueUrl: inputQueueUrl,
-        MessageBody: JSON.stringify(toolResultMessage),
-        MessageGroupId: groupId,
-        MessageDeduplicationId: `${id}-${Date.now()}`,
-    }));
-    console.log('Sent tool result to input queue');
+async function sendToolResult(rapReceiverUrl, groupId, id, callId, text) {
+    await rapSendToolResult(rapReceiverUrl, groupId, id, callId, text);
+    console.log('Sent tool result via RAP');
 }
 
 /**
- * Send an OAuth URL to the agent (special message type that bypasses history)
+ * Send an OAuth URL to the agent via RAP
  */
-async function sendOAuthUrl(inputQueueUrl, groupId, id, callId, authUrl) {
-    const oauthMessage = {
-        content: {
-            type: 'oauth_required',
-            id,
-            call_id: callId,
-            auth_url: authUrl,
-        },
-        group_id: groupId,
-    };
-
-    await sqsClient.send(new SendMessageCommand({
-        QueueUrl: inputQueueUrl,
-        MessageBody: JSON.stringify(oauthMessage),
-        MessageGroupId: groupId,
-        MessageDeduplicationId: `${id}-${Date.now()}`,
-    }));
-    console.log('Sent OAuth URL to input queue');
+async function sendOAuthUrl(rapReceiverUrl, groupId, id, callId, authUrl) {
+    await rapSendOAuthUrl(rapReceiverUrl, groupId, id, callId, authUrl);
+    console.log('Sent OAuth URL via RAP');
 }
 
 /**
@@ -679,7 +648,7 @@ export const handler = async (event) => {
 
     for (const record of event.Records) {
         const request = JSON.parse(record.body);
-        const { arguments: args, id, call_id, input_queue_url, group_id, operation, user_id } = request;
+        const { arguments: args, id, call_id, rap_receiver_url, group_id, operation, user_id } = request;
 
         console.log('Processing MCP request:', { operation, args, id, call_id, user_id });
 
@@ -706,7 +675,7 @@ export const handler = async (event) => {
                     throw new Error(`Unknown operation: ${operation}`);
                 }
 
-                await sendToolResult(input_queue_url, group_id, id, call_id, result);
+                await sendToolResult(rap_receiver_url, group_id, id, call_id, result);
             } catch (error) {
                 if (error instanceof OAuthRequiredError) {
                     // For list_tools, initiate OAuth flow
@@ -722,7 +691,7 @@ export const handler = async (event) => {
                         
                         // Store the pending request with PKCE verifier, metadata, and client info
                         await storePendingOAuthRequest(id, {
-                            operation, args, id, call_id, input_queue_url, group_id, user_id,
+                            operation, args, id, call_id, rap_receiver_url, group_id, user_id,
                             codeVerifier: pkce.codeVerifier,
                             tokenEndpoint: oauthMetadata.tokenEndpoint,
                             resource: oauthMetadata.resource,
@@ -732,11 +701,11 @@ export const handler = async (event) => {
 
                         // Build the authorization URL with the registered client ID
                         const authUrl = buildAuthorizationUrl(oauthMetadata, clientRegistration, id, user_id, pkce.codeChallenge);
-                        await sendOAuthUrl(input_queue_url, group_id, id, call_id, authUrl);
+                        await sendOAuthUrl(rap_receiver_url, group_id, id, call_id, authUrl);
                     } else {
                         // For other operations, tell the agent to call list_tools first
                         await sendToolResult(
-                            input_queue_url, group_id, id, call_id,
+                            rap_receiver_url, group_id, id, call_id,
                             'Authorization required. Please call the list_tools operation first to complete the OAuth flow.'
                         );
                     }
@@ -748,7 +717,7 @@ export const handler = async (event) => {
             }
         } catch (error) {
             console.error('Error processing MCP request:', error);
-            await sendToolResult(input_queue_url, group_id, id, call_id, `MCP tool error: ${error.message}`);
+            await sendToolResult(rap_receiver_url, group_id, id, call_id, `MCP tool error: ${error.message}`);
         }
     }
 
@@ -862,7 +831,7 @@ async function handleOAuthCallback(event) {
 
             // Send the result back to the agent
             await sendToolResult(
-                pendingRequest.input_queue_url,
+                pendingRequest.rap_receiver_url,
                 pendingRequest.group_id,
                 pendingRequest.id,
                 pendingRequest.call_id,

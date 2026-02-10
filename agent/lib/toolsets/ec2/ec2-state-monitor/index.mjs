@@ -1,10 +1,9 @@
 import { EC2Client, DescribeTagsCommand } from '@aws-sdk/client-ec2';
-import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
+import { sendToolResult } from 'rap-js';
 
 const ec2Client = new EC2Client({});
-const sqsClient = new SQSClient({});
 
-const INPUT_QUEUE_URL = process.env.INPUT_QUEUE_URL;
+const RAP_RECEIVER_URL = process.env.RAP_RECEIVER_URL;
 
 export const handler = async (event) => {
     console.log('Received EC2 state change event:', JSON.stringify(event, null, 2));
@@ -20,67 +19,33 @@ export const handler = async (event) => {
     }
 
     try {
-        // Get tags for the instance
         const describeTagsCommand = new DescribeTagsCommand({
-            Filters: [
-                {
-                    Name: 'resource-id',
-                    Values: [instanceId],
-                },
-            ],
+            Filters: [{ Name: 'resource-id', Values: [instanceId] }],
         });
 
         const tagsResult = await ec2Client.send(describeTagsCommand);
         const tags = {};
-        
         for (const tag of tagsResult.Tags || []) {
             tags[tag.Key] = tag.Value;
         }
 
         console.log('Instance tags:', tags);
 
-        // Check if this instance was created by InfinityAgents
         if (tags.CreatedBy !== 'InfinityAgents') {
             console.log('Instance not created by InfinityAgents, ignoring');
             return { statusCode: 200, body: 'OK' };
         }
 
-        // Extract tool call metadata from tags
         const toolCallId = tags.ToolCallId;
         const callId = tags.CallId || null;
         const groupId = tags.GroupId;
         const instanceType = tags.InstanceType;
         const amiId = tags.AmiId;
 
-        // Create tool result message
-        const toolResultContent = {
-            type: 'toolresult',
-            id: toolCallId,
-            call_id: callId,
-            content: [
-                {
-                    type: 'text',
-                    text: `EC2 instance is now running! Type: ${instanceType}, AMI: ${amiId}, Instance ID: ${instanceId}`,
-                },
-            ],
-        };
+        await sendToolResult(RAP_RECEIVER_URL, groupId, toolCallId, callId,
+            `EC2 instance is now running! Type: ${instanceType}, AMI: ${amiId}, Instance ID: ${instanceId}`);
 
-        const toolResultMessage = {
-            content: toolResultContent,
-            group_id: groupId,
-        };
-
-        // Send result to agent input FIFO queue
-        const sendCommand = new SendMessageCommand({
-            QueueUrl: INPUT_QUEUE_URL,
-            MessageBody: JSON.stringify(toolResultMessage),
-            MessageGroupId: groupId,
-            MessageDeduplicationId: `${toolCallId}-${Date.now()}`,
-        });
-
-        await sqsClient.send(sendCommand);
-        console.log('Sent tool result to input queue');
-
+        console.log('Sent tool result via RAP');
         return { statusCode: 200, body: 'OK' };
     } catch (error) {
         console.error('Error processing EC2 state change:', error);

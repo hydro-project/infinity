@@ -65,10 +65,9 @@ export class Ec2ToolSet extends CustomToolSet {
       timeout: cdk.Duration.seconds(30),
       recursiveLoop: lambda.RecursiveLoop.ALLOW,
       environment: {
-        INPUT_QUEUE_URL: agent.inputQueue.queueUrl,
+        RAP_RECEIVER_URL: agent.rapReceiverUrl,
       },
     });
-    agent.inputQueue.grantSendMessages(ec2StateMonitorFunction);
     ec2StateMonitorFunction.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
@@ -89,6 +88,9 @@ export class Ec2ToolSet extends CustomToolSet {
       },
     });
     ec2StateRule.addTarget(new targets.LambdaFunction(ec2StateMonitorFunction));
+
+    // Grant RAP receiver invoke permission (SigV4)
+    agent.grantRapAccess(ec2StateMonitorFunction);
 
     super(agent, id, [createEc2Tool]);
   }

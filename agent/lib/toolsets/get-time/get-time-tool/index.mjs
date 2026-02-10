@@ -1,6 +1,4 @@
-import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
-
-const sqsClient = new SQSClient({});
+import { sendToolResult } from 'rap-js';
 
 export const handler = async (event) => {
   console.log('Received event:', JSON.stringify(event, null, 2));
@@ -8,11 +6,10 @@ export const handler = async (event) => {
   for (const record of event.Records) {
     try {
       const request = JSON.parse(record.body);
-      const { arguments: args, id, call_id, input_queue_url, group_id } = request;
+      const { arguments: args, id, call_id, rap_receiver_url, group_id } = request;
 
       console.log('Processing get_time request:', { args, id, call_id });
 
-      // Get the current time
       const now = new Date();
       const timeString = now.toISOString();
       const localTime = now.toLocaleString('en-US', { 
@@ -25,47 +22,14 @@ export const handler = async (event) => {
         ? `Current time in ${args.timezone}: ${localTime}`
         : `Current UTC time: ${timeString}`;
 
-      // Create tool result message in the same format as sleep tool
-      const toolResultContent = {
-        type: "toolresult",
-        id: id,
-        content: [
-          {
-            type: "text",
-            text: resultText,
-          }
-        ]
-      };
-
-      // Only add call_id if it exists
-      if (call_id) {
-        toolResultContent.call_id = call_id;
-      }
-
-      const toolResultMessage = {
-        content: toolResultContent,
-        group_id: group_id,
-      };
-
-      // Send result back to the agent input FIFO queue
-      const command = new SendMessageCommand({
-        QueueUrl: input_queue_url,
-        MessageBody: JSON.stringify(toolResultMessage),
-        MessageGroupId: group_id,
-        MessageDeduplicationId: `${id}-${Date.now()}`,
-      });
-
-      await sqsClient.send(command);
-      console.log('Successfully sent tool result back to input queue');
+      await sendToolResult(rap_receiver_url, group_id, id, call_id, resultText);
+      console.log('Successfully sent tool result via RAP');
 
     } catch (error) {
       console.error('Error processing message:', error);
-      throw error; // Let SQS handle retry
+      throw error;
     }
   }
 
-  return {
-    statusCode: 200,
-    body: JSON.stringify({ ok: true }),
-  };
+  return { statusCode: 200, body: JSON.stringify({ ok: true }) };
 };
