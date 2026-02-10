@@ -128,7 +128,7 @@ impl Tool for ReportToParentTool {
     }
 
     fn description(&self) -> &str {
-        "Send a report to the parent thread without closing the current thread. Use this when you have intermediate results, updates, or information the parent should know about while you continue working."
+        "Send a report to the parent thread. Use this when you have intermediate results, updates, or information the parent should know about while you continue working."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -229,7 +229,7 @@ impl Tool for CloseThreadTool {
     }
 
     fn description(&self) -> &str {
-        "Close the specified thread, marking it as complete. Use this from a thread that wants to close itself. Make sure to cancel any subscriptions you own before calling this. If the thread has something to report or has information that should be remembered for future events handled by the parent or its future children, include it in report_to_parent. Omit report_to_parent if there is nothing worth reporting."
+        "Permanently shuts down the specified thread, marking it as complete. Use this from a thread that wants to close itself. Make sure to cancel any subscriptions you created before calling this. If the thread has additional information has not already been reported to the parent, include it in report_to_parent. Omit report_to_parent if there is nothing worth reporting."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -242,7 +242,7 @@ impl Tool for CloseThreadTool {
                 },
                 "report_to_parent": {
                     "type": "string",
-                    "description": "Optional report to send to the parent thread. Only include this if the thread has something to report or has information that should be remembered for future events handled by the parent or its future children. Omit if there is nothing worth reporting."
+                    "description": "Optional report to send to the parent thread."
                 }
             },
             "required": ["thread_id"]
@@ -252,13 +252,41 @@ impl Tool for CloseThreadTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _id: String,
-        _call_id: Option<String>,
+        id: String,
+        call_id: Option<String>,
         context: &ToolContext,
     ) -> Result<(), Error> {
         let thread_id = args["thread_id"]
             .as_str()
             .ok_or_else(|| Error::from("thread_id is required"))?;
+
+        if thread_id != context.group_id {
+            let tool_result = InputMessage {
+                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                    id,
+                    call_id,
+                    content: OneOrMany::one(ToolResultContent::Text(Text {
+                        text: format!(
+                            "Error: the provided thread ID to close {} does not match the current thread ID {}",
+                            thread_id, context.group_id
+                        ),
+                    })),
+                })),
+                group_id: context.group_id.clone(),
+                metadata: None,
+                synthetic: None,
+            };
+
+            context
+                .sqs_client
+                .send_message()
+                .queue_url(&context.input_queue_url)
+                .message_body(serde_json::to_string(&tool_result)?)
+                .send()
+                .await?;
+
+            return Ok(());
+        }
 
         let report = args.get("report_to_parent").and_then(|v| v.as_str());
 
@@ -266,44 +294,48 @@ impl Tool for CloseThreadTool {
 
         tracing::info!("Closed thread {}", thread_id);
 
-        // If there's a report, send a synthetic subscription event to the parent
-        if let Some(report_text) = report {
-            if let Some((parent_id, spawn_tool_call_id)) = self
-                .conversation_store
-                .get_thread_parent_info(thread_id)
-                .await?
-            {
-                tracing::info!(
-                    "Sending report from thread {} to parent {} via tool call {}",
-                    thread_id,
-                    parent_id,
-                    spawn_tool_call_id
-                );
+        // TODO(shadaj): models get confused about this when it is for a subscription event, they don't know what a "child thread" is
+        let report_text = if let Some(report_text) = report {
+            format!(
+                "Child thread with ID {} has shut down. Report from child thread:\n{}",
+                thread_id, report_text
+            )
+        } else {
+            format!("Child thread with ID {} has shut down", thread_id)
+        };
 
-                let report_message = InputMessage {
-                    content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                        id: String::new(),
-                        call_id: None,
-                        content: OneOrMany::one(ToolResultContent::Text(Text {
-                            // TODO(shadaj): models get confused about this when it is for a subscription event, they don't know what a "child thread" is
-                            text: format!("Report from child thread:\n{}", report_text),
-                        })),
-                    })),
-                    group_id: parent_id,
-                    metadata: None,
-                    synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
-                        tool_call_id: spawn_tool_call_id,
-                    })),
-                };
+        if let Some((parent_id, spawn_tool_call_id)) = self
+            .conversation_store
+            .get_thread_parent_info(thread_id)
+            .await?
+        {
+            tracing::info!(
+                "Sending report from thread {} to parent {} via tool call {}",
+                thread_id,
+                parent_id,
+                spawn_tool_call_id
+            );
 
-                context
-                    .sqs_client
-                    .send_message()
-                    .queue_url(&context.input_queue_url)
-                    .message_body(serde_json::to_string(&report_message)?)
-                    .send()
-                    .await?;
-            }
+            let report_message = InputMessage {
+                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                    id: String::new(),
+                    call_id: None,
+                    content: OneOrMany::one(ToolResultContent::Text(Text { text: report_text })),
+                })),
+                group_id: parent_id,
+                metadata: None,
+                synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
+                    tool_call_id: spawn_tool_call_id,
+                })),
+            };
+
+            context
+                .sqs_client
+                .send_message()
+                .queue_url(&context.input_queue_url)
+                .message_body(serde_json::to_string(&report_message)?)
+                .send()
+                .await?;
         }
 
         Ok(())

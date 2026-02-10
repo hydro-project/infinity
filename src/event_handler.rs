@@ -783,6 +783,19 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         )
         .await?;
 
+        // Skip messages for closed threads
+        if conversation_store
+            .is_thread_closed(&input_msg.group_id)
+            .await
+            .unwrap_or(false)
+        {
+            tracing::warn!(
+                "Received message for closed thread {}, skipping",
+                input_msg.group_id
+            );
+            continue;
+        }
+
         // Update metadata if provided (for first message in conversation)
         if let Some(metadata) = input_msg.metadata {
             current_history.update_metadata(metadata).await?;
