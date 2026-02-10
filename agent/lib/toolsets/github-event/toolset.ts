@@ -54,6 +54,7 @@ export class GitHubEventToolSet extends CustomToolSet {
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, 'check-github-actions-tool')),
       timeout: cdk.Duration.seconds(30),
+      recursiveLoop: lambda.RecursiveLoop.ALLOW,
       environment: {
         GITHUB_CHECKS_TABLE: githubChecksTable.tableName,
         SUBSCRIPTION_LOOKUP_TABLE: subscriptionLookupTable.tableName,
@@ -147,6 +148,7 @@ export class GitHubEventToolSet extends CustomToolSet {
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, 'github-webhook-receiver')),
       timeout: cdk.Duration.seconds(30),
+      recursiveLoop: lambda.RecursiveLoop.ALLOW,
       environment: {
         GITHUB_CHECKS_TABLE: githubChecksTable.tableName,
         GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET || '',

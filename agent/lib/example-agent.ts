@@ -5,7 +5,7 @@ import { Construct } from 'constructs';
 import { InfinityAgent } from './infinity-agents';
 import { HTTPMCPToolSet } from './infinity-agents/mcp';
 import { SlackIntegration } from './infinity-agents/slack';
-import { GetTimeToolSet, Ec2ToolSet, GitHubEventToolSet } from './toolsets';
+import { GetTimeToolSet, Ec2ToolSet, GitHubEventToolSet, FinanceToolSet } from './toolsets';
 
 export class ExampleAgent extends InfinityAgent {
   constructor(scope: Construct, id: string, gateway: apigateway.RestApi) {
@@ -28,6 +28,9 @@ export class ExampleAgent extends InfinityAgent {
 
     // Event subscriptions
     new GitHubEventToolSet(this, 'GitHubEventToolSet', { webhookGateway: gateway });
+
+    // Finance tools (subscriptions + paper trading)
+    new FinanceToolSet(this, 'FinanceToolSet');
   }
 }
 

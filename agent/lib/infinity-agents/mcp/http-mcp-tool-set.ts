@@ -101,6 +101,7 @@ export class HTTPMCPToolSet extends MCPToolSet {
       code: lambda.Code.fromAsset(path.join(__dirname, 'mcp-server-proxy')),
       timeout: cdk.Duration.seconds(60),
       memorySize: 256,
+      recursiveLoop: lambda.RecursiveLoop.ALLOW,
       environment: {
         MCP_SERVER_URL: props.url,
         MCP_SERVER_HEADERS: JSON.stringify(props.headers || {}),

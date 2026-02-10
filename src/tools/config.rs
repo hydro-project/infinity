@@ -1,3 +1,4 @@
+use aws_sdk_dynamodb::Client as DynamoDbClient;
 use aws_sdk_ssm::Client as SsmClient;
 use serde::{Deserialize, Serialize};
 
@@ -81,6 +82,33 @@ impl ToolsConfig {
             .ok_or("SSM parameter value not found")?;
 
         let config = serde_json::from_str(value)?;
+        Ok(config)
+    }
+
+    pub async fn from_dynamodb(
+        dynamodb_client: &DynamoDbClient,
+        table_name: &str,
+        key: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let result = dynamodb_client
+            .get_item()
+            .table_name(table_name)
+            .key(
+                "session",
+                aws_sdk_dynamodb::types::AttributeValue::S(key.to_string()),
+            )
+            .send()
+            .await?;
+
+        let item = result
+            .item()
+            .ok_or("Tools config item not found in DynamoDB")?;
+        let config_str = item
+            .get("config")
+            .and_then(|v| v.as_s().ok())
+            .ok_or("Tools config 'config' attribute not found or not a string")?;
+
+        let config = serde_json::from_str(config_str)?;
         Ok(config)
     }
 

@@ -19,6 +19,7 @@ export class Ec2ToolSet extends CustomToolSet {
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, 'create-ec2-tool')),
       timeout: cdk.Duration.seconds(60),
+      recursiveLoop: lambda.RecursiveLoop.ALLOW,
     });
     createEc2ToolFunction.addToRolePolicy(
       new iam.PolicyStatement({
@@ -62,6 +63,7 @@ export class Ec2ToolSet extends CustomToolSet {
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, 'ec2-state-monitor')),
       timeout: cdk.Duration.seconds(30),
+      recursiveLoop: lambda.RecursiveLoop.ALLOW,
       environment: {
         INPUT_QUEUE_URL: agent.inputQueue.queueUrl,
       },
