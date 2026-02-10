@@ -31,6 +31,7 @@ export class InfinityAgent extends Construct {
   public readonly lambdaFunction: RustFunction;
   public readonly inputQueue: sqs.Queue;
   public readonly outputQueue: sqs.Queue;
+  public readonly delayQueue: sqs.Queue;
   public readonly historyTable: dynamodb.Table;
   public readonly dsqlCluster: dsql.CfnCluster;
   private readonly schedulerRole: iam.Role;
@@ -96,6 +97,33 @@ export class InfinityAgent extends Construct {
     });
     this.inputQueue.grantSendMessages(this.schedulerRole);
 
+    // Standard SQS queue for short delays (supports per-message DelaySeconds up to 900s).
+    // A relay Lambda forwards messages to the FIFO input queue after the delay expires.
+    this.delayQueue = new sqs.Queue(this, 'DelayQueue', {
+      retentionPeriod: cdk.Duration.days(4),
+      visibilityTimeout: cdk.Duration.seconds(30),
+    });
+
+    const delayRelayFunction = new lambda.Function(this, 'DelayRelayFunction', {
+      runtime: lambda.Runtime.NODEJS_24_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, 'delay-relay')),
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 128,
+      environment: {
+        INPUT_QUEUE_URL: this.inputQueue.queueUrl,
+      },
+    });
+
+    this.inputQueue.grantSendMessages(delayRelayFunction);
+
+    delayRelayFunction.addEventSource(
+      new SqsEventSource(this.delayQueue, {
+        batchSize: 1,
+        reportBatchItemFailures: true,
+      })
+    );
+
     // Create the leader Lambda function using cargo-lambda-cdk
     this.lambdaFunction = new RustFunction(this, 'LeaderFunction', {
       manifestPath: props.codePath || path.join(__dirname, '../../..'),
@@ -110,6 +138,7 @@ export class InfinityAgent extends Construct {
         INPUT_QUEUE_URL: this.inputQueue.queueUrl,
         INPUT_QUEUE_ARN: this.inputQueue.queueArn,
         SCHEDULER_ROLE_ARN: this.schedulerRole.roleArn,
+        DELAY_QUEUE_URL: this.delayQueue.queueUrl,
         DSQL_CLUSTER_ENDPOINT: this.dsqlCluster.attrEndpoint,
         RUST_BACKTRACE: '1',
       },
@@ -119,6 +148,7 @@ export class InfinityAgent extends Construct {
     this.historyTable.grantReadWriteData(this.lambdaFunction);
     this.outputQueue.grantSendMessages(this.lambdaFunction);
     this.inputQueue.grantSendMessages(this.lambdaFunction);
+    this.delayQueue.grantSendMessages(this.lambdaFunction);
 
     // Grant Bedrock permissions
     this.lambdaFunction.addToRolePolicy(

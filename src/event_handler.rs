@@ -728,11 +728,13 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             Box::new(SleepTool {
                 scheduler_client: scheduler_client.clone(),
                 scheduler_role_arn: scheduler_role_arn.clone(),
+                delay_queue_url: std::env::var("DELAY_QUEUE_URL").unwrap_or_default(),
             }),
             Box::new(SleepUntilEventOrInputTool),
             Box::new(SleepUntilTool {
                 scheduler_client: scheduler_client.clone(),
                 scheduler_role_arn: scheduler_role_arn.clone(),
+                delay_queue_url: std::env::var("DELAY_QUEUE_URL").unwrap_or_default(),
             }),
             Box::new(SpawnThreadTool {
                 conversation_store: conversation_store.clone(),
