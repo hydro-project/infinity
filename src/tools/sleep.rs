@@ -16,10 +16,37 @@ use crate::event_handler::{InputMessage, InputMessageContent};
 
 use super::{Tool, ToolContext};
 
+/// Send a message to the standard delay queue with a per-message delay.
+/// The relay Lambda will forward it to the FIFO input queue after the delay.
+async fn send_to_delay_queue(
+    context: &ToolContext,
+    delay_queue_url: &str,
+    body: &str,
+    group_id: &str,
+    dedup_id: &str,
+    delay_seconds: i32,
+) -> Result<(), Error> {
+    let envelope = serde_json::json!({
+        "message": body,
+        "group_id": group_id,
+        "dedup_id": dedup_id,
+    });
+    context
+        .sqs_client
+        .send_message()
+        .queue_url(delay_queue_url)
+        .message_body(serde_json::to_string(&envelope)?)
+        .delay_seconds(delay_seconds)
+        .send()
+        .await?;
+    Ok(())
+}
+
 // Sleep tool implementation
 pub struct SleepTool {
     pub scheduler_client: SchedulerClient,
     pub scheduler_role_arn: String,
+    pub delay_queue_url: String,
 }
 
 #[async_trait]
@@ -68,8 +95,11 @@ impl Tool for SleepTool {
             synthetic: None,
         };
 
-        // FIFO queues don't support per-message delay_seconds,
-        // so all delays go through EventBridge Scheduler.
+        // Short delays (≤ 900s): use standard SQS queue with per-message DelaySeconds.
+        // A relay Lambda forwards the message to the FIFO input queue after the delay.
+        // Long delays (> 900s): use EventBridge Scheduler (SQS max delay is 900s).
+        const MAX_SQS_DELAY_SECONDS: i64 = 900;
+
         if seconds <= 0 {
             // No delay — send directly to FIFO queue
             context
@@ -81,6 +111,19 @@ impl Tool for SleepTool {
                 .await?;
 
             tracing::info!("Sleep of 0 seconds, sent immediately");
+        } else if seconds <= MAX_SQS_DELAY_SECONDS {
+            // Use standard SQS delay queue for short sleeps
+            send_to_delay_queue(
+                context,
+                &self.delay_queue_url,
+                &serde_json::to_string(&tool_result_msg)?,
+                &context.group_id,
+                &id,
+                seconds as i32,
+            )
+            .await?;
+
+            tracing::info!("Sent sleep of {} seconds via SQS delay queue", seconds);
         } else {
             // Use EventBridge Scheduler for all delays
             let schedule_time = Utc::now() + Duration::seconds(seconds);
@@ -162,6 +205,7 @@ impl Tool for SleepUntilEventOrInputTool {
 pub struct SleepUntilTool {
     pub scheduler_client: SchedulerClient,
     pub scheduler_role_arn: String,
+    pub delay_queue_url: String,
 }
 
 #[async_trait]
@@ -277,6 +321,7 @@ impl Tool for SleepUntilTool {
         }
 
         let seconds_until = (target_utc - now).num_seconds();
+        let dedup_id = format!("sleep-until-{}", Utc::now().timestamp_millis());
 
         let tool_result_msg = InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
@@ -294,41 +339,63 @@ impl Tool for SleepUntilTool {
             synthetic: None,
         };
 
-        // FIFO queues don't support per-message delay_seconds,
-        // so all delays go through EventBridge Scheduler.
-        let schedule_name = format!("sleep-until-{}", Utc::now().timestamp_millis());
+        // Short delays (≤ 900s): use standard SQS delay queue.
+        // Long delays (> 900s): use EventBridge Scheduler.
+        const MAX_SQS_DELAY_SECONDS: i64 = 900;
 
-        self.scheduler_client
-            .create_schedule()
-            .name(&schedule_name)
-            .schedule_expression(format!("at({})", target_utc.format("%Y-%m-%dT%H:%M:%S")))
-            .flexible_time_window(
-                FlexibleTimeWindow::builder()
-                    .mode(FlexibleTimeWindowMode::Off)
-                    .build()?,
+        if seconds_until <= MAX_SQS_DELAY_SECONDS {
+            send_to_delay_queue(
+                context,
+                &self.delay_queue_url,
+                &serde_json::to_string(&tool_result_msg)?,
+                &context.group_id,
+                &dedup_id,
+                seconds_until as i32,
             )
-            .target(
-                Target::builder()
-                    .arn(&context.input_queue_arn)
-                    .role_arn(&self.scheduler_role_arn)
-                    .input(serde_json::to_string(&tool_result_msg)?)
-                    .sqs_parameters(
-                        SqsParameters::builder()
-                            .message_group_id(context.group_id.clone())
-                            .build(),
-                    )
-                    .build()?,
-            )
-            .send()
             .await?;
 
-        tracing::info!(
-            "Scheduled sleep_until for {} seconds using EventBridge Scheduler (target: {} {} {})",
-            seconds_until,
-            date_str,
-            time_str,
-            tz_str
-        );
+            tracing::info!(
+                "Sent sleep_until of {} seconds via SQS delay queue (target: {} {} {})",
+                seconds_until,
+                date_str,
+                time_str,
+                tz_str
+            );
+        } else {
+            let schedule_name = format!("sleep-until-{}", Utc::now().timestamp_millis());
+
+            self.scheduler_client
+                .create_schedule()
+                .name(&schedule_name)
+                .schedule_expression(format!("at({})", target_utc.format("%Y-%m-%dT%H:%M:%S")))
+                .flexible_time_window(
+                    FlexibleTimeWindow::builder()
+                        .mode(FlexibleTimeWindowMode::Off)
+                        .build()?,
+                )
+                .target(
+                    Target::builder()
+                        .arn(&context.input_queue_arn)
+                        .role_arn(&self.scheduler_role_arn)
+                        .input(serde_json::to_string(&tool_result_msg)?)
+                        .sqs_parameters(
+                            SqsParameters::builder()
+                                .message_group_id(context.group_id.clone())
+                                .build(),
+                        )
+                        .build()?,
+                )
+                .send()
+                .await?;
+
+            tracing::info!(
+                "Scheduled sleep_until for {} seconds using EventBridge Scheduler (target: {} {} {})",
+                seconds_until,
+                date_str,
+                time_str,
+                tz_str
+            );
+        }
 
         Ok(())
     }

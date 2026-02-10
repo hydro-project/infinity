@@ -41,8 +41,6 @@ impl ToolContext {
         Ok(())
     }
 }
-
-// Trait for tool implementations
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
