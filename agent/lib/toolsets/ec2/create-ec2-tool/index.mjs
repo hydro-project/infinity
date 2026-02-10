@@ -72,6 +72,8 @@ export const handler = async (event) => {
             const sendCommand = new SendMessageCommand({
                 QueueUrl: input_queue_url,
                 MessageBody: JSON.stringify(errorMessage),
+                MessageGroupId: group_id,
+                MessageDeduplicationId: `${id}-${Date.now()}`,
             });
 
             await sqsClient.send(sendCommand);

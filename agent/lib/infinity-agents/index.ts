@@ -60,11 +60,16 @@ export class InfinityAgent extends Construct {
     // Dead Letter Queue for failed messages
     const deadLetterQueue = new sqs.Queue(this, 'DeadLetterQueue', {
       retentionPeriod: cdk.Duration.days(14),
+      fifo: true,
     });
 
-    // SQS Standard Queue for incoming messages (agent input)
+    // SQS FIFO Queue for incoming messages (agent input)
+    // MessageGroupId = thread ID, so messages for different threads process concurrently
     this.inputQueue = new sqs.Queue(this, 'InputQueue', {
+      fifo: true,
+      contentBasedDeduplication: false,
       retentionPeriod: cdk.Duration.days(4),
+      visibilityTimeout: cdk.Duration.minutes(15),
       deadLetterQueue: {
         queue: deadLetterQueue,
         maxReceiveCount: 3,
@@ -98,7 +103,6 @@ export class InfinityAgent extends Construct {
       architecture: lambda.Architecture.ARM_64,
       timeout: cdk.Duration.minutes(15),
       memorySize: 128,
-      reservedConcurrentExecutions: 1,
       recursiveLoop: lambda.RecursiveLoop.ALLOW,
       environment: {
         DYNAMODB_TABLE_NAME: this.historyTable.tableName,

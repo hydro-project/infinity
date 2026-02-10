@@ -17,6 +17,31 @@ pub struct ToolContext {
     pub user_id: Option<String>,
 }
 
+impl ToolContext {
+    /// Send a message to the input FIFO queue with the correct MessageGroupId and dedup ID.
+    /// `dedup_id` should be the tool call ID for the message being sent.
+    pub async fn send_to_input_queue(
+        &self,
+        body: &str,
+        group_id: &str,
+        dedup_id: &str,
+    ) -> Result<(), Error> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        self.sqs_client
+            .send_message()
+            .queue_url(&self.input_queue_url)
+            .message_body(body)
+            .message_group_id(group_id)
+            .message_deduplication_id(format!("{}-{}", dedup_id, now))
+            .send()
+            .await?;
+        Ok(())
+    }
+}
+
 // Trait for tool implementations
 #[async_trait]
 pub trait Tool: Send + Sync {

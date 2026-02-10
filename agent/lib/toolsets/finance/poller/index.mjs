@@ -164,6 +164,8 @@ async function sendSynthetic(sub, text) {
   await sqsClient.send(new SendMessageCommand({
     QueueUrl: sub.inputQueueUrl.S,
     MessageBody: JSON.stringify(msg),
+    MessageGroupId: sub.groupId.S,
+    MessageDeduplicationId: `${sub.toolCallId.S}-${Date.now()}`,
   }));
   console.log(`Sent notification for ${sub.pk.S} to group ${sub.groupId.S}`);
 }

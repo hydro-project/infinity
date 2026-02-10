@@ -47,10 +47,12 @@ export const handler = async (event) => {
         group_id: group_id,
       };
 
-      // Send result back to the agent input queue
+      // Send result back to the agent input FIFO queue
       const command = new SendMessageCommand({
         QueueUrl: input_queue_url,
         MessageBody: JSON.stringify(toolResultMessage),
+        MessageGroupId: group_id,
+        MessageDeduplicationId: `${id}-${Date.now()}`,
       });
 
       await sqsClient.send(command);
