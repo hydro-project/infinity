@@ -1,5 +1,5 @@
 import { DynamoDBClient, ScanCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
-import { sendSyntheticEvent } from 'rap-js';
+import { sendSubscriptionEvent } from 'rap-js';
 import { XMLParser } from 'fast-xml-parser';
 
 const dynamoClient = new DynamoDBClient({});
@@ -64,7 +64,7 @@ async function processPriceSubscriptions(items) {
           threshold,
         });
 
-        await sendSyntheticEvent(
+        await sendSubscriptionEvent(
           sub.rapReceiverUrl.S,
           sub.groupId.S,
           sub.toolCallId.S,
@@ -139,7 +139,7 @@ async function processNewsSubscriptions(items) {
         articles: toSend,
       });
 
-      await sendSyntheticEvent(
+      await sendSubscriptionEvent(
         sub.rapReceiverUrl.S,
         sub.groupId.S,
         sub.toolCallId.S,

@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { DynamoDBClient, QueryCommand } from '@aws-sdk/client-dynamodb';
-import { sendSyntheticEvent } from 'rap-js';
+import { sendSubscriptionEvent } from 'rap-js';
 
 const dynamoClient = new DynamoDBClient({});
 
@@ -118,7 +118,7 @@ export const handler = async (event) => {
                 const rapReceiverUrl = item.rapReceiverUrl.S;
 
                 const resultText = formatEventResult(eventType, body);
-                await sendSyntheticEvent(rapReceiverUrl, groupId, toolCallId, resultText);
+                await sendSubscriptionEvent(rapReceiverUrl, groupId, toolCallId, resultText);
                 console.log('Sent event notification via RAP');
             }
         }

@@ -6,52 +6,104 @@ const INPUT_QUEUE_URL = process.env.INPUT_QUEUE_URL;
 /**
  * RAP (Reactive Agent Protocol) HTTP receiver.
  *
- * Accepts tool call results via HTTP POST and forwards them to the
- * agent's input FIFO queue. This decouples tool implementors from
- * needing direct SQS access — they just POST JSON to a URL.
+ * Accepts clean JSON payloads via HTTP POST and transforms them into
+ * the legacy InputMessage format before forwarding to the agent's
+ * input FIFO queue.
  *
- * Expected JSON body:
- * {
- *   content: { type: "toolresult"|"oauth_required", id, call_id?, content?, auth_url? },
- *   group_id: string,
- *   synthetic?: string | { type, tool_call_id }
- * }
+ * Accepted payload types:
+ *
+ * Tool result:
+ *   { type: "tool_result", group_id, id, call_id?, text }
+ *
+ * OAuth redirect:
+ *   { type: "oauth", group_id, id, call_id?, auth_url }
+ *
+ * Subscription event:
+ *   { type: "subscription_event", group_id, tool_call_id, text }
  */
 export const handler = async (event) => {
-  // This Lambda is invoked via Function URL (HTTP)
   try {
     const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
 
-    if (!body || !body.group_id) {
-      return {
-        statusCode: 400,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ error: 'Missing required field: group_id' }),
-      };
+    if (!body || !body.type || !body.group_id) {
+      return respond(400, { error: 'Missing required fields: type, group_id' });
     }
 
-    // Derive a dedup ID from the content
-    const dedupBase = body.content?.id || body.synthetic || 'unknown';
-    const dedupId = `${dedupBase}-${Date.now()}`;
+    let sqsMessage;
+    let dedupBase;
+
+    switch (body.type) {
+      case 'tool_result':
+        if (!body.id && body.id !== '') {
+          return respond(400, { error: 'tool_result requires: id, text' });
+        }
+        sqsMessage = {
+          content: {
+            type: 'toolresult',
+            id: body.id,
+            ...(body.call_id && { call_id: body.call_id }),
+            content: [{ type: 'text', text: body.text || '' }],
+          },
+          group_id: body.group_id,
+        };
+        dedupBase = body.id;
+        break;
+
+      case 'oauth':
+        if (!body.id || !body.auth_url) {
+          return respond(400, { error: 'oauth requires: id, auth_url' });
+        }
+        sqsMessage = {
+          content: {
+            type: 'oauth_required',
+            id: body.id,
+            call_id: body.call_id || null,
+            auth_url: body.auth_url,
+          },
+          group_id: body.group_id,
+        };
+        dedupBase = body.id;
+        break;
+
+      case 'subscription_event':
+        if (!body.tool_call_id) {
+          return respond(400, { error: 'subscription_event requires: tool_call_id, text' });
+        }
+        sqsMessage = {
+          content: {
+            type: 'toolresult',
+            id: '',
+            call_id: null,
+            content: [{ type: 'text', text: body.text || '' }],
+          },
+          group_id: body.group_id,
+          synthetic: body.tool_call_id,
+        };
+        dedupBase = body.tool_call_id;
+        break;
+
+      default:
+        return respond(400, { error: `Unknown type: ${body.type}` });
+    }
 
     await sqsClient.send(new SendMessageCommand({
       QueueUrl: INPUT_QUEUE_URL,
-      MessageBody: JSON.stringify(body),
+      MessageBody: JSON.stringify(sqsMessage),
       MessageGroupId: body.group_id,
-      MessageDeduplicationId: dedupId,
+      MessageDeduplicationId: `${dedupBase}-${Date.now()}`,
     }));
 
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ok: true }),
-    };
+    return respond(200, { ok: true });
   } catch (error) {
     console.error('RAP receiver error:', error);
-    return {
-      statusCode: 500,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    };
+    return respond(500, { error: 'Internal error' });
   }
 };
+
+function respond(statusCode, body) {
+  return {
+    statusCode,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  };
+}
