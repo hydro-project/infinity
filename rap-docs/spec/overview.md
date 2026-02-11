@@ -5,40 +5,25 @@ title: Overview
 
 # RAP Specification
 
-This section defines the Reactive Agent Protocol — the message formats, lifecycle, and contracts between agent runtimes and tools.
+This section defines the public protocol between RAP agent runtimes and tools — the HTTP contracts that both sides must implement.
 
-RAP has two participants:
+The protocol has two directions of communication:
 
-- **Agent Runtime** — orchestrates LLM completions, dispatches tool calls, manages conversation state and threads
-- **Tool** — an independent HTTP service that receives invocations and returns results asynchronously via the RAP receiver
+**Runtime → Tool.** The runtime invokes a tool by POSTing a JSON payload to the tool's HTTP endpoint. The tool must acknowledge immediately with HTTP 200.
 
-Communication is asynchronous. The runtime invokes tools via HTTP POST. Tools return results by POSTing to the RAP receiver endpoint, which enqueues them on the runtime's input queue.
+**Tool → Runtime.** The tool returns results by POSTing a JSON payload to the `callback_url` provided in the original invocation. Three message types are supported: `tool_result`, `subscription_event`, and `oauth`.
 
-## Protocol flow
+```mermaid
+sequenceDiagram
+    participant R as Agent Runtime
+    participant T as RAP Tool
 
-```
-Runtime                          Tool                         RAP Receiver
-   │                              │                              │
-   │──── POST invocation ────────▶│                              │
-   │◀─── HTTP 200 (ack) ─────────│                              │
-   │                              │                              │
-   │  (runtime exits)             │  (tool processes async)      │
-   │                              │                              │
-   │                              │──── POST tool_result ───────▶│
-   │                              │                              │──── enqueue ────▶ Input Queue
-   │                              │                              │
-   │◀──────────────────── message from input queue ──────────────│
-   │  (runtime starts, continues conversation)                   │
+    R->>T: POST /invoke (tool invocation)
+    T-->>R: HTTP 200 (ack)
+    Note over R: runtime hibernates
+    Note over T: tool processes async
+    T->>R: POST callback_url (tool_result)
+    Note over R: runtime wakes, continues
 ```
 
-## Message types
-
-The RAP receiver accepts three message types:
-
-| Type | Purpose | Required fields |
-|---|---|---|
-| `tool_result` | Result of a tool invocation | `group_id`, `id`, `text` |
-| `subscription_event` | Event from an active subscription | `group_id`, `tool_call_id`, `text` |
-| `oauth` | OAuth authorization URL for user | `group_id`, `id`, `auth_url` |
-
-All messages include `group_id` (the thread ID) for routing to the correct conversation.
+Everything else — how the runtime stores conversation state, how it runs the LLM, how it serializes messages internally — is implementation-specific and not part of this specification.

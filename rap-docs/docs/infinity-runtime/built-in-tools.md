@@ -15,7 +15,7 @@ While RAP's hibernation means the runtime exits after every tool call, sometimes
 
 **`sleep_until(date, time, timezone)`** — Hibernate until a specific wall-clock time. Useful for "wake me when the market opens at 9:30 AM Eastern." Converts the target to a UTC delay and uses the same mechanism as `sleep`. Returns immediately if the target is in the past.
 
-**`sleep_until_event_or_input()`** — Hibernate indefinitely. A no-op — the runtime exits without scheduling anything. The agent wakes when the next message arrives naturally: user input, subscription event, or a tool result from another pending call. This is the tool agents use after setting up subscriptions when there's nothing else to do.
+**`sleep_until_event_or_input()`** — Hibernate indefinitely. A no-op — the runtime exits without scheduling anything. The agent wakes when the next message arrives naturally: user input or subscription event. This is the tool agents use after setting up subscriptions when there's nothing else to do.
 
 All sleep tools are interruptible. If a user message or subscription event arrives while the agent is sleeping, the runtime processes it immediately. The pending sleep result arrives later and is appended to history normally.
 

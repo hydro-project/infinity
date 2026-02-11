@@ -13,7 +13,7 @@ The Infinity Runtime is a Rust Lambda function triggered by the SQS FIFO input q
 
 Tool calls are POSTed to Lambda Function URLs with IAM auth (SigV4). The tool Lambda uses response streaming to acknowledge immediately (`responseStream.write('OK'); responseStream.end()`), then continues processing. The Infinity Runtime doesn't read the response body — it fires and moves on.
 
-When the tool finishes, it POSTs the result to the RAP receiver (also a Lambda Function URL). The receiver enqueues the result on the input FIFO queue, which triggers the runtime Lambda again.
+When the tool finishes, it POSTs the result to the callback endpoint (also a Lambda Function URL). The endpoint enqueues the result on the input FIFO queue, which triggers the runtime Lambda again.
 
 ## Scheduled wake-ups
 
@@ -28,9 +28,3 @@ In both cases, the runtime exits immediately after scheduling. The Lambda functi
 ## Interruption
 
 The input queue doesn't care what kind of message arrives. If a user sends a Slack message while the agent is waiting for a tool result or a scheduled wake-up, that message lands on the queue and triggers the runtime. The runtime loads history, processes the user message, and continues normally. The pending tool result or sleep wake-up arrives later as a separate message and is processed in turn.
-
-## Cost model
-
-Lambda bills per millisecond of execution. SQS bills per million requests. EventBridge Scheduler is free for one-time schedules. DSQL bills for storage and I/O.
-
-An agent that processes 100 messages per day, each taking 10 seconds of Lambda execution, costs roughly the same as a few minutes of an EC2 instance per month — regardless of whether the agent has been "alive" for a day or a year.

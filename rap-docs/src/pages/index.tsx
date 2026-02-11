@@ -19,13 +19,11 @@ export default function Home(): React.JSX.Element {
               Protocol
             </h1>
             <p>
-              The protocol for AI agents that subscribe to events, execute
-              long-running operations, and hibernate at zero cost. A
-              next-generation replacement for MCP's synchronous tool model.
+              The tool protocol for agents that live in the real world and run forever. Subscribe to real-time events, execute operations that take hours, and pay nothing while idle.
             </p>
             <div className="hero-buttons">
               <a href="/docs/what-is-rap" className="primary">
-                Read the docs
+                Get Started
               </a>
               <a href="/spec/overview" className="secondary">
                 Specification →
