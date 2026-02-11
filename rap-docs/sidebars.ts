@@ -8,8 +8,10 @@ const sidebars: SidebarsConfig = {
       label: 'About RAP',
       items: [
         'about/architecture',
+        'about/tool-servers',
+        'about/subscription-events',
         'about/agent-runtime',
-        'about/tool-role',
+        'about/mcp-compatibility',
       ],
     },
     {

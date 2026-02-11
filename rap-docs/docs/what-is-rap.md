@@ -10,17 +10,14 @@ RAP (Reactive Agent Protocol) is a protocol for AI agent tool execution. It repl
 
 In MCP, the agent calls a tool and blocks until it returns. This works for fast lookups. It falls apart when a CI pipeline takes 20 minutes, a deployment needs human approval, or you want to be notified when a PR gets reviewed. The agent burns compute waiting, or resorts to polling.
 
-RAP inverts this. Tool calls are fire-and-forget. The agent invokes a tool via HTTP, the tool acknowledges immediately, and the agent exits. When the tool finishes — 100ms or 3 days later — it POSTs the result to the agent's RAP receiver, and the agent wakes up to continue.
+RAP inverts this. Tool calls are fire-and-forget. The agent invokes a tool via HTTP, the tool acknowledges immediately, and the agent shuts down. When the tool finishes — 100ms or 3 days later — it POSTs the result back to the agent's callback URL, and the agent wakes up to continue.
 
-This enables three things MCP can't do:
+This enables three capabilities:
+- **Subscriptions.** A tool registers an ongoing subscription (e.g. "notify me on new GitHub PRs"). Each matching event wakes the agent, which processes it and goes back to sleep. The subscription persists across hibernations.
+- **Long-running tool calls.** A tool that takes minutes or hours doesn't block anything. The agent hibernates at zero cost and resumes when the result arrives.
+- **Agent hibernation.** When there's nothing to do, the agent process shuts down entirely. No idle compute. It restarts instantly when a message arrives — user input, tool result, or external event.
 
-**Subscriptions.** A tool registers an ongoing subscription (e.g. "notify me on new GitHub PRs"). Each matching event wakes the agent, which processes it and goes back to sleep. The subscription persists across agent hibernations.
-
-**Long-running tool calls.** A tool that takes minutes or hours doesn't block anything. The agent hibernates at zero cost and resumes when the result arrives.
-
-**Agent hibernation.** When there's nothing to do, the agent process shuts down entirely. No idle compute. It restarts instantly when a message arrives — user input, tool result, or external event.
-
-RAP wraps MCP, not replaces it. Any MCP server works as a RAP tool through the proxy layer. You keep the MCP ecosystem and gain async execution for the tools that need it.
+RAP is also fully compatible with MCP. Any MCP server works as a RAP tool through a backwards compatibility layer — you keep the entire MCP ecosystem and gain async execution for the tools that need it.
 
 ## Who should use RAP?
 

@@ -881,7 +881,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                     synthetic_args.as_object_mut().unwrap().insert(
                         "kind".to_string(),
                         serde_json::json!(format!(
-                            "thread_report:{} (child thread closed)",
+                            "thread_report:{}",
                             original_tool_call_id
                         )),
                     );
