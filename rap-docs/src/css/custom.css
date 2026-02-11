@@ -301,20 +301,16 @@
 
 .features-right pre {
   margin: 0;
-  background: #0d1117;
-  border: 1px solid #21262d;
   border-radius: 12px;
   padding: 1.5rem;
   font-size: 0.875rem;
   font-weight: 500;
   line-height: 1.7;
   overflow-x: auto;
-  color: #c9d1d9;
   min-height: 340px;
 }
 
 .features-right pre code {
-  color: #c9d1d9;
   font-weight: 500;
   background: none;
   padding: 0;
