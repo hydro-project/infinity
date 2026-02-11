@@ -61,13 +61,13 @@ const installPromise = ensureServerInstalled().catch(err => {
 // Token storage helpers
 async function getStoredToken(userId) {
     if (!OAUTH_TOKEN_TABLE || !userId) return null;
-    
+
     try {
         const result = await dynamoClient.send(new GetItemCommand({
             TableName: OAUTH_TOKEN_TABLE,
             Key: { user_id: { S: userId } },
         }));
-        
+
         if (result.Item?.access_token?.S) {
             return {
                 accessToken: result.Item.access_token.S,
@@ -83,20 +83,20 @@ async function getStoredToken(userId) {
 
 async function storeToken(userId, tokenData) {
     if (!OAUTH_TOKEN_TABLE || !userId) return;
-    
+
     const item = {
         user_id: { S: userId },
         access_token: { S: tokenData.accessToken },
         updated_at: { N: String(Date.now()) },
     };
-    
+
     if (tokenData.refreshToken) {
         item.refresh_token = { S: tokenData.refreshToken };
     }
     if (tokenData.expiresAt) {
         item.expires_at = { N: String(tokenData.expiresAt) };
     }
-    
+
     await dynamoClient.send(new PutItemCommand({
         TableName: OAUTH_TOKEN_TABLE,
         Item: item,
@@ -106,7 +106,7 @@ async function storeToken(userId, tokenData) {
 // Store pending OAuth request for callback
 async function storePendingOAuthRequest(requestId, requestData) {
     if (!OAUTH_TOKEN_TABLE) return;
-    
+
     await dynamoClient.send(new PutItemCommand({
         TableName: OAUTH_TOKEN_TABLE,
         Item: {
@@ -119,13 +119,13 @@ async function storePendingOAuthRequest(requestId, requestData) {
 
 async function getPendingOAuthRequest(requestId) {
     if (!OAUTH_TOKEN_TABLE) return null;
-    
+
     try {
         const result = await dynamoClient.send(new GetItemCommand({
             TableName: OAUTH_TOKEN_TABLE,
             Key: { user_id: { S: `pending:${requestId}` } },
         }));
-        
+
         if (result.Item?.request_data?.S) {
             return JSON.parse(result.Item.request_data.S);
         }
@@ -158,7 +158,7 @@ async function fetchOAuthMetadata(resourceMetadataUrl) {
     }
 
     console.log('Fetching Protected Resource Metadata from:', resourceMetadataUrl);
-    
+
     // Fetch the Protected Resource Metadata document
     const prmResponse = await fetch(resourceMetadataUrl);
     if (!prmResponse.ok) {
@@ -176,13 +176,13 @@ async function fetchOAuthMetadata(resourceMetadataUrl) {
     // Fetch the Authorization Server Metadata
     // Try RFC 8414 first, then fall back to OpenID Connect discovery
     const authServerBase = authServerUrl.endsWith('/') ? authServerUrl : authServerUrl + '/';
-    
+
     let asm = null;
-    
+
     // Try OAuth 2.0 Authorization Server Metadata (RFC 8414)
     const oauthMetadataUrl = authServerBase + '.well-known/oauth-authorization-server';
     console.log('Trying OAuth Authorization Server Metadata:', oauthMetadataUrl);
-    
+
     let asmResponse = await fetch(oauthMetadataUrl);
     if (asmResponse.ok) {
         asm = await asmResponse.json();
@@ -191,25 +191,25 @@ async function fetchOAuthMetadata(resourceMetadataUrl) {
         // Fall back to OpenID Connect discovery
         const oidcMetadataUrl = authServerBase + '.well-known/openid-configuration';
         console.log('Trying OpenID Connect discovery:', oidcMetadataUrl);
-        
+
         asmResponse = await fetch(oidcMetadataUrl);
         if (asmResponse.ok) {
             asm = await asmResponse.json();
             console.log('Found OpenID Connect configuration');
         }
     }
-    
+
     if (!asm) {
         throw new Error(`Failed to fetch Authorization Server Metadata from either endpoint`);
     }
-    
+
     console.log('Authorization Server Metadata:', JSON.stringify(asm));
 
     // Derive missing endpoints from issuer URL if not provided
     // This handles minimal OIDC configs that only have issuer
     const issuer = asm.issuer || authServerUrl;
     const issuerBase = issuer.endsWith('/') ? issuer.slice(0, -1) : issuer;
-    
+
     // Standard OAuth/OIDC endpoint paths (used as fallback)
     const authorizationEndpoint = asm.authorization_endpoint || `${issuerBase}/login/oauth/authorize`;
     const tokenEndpoint = asm.token_endpoint || `${issuerBase}/login/oauth/access_token`;
@@ -250,17 +250,17 @@ async function getOrCreateClientRegistration(oauthMetadata) {
     if (!OAUTH_TOKEN_TABLE) {
         throw new Error('OAUTH_TOKEN_TABLE required for Dynamic Client Registration');
     }
-    
+
     // Use a consistent key for the client registration based on the auth server
     const registrationKey = `client:${oauthMetadata.resourceMetadataUrl}`;
-    
+
     // Try to get existing registration
     try {
         const result = await dynamoClient.send(new GetItemCommand({
             TableName: OAUTH_TOKEN_TABLE,
             Key: { user_id: { S: registrationKey } },
         }));
-        
+
         if (result.Item?.client_id?.S) {
             console.log('Using existing client registration from DynamoDB');
             return {
@@ -271,17 +271,17 @@ async function getOrCreateClientRegistration(oauthMetadata) {
     } catch (error) {
         console.error('Error fetching client registration:', error);
     }
-    
+
     // No existing registration, perform Dynamic Client Registration
     if (!oauthMetadata.registrationEndpoint) {
         throw new Error('Authorization server does not support Dynamic Client Registration. Please provide OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET environment variables.');
     }
-    
+
     console.log('Performing Dynamic Client Registration at:', oauthMetadata.registrationEndpoint);
-    
+
     // Build redirect URIs
     const redirectUris = OAUTH_CALLBACK_URL ? [OAUTH_CALLBACK_URL] : [];
-    
+
     // Client metadata for registration (RFC 7591)
     const clientMetadata = {
         client_name: 'Infinity Agents MCP Proxy',
@@ -293,7 +293,7 @@ async function getOrCreateClientRegistration(oauthMetadata) {
         // Request scopes if available
         scope: oauthMetadata.scopes?.join(' ') || undefined,
     };
-    
+
     const response = await fetch(oauthMetadata.registrationEndpoint, {
         method: 'POST',
         headers: {
@@ -301,16 +301,16 @@ async function getOrCreateClientRegistration(oauthMetadata) {
         },
         body: JSON.stringify(clientMetadata),
     });
-    
+
     if (!response.ok) {
         const errorText = await response.text();
         console.error('Dynamic Client Registration failed:', response.status, errorText);
         throw new Error(`Dynamic Client Registration failed: ${response.status} - ${errorText}`);
     }
-    
+
     const registration = await response.json();
     console.log('Client registered successfully, client_id:', registration.client_id);
-    
+
     // Store the registration for future use
     const item = {
         user_id: { S: registrationKey },
@@ -318,16 +318,16 @@ async function getOrCreateClientRegistration(oauthMetadata) {
         registration_response: { S: JSON.stringify(registration) },
         created_at: { N: String(Date.now()) },
     };
-    
+
     if (registration.client_secret) {
         item.client_secret = { S: registration.client_secret };
     }
-    
+
     await dynamoClient.send(new PutItemCommand({
         TableName: OAUTH_TOKEN_TABLE,
         Item: item,
     }));
-    
+
     return {
         clientId: registration.client_id,
         clientSecret: registration.client_secret || null,
@@ -342,7 +342,7 @@ function generatePKCE() {
     const array = new Uint8Array(32);
     crypto.getRandomValues(array);
     const codeVerifier = base64UrlEncode(array);
-    
+
     // Generate code challenge using SHA-256
     const encoder = new TextEncoder();
     const data = encoder.encode(codeVerifier);
@@ -370,7 +370,7 @@ class MCPClient {
         return new Promise((resolve, reject) => {
             const [cmd, ...args] = MCP_SERVER_COMMAND;
             console.log('Starting MCP server:', cmd, args);
-            
+
             this.process = spawn(cmd, args, {
                 env: { ...process.env, ...MCP_SERVER_ENV, HOME: '/tmp', TMPDIR: '/tmp' },
                 stdio: ['pipe', 'pipe', 'pipe'],
@@ -514,7 +514,7 @@ class HTTPMCPClient {
         if (response.status === 401) {
             const authHeader = response.headers.get('WWW-Authenticate');
             const body = await response.text();
-            
+
             // Extract resource_metadata URL from WWW-Authenticate header
             // Format: Bearer resource_metadata="https://..."
             let resourceMetadataUrl = null;
@@ -524,7 +524,7 @@ class HTTPMCPClient {
                     resourceMetadataUrl = match[1];
                 }
             }
-            
+
             if (resourceMetadataUrl) {
                 throw new OAuthRequiredError(resourceMetadataUrl);
             }
@@ -630,106 +630,122 @@ async function sendOAuthUrl(rapReceiverUrl, groupId, id, callId, authUrl) {
 }
 
 /**
- * Unified handler for both SQS events (tool requests) and HTTP requests (OAuth callback)
+ * Unified handler for HTTP requests.
+ * Tool invocations arrive as POST with JSON body via Function URL (response streaming).
+ * OAuth callbacks arrive as GET with query parameters.
+ *
+ * Uses response streaming to immediately return OK for tool invocations,
+ * then processes the request asynchronously and sends results via RAP.
  */
-export const handler = async (event) => {
+export const handler = awslambda.streamifyResponse(async (event, responseStream) => {
     console.log('Received event:', JSON.stringify(event, null, 2));
 
-    // Detect if this is an HTTP request (API Gateway or Function URL) or SQS event
-    // API Gateway REST API has httpMethod, API Gateway HTTP API has requestContext.http
-    if (event.httpMethod || event.requestContext?.http || event.rawPath) {
-        return handleOAuthCallback(event);
+    // Detect OAuth callback: GET request with 'code' query parameter
+    const method = event.requestContext?.http?.method || event.httpMethod || 'POST';
+    const queryParams = event.queryStringParameters || {};
+
+    if (method === 'GET' && (queryParams.code || queryParams.error)) {
+        // OAuth callback - return HTML response
+        const result = await handleOAuthCallback(event);
+        responseStream.write(JSON.stringify(result));
+        responseStream.end();
+        return;
     }
 
-    // Otherwise, handle as SQS event
+    // Tool invocation - immediately stream OK so the leader doesn't block
+    responseStream.write('OK');
+    responseStream.end();
+
+    // Parse the request body
+    const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+    if (!body) {
+        console.error('Empty request body');
+        return;
+    }
+
     if (!MCP_SERVER_URL) {
         await ensureServerInstalled();
     }
 
-    for (const record of event.Records) {
-        const request = JSON.parse(record.body);
-        const { arguments: args, id, call_id, rap_receiver_url, group_id, operation, user_id } = request;
+    const { arguments: args, id, call_id, rap_receiver_url, group_id, operation, user_id } = body;
 
-        console.log('Processing MCP request:', { operation, args, id, call_id, user_id });
+    console.log('Processing MCP request:', { operation, args, id, call_id, user_id });
+
+    try {
+        // Get stored token for this user
+        const tokenData = await getStoredToken(user_id);
+        const mcpClient = createMCPClient(tokenData?.accessToken);
 
         try {
-            // Get stored token for this user
-            const tokenData = await getStoredToken(user_id);
-            const mcpClient = createMCPClient(tokenData?.accessToken);
+            await mcpClient.start();
 
-            try {
-                await mcpClient.start();
-
-                let result;
-                if (operation?.endsWith('_list_tools')) {
-                    console.log('Listing tools');
-                    const toolsResult = await mcpClient.listTools();
-                    result = formatToolsList(toolsResult);
-                } else if (operation?.endsWith('_invoke_tool')) {
-                    const toolName = args.tool_name;
-                    const toolArgs = args.arguments || {};
-                    console.log('Invoking tool:', toolName, 'with args:', toolArgs);
-                    const invokeResult = await mcpClient.invokeTool(toolName, toolArgs);
-                    result = formatToolResult(toolName, invokeResult);
-                } else {
-                    throw new Error(`Unknown operation: ${operation}`);
-                }
-
-                await sendToolResult(rap_receiver_url, group_id, id, call_id, result);
-            } catch (error) {
-                if (error instanceof OAuthRequiredError) {
-                    // For list_tools, initiate OAuth flow
-                    if (operation?.endsWith('_list_tools')) {
-                        // Fetch OAuth metadata from the PRM document
-                        const oauthMetadata = await fetchOAuthMetadata(error.resourceMetadataUrl);
-                        
-                        // Get or create client registration (Dynamic Client Registration)
-                        const clientRegistration = await getOrCreateClientRegistration(oauthMetadata);
-                        
-                        // Generate PKCE challenge
-                        const pkce = await generatePKCE();
-                        
-                        // Store the pending request with PKCE verifier, metadata, and client info
-                        await storePendingOAuthRequest(id, {
-                            operation, args, id, call_id, rap_receiver_url, group_id, user_id,
-                            codeVerifier: pkce.codeVerifier,
-                            tokenEndpoint: oauthMetadata.tokenEndpoint,
-                            resource: oauthMetadata.resource,
-                            clientId: clientRegistration.clientId,
-                            clientSecret: clientRegistration.clientSecret,
-                        });
-
-                        // Build the authorization URL with the registered client ID
-                        const authUrl = buildAuthorizationUrl(oauthMetadata, clientRegistration, id, user_id, pkce.codeChallenge);
-                        await sendOAuthUrl(rap_receiver_url, group_id, id, call_id, authUrl);
-                    } else {
-                        // For other operations, tell the agent to call list_tools first
-                        await sendToolResult(
-                            rap_receiver_url, group_id, id, call_id,
-                            'Authorization required. Please call the list_tools operation first to complete the OAuth flow.'
-                        );
-                    }
-                } else {
-                    throw error;
-                }
-            } finally {
-                mcpClient.stop();
+            let result;
+            if (operation?.endsWith('_list_tools')) {
+                console.log('Listing tools');
+                const toolsResult = await mcpClient.listTools();
+                result = formatToolsList(toolsResult);
+            } else if (operation?.endsWith('_invoke_tool')) {
+                const toolName = args.tool_name;
+                const toolArgs = args.arguments || {};
+                console.log('Invoking tool:', toolName, 'with args:', toolArgs);
+                const invokeResult = await mcpClient.invokeTool(toolName, toolArgs);
+                result = formatToolResult(toolName, invokeResult);
+            } else {
+                throw new Error(`Unknown operation: ${operation}`);
             }
-        } catch (error) {
-            console.error('Error processing MCP request:', error);
-            await sendToolResult(rap_receiver_url, group_id, id, call_id, `MCP tool error: ${error.message}`);
-        }
-    }
 
-    return { statusCode: 200, body: JSON.stringify({ ok: true }) };
-};
+            await sendToolResult(rap_receiver_url, group_id, id, call_id, result);
+        } catch (error) {
+            if (error instanceof OAuthRequiredError) {
+                // For list_tools, initiate OAuth flow
+                if (operation?.endsWith('_list_tools')) {
+                    // Fetch OAuth metadata from the PRM document
+                    const oauthMetadata = await fetchOAuthMetadata(error.resourceMetadataUrl);
+
+                    // Get or create client registration (Dynamic Client Registration)
+                    const clientRegistration = await getOrCreateClientRegistration(oauthMetadata);
+
+                    // Generate PKCE challenge
+                    const pkce = await generatePKCE();
+
+                    // Store the pending request with PKCE verifier, metadata, and client info
+                    await storePendingOAuthRequest(id, {
+                        operation, args, id, call_id, rap_receiver_url, group_id, user_id,
+                        codeVerifier: pkce.codeVerifier,
+                        tokenEndpoint: oauthMetadata.tokenEndpoint,
+                        resource: oauthMetadata.resource,
+                        clientId: clientRegistration.clientId,
+                        clientSecret: clientRegistration.clientSecret,
+                    });
+
+                    // Build the authorization URL with the registered client ID
+                    const authUrl = buildAuthorizationUrl(oauthMetadata, clientRegistration, id, user_id, pkce.codeChallenge);
+                    await sendOAuthUrl(rap_receiver_url, group_id, id, call_id, authUrl);
+                } else {
+                    // For other operations, tell the agent to call list_tools first
+                    await sendToolResult(
+                        rap_receiver_url, group_id, id, call_id,
+                        'Authorization required. Please call the list_tools operation first to complete the OAuth flow.'
+                    );
+                }
+            } else {
+                throw error;
+            }
+        } finally {
+            mcpClient.stop();
+        }
+    } catch (error) {
+        console.error('Error processing MCP request:', error);
+        await sendToolResult(rap_receiver_url, group_id, id, call_id, `MCP tool error: ${error.message}`);
+    }
+});
 
 /**
  * Build the OAuth authorization URL with all required parameters
  */
 function buildAuthorizationUrl(oauthMetadata, clientRegistration, requestId, userId, codeChallenge) {
     const url = new URL(oauthMetadata.authorizationEndpoint);
-    
+
     // Build redirect URI with our callback URL
     let redirectUri = OAUTH_CALLBACK_URL;
     if (redirectUri) {
@@ -738,27 +754,27 @@ function buildAuthorizationUrl(oauthMetadata, clientRegistration, requestId, use
         if (userId) callbackUrl.searchParams.set('user_id', userId);
         redirectUri = callbackUrl.toString();
     }
-    
+
     // Standard OAuth 2.0 parameters
     url.searchParams.set('response_type', 'code');
     url.searchParams.set('client_id', clientRegistration.clientId);
     if (redirectUri) url.searchParams.set('redirect_uri', redirectUri);
     url.searchParams.set('state', requestId);
-    
+
     // PKCE parameters (RFC 7636)
     url.searchParams.set('code_challenge', codeChallenge);
     url.searchParams.set('code_challenge_method', 'S256');
-    
+
     // Request scopes if available
     if (oauthMetadata.scopes?.length > 0) {
         url.searchParams.set('scope', oauthMetadata.scopes.join(' '));
     }
-    
+
     // Resource indicator (RFC 8707) if available
     if (oauthMetadata.resource) {
         url.searchParams.set('resource', oauthMetadata.resource);
     }
-    
+
     return url.toString();
 }
 
@@ -805,7 +821,7 @@ async function handleOAuthCallback(event) {
 
         // Exchange authorization code for access token
         const tokenData = await exchangeCodeForToken(code, pendingRequest);
-        
+
         // Store the token
         const effectiveUserId = user_id || pendingRequest.user_id;
         if (effectiveUserId) {
@@ -814,7 +830,7 @@ async function handleOAuthCallback(event) {
 
         // Re-execute the original request with the new token
         const mcpClient = createMCPClient(tokenData.accessToken);
-        
+
         try {
             await mcpClient.start();
 
@@ -861,17 +877,17 @@ async function handleOAuthCallback(event) {
  */
 async function exchangeCodeForToken(code, pendingRequest) {
     const { tokenEndpoint, codeVerifier, resource, clientId, clientSecret } = pendingRequest;
-    
+
     if (!tokenEndpoint) {
         throw new Error('No token endpoint available');
     }
-    
+
     if (!clientId) {
         throw new Error('No client_id available');
     }
-    
+
     console.log('Exchanging code for token at:', tokenEndpoint);
-    
+
     // Build redirect URI (must match what was used in authorization request)
     let redirectUri = OAUTH_CALLBACK_URL;
     if (redirectUri) {
@@ -880,7 +896,7 @@ async function exchangeCodeForToken(code, pendingRequest) {
         if (pendingRequest.user_id) callbackUrl.searchParams.set('user_id', pendingRequest.user_id);
         redirectUri = callbackUrl.toString();
     }
-    
+
     // Build token request body
     const params = new URLSearchParams();
     params.set('grant_type', 'authorization_code');
@@ -889,36 +905,36 @@ async function exchangeCodeForToken(code, pendingRequest) {
     if (redirectUri) params.set('redirect_uri', redirectUri);
     if (codeVerifier) params.set('code_verifier', codeVerifier);
     if (resource) params.set('resource', resource);
-    
+
     // Build headers - include client secret if we have one (confidential client)
     const headers = {
         'Content-Type': 'application/x-www-form-urlencoded',
         'Accept': 'application/json', // Request JSON response (GitHub needs this)
     };
-    
+
     // If we have a client secret, use HTTP Basic auth or include in body
     if (clientSecret) {
         // Use HTTP Basic authentication for confidential clients
         const credentials = btoa(`${clientId}:${clientSecret}`);
         headers['Authorization'] = `Basic ${credentials}`;
     }
-    
+
     const response = await fetch(tokenEndpoint, {
         method: 'POST',
         headers,
         body: params.toString(),
     });
-    
+
     if (!response.ok) {
         const errorText = await response.text();
         console.error('Token exchange failed:', response.status, errorText);
         throw new Error(`Token exchange failed: ${response.status} - ${errorText}`);
     }
-    
+
     // Parse response - handle both JSON and form-urlencoded responses
     const contentType = response.headers.get('Content-Type') || '';
     let tokenResponse;
-    
+
     if (contentType.includes('application/json')) {
         tokenResponse = await response.json();
     } else {
@@ -926,14 +942,14 @@ async function exchangeCodeForToken(code, pendingRequest) {
         const text = await response.text();
         tokenResponse = Object.fromEntries(new URLSearchParams(text));
     }
-    
+
     console.log('Token response received');
-    
+
     return {
         accessToken: tokenResponse.access_token,
         refreshToken: tokenResponse.refresh_token || null,
-        expiresAt: tokenResponse.expires_in 
-            ? Date.now() + (tokenResponse.expires_in * 1000) 
+        expiresAt: tokenResponse.expires_in
+            ? Date.now() + (tokenResponse.expires_in * 1000)
             : null,
     };
 }

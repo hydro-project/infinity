@@ -1,7 +1,4 @@
-import * as cdk from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as sqs from 'aws-cdk-lib/aws-sqs';
-import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { ToolSet, ToolSetConfig } from '../tools/tool-set';
 import { InfinityAgent } from '..';
 
@@ -15,41 +12,29 @@ export interface MCPToolSetProps {
    * Lambda function that proxies to the MCP server
    */
   readonly handler: lambda.IFunction;
-
-  /**
-   * Optional: custom queue configuration
-   */
-  readonly queueProps?: Partial<sqs.QueueProps>;
 }
 
 /**
- * An MCP server that automatically creates list_tools and invoke_tool methods
+ * An MCP server that automatically creates list_tools and invoke_tool methods.
+ * The leader invokes the MCP proxy Lambda via HTTP (Function URL with IAM auth).
+ * The Lambda uses response streaming to return OK immediately, then processes async.
  */
 export class MCPToolSet extends ToolSet {
-  public readonly queue: sqs.Queue;
+  public readonly functionUrl: lambda.FunctionUrl;
   private readonly name: string;
 
   constructor(agent: InfinityAgent, id: string, props: MCPToolSetProps) {
     super(agent, id);
     this.name = props.name;
 
-    // Create SQS queue for this MCP server
-    this.queue = new sqs.Queue(this, 'RequestQueue', {
-      visibilityTimeout: cdk.Duration.seconds(60),
-      retentionPeriod: cdk.Duration.days(4),
-      ...props.queueProps,
+    // Expose the MCP proxy handler via a Function URL with IAM auth (SigV4)
+    this.functionUrl = props.handler.addFunctionUrl({
+      authType: lambda.FunctionUrlAuthType.AWS_IAM,
+      invokeMode: lambda.InvokeMode.RESPONSE_STREAM,
     });
 
-    // Add queue as event source for the handler
-    props.handler.addEventSource(
-      new SqsEventSource(this.queue, {
-        batchSize: 1,
-        reportBatchItemFailures: true,
-      })
-    );
-
-    // Grant the agent permission to send to this queue
-    agent.grantQueuePermissions(this.queue);
+    // Grant the leader permission to invoke this tool's Function URL
+    agent.grantToolInvokeAccess(props.handler);
 
     // Grant the handler permission to invoke the RAP receiver (SigV4)
     agent.grantRapAccess(props.handler);
@@ -62,7 +47,7 @@ export class MCPToolSet extends ToolSet {
     return {
       type: 'mcp',
       name: this.name,
-      queue_url: this.queue.queueUrl,
+      function_url: this.functionUrl.url,
     };
   }
 }

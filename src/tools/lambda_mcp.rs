@@ -1,17 +1,17 @@
 use super::{Tool, ToolSet, lambda_tool::LambdaTool};
 
-/// Abstraction for MCP servers wrapped as Lambda functions
-/// This provides a consistent interface for tools that proxy to MCP servers
+/// Abstraction for MCP servers wrapped as Lambda functions.
+/// The leader invokes the MCP proxy Lambda via HTTP (Function URL with IAM auth).
 pub struct LambdaMCP {
     pub name: String,
-    pub queue_url: String,
+    pub function_url: String,
 }
 
 impl LambdaMCP {
-    pub fn new(name: impl Into<String>, queue_url: impl Into<String>) -> Self {
+    pub fn new(name: impl Into<String>, function_url: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            queue_url: queue_url.into(),
+            function_url: function_url.into(),
         }
     }
 }
@@ -30,7 +30,7 @@ impl ToolSet for LambdaMCP {
                     "properties": {},
                     "required": []
                 }),
-                queue_url: self.queue_url.clone(),
+                function_url: self.function_url.clone(),
             }),
             Box::new(LambdaTool {
                 name: format!("{}_invoke_tool", self.name),
@@ -52,7 +52,7 @@ impl ToolSet for LambdaMCP {
                     },
                     "required": ["tool_name"]
                 }),
-                queue_url: self.queue_url.clone(),
+                function_url: self.function_url.clone(),
             }),
         ]
     }

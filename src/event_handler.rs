@@ -1064,6 +1064,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
 
         let tool_context = ToolContext {
             sqs_client: sqs_client.clone(),
+            http_client: crate::tools::rap_http::RapHttpClient::new(&config),
             group_id: active_thread_id.clone(),
             input_queue_url: std::env::var("INPUT_QUEUE_URL").unwrap_or_default(),
             input_queue_arn: std::env::var("INPUT_QUEUE_ARN").unwrap_or_default(),
