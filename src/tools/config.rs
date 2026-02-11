@@ -11,7 +11,7 @@ pub enum ToolConfig {
         name: String,
         description: String,
         parameters: serde_json::Value,
-        queue_url: String,
+        function_url: String,
     },
 }
 
@@ -22,12 +22,12 @@ impl ToolConfig {
                 name,
                 description,
                 parameters,
-                queue_url,
+                function_url,
             } => Box::new(LambdaTool {
                 name,
                 description,
                 parameters,
-                queue_url,
+                function_url,
             }),
         }
     }
@@ -37,7 +37,7 @@ impl ToolConfig {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolSetConfig {
     Vec { tools: Vec<ToolConfig> },
-    Mcp { name: String, queue_url: String },
+    Mcp { name: String, function_url: String },
 }
 
 impl ToolSetConfig {
@@ -47,7 +47,9 @@ impl ToolSetConfig {
                 let tool_impls = tools.into_iter().map(|t| t.into_tool()).collect();
                 Box::new(VecToolSet::new(tool_impls))
             }
-            ToolSetConfig::Mcp { name, queue_url } => Box::new(LambdaMCP::new(name, queue_url)),
+            ToolSetConfig::Mcp { name, function_url } => {
+                Box::new(LambdaMCP::new(name, function_url))
+            }
         }
     }
 }

@@ -1,6 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as path from 'path';
 import { InfinityAgent } from '..';
 import { MCPToolSet } from './mcp-tool-set';
@@ -22,18 +21,14 @@ export interface LambdaMCPToolSetProps {
   readonly env?: Record<string, string | undefined>;
 
   /**
-   * Optional: custom queue configuration
-   */
-  readonly queueProps?: Partial<sqs.QueueProps>;
-
-  /**
    * Optional: custom Lambda configuration
    */
   readonly lambdaProps?: Partial<lambda.FunctionProps>;
 }
 
 /**
- * An MCP server that automatically creates the Lambda proxy, queue, and tool set configuration
+ * An MCP server that automatically creates the Lambda proxy and tool set configuration.
+ * Invoked via HTTP (Function URL with IAM auth) instead of SQS.
  */
 export class LambdaMCPToolSet extends MCPToolSet {
   public readonly handler: lambda.Function;
@@ -57,7 +52,6 @@ export class LambdaMCPToolSet extends MCPToolSet {
     super(agent, id, {
       name: props.name,
       handler,
-      queueProps: props.queueProps,
     });
 
     this.handler = handler;

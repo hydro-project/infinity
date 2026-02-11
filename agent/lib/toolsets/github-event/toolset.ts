@@ -117,9 +117,6 @@ export class GitHubEventToolSet extends CustomToolSet {
         required: ['owner', 'repo'],
       },
       handler: checkGithubActionsToolFunction,
-      queueProps: {
-        visibilityTimeout: cdk.Duration.seconds(30),
-      },
     });
 
     const cancelGithubSubscriptionTool = new LambdaTool(agent, 'CancelSubscriptionTool', {
@@ -137,9 +134,6 @@ export class GitHubEventToolSet extends CustomToolSet {
         required: ['subscription_id'],
       },
       handler: checkGithubActionsToolFunction,
-      queueProps: {
-        visibilityTimeout: cdk.Duration.seconds(30),
-      },
     });
 
     // GitHub Webhook Receiver

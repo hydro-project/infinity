@@ -1,6 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as path from 'path';
@@ -47,18 +46,14 @@ export interface HTTPMCPToolSetProps {
   };
 
   /**
-   * Optional: custom queue configuration
-   */
-  readonly queueProps?: Partial<sqs.QueueProps>;
-
-  /**
    * Optional: custom Lambda configuration
    */
   readonly lambdaProps?: Partial<lambda.FunctionProps>;
 }
 
 /**
- * An MCP server that connects to an HTTP endpoint using Streamable HTTP transport
+ * An MCP server that connects to an HTTP endpoint using Streamable HTTP transport.
+ * Invoked via HTTP (Function URL with IAM auth) instead of SQS.
  */
 export class HTTPMCPToolSet extends MCPToolSet {
   public readonly handler: lambda.Function;
@@ -131,7 +126,6 @@ export class HTTPMCPToolSet extends MCPToolSet {
     super(agent, id, {
       name: props.name,
       handler,
-      queueProps: props.queueProps,
     });
 
     this.handler = handler;
