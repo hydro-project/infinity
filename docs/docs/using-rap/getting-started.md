@@ -17,8 +17,8 @@ The fastest way to get a RAP agent running is with the Infinity Runtime's CDK fr
 ## Deploy
 
 ```bash
-git clone https://github.com/your-org/rap
-cd rap/agent
+git clone https://github.com/hydro-project/infinity
+cd agent
 npm install
 npx cdk deploy
 ```

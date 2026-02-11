@@ -75,11 +75,6 @@ const config: Config = {
           position: 'left',
           activeBaseRegex: '/spec/',
         },
-        {
-          href: 'https://github.com/your-org/rap',
-          label: 'GitHub',
-          position: 'right',
-        },
       ],
     },
     footer: {
@@ -102,7 +97,6 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} Reactive Agent Protocol`,
     },
     prism: {
       theme: prismThemes.github,
