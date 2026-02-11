@@ -23,7 +23,7 @@ const TERMINAL_LINES: TerminalLine[] = [
   { text: '', delay: 600 },
   { text: '', spacer: true, delay: 0 },
   {
-    text: '◆ [RAP] subscribe_stripe_events({ event: "charge.succeeded", min: 500 })',
+    text: '◆ subscribe_stripe_events({ event: "charge.succeeded", min: 500 })',
     className: 'tool-call',
     delay: 400,
   },
@@ -34,12 +34,12 @@ const TERMINAL_LINES: TerminalLine[] = [
   },
   { text: '', spacer: true, delay: 200 },
   {
-    text: '◆ [RAP] sleep_until_event_or_input()',
+    text: '◆ sleep_until_event_or_input()',
     className: 'tool-call',
     delay: 300,
   },
   {
-    text: '💤 Hibernating... (zero compute cost)',
+    text: '💤 Hibernating... (runtime shut down)',
     className: 'sleep-text',
     delay: 400,
   },
@@ -57,7 +57,7 @@ const TERMINAL_LINES: TerminalLine[] = [
   },
   { text: '', spacer: true, delay: 400 },
   {
-    text: '◆ [MCP] stripe_get_charge({ charge: "ch_3Nk9x" })',
+    text: '◆ stripe_get_charge({ charge: "ch_3Nk9x" })',
     className: 'tool-call',
     delay: 300,
   },
@@ -68,20 +68,25 @@ const TERMINAL_LINES: TerminalLine[] = [
   },
   { text: '', spacer: true, delay: 300 },
   {
-    text: '◆ [RAP] send_email({ to: "sarah@acme.co", body: "Enjoy your purchase Sarah! The weekender bag pairs great with your scarf." })',
+    text: '◆ send_email({ to: "sarah@acme.co", body: "Enjoy your purchase Sarah! The weekender bag pairs great with your scarf." })',
     className: 'tool-call',
     delay: 300,
   },
   {
-    text: '💤 Hibernating... (zero compute cost)',
+    text: '💤 Hibernating... (runtime shut down)',
     className: 'sleep-text',
     delay: 500,
   },
   { text: '', spacer: true, delay: 2000 },
   {
+    text: '⚡ Woken by tool call result:',
+    className: 'event',
+    delay: 400,
+  },
+  {
     text: '✓ Email delivered.',
     className: 'result',
-    delay: 400,
+    delay: 300,
   }
 ];
 
@@ -91,7 +96,6 @@ export default function AnimatedTerminal(): React.JSX.Element {
   const [visibleLines, setVisibleLines] = useState<number>(0);
   const [typingIndex, setTypingIndex] = useState<number | null>(null); // which line is typing
   const [typingChars, setTypingChars] = useState<number>(0); // how many chars shown
-  const [cycle, setCycle] = useState(0);
   const bodyRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef<ReturnType<typeof setTimeout>>(null);
 
@@ -141,7 +145,7 @@ export default function AnimatedTerminal(): React.JSX.Element {
 
     showNext();
     return clearTimer;
-  }, [cycle, clearTimer]);
+  }, [clearTimer]);
 
   useEffect(() => {
     if (bodyRef.current) {
@@ -157,13 +161,12 @@ export default function AnimatedTerminal(): React.JSX.Element {
         <div className="terminal-dot red" />
         <div className="terminal-dot yellow" />
         <div className="terminal-dot green" />
-        <div className="terminal-title">rap-agent</div>
       </div>
       <div className="terminal-body" ref={bodyRef} style={{ overflowY: 'auto' }}>
         {TERMINAL_LINES.slice(0, visibleLines).map((line, i) => {
           if (line.text === '' && !line.spacer) return null;
           if (line.spacer) {
-            return <div key={`${cycle}-${i}`} className="terminal-line" style={{ height: '0.5em' }} />;
+            return <div key={`${i}`} className="terminal-line" style={{ height: '0.5em' }} />;
           }
 
           const isThisLineTyping = typingIndex === i;
@@ -173,7 +176,7 @@ export default function AnimatedTerminal(): React.JSX.Element {
 
           return (
             <div
-              key={`${cycle}-${i}`}
+              key={`${i}`}
               className="terminal-line"
               style={{ animationDelay: '0ms' }}
             >

@@ -121,9 +121,9 @@
   box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
   border: 1px solid #21262d;
   font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, Consolas, monospace;
-  font-size: 0.8rem;
+  font-size: 0.9rem;
   line-height: 1.6;
-  min-height: 480px;
+  min-height: 530px;
 }
 
 .terminal-header {
@@ -155,7 +155,8 @@
 .terminal-body {
   padding: 16px;
   color: #c9d1d9;
-  overflow: hidden;
+  overflow-y: scroll;
+  height: 490px;
 }
 
 .terminal-line {
@@ -425,11 +426,11 @@
 }
 
 .comparison-card .label.mcp {
-  background: #2d333b;
+  background: transparent;
   color: #8b949e;
 }
 
 .comparison-card .label.rap {
-  background: rgba(58, 123, 213, 0.15);
+  background: transparent;
   color: var(--ifm-color-primary);
 }
