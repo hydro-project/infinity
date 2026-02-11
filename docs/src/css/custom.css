@@ -1,7 +1,3 @@
-body > svg {
-  display: none;
-}
-
 :root {
   --ifm-color-primary: #3a7bd5;
   --ifm-color-primary-dark: #2e6bc4;
