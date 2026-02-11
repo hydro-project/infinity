@@ -1,46 +1,131 @@
 ---
-sidebar_position: 3
+sidebar_position: 4
 title: Threading
 ---
 
 # Threading
 
-The Infinity Runtime supports spawning child threads for parallel work. Each thread has its own message group on the input FIFO queue, so threads process concurrently without blocking each other.
+The Infinity Runtime lets agents spawn child threads for parallel work. Each thread runs independently with its own context, and can report results back to the parent.
 
-## Spawning
+Threads are useful for concurrent processing and context management:
+- **Parallel code review** — spawn one thread per file, each reviews independently, reports back
+- **Research and execute** — one thread researches the approach while another starts implementing
+- **Event processing** — subscription events are handled in isolated threads without polluting the parent context
+- **Divide and conquer** — break a large task into sub-tasks, each in its own thread with focused context
 
-The `spawn_thread(instructions)` tool creates a child thread. The runtime records the parent-child relationship, then sends two messages: a result to the parent ("Child thread spawned with ID: \{id\}") and a result to the child ("You are inside the spawned thread"). Both are enqueued with their respective `group_id`s and process independently.
 
-## Context inheritance
+## Spawning a thread
 
-When loading history for a child thread, the runtime walks the ancestor chain from root to leaf. Each ancestor's history is truncated at the `spawn_message_order` recorded when its child was created. The leaf thread's history is included in full. These segments are concatenated to form the complete context window.
+When the agent needs to do something in parallel — review multiple files, research while implementing, process a subscription event — it calls `spawn_thread`:
 
-The `spawn_thread` tool call naturally appears at the end of each truncated segment, and its `instructions` parameter tells the child what to do.
+```
+🤖 Agent:  I'll review these three files in parallel.
 
-## Reporting
+🔧 Tool call:  spawn_thread({ instructions: "Review src/auth.ts for security issues" })
+📥 Result:     "Child thread spawned with ID: thread_a1b2"
 
-`report_to_parent(report)` sends a message to the parent thread without closing the current thread. The report is delivered as a synthetic thread report — injected into the parent's conversation as a tool result tied to the original `spawn_thread` call.
+🔧 Tool call:  spawn_thread({ instructions: "Review src/api.ts for error handling" })
+📥 Result:     "Child thread spawned with ID: thread_c3d4"
+```
 
-`close_thread(thread_id, report_to_parent?)` marks the thread as closed and optionally sends a final report. For subscription event threads, the report is annotated to indicate it came from an event handler.
+Each child thread starts with the parent's conversation history up to the point it was spawned, plus the instructions. The parent continues immediately — it doesn't wait for children to finish.
+
+The child thread inherits context from its ancestors. If the parent had a 30-message conversation before spawning, the child sees those 30 messages truncated at the spawn point, followed by its own spawn instruction and result:
+
+```
+── inherited from parent (messages 1–30) ──
+
+👤 User:       Please review src/auth.ts and src/api.ts for issues.
+🤖 Agent:      I'll review these in parallel.
+🔧 Tool call:  spawn_thread({ instructions: "Review src/auth.ts for security issues" })
+
+── child thread starts here ──
+
+📥 Result:     "You are now inside the spawned thread. Follow the
+                instructions in the tool call. Your thread ID is thread_a1b2."
+```
+
+The child has enough context to understand the task without the parent having to repeat anything. It doesn't see any messages the parent produces after the spawn point.
+
+## Reporting back
+
+Children can send results to the parent at any time using `report_to_parent`:
+
+```
+[Child thread_a1b2]
+
+🤖 Agent:      Found a SQL injection vulnerability in the auth handler.
+
+🔧 Tool call:  report_to_parent({ report: "Critical: SQL injection in auth.ts
+               line 42. The user input is interpolated directly into the query." })
+📥 Result:     "Report sent to parent thread."
+```
+
+The parent sees this as a [synthetic tool call](/docs/about/subscription-events#synthetic-tool-calls) — the same mechanism used for subscription events. The runtime injects a synthetic `spawn_thread` call and result into the parent's history:
+
+```
+[Parent thread]
+
+🔧 Synthetic:  spawn_thread({
+                 instructions: "Review src/auth.ts for security issues",
+                 kind: "thread_report:call_spawn_a1b2"
+               })
+📥 Result:     "Report from child thread: Critical: SQL injection in
+                auth.ts line 42. The user input is interpolated directly
+                into the query."
+```
+
+The report is tied to the original `spawn_thread` call, so the LLM knows which child it came from. The child can send multiple reports before closing.
+
+## Closing a thread
+
+When a child is done, it calls `close_thread` with an optional final report:
+
+```
+[Child thread_a1b2]
+
+🔧 Tool call:  close_thread({
+                 thread_id: "thread_a1b2",
+                 report_to_parent: "Review complete. 1 critical issue, 2 warnings."
+               })
+```
+
+The parent sees the report via the same synthetic tool call mechanism:
+
+```
+[Parent thread]
+
+🔧 Synthetic:  spawn_thread({
+                 instructions: "Review src/auth.ts for security issues",
+                 kind: "thread_report:call_spawn_a1b2"
+               })
+📥 Result:     "Child thread thread_a1b2 has shut down. Report:
+                Review complete. 1 critical issue, 2 warnings."
+```
 
 ## Subscription event threads
 
-When a subscription event arrives, the runtime automatically spawns a temporary child thread to process it. The child is seeded with the event content and instructions to process it, then close with a report. The parent's subscription remains active — future events spawn new child threads. Multiple events can be processed concurrently.
+When a [subscription event](/docs/about/subscription-events) arrives, the Infinity Runtime automatically spawns a temporary child thread to process it. This keeps the parent's context clean — each event gets its own fresh context window.
 
-## Thread hierarchy
+The child is seeded with the event data and instructions to process it:
 
-Thread relationships are stored in DSQL:
+```
+[Auto-spawned child for subscription event]
 
-```sql
-CREATE TABLE thread_hierarchy (
-    thread_id            VARCHAR(255) PRIMARY KEY,
-    parent_thread_id     VARCHAR(255),
-    root_thread_id       VARCHAR(255) NOT NULL,
-    spawn_message_order  BIGINT,
-    spawn_tool_call_id   VARCHAR(255),
-    closed               BOOLEAN NOT NULL DEFAULT FALSE,
-    is_subscription_event BOOLEAN NOT NULL DEFAULT FALSE
-);
+🔧 Synthetic:  subscribe_github_events({
+                 owner: "acme", repo: "api",
+                 kind: "interrupt:call_abc123 (subscription remains active)"
+               })
+📥 Result:     {"event_type": "pull_request", "action": "opened", "number": 42}
+
+🔧 Synthetic:  spawn_thread({
+                 instructions: "Process the subscription event above, then
+                 close with a report."
+               })
+📥 Result:     "You are in a new thread created for processing a
+                subscription event."
 ```
 
-Output from non-root threads is prefixed with a nesting label (`[abcd1234:efgh5678]`) so users can identify the source. Conversation metadata is always keyed by the root thread ID — all threads in a conversation share the same metadata.
+The child processes the event — reads the PR diff, runs checks, posts a review — and then closes with a report. The parent sees the report without its context being cluttered by the raw event data. If an event is irrelevant to the parent, the child can also shut down without providing a report, in which case the parent thread continues running as if the event never happened.
+
+If multiple events arrive close together, each gets its own child thread and they process concurrently.

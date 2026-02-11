@@ -1,27 +1,48 @@
 ---
-sidebar_position: 2
+sidebar_position: 4
 title: Agent Runtime
 ---
 
 # Agent Runtime
 
-The agent runtime is the process that orchestrates LLM completions and tool execution. In RAP, the runtime is designed to be ephemeral — it starts, processes one or more messages, and exits.
+The agent runtime is the host process that connects an LLM to RAP tools. It's the equivalent of an MCP client, but designed for a world where tool calls are asynchronous and the runtime doesn't stay alive between them.
 
-The runtime's job on each invocation:
+The runtime manages the conversation lifecycle: it receives inputs, maintains conversation state, runs LLM completions, dispatches tool calls, and delivers output. Tools never interact with the LLM directly — the runtime mediates everything.
 
-1. Pull messages from the input queue
-2. Load conversation history from durable storage
-3. Run the LLM completion loop — the model reads history, produces text or tool calls
-4. For each tool call, POST the invocation to the tool's HTTP endpoint. The tool acknowledges immediately. The runtime does **not** wait for the tool to finish.
-5. Persist updated conversation history
-6. Exit
+## Core responsibilities
 
-When a tool result arrives later, it lands on the input queue, the runtime starts again, and the cycle repeats. The runtime never blocks on a tool.
+**Conversation state.** The runtime owns the conversation history. Because the runtime is ephemeral (it exits between tool calls), state must be persisted to durable storage and reloaded on each invocation. The runtime is the single source of truth for what the LLM has seen and said.
 
-**Thread management.** The runtime supports spawning child threads via the `spawn_thread` tool. A child thread gets its own message group on the input queue, so it processes concurrently with the parent. The child inherits the parent's conversation history up to the spawn point. When it finishes, it can report results back to the parent via a synthetic message.
+**Tool dispatch.** When the LLM produces a tool call, the runtime resolves it to an HTTP endpoint and POSTs the invocation. The tool acknowledges immediately. The runtime does not wait for the result — it persists state and exits. This fire-and-forget dispatch is what enables hibernation.
 
-**Interruption handling.** If a user message arrives while the agent is waiting for a tool result, the runtime processes it immediately. When the original tool result eventually arrives, the runtime injects a synthetic "interrupted" result into the conversation so the LLM understands what happened.
+**Result routing.** Tool results, subscription events, and user messages all arrive through the same input channel. The runtime doesn't distinguish between them at the transport level — it loads state, appends the new message, and runs the LLM again. The `group_id` field routes messages to the correct conversation thread.
 
-**MCP compatibility.** MCP servers are wrapped in a Lambda proxy that spawns the MCP process, forwards JSON-RPC requests, and returns results via RAP. From the runtime's perspective, an MCP tool looks like any other RAP tool — it's invoked via HTTP and returns results asynchronously through the RAP receiver.
+**Tool definitions.** The runtime maintains the set of available tools and their JSON Schema definitions. These are passed to the LLM on each completion request so it knows what tools it can call. How definitions are stored and loaded is implementation-specific.
 
-The reference implementation is a Rust Lambda function using Amazon Bedrock for completions and Aurora DSQL for conversation state. But the protocol is runtime-agnostic — any process that speaks RAP can fill this role.
+## Capabilities provided to tools
+
+The invocation payload includes context that tools need to operate:
+
+| Field | Purpose |
+|---|---|
+| `callback_url` | Where the tool should POST results. The runtime provides this so tools can return results asynchronously without knowing the runtime's internal architecture. |
+| `group_id` | The conversation thread ID. Tools include this when returning results so the runtime routes them to the correct conversation. |
+| `user_id` | The end user's identity, if available. Tools can use this for authorization, personalization, or audit logging. |
+
+Tools are fully decoupled from the runtime. They don't know what LLM is being used, what the conversation history looks like, or whether the runtime is a Lambda function or a CLI process. They receive a request, do their work, and POST the result to the callback URL.
+
+## Interruption model
+
+Because the runtime is stateless and message-driven, interruptions are handled naturally. If a user sends a message while the agent is waiting for a tool result, the runtime simply starts, loads state, and processes the user message. When the tool result arrives later, it's processed as a separate invocation. The LLM sees both in its context and can reason about the sequence of events.
+
+This means agents are always responsive to users, even while waiting for long-running operations.
+
+Runtimes need to be careful about concurrency within a single conversation thread. If two messages for the same thread arrive close together (e.g. a user message and a tool result), processing them simultaneously could corrupt conversation state. The Infinity Runtime handles this by using a FIFO queue with message group IDs — messages within a thread are serialized, while different threads process concurrently. Other implementations might use database locks, optimistic concurrency control, or single-threaded processing per thread. The key invariant: within a thread, messages must be processed one at a time.
+
+## MCP compatibility
+
+The runtime can integrate MCP servers through a proxy layer. See [MCP Compatibility](/docs/about/mcp-compatibility) for how this works.
+
+## Implementation flexibility
+
+The protocol doesn't prescribe how the runtime is built. The reference implementation (the [Infinity Runtime](/docs/infinity-runtime/overview)) is a Rust Lambda function using Amazon Bedrock, but any process that can receive messages, call an LLM, POST HTTP requests, and persist state can serve as a RAP runtime. See [Building a Runtime](/docs/using-rap/building-a-runtime) for implementation guidance.

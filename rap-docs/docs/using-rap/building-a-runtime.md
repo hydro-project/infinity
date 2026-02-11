@@ -5,68 +5,261 @@ title: Building a Runtime
 
 # Building a Runtime
 
-The agent runtime is the component that orchestrates LLM completions and tool dispatch. The reference implementation is a Rust Lambda, but you can build a RAP-compatible runtime in any language on any platform. Here's what it needs to do.
+This guide walks through building a minimal RAP-compatible agent runtime in TypeScript. By the end, you'll have a working runtime that can invoke tools, handle results, and hibernate between calls.
 
-## The runtime loop
+The complete runtime is ~150 lines. We'll build it step by step.
 
-```
-receive message from input queue
-  → load conversation history from durable storage
-  → append the new message to history
-  → loop:
-      → send history + tool definitions to LLM
-      → if LLM produces text → accumulate as response
-      → if LLM calls tools → for each tool call:
-          → POST invocation to tool's HTTP endpoint (fire-and-forget)
-          → do NOT wait for the tool to finish
-      → if LLM stops (no more tool calls) → break
-  → persist conversation history
-  → send accumulated text to output
-  → exit
+## Setup
+
+Create a new project and install dependencies:
+
+```bash
+mkdir my-rap-runtime && cd my-rap-runtime
+npm init -y
+npm install express @anthropic-ai/sdk
+npm install -D typescript @types/express
+npx tsc --init
 ```
 
-The critical detail: after dispatching tool calls, the runtime **exits**. It does not wait for results. When a tool result arrives on the input queue, the runtime starts fresh, loads history, and continues.
+You'll need an Anthropic API key in your environment:
 
-## Handling tool results
+```bash
+export ANTHROPIC_API_KEY=your-key-here
+```
 
-Tool results arrive as messages on the input queue. They look like user messages containing a `ToolResult` — the tool call ID, an optional call ID, and the result text. The runtime appends this to conversation history and runs the LLM again, which sees the result and decides what to do next.
+## 1. Conversation state
 
-## Handling subscription events
+The runtime is ephemeral — it starts, processes a message, and exits. Conversation history must be persisted to survive across invocations. For this example we'll use an in-memory store to keep things simple:
 
-Subscription events arrive with a `synthetic` field containing the original tool call ID. The runtime should:
+```typescript
+const threads = new Map<string, { role: string; content: string }[]>();
 
-1. Look up the original tool call in conversation history
-2. Spawn a new child thread (new message group ID)
-3. Seed the child thread with: the subscription tool call (with an `interrupt` annotation), the event content as a tool result, and a `spawn_thread` call instructing the child to process the event
-4. The child thread processes the event independently. The parent's subscription remains active.
+function loadHistory(threadId: string) {
+  return threads.get(threadId) || [];
+}
 
-This is the most complex part of the protocol. See the [Subscriptions](/spec/subscriptions) spec for the exact message format.
+function appendMessage(threadId: string, role: string, content: string) {
+  if (!threads.has(threadId)) threads.set(threadId, []);
+  threads.get(threadId)!.push({ role, content });
+}
+```
 
-## Handling hibernation
+:::note
+In-memory state is fine for prototyping, but a production runtime needs durable storage — a database, Redis, or even a file on disk. If the process crashes, in-memory history is lost. The Infinity Runtime uses Aurora DSQL; a simpler option would be SQLite or Postgres.
+:::
 
-The runtime needs to support three sleep patterns:
+## 2. Tool definitions
 
-**Timed sleep.** The `sleep` and `sleep_until` tools schedule a future message on the input queue. For short delays, use a message delay mechanism. For long delays, use a scheduler (EventBridge Scheduler, cron, etc.) to enqueue a message at the target time. The runtime exits immediately after scheduling.
+The runtime maintains a registry of available tools and their HTTP endpoints. These are passed to the LLM so it knows what it can call:
 
-**Indefinite sleep.** The `sleep_until_event_or_input` tool is a no-op — the runtime simply exits without scheduling anything. It wakes when the next message arrives naturally (user input, subscription event, or tool result from another pending call).
+```typescript
+interface ToolDef {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  endpoint_url: string;
+}
 
-**Interruption.** If a user message arrives while the agent is sleeping (waiting for a timed wake-up), the runtime processes it immediately. The pending sleep result will arrive later and be appended to history normally.
+// In practice, load these from a config file or database
+const tools: ToolDef[] = [
+  {
+    name: 'get_weather',
+    description: 'Get current weather for a city',
+    parameters: {
+      type: 'object',
+      properties: {
+        city: { type: 'string', description: 'City name' },
+      },
+      required: ['city'],
+    },
+    endpoint_url: 'https://my-weather-tool.example.com/invoke',
+  },
+];
+```
 
-## Thread management
+## 3. Tool dispatch
 
-The runtime should support:
+When the LLM calls a tool, the runtime POSTs the invocation to the tool's endpoint. The tool acknowledges immediately — the runtime does **not** wait for the actual result:
 
-- `spawn_thread` — create a child thread with a new message group ID. The child inherits the parent's conversation history truncated at the spawn point.
-- `report_to_parent` — send a synthetic message to the parent thread with intermediate results.
-- `close_thread` — mark the thread as closed, optionally sending a final report to the parent.
+```typescript
+async function dispatchToolCall(
+  toolName: string,
+  args: Record<string, unknown>,
+  toolCallId: string,
+  callbackUrl: string,
+  threadId: string,
+) {
+  const tool = tools.find((t) => t.name === toolName);
+  if (!tool) throw new Error(`Unknown tool: ${toolName}`);
 
-Thread hierarchy is stored in the conversation database. When loading history for a child thread, the runtime walks the ancestor chain, concatenating each ancestor's history (truncated at the spawn point) to build the full context.
+  const payload = {
+    operation: toolName,
+    arguments: args,
+    id: toolCallId,
+    call_id: null,
+    callback_url: callbackUrl,
+    group_id: threadId,
+    user_id: null,
+  };
 
-## Durable state
+  // Fire-and-forget: we don't await the tool's actual work,
+  // just the HTTP acknowledgment
+  const res = await fetch(tool.endpoint_url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
 
-The runtime must persist conversation history to survive across invocations. The reference implementation uses Aurora DSQL with a simple schema:
+  if (!res.ok) {
+    throw new Error(`Tool ${toolName} returned ${res.status}`);
+  }
+}
+```
 
-- `conversation_history` table: `(session_id, message_order, message_id, message_data)`
-- `thread_hierarchy` table: `(thread_id, parent_thread_id, root_thread_id, spawn_message_order, closed)`
+This is the core of RAP's async model. The tool will POST its result to `callbackUrl` when it's done — which could be immediately, or hours later.
 
-Any durable store works — Postgres, DynamoDB, Redis, a file on disk. The key requirement is that history loads are fast and writes are durable before the runtime exits.
+## 4. The completion loop
+
+The runtime sends conversation history to the LLM and processes the response. If the LLM produces text, we accumulate it. If it calls tools, we dispatch them and **exit** — we don't loop waiting for results:
+
+```typescript
+import Anthropic from '@anthropic-ai/sdk';
+
+const anthropic = new Anthropic();
+
+async function runCompletion(threadId: string, callbackUrl: string) {
+  const history = loadHistory(threadId);
+
+  const messages = history.map((m) => ({
+    role: m.role as 'user' | 'assistant',
+    content: m.content,
+  }));
+
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 4096,
+    tools: tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.parameters as Anthropic.Tool.InputSchema,
+    })),
+    messages,
+  });
+
+  // Accumulate text output
+  let outputText = '';
+
+  for (const block of response.content) {
+    if (block.type === 'text') {
+      outputText += block.text;
+    }
+  }
+
+  // Save assistant response to history
+  appendMessage(threadId, 'assistant', JSON.stringify(response.content));
+
+  // Dispatch any tool calls (fire-and-forget)
+  for (const block of response.content) {
+    if (block.type === 'tool_use') {
+      await dispatchToolCall(
+        block.name,
+        block.input as Record<string, unknown>,
+        block.id,
+        callbackUrl,
+        threadId,
+      );
+    }
+  }
+
+  return outputText;
+}
+```
+
+Notice: after dispatching tool calls, the function returns. The runtime exits. When the tool POSTs its result to the callback URL, the runtime starts again and runs another completion with the updated history.
+
+## 5. The callback endpoint
+
+This is the "front door" that tools POST results to. It receives tool results and subscription events, appends them to conversation history, and runs the completion loop again:
+
+```typescript
+import express from 'express';
+
+const app = express();
+app.use(express.json());
+
+const CALLBACK_URL = process.env.CALLBACK_URL || 'http://localhost:3000/callback';
+
+// Callback endpoint — tools POST results here
+app.post('/callback', async (req, res) => {
+  const { type, group_id, id, tool_call_id, text } = req.body;
+
+  if (type === 'tool_result') {
+    // Append the tool result to conversation history
+    const toolResult = JSON.stringify([{
+      type: 'tool_result',
+      tool_use_id: id,
+      content: text,
+    }]);
+    appendMessage(group_id, 'user', toolResult);
+
+    // Run the completion loop again
+    const output = await runCompletion(group_id, CALLBACK_URL);
+    if (output) {
+      console.log(`[${group_id}] ${output}`);
+    }
+  }
+
+  if (type === 'subscription_event') {
+    // Subscription events require synthetic tool call generation
+    // to present the event to the LLM correctly.
+    // See: /docs/about/subscription-events#synthetic-tool-calls
+    // This is not covered in this tutorial.
+    console.log(`Subscription event received for ${group_id} — not handled in this example`);
+  }
+
+  res.json({ ok: true });
+});
+
+// User input endpoint
+app.post('/message', async (req, res) => {
+  const { thread_id, text } = req.body;
+
+  appendMessage(thread_id, 'user', text);
+  const output = await runCompletion(thread_id, CALLBACK_URL);
+
+  res.json({ response: output });
+});
+
+app.listen(3000, () => {
+  console.log('RAP runtime listening on :3000');
+});
+```
+
+## Running it
+
+```bash
+npx tsc
+node dist/index.js
+```
+
+Send a message:
+
+```bash
+curl -X POST http://localhost:3000/message \
+  -H 'Content-Type: application/json' \
+  -d '{"thread_id": "test-1", "text": "What is the weather in Tokyo?"}'
+```
+
+The runtime will call the LLM, which will invoke the `get_weather` tool. The tool receives the invocation, acknowledges immediately, and later POSTs the result to `http://localhost:3000/callback`. The runtime wakes up, appends the result, runs the LLM again, and returns the final response.
+
+## What this doesn't cover
+
+This is a minimal runtime to demonstrate the protocol. A production runtime would add:
+
+- **Subscription event handling** — requires generating [synthetic tool calls](/docs/about/subscription-events#synthetic-tool-calls) to present events to the LLM in a way it can reason about. See [Subscription Events](/docs/about/subscription-events) for the full design.
+- **Concurrency control** — serialize messages within a thread (e.g. with a queue or database lock). See [Agent Runtime](/docs/about/agent-runtime#interruption-model).
+- **Hibernation** — for a serverless deployment, replace the Express server with a Lambda triggered by SQS, and use scheduled messages for sleep. See [Infinity Runtime Hibernation](/docs/infinity-runtime/hibernation).
+- **Authentication** — sign callback requests with SigV4 or bearer tokens.
+- **Streaming** — stream LLM responses to the user instead of waiting for the full completion.
+
+The [Infinity Runtime](/docs/infinity-runtime/overview) is a production-grade implementation that handles all of these.
