@@ -14,15 +14,25 @@ rig-core = { version = "0.24", default-features = false }
 rig-bedrock = "0.3"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
-aws-sdk-dynamodb = "1"
-aws-sdk-sqs = "1"
-aws-sdk-ssm = "1"
-aws-sdk-scheduler = "1"
-aws-sdk-dsql = "1"
-aws-config = "1"
-aws-types = "1"
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json", "chrono", "uuid"] }
+aws-sdk-dynamodb = { version = "1", default-features = false }
+aws-sdk-sqs = { version = "1", default-features = false }
+aws-sdk-ssm = { version = "1", default-features = false }
+aws-sdk-scheduler = { version = "1", default-features = false }
+aws-sdk-dsql = { version = "1", default-features = false }
+aws-config = { version = "1", default-features = false, features = [ "rt-tokio", "default-https-client" ] }
+aws-types = { version = "1", default-features = false }
+aws-sigv4 = { version = "1", default-features = false }
+aws-credential-types = { version = "1", default-features = false }
+aws-smithy-runtime-api = { version = "1", default-features = false }
+hyper = { version = "1", features = ["client", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "tokio"] }
+hyper-rustls = { version = "0.27", features = ["http2", "aws-lc-rs", "tls12"] }
+rustls = { version = "0.23", features = ["aws-lc-rs"] }
+http = "1"
+http-body-util = "0.1"
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "postgres", "json", "chrono", "uuid"] }
 chrono = "0.4"
 chrono-tz = "0.10"
 async-trait = "0.1"
 uuid = { version = "1", features = ["v4"] }
+url = "2"

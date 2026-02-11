@@ -5,12 +5,14 @@ use lambda_runtime::Error;
 pub mod config;
 pub mod lambda_mcp;
 pub mod lambda_tool;
+pub mod rap_http;
 pub mod sleep;
 pub mod thread;
 
 // Context passed to tool implementations
 pub struct ToolContext {
     pub sqs_client: SqsClient,
+    pub http_client: rap_http::RapHttpClient,
     pub group_id: String,
     pub input_queue_url: String,
     pub input_queue_arn: String,

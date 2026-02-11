@@ -33,9 +33,6 @@ export class GetTimeToolSet extends CustomToolSet {
         required: [],
       },
       handler: getTimeToolFunction,
-      queueProps: {
-        visibilityTimeout: cdk.Duration.seconds(30),
-      },
     });
 
     super(agent, id, [getTimeTool]);

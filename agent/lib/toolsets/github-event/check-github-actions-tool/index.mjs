@@ -96,12 +96,14 @@ async function handleCancelSubscription(args) {
     return `Successfully cancelled subscription: ${subscriptionId}`;
 }
 
-export const handler = async (event) => {
-    console.log('Received event:', JSON.stringify(event, null, 2));
+export const handler = awslambda.streamifyResponse(async (event, responseStream) => {
+    // Immediately signal OK to the invoker so the leader doesn't block
+    responseStream.write('OK');
+    responseStream.end();
 
-    for (const record of event.Records) {
-        const request = JSON.parse(record.body);
-        const { arguments: args, id, call_id, rap_receiver_url, group_id, tool_name } = request;
+    try {
+        const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+        const { arguments: args, id, call_id, rap_receiver_url, group_id, tool_name } = body;
 
         console.log('Processing request:', { tool_name, args, id, call_id });
 
@@ -120,7 +122,7 @@ export const handler = async (event) => {
             console.error('Error processing request:', error);
             await sendToolResult(rap_receiver_url, group_id, id, call_id, `Error: ${error.message}`);
         }
+    } catch (error) {
+        console.error('Error parsing request:', error);
     }
-
-    return { statusCode: 200, body: JSON.stringify({ ok: true }) };
-};
+});

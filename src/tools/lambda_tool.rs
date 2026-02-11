@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use aws_sdk_sqs::types::MessageAttributeValue;
 use lambda_runtime::{Error, tracing};
 use serde::Serialize;
 
@@ -17,12 +16,14 @@ struct LambdaToolRequest {
     user_id: Option<String>,
 }
 
-// Generic Lambda tool that forwards requests to another Lambda via SQS
+/// Generic Lambda tool that invokes another Lambda via HTTP (Function URL with IAM auth).
+/// The tool Lambda uses response streaming to return OK immediately,
+/// then processes the request asynchronously and sends results via RAP.
 pub struct LambdaTool {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
-    pub queue_url: String,
+    pub function_url: String,
 }
 
 #[async_trait]
@@ -46,7 +47,6 @@ impl Tool for LambdaTool {
         call_id: Option<String>,
         context: &ToolContext,
     ) -> Result<(), Error> {
-        // Create request with RAP receiver URL for the Lambda to respond through
         let request = LambdaToolRequest {
             operation: self.name.clone(),
             arguments: args,
@@ -57,23 +57,18 @@ impl Tool for LambdaTool {
             user_id: context.user_id.clone(),
         };
 
-        // Send to the tool's SQS queue
-        context
-            .sqs_client
-            .send_message()
-            .queue_url(&self.queue_url)
-            .message_body(serde_json::to_string(&request)?)
-            .message_attributes(
-                "ToolName",
-                MessageAttributeValue::builder()
-                    .data_type("String")
-                    .string_value(&self.name)
-                    .build()?,
-            )
-            .send()
+        let body = serde_json::to_string(&request)?;
+
+        let status = context
+            .http_client
+            .post_signed(&self.function_url, &body)
             .await?;
 
-        tracing::info!("Forwarded {} tool request to Lambda queue", self.name);
+        if !status.is_success() {
+            tracing::warn!("Tool {} Function URL returned status {}", self.name, status);
+        }
+
+        tracing::info!("Invoked {} tool via HTTP (status: {})", self.name, status);
         Ok(())
     }
 }

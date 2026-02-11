@@ -225,11 +225,10 @@ export class InfinityAgent extends Construct {
   }
 
   /**
-   * Grant a queue permission to send messages to the agent's input queue
-   * and grant the agent permission to send messages to the queue
+   * Grant the leader Lambda permission to invoke a tool Lambda's Function URL (SigV4).
    */
-  grantQueuePermissions(queue: sqs.IQueue): void {
-    queue.grantSendMessages(this.lambdaFunction);
+  grantToolInvokeAccess(fn: lambda.IFunction): void {
+    fn.grantInvokeUrl(this.lambdaFunction);
   }
 
   /**

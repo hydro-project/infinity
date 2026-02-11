@@ -109,27 +109,33 @@ async function handleCancel(args) {
   return `Cancelled subscription: ${subscription_id}`;
 }
 
-export const handler = async (event) => {
-  for (const record of event.Records) {
-    const request = JSON.parse(record.body);
-    const { arguments: args, id, call_id, rap_receiver_url, group_id, operation } = request;
+export const handler = awslambda.streamifyResponse(async (event, responseStream) => {
+  // Immediately signal OK to the invoker so the leader doesn't block
+  responseStream.write('OK');
+  responseStream.end();
 
+  try {
+    const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+    const { arguments: args, id, call_id, rap_receiver_url, group_id, operation } = body;
+
+    let result;
+    if (operation === 'cancel_finance_subscription') {
+      result = await handleCancel(args);
+    } else if (operation === 'notify_price_change') {
+      result = await handlePriceSubscription(args, id, call_id, rap_receiver_url, group_id);
+    } else if (operation === 'notify_news') {
+      result = await handleNewsSubscription(args, id, call_id, rap_receiver_url, group_id);
+    } else {
+      result = `Unknown tool: ${operation}`;
+    }
+    await sendToolResult(rap_receiver_url, group_id, id, call_id, result);
+  } catch (err) {
+    console.error('Error:', err);
     try {
-      let result;
-      if (operation === 'cancel_finance_subscription') {
-        result = await handleCancel(args);
-      } else if (operation === 'notify_price_change') {
-        result = await handlePriceSubscription(args, id, call_id, rap_receiver_url, group_id);
-      } else if (operation === 'notify_news') {
-        result = await handleNewsSubscription(args, id, call_id, rap_receiver_url, group_id);
-      } else {
-        result = `Unknown tool: ${operation}`;
-      }
-      await sendToolResult(rap_receiver_url, group_id, id, call_id, result);
-    } catch (err) {
-      console.error('Error:', err);
-      await sendToolResult(rap_receiver_url, group_id, id, call_id, `Error: ${err.message}`);
+      const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+      await sendToolResult(body.rap_receiver_url, body.group_id, body.id, body.call_id, `Error: ${err.message}`);
+    } catch (e) {
+      console.error('Failed to send error result:', e);
     }
   }
-  return { statusCode: 200 };
-};
+});
