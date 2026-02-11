@@ -72,7 +72,7 @@ const features: Feature[] = [
       <>
         When there's nothing to do, the agent shuts down completely. No idle
         process, no polling, no cost. It wakes instantly when a message arrives —
-        user input, tool result, or external event. Agents can run for weeks at
+        user input, tool result, or external event. Agents can run for years at
         near-zero cost.
       </>
     ),
