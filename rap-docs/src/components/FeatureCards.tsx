@@ -63,7 +63,7 @@ const features: Feature[] = [
 
 🤖 Agent:  Staging looks good. Ready to
             promote to production.`,
-    link: '/docs/about/architecture#hibernation',
+    link: '/docs/about/tool-servers',
   },
   {
     icon: '💤',
