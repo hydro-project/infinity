@@ -9,7 +9,7 @@ A RAP tool is any HTTP service that accepts an invocation, acknowledges immediat
 
 ## The contract
 
-Your tool receives a POST with a JSON body containing `operation`, `arguments`, `id`, `callback_url`, and `group_id`. See [The Tool Role](/docs/about/tool-role) for the full schema.
+Your tool receives a POST with a JSON body containing `operation`, `arguments`, `id`, `callback_url`, and `group_id`. See [The Tool Role](/docs/about/tool-servers) for the full schema.
 
 Your tool must:
 
