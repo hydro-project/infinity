@@ -33,7 +33,7 @@ agent exits (zero compute)
   ⋮
   ⋮  (20 min later, tool finishes)
   ⋮
-tool POSTs result to RAP receiver
+tool POSTs result to RAP agent runtime
 agent wakes, continues`}</code>
           </pre>
         </div>

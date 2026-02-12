@@ -396,7 +396,7 @@
 
 .comparison-card pre {
   margin: 0;
-  font-size: 0.78rem;
+  font-size: 0.9rem;
   background: #0d1117;
   border-radius: 8px;
   padding: 1rem;
@@ -419,14 +419,74 @@
   padding: 3px 8px;
   border-radius: 4px;
   margin-bottom: 0.75rem;
+  border: 1px solid gray;
 }
 
 .comparison-card .label.mcp {
   background: transparent;
-  color: #8b949e;
 }
 
 .comparison-card .label.rap {
   background: transparent;
   color: var(--ifm-color-primary);
+}
+
+/* Swarm section */
+.swarm-section {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem 2rem 6rem;
+}
+
+.swarm-section h2 {
+  text-align: center;
+  font-size: 2rem;
+  margin-bottom: 1rem;
+  font-weight: 700;
+}
+
+.swarm-section > p {
+  text-align: center;
+  color: var(--ifm-color-emphasis-700);
+  max-width: 600px;
+  margin: 0 auto 3rem;
+  font-size: 1.05rem;
+  line-height: 1.6;
+}
+
+.swarm-blurb {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.swarm-blurb h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+}
+
+.swarm-blurb p {
+  color: var(--ifm-color-emphasis-700);
+  line-height: 1.6;
+  font-size: 1rem;
+  margin-bottom: 1rem;
+}
+
+.swarm-code pre {
+  margin: 0;
+  font-size: 0.85rem;
+  background: #0d1117;
+  border-radius: 12px;
+  padding: 1.5rem;
+  overflow-x: auto;
+  color: #c9d1d9;
+  line-height: 1.6;
+  border: 1px solid #21262d;
+}
+
+.swarm-code pre code {
+  color: #c9d1d9;
+  background: none;
+  padding: 0;
 }
