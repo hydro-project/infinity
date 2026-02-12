@@ -3,6 +3,7 @@ import Layout from '@theme/Layout';
 import AnimatedTerminal from '../components/AnimatedTerminal';
 import FeatureCards from '../components/FeatureCards';
 import ProtocolComparison from '../components/ProtocolComparison';
+import SwarmSection from '../components/SwarmSection';
 
 export default function Home(): React.JSX.Element {
   return (
@@ -37,6 +38,7 @@ export default function Home(): React.JSX.Element {
 
         <FeatureCards />
         <ProtocolComparison />
+        <SwarmSection />
       </main>
     </Layout>
   );

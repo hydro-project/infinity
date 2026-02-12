@@ -61,7 +61,7 @@ const config: Config = {
       respectPrefersColorScheme: true,
     },
     navbar: {
-      title: 'RAP',
+      title: 'Reactive Agent Protocol',
       items: [
         {
           type: 'docSidebar',
