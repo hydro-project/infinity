@@ -36,7 +36,7 @@ Content-Type: application/json
 
 ## Flow
 
-The OAuth flow in RAP follows this sequence:
+The OAuth flow in RAP bridges the gap between a tool that needs credentials and a user who can grant them — without the runtime needing to understand the authorization mechanism.
 
 ```mermaid
 sequenceDiagram
@@ -58,21 +58,15 @@ sequenceDiagram
     Note over R: Runtime wakes, continues with result
 ```
 
-### Step by Step
+The flow begins when the runtime dispatches a normal [tool invocation](/spec/basic/tool-invocation). The tool acknowledges immediately, then checks whether it holds a valid token for the `user_id` from the invocation. If no valid token exists, the tool sends an `oauth` message containing the authorization URL instead of a `tool_result`.
 
-1. The runtime invokes a tool that requires authorization
-2. The tool detects that no valid token exists for the user (identified by `user_id`)
-3. Instead of a `tool_result`, the tool sends an `oauth` message with the authorization URL
-4. The runtime surfaces the URL to the user through its interface (e.g., Slack message, CLI prompt, web UI)
-5. The user visits the URL and completes the authorization flow with the OAuth provider
-6. The OAuth provider redirects to the tool's registered callback endpoint with an authorization code
-7. The tool exchanges the authorization code for an access token and stores it
-8. The tool retries the original operation using the new token
-9. The tool sends the actual `tool_result` to the callback URL
+The runtime surfaces this URL to the user through whatever interface it provides — a clickable link in Slack, a CLI prompt, a web UI. The user visits the URL and completes the authorization flow directly with the OAuth provider. The provider redirects back to the tool's registered callback endpoint with an authorization code.
+
+The tool exchanges the code for an access token, stores it, and retries the original operation using the new credentials. When the operation completes, the tool delivers a normal [tool result](/spec/basic/tool-result) to the callback URL. From the runtime's perspective, the tool call simply took longer than usual — the OAuth detour is entirely transparent.
 
 ## Runtime Behavior
 
-The runtime MUST treat the `oauth` message as a special callback that requires user interaction before the tool call can complete. Upon receiving an `oauth` message, the runtime MUST surface the `auth_url` to the user in a way that allows them to visit it — for example, by displaying it as a clickable link in a Slack message, CLI prompt, or web UI.
+The runtime MUST treat the `oauth` message as a special callback that requires user interaction before the tool call can complete. Upon receiving an `oauth` message, the runtime MUST surface the `auth_url` to the user in a way that allows them to visit it.
 
 The runtime MUST keep the original tool call in a pending state until a `tool_result` eventually arrives from the tool. The runtime SHOULD inform the LLM that authorization is in progress, for example by injecting a status message into the conversation. The runtime MUST NOT retry the tool invocation itself — the tool is responsible for retrying the original operation after the user completes authorization.
 
@@ -90,7 +84,7 @@ Token storage and refresh are tool-specific concerns — the protocol does not p
 
 ## Error Handling
 
-If the OAuth flow fails (e.g., user denies access, authorization code is invalid), the tool MUST send a `tool_result` with an error description:
+If the OAuth flow fails — the user denies access, the authorization code is invalid, or the token exchange errors — the tool MUST send a `tool_result` with an error description:
 
 ```json
 {
