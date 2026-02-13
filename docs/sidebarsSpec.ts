@@ -3,10 +3,25 @@ import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
 const sidebars: SidebarsConfig = {
   specSidebar: [
     'overview',
-    'tool-invocation',
-    'tool-result',
-    'subscription-events',
-    'oauth',
+    {
+      type: 'category',
+      label: 'Basic Protocol',
+      items: [
+        'basic/lifecycle',
+        'basic/transport',
+        'basic/toolsets',
+        'basic/tool-invocation',
+        'basic/tool-result',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Server Features',
+      items: [
+        'server/subscription-events',
+        'server/oauth',
+      ],
+    },
   ],
 };
 

@@ -5,6 +5,76 @@ const dynamoClient = new DynamoDBClient({});
 
 const TRADING_TABLE = process.env.TRADING_TABLE;
 
+const TOOLSET_MANIFEST = {
+  name: 'finance-trading',
+  description: 'Paper trading and stock price tools',
+  endpoint: '',
+  tools: [
+    {
+      name: 'get_stock_price',
+      description: 'Get the current market price of a stock.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          symbol: { type: 'string', description: 'Stock ticker symbol (e.g. AAPL, TSLA, MSFT)' },
+        },
+        required: ['symbol'],
+      },
+      annotations: { readOnly: true },
+    },
+    {
+      name: 'create_trading_account',
+      description: 'Create a paper trading account with an initial cash balance.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          account_id: { type: 'string', description: 'Unique account name/ID' },
+          initial_balance: { type: 'number', description: 'Starting cash balance in USD' },
+        },
+        required: ['account_id', 'initial_balance'],
+      },
+    },
+    {
+      name: 'buy_shares',
+      description: 'Buy shares of a stock in a paper trading account. Uses real-time market prices.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          account_id: { type: 'string', description: 'Trading account ID' },
+          symbol: { type: 'string', description: 'Stock ticker symbol (e.g. AAPL)' },
+          quantity: { type: 'number', description: 'Number of shares to buy' },
+        },
+        required: ['account_id', 'symbol', 'quantity'],
+      },
+    },
+    {
+      name: 'sell_shares',
+      description: 'Sell shares of a stock from a paper trading account. Uses real-time market prices.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          account_id: { type: 'string', description: 'Trading account ID' },
+          symbol: { type: 'string', description: 'Stock ticker symbol (e.g. AAPL)' },
+          quantity: { type: 'number', description: 'Number of shares to sell' },
+        },
+        required: ['account_id', 'symbol', 'quantity'],
+      },
+    },
+    {
+      name: 'get_portfolio',
+      description: 'Get the current portfolio for a paper trading account, including cash balance, holdings with current market values, and P&L.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          account_id: { type: 'string', description: 'Trading account ID' },
+        },
+        required: ['account_id'],
+      },
+      annotations: { readOnly: true },
+    },
+  ],
+};
+
 async function fetchPrice(symbol) {
   const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=1d`;
   const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
@@ -213,7 +283,18 @@ async function handleGetPortfolio(args) {
 }
 
 export const handler = awslambda.streamifyResponse(async (event, responseStream) => {
-  // Immediately signal OK to the invoker so the leader doesn't block
+  // Handle .well-known/rap-toolset discovery
+  if (event.requestContext?.http?.method === 'GET' && event.rawPath?.includes('.well-known/rap-toolset')) {
+    const manifest = { ...TOOLSET_MANIFEST };
+    if (!manifest.endpoint) {
+      manifest.endpoint = `https://${event.requestContext?.domainName || ''}`;
+    }
+    responseStream.write(JSON.stringify(manifest));
+    responseStream.end();
+    return;
+  }
+
+  // Tool invocation — immediately signal OK
   responseStream.write('OK');
   responseStream.end();
 

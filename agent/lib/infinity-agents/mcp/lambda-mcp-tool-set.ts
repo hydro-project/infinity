@@ -2,7 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as path from 'path';
 import { InfinityAgent } from '..';
-import { MCPToolSet } from './mcp-tool-set';
+import { RapToolSet } from '../tools';
 
 export interface LambdaMCPToolSetProps {
   /**
@@ -27,14 +27,13 @@ export interface LambdaMCPToolSetProps {
 }
 
 /**
- * An MCP server that automatically creates the Lambda proxy and tool set configuration.
- * Invoked via HTTP (Function URL with IAM auth) instead of SQS.
+ * An MCP server that runs as a stdio subprocess inside a Lambda proxy.
+ * Tool definitions are served via /.well-known/rap-toolset.
  */
-export class LambdaMCPToolSet extends MCPToolSet {
+export class LambdaMCPToolSet extends RapToolSet {
   public readonly handler: lambda.Function;
 
   constructor(agent: InfinityAgent, id: string, props: LambdaMCPToolSetProps) {
-    // Create the MCP proxy Lambda function first
     const handler = new lambda.Function(agent, `${id}Handler`, {
       runtime: lambda.Runtime.NODEJS_24_X,
       handler: 'index.handler',
@@ -45,12 +44,13 @@ export class LambdaMCPToolSet extends MCPToolSet {
       environment: {
         MCP_SERVER_COMMAND: JSON.stringify(props.command),
         MCP_SERVER_ENV: JSON.stringify(props.env || {}),
+        MCP_SERVER_NAME: props.name,
       },
       ...props.lambdaProps,
     });
 
     super(agent, id, {
-      name: props.name,
+      serverUrl: '',
       handler,
     });
 

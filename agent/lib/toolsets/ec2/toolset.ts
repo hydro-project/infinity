@@ -5,23 +5,23 @@ import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as path from 'path';
 
-import { InfinityAgent } from '../../infinity-agents';  
-import { CustomToolSet, LambdaTool } from '../../infinity-agents/tools';
+import { InfinityAgent } from '../../infinity-agents';
+import { RapToolSet } from '../../infinity-agents/tools';
 
 /**
- * EC2 management tools
+ * EC2 management tools.
+ * Tool definitions are served via /.well-known/rap-toolset.
  */
-export class Ec2ToolSet extends CustomToolSet {
+export class Ec2ToolSet extends RapToolSet {
   constructor(agent: InfinityAgent, id: string) {
-    // Create EC2 Tool Lambda
-    const createEc2ToolFunction = new lambda.Function(agent, 'CreateEc2Function', {
+    const createEc2Function = new lambda.Function(agent, 'CreateEc2Function', {
       runtime: lambda.Runtime.NODEJS_24_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, 'create-ec2-tool')),
       timeout: cdk.Duration.seconds(60),
       recursiveLoop: lambda.RecursiveLoop.ALLOW,
     });
-    createEc2ToolFunction.addToRolePolicy(
+    createEc2Function.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: ['ec2:RunInstances', 'ec2:CreateTags', 'ec2:DescribeInstances'],
@@ -29,35 +29,7 @@ export class Ec2ToolSet extends CustomToolSet {
       })
     );
 
-    const createEc2Tool = new LambdaTool(agent, 'CreateEc2Tool', {
-      name: 'create_ec2',
-      description: 'Create an EC2 instance. You will be notified when the instance is running.',
-      parameters: {
-        type: 'object',
-        properties: {
-          instance_type: {
-            type: 'string',
-            description: "EC2 instance type (e.g., 't3.micro', 't3.small').",
-          },
-          ami_id: {
-            type: 'string',
-            description: 'AMI ID to use for the instance.',
-          },
-          name: {
-            type: 'string',
-            description: 'Name tag for the instance.',
-          },
-          key_name: {
-            type: 'string',
-            description: 'SSH key pair name for accessing the instance. Optional.',
-          },
-        },
-        required: ['instance_type', 'ami_id', 'name'],
-      },
-      handler: createEc2ToolFunction,
-    });
-
-    // EC2 State Monitor Lambda
+    // EC2 State Monitor — EventBridge listener, not a tool the LLM calls
     const ec2StateMonitorFunction = new lambda.Function(agent, 'StateMonitorFunction', {
       runtime: lambda.Runtime.NODEJS_24_X,
       handler: 'index.handler',
@@ -76,22 +48,17 @@ export class Ec2ToolSet extends CustomToolSet {
       })
     );
 
-    const ec2StateRule = new events.Rule(agent, 'StateChangeRule', {
-      ruleName: 'infinity-agents-ec2-running',
+    new events.Rule(agent, 'StateChangeRule', {
       description: 'Monitors EC2 instances created by InfinityAgents reaching running state',
       eventPattern: {
         source: ['aws.ec2'],
         detailType: ['EC2 Instance State-change Notification'],
-        detail: {
-          state: ['running'],
-        },
+        detail: { state: ['running'] },
       },
-    });
-    ec2StateRule.addTarget(new targets.LambdaFunction(ec2StateMonitorFunction));
+    }).addTarget(new targets.LambdaFunction(ec2StateMonitorFunction));
 
-    // Grant RAP receiver invoke permission (SigV4)
     agent.grantRapAccess(ec2StateMonitorFunction);
 
-    super(agent, id, [createEc2Tool]);
+    super(agent, id, { serverUrl: '', handler: createEc2Function });
   }
 }

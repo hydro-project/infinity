@@ -1,12 +1,46 @@
 import { sendToolResult } from 'rap-js';
 
+const TOOLSET_MANIFEST = {
+  name: 'get-time',
+  description: 'Utility tools for getting the current time',
+  endpoint: process.env.FUNCTION_URL || '',
+  tools: [
+    {
+      name: 'get_time',
+      description: 'Get the current time in a specified timezone or UTC.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          timezone: {
+            type: 'string',
+            description: "IANA timezone name (e.g., 'America/New_York', 'Europe/London'). Defaults to UTC if not specified.",
+          },
+        },
+        required: [],
+      },
+    },
+  ],
+};
+
 /**
  * Get-time tool Lambda handler.
- * Invoked via Function URL with response streaming.
- * Immediately streams back OK, then processes the request and sends results via RAP.
+ * Serves /.well-known/rap-toolset for discovery, and handles tool invocations via streaming.
  */
 export const handler = awslambda.streamifyResponse(async (event, responseStream) => {
-  // Immediately signal OK to the invoker so the leader doesn't block
+  // Handle .well-known/rap-toolset discovery
+  if (event.requestContext?.http?.method === 'GET' && event.rawPath?.includes('.well-known/rap-toolset')) {
+    const manifest = { ...TOOLSET_MANIFEST };
+    // Resolve endpoint from the Function URL at runtime
+    if (!manifest.endpoint) {
+      const host = event.requestContext?.domainName || '';
+      manifest.endpoint = `https://${host}`;
+    }
+    responseStream.write(JSON.stringify(manifest));
+    responseStream.end();
+    return;
+  }
+
+  // Tool invocation — immediately signal OK
   responseStream.write('OK');
   responseStream.end();
 
