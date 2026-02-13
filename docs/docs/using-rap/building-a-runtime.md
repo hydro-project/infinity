@@ -5,9 +5,9 @@ title: Building a Runtime
 
 # Building a Runtime
 
-This guide walks through building a minimal RAP-compatible agent runtime in TypeScript. By the end, you'll have a working runtime that can invoke tools, handle results, and hibernate between calls.
+This guide walks through building a minimal RAP-compatible agent runtime in TypeScript. By the end, you'll have a working runtime that can discover tools dynamically, invoke them, handle results, and hibernate between calls.
 
-The complete runtime is ~150 lines. We'll build it step by step.
+The complete runtime is ~200 lines. We'll build it step by step.
 
 ## Setup
 
@@ -48,41 +48,99 @@ function appendMessage(threadId: string, role: string, content: string) {
 In-memory state is fine for prototyping, but a production runtime needs durable storage — a database, Redis, or even a file on disk. If the process crashes, in-memory history is lost. The Infinity Runtime uses Aurora DSQL; a simpler option would be SQLite or Postgres.
 :::
 
-## 2. Tool definitions
+## 2. Toolset discovery
 
-The runtime maintains a registry of available tools and their HTTP endpoints. These are passed to the LLM so it knows what it can call:
+RAP runtimes don't hardcode tool definitions. Instead, they discover tools dynamically by fetching [toolset definitions](/spec/basic/toolsets) from each tool server's well-known endpoint. The runtime is configured with a list of tool server base URLs and fetches `/.well-known/rap-toolset` from each on startup.
 
 ```typescript
-interface ToolDef {
+interface RapTool {
   name: string;
   description: string;
-  parameters: Record<string, unknown>;
-  endpoint_url: string;
+  inputSchema: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
 }
 
-// In practice, load these from a config file or database
-const tools: ToolDef[] = [
-  {
-    name: 'get_weather',
-    description: 'Get current weather for a city',
-    parameters: {
-      type: 'object',
-      properties: {
-        city: { type: 'string', description: 'City name' },
-      },
-      required: ['city'],
-    },
-    endpoint_url: 'https://my-weather-tool.example.com/invoke',
-  },
-];
+interface RapToolset {
+  name: string;
+  description?: string;
+  endpoint: string;
+  tools: RapTool[];
+}
+
+// Resolved tool: a tool definition paired with its endpoint
+interface ResolvedTool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  endpoint: string;
+}
 ```
+
+The loader fetches each toolset and flattens the tools into a single registry, pairing each tool with its toolset's endpoint URL:
+
+```typescript
+// Tool server base URLs — configure these for your deployment
+const TOOL_SERVER_URLS = [
+  'https://weather-tool.example.com',
+  'https://github-tools.example.com',
+];
+
+// Session-scoped cache: toolsets are fetched once per session
+const toolsetCache = new Map<string, RapToolset>();
+
+async function loadToolsets(): Promise<ResolvedTool[]> {
+  const resolved: ResolvedTool[] = [];
+
+  for (const baseUrl of TOOL_SERVER_URLS) {
+    // Use cached toolset if available (session-scoped)
+    let toolset = toolsetCache.get(baseUrl);
+
+    if (!toolset) {
+      const url = `${baseUrl.replace(/\/$/, '')}/.well-known/rap-toolset`;
+      const res = await fetch(url, {
+        headers: { Accept: 'application/json' },
+      });
+
+      if (!res.ok) {
+        console.error(`Failed to load toolset from ${url}: ${res.status}`);
+        continue;
+      }
+
+      toolset = (await res.json()) as RapToolset;
+      toolsetCache.set(baseUrl, toolset);
+      console.log(`Loaded toolset '${toolset.name}' with ${toolset.tools.length} tools`);
+    }
+
+    for (const tool of toolset.tools) {
+      resolved.push({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        endpoint: toolset.endpoint,
+      });
+    }
+  }
+
+  // Validate uniqueness
+  const names = resolved.map((t) => t.name);
+  const dupes = names.filter((n, i) => names.indexOf(n) !== i);
+  if (dupes.length > 0) {
+    throw new Error(`Duplicate tool names across toolsets: ${dupes.join(', ')}`);
+  }
+
+  return resolved;
+}
+```
+
+This follows the [Toolsets spec](/spec/basic/toolsets#loading-toolsets): toolsets are fetched from the discovery endpoint, cached for the session, and validated for name uniqueness. The runtime never loads tool definitions from local config — the tool server is the authoritative source.
 
 ## 3. Tool dispatch
 
-When the LLM calls a tool, the runtime POSTs the invocation to the tool's endpoint. The tool acknowledges immediately — the runtime does **not** wait for the actual result:
+When the LLM calls a tool, the runtime looks up the endpoint from the resolved tool registry and POSTs the [invocation](/spec/basic/tool-invocation). The tool acknowledges immediately — the runtime does not wait for the actual result:
 
 ```typescript
 async function dispatchToolCall(
+  tools: ResolvedTool[],
   toolName: string,
   args: Record<string, unknown>,
   toolCallId: string,
@@ -104,7 +162,7 @@ async function dispatchToolCall(
 
   // Fire-and-forget: we don't await the tool's actual work,
   // just the HTTP acknowledgment
-  const res = await fetch(tool.endpoint_url, {
+  const res = await fetch(tool.endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -120,7 +178,7 @@ This is the core of RAP's async model. The tool will POST its result to `callbac
 
 ## 4. The completion loop
 
-The runtime sends conversation history to the LLM and processes the response. If the LLM produces text, we accumulate it. If it calls tools, we dispatch them and **exit** — we don't loop waiting for results:
+The runtime loads toolsets, sends conversation history and tool schemas to the LLM, and processes the response. If the LLM produces text, we accumulate it. If it calls tools, we dispatch them and exit — we don't loop waiting for results:
 
 ```typescript
 import Anthropic from '@anthropic-ai/sdk';
@@ -128,8 +186,10 @@ import Anthropic from '@anthropic-ai/sdk';
 const anthropic = new Anthropic();
 
 async function runCompletion(threadId: string, callbackUrl: string) {
-  const history = loadHistory(threadId);
+  // Load tools dynamically from tool servers
+  const tools = await loadToolsets();
 
+  const history = loadHistory(threadId);
   const messages = history.map((m) => ({
     role: m.role as 'user' | 'assistant',
     content: m.content,
@@ -141,7 +201,7 @@ async function runCompletion(threadId: string, callbackUrl: string) {
     tools: tools.map((t) => ({
       name: t.name,
       description: t.description,
-      input_schema: t.parameters as Anthropic.Tool.InputSchema,
+      input_schema: t.inputSchema as Anthropic.Tool.InputSchema,
     })),
     messages,
   });
@@ -162,6 +222,7 @@ async function runCompletion(threadId: string, callbackUrl: string) {
   for (const block of response.content) {
     if (block.type === 'tool_use') {
       await dispatchToolCall(
+        tools,
         block.name,
         block.input as Record<string, unknown>,
         block.id,
@@ -175,7 +236,7 @@ async function runCompletion(threadId: string, callbackUrl: string) {
 }
 ```
 
-Notice: after dispatching tool calls, the function returns. The runtime exits. When the tool POSTs its result to the callback URL, the runtime starts again and runs another completion with the updated history.
+Notice: after dispatching tool calls, the function returns. The runtime exits. When the tool POSTs its result to the callback URL, the runtime starts again and runs another completion with the updated history. The toolset cache means we don't re-fetch tool definitions on every wake — only once per session.
 
 ## 5. The callback endpoint
 
@@ -250,7 +311,7 @@ curl -X POST http://localhost:3000/message \
   -d '{"thread_id": "test-1", "text": "What is the weather in Tokyo?"}'
 ```
 
-The runtime will call the LLM, which will invoke the `get_weather` tool. The tool receives the invocation, acknowledges immediately, and later POSTs the result to `http://localhost:3000/callback`. The runtime wakes up, appends the result, runs the LLM again, and returns the final response.
+The runtime discovers tools from the configured tool servers, calls the LLM, which invokes `get_weather`. The tool receives the invocation, acknowledges immediately, and later POSTs the result to `http://localhost:3000/callback`. The runtime wakes up, appends the result, runs the LLM again, and returns the final response.
 
 ## What this doesn't cover
 
@@ -259,7 +320,8 @@ This is a minimal runtime to demonstrate the protocol. A production runtime woul
 - **Subscription event handling** — requires generating [synthetic tool calls](/docs/about/subscription-events#synthetic-tool-calls) to present events to the LLM in a way it can reason about. See [Subscription Events](/docs/about/subscription-events) for the full design.
 - **Concurrency control** — serialize messages within a thread (e.g. with a queue or database lock). See [Agent Runtime](/docs/about/agent-runtime#interruption-model).
 - **Hibernation** — for a serverless deployment, replace the Express server with a Lambda triggered by SQS, and use scheduled messages for sleep. See [Infinity Runtime Hibernation](/docs/infinity-runtime/hibernation).
-- **Authentication** — sign callback requests with SigV4 or bearer tokens.
+- **Authentication** — sign requests to tool servers with SigV4 or bearer tokens, and authenticate callback requests to prevent unauthorized message injection.
 - **Streaming** — stream LLM responses to the user instead of waiting for the full completion.
+- **Toolset validation** — validate fetched toolset definitions against the [schema requirements](/spec/basic/toolsets#validation) before making tools available to the LLM.
 
 The [Infinity Runtime](/docs/infinity-runtime/overview) is a production-grade implementation that handles all of these.

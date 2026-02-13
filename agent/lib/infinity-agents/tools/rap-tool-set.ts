@@ -6,13 +6,15 @@ export interface RapToolSetProps {
   /**
    * Base URL of the RAP tool server.
    * The runtime will fetch the toolset definition from `{serverUrl}/.well-known/rap-toolset`.
+   * Required if `handler` is not provided.
    */
-  readonly serverUrl: string;
+  readonly serverUrl?: string;
 
   /**
-   * Lambda function that implements the tool server (optional).
+   * Lambda function that implements the tool server.
    * If provided, the construct will create a Function URL and use it as the server URL,
    * and grant the leader Lambda permission to invoke it.
+   * Required if `serverUrl` is not provided.
    */
   readonly handler?: lambda.IFunction;
 }
@@ -26,6 +28,10 @@ export class RapToolSet extends ToolSet {
 
   constructor(agent: InfinityAgent, id: string, props: RapToolSetProps) {
     super(agent, id);
+
+    if (!props.handler && !props.serverUrl) {
+      throw new Error('RapToolSet requires either `handler` or `serverUrl`');
+    }
 
     if (props.handler) {
       // Create a Function URL for the handler and use it as the server URL
@@ -41,7 +47,7 @@ export class RapToolSet extends ToolSet {
       // Grant the handler permission to invoke the RAP receiver (SigV4)
       agent.grantRapAccess(props.handler);
     } else {
-      this.serverUrl = props.serverUrl;
+      this.serverUrl = props.serverUrl!;
     }
 
     // Register this tool set with the agent

@@ -19,6 +19,6 @@ export class GetTimeToolSet extends RapToolSet {
       recursiveLoop: lambda.RecursiveLoop.ALLOW,
     });
 
-    super(agent, id, { serverUrl: '', handler });
+    super(agent, id, { handler });
   }
 }

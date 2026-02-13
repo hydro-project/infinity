@@ -50,7 +50,6 @@ export class LambdaMCPToolSet extends RapToolSet {
     });
 
     super(agent, id, {
-      serverUrl: '',
       handler,
     });
 

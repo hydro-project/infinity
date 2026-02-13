@@ -56,7 +56,6 @@ export class FinanceToolSet extends Construct {
     subscriptionLookupTable.grantReadWriteData(subscribeFunction);
 
     new RapToolSet(agent, 'FinanceSubscriptions', {
-      serverUrl: '',
       handler: subscribeFunction,
     });
 
@@ -95,7 +94,6 @@ export class FinanceToolSet extends Construct {
     tradingTable.grantReadWriteData(tradingFunction);
 
     new RapToolSet(agent, 'FinanceTrading', {
-      serverUrl: '',
       handler: tradingFunction,
     });
   }
