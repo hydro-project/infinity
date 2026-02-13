@@ -4,7 +4,7 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as path from 'path';
 import { InfinityAgent } from '..';
-import { MCPToolSet } from './mcp-tool-set';
+import { RapToolSet } from '../tools';
 
 export interface HTTPMCPToolSetProps {
   /**
@@ -53,9 +53,9 @@ export interface HTTPMCPToolSetProps {
 
 /**
  * An MCP server that connects to an HTTP endpoint using Streamable HTTP transport.
- * Invoked via HTTP (Function URL with IAM auth) instead of SQS.
+ * Tool definitions are served via /.well-known/rap-toolset.
  */
-export class HTTPMCPToolSet extends MCPToolSet {
+export class HTTPMCPToolSet extends RapToolSet {
   public readonly handler: lambda.Function;
   public readonly tokenTable?: dynamodb.Table;
   public readonly oauthCallbackUrl?: string;
@@ -100,6 +100,7 @@ export class HTTPMCPToolSet extends MCPToolSet {
       environment: {
         MCP_SERVER_URL: props.url,
         MCP_SERVER_HEADERS: JSON.stringify(props.headers || {}),
+        MCP_SERVER_NAME: props.name,
         ...(tokenTable && { OAUTH_TOKEN_TABLE: tokenTable.tableName }),
         ...(oauthCallbackUrl && { OAUTH_CALLBACK_URL: oauthCallbackUrl }),
         ...(props.oauth?.clientId && { OAUTH_CLIENT_ID: props.oauth.clientId }),
@@ -124,7 +125,7 @@ export class HTTPMCPToolSet extends MCPToolSet {
     }
 
     super(agent, id, {
-      name: props.name,
+      serverUrl: '',
       handler,
     });
 

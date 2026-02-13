@@ -9,6 +9,7 @@ const MCP_SERVER_COMMAND = process.env.MCP_SERVER_COMMAND ? JSON.parse(process.e
 const MCP_SERVER_ENV = process.env.MCP_SERVER_ENV ? JSON.parse(process.env.MCP_SERVER_ENV) : {};
 const MCP_SERVER_URL = process.env.MCP_SERVER_URL || null;
 const MCP_SERVER_HEADERS = process.env.MCP_SERVER_HEADERS ? JSON.parse(process.env.MCP_SERVER_HEADERS) : {};
+const MCP_SERVER_NAME = process.env.MCP_SERVER_NAME || 'mcp';
 
 // OAuth configuration
 const OAUTH_TOKEN_TABLE = process.env.OAUTH_TOKEN_TABLE || null;
@@ -640,9 +641,42 @@ async function sendOAuthUrl(rapReceiverUrl, groupId, id, callId, authUrl) {
 export const handler = awslambda.streamifyResponse(async (event, responseStream) => {
     console.log('Received event:', JSON.stringify(event, null, 2));
 
-    // Detect OAuth callback: GET request with 'code' query parameter
     const method = event.requestContext?.http?.method || event.httpMethod || 'POST';
     const queryParams = event.queryStringParameters || {};
+
+    // Handle .well-known/rap-toolset discovery
+    if (method === 'GET' && event.rawPath?.includes('.well-known/rap-toolset')) {
+        const endpoint = `https://${event.requestContext?.domainName || ''}`;
+        const manifest = {
+            name: `${MCP_SERVER_NAME}-mcp`,
+            description: `MCP server proxy for ${MCP_SERVER_NAME}. Use ${MCP_SERVER_NAME}_list_tools to discover available tools, then ${MCP_SERVER_NAME}_invoke_tool to call them.`,
+            endpoint,
+            tools: [
+                {
+                    name: `${MCP_SERVER_NAME}_list_tools`,
+                    description: `List all available tools from the ${MCP_SERVER_NAME} MCP server. Performs OAuth if required by the server. If you are assigned a task that will require autonomous actions in the future, you should use this tool to get auth before sleeping.`,
+                    inputSchema: { type: 'object', properties: {}, required: [] },
+                },
+                {
+                    name: `${MCP_SERVER_NAME}_invoke_tool`,
+                    description: `Invoke a tool from the ${MCP_SERVER_NAME} MCP server. Use ${MCP_SERVER_NAME}_list_tools first to see available tools.`,
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            tool_name: { type: 'string', description: "Name of the tool to invoke (e.g., 'create_issue', 'create_pull_request')." },
+                            arguments: { type: 'object', description: 'Arguments to pass to the tool as a JSON object. Structure depends on the specific tool.' },
+                        },
+                        required: ['tool_name'],
+                    },
+                },
+            ],
+        };
+        responseStream.write(JSON.stringify(manifest));
+        responseStream.end();
+        return;
+    }
+
+    // Detect OAuth callback: GET request with 'code' query parameter
 
     if (method === 'GET' && (queryParams.code || queryParams.error)) {
         // OAuth callback - return HTML response

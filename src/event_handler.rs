@@ -14,6 +14,7 @@ use crate::conversation_history::ConversationHistoryStore;
 use crate::tools::config::ToolsConfig;
 use crate::tools::sleep::{SleepTool, SleepUntilEventOrInputTool, SleepUntilTool};
 use crate::tools::thread::{CloseThreadTool, ReportToParentTool, SpawnThreadTool};
+use crate::tools::toolset_loader::ToolsetLoader;
 use crate::tools::{Tool, ToolContext, ToolSet, VecToolSet};
 
 use futures_util::StreamExt;
@@ -660,21 +661,21 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     let conversation_store =
         ConversationHistoryStore::new(&dsql_client, &dsql_cluster_endpoint).await?;
 
-    // Load tool sets from configuration (DynamoDB preferred, then SSM, then file, then env var)
-    let mut tool_sets: Vec<Box<dyn ToolSet>> = if let Ok(ddb_key) =
-        std::env::var("TOOLS_CONFIG_DDB_KEY")
-    {
+    // Load tools configuration (DynamoDB preferred, then SSM, then file, then env var).
+    // This only reads the list of server URLs and legacy tool configs — actual toolset
+    // fetching happens per-record inside the loop (scoped to the session).
+    let tools_config = if let Ok(ddb_key) = std::env::var("TOOLS_CONFIG_DDB_KEY") {
         match ToolsConfig::from_dynamodb(&dynamodb_client, &table_name, &ddb_key).await {
             Ok(config) => {
                 tracing::info!("Loaded tools configuration from DynamoDB key {}", ddb_key);
-                config.into_tool_sets()
+                Some(config)
             }
             Err(e) => {
                 tracing::warn!(
                     "Failed to load tools config from DynamoDB: {}. Using empty tool set.",
                     e
                 );
-                vec![]
+                None
             }
         }
     } else if let Ok(ssm_param) = std::env::var("TOOLS_CONFIG_SSM_PARAM") {
@@ -685,14 +686,14 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                     "Loaded tools configuration from SSM parameter {}",
                     ssm_param
                 );
-                config.into_tool_sets()
+                Some(config)
             }
             Err(e) => {
                 tracing::warn!(
                     "Failed to load tools config from SSM: {}. Using empty tool set.",
                     e
                 );
-                vec![]
+                None
             }
         }
     } else {
@@ -701,30 +702,80 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         match ToolsConfig::from_file(&config_path) {
             Ok(config) => {
                 tracing::info!("Loaded tools configuration from {}", config_path);
-                config.into_tool_sets()
+                Some(config)
             }
-            Err(_) => {
-                // Fallback to env var for backwards compatibility
-                match ToolsConfig::from_env() {
-                    Ok(config) => {
-                        tracing::info!(
-                            "Loaded tools configuration from TOOLS_CONFIG environment variable"
-                        );
-                        config.into_tool_sets()
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to load tools config: {}. Using empty tool set.", e);
-                        vec![]
-                    }
+            Err(_) => match ToolsConfig::from_env() {
+                Ok(config) => {
+                    tracing::info!(
+                        "Loaded tools configuration from TOOLS_CONFIG environment variable"
+                    );
+                    Some(config)
                 }
-            }
+                Err(e) => {
+                    tracing::warn!("Failed to load tools config: {}. Using empty tool set.", e);
+                    None
+                }
+            },
         }
     };
 
-    // Add hardcoded sleep tool set
-    tool_sets.insert(
-        0,
-        Box::new(VecToolSet::new(vec![
+    // Pre-extract server URLs (shared across records) and create the loader once
+    let toolset_server_urls: Vec<String> = tools_config
+        .as_ref()
+        .map(|tc| tc.toolset_server_urls())
+        .unwrap_or_default();
+    let toolset_loader = ToolsetLoader::new(
+        dynamodb_client.clone(),
+        table_name.clone(),
+        crate::tools::rap_http::RapHttpClient::new(&config),
+    );
+
+    let client = Client::from_env();
+    let model = client.completion_model("global.anthropic.claude-haiku-4-5-20251001-v1:0");
+
+    for record in payload.records {
+        let message_id = record.message_id.unwrap_or_default();
+        let body = record.body.unwrap();
+
+        let input_msg: InputMessage = serde_json::from_str(&body)?;
+
+        let mut current_history = HistoryManager::new_with_history(
+            dynamodb_client.clone(),
+            conversation_store.clone(),
+            table_name.clone(),
+            input_msg.group_id.clone(),
+        )
+        .await?;
+
+        // Build tools for this record, scoped to the session (root thread)
+        let mut tool_sets: Vec<Box<dyn ToolSet>> = Vec::new();
+
+        // Load RAP toolsets from .well-known endpoints, cached per session
+        if !toolset_server_urls.is_empty() {
+            let session_id = &current_history.root_thread_id;
+            match toolset_loader
+                .load_toolsets(&toolset_server_urls, session_id)
+                .await
+            {
+                Ok(loaded) => {
+                    for ts in loaded {
+                        tracing::info!(
+                            "Loaded RAP toolset '{}' with {} tools for session {}",
+                            ts.manifest.name,
+                            ts.manifest.tools.len(),
+                            session_id
+                        );
+                        tool_sets.push(ts.into_tool_set());
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load RAP toolsets: {}", e);
+                }
+            }
+        }
+
+        // Add built-in tools
+        tool_sets.push(Box::new(VecToolSet::new(vec![
             Box::new(SleepTool {
                 scheduler_client: scheduler_client.clone(),
                 scheduler_role_arn: scheduler_role_arn.clone(),
@@ -745,45 +796,27 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             Box::new(CloseThreadTool {
                 conversation_store: conversation_store.clone(),
             }),
-        ])),
-    );
+        ])));
 
-    // Concatenate all tools from tool sets
-    let mut tool_impls: Vec<Box<dyn Tool>> = Vec::new();
-    for tool_set in tool_sets {
-        tool_impls.extend(tool_set.into_tools());
-    }
+        // Concatenate all tools from tool sets
+        let mut tool_impls: Vec<Box<dyn Tool>> = Vec::new();
+        for tool_set in tool_sets {
+            tool_impls.extend(tool_set.into_tools());
+        }
 
-    let tool_registry: HashMap<String, &Box<dyn Tool>> = tool_impls
-        .iter()
-        .map(|tool| (tool.name().to_string(), tool))
-        .collect();
+        let tool_registry: HashMap<String, &Box<dyn Tool>> = tool_impls
+            .iter()
+            .map(|tool| (tool.name().to_string(), tool))
+            .collect();
 
-    let tools: Vec<ToolDefinition> = tool_impls
-        .iter()
-        .map(|tool| ToolDefinition {
-            name: tool.name().to_string(),
-            description: tool.description().to_string(),
-            parameters: tool.parameters(),
-        })
-        .collect();
-
-    let client = Client::from_env();
-    let model = client.completion_model("global.anthropic.claude-haiku-4-5-20251001-v1:0");
-
-    for record in payload.records {
-        let message_id = record.message_id.unwrap_or_default();
-        let body = record.body.unwrap();
-
-        let input_msg: InputMessage = serde_json::from_str(&body)?;
-
-        let mut current_history = HistoryManager::new_with_history(
-            dynamodb_client.clone(),
-            conversation_store.clone(),
-            table_name.clone(),
-            input_msg.group_id.clone(),
-        )
-        .await?;
+        let tools: Vec<ToolDefinition> = tool_impls
+            .iter()
+            .map(|tool| ToolDefinition {
+                name: tool.name().to_string(),
+                description: tool.description().to_string(),
+                parameters: tool.parameters(),
+            })
+            .collect();
 
         // Skip messages for closed threads
         if conversation_store
@@ -880,10 +913,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                     let mut synthetic_args = original_call.function.arguments.clone();
                     synthetic_args.as_object_mut().unwrap().insert(
                         "kind".to_string(),
-                        serde_json::json!(format!(
-                            "thread_report:{}",
-                            original_tool_call_id
-                        )),
+                        serde_json::json!(format!("thread_report:{}", original_tool_call_id)),
                     );
 
                     let synthetic_tool_call = Message::Assistant {
