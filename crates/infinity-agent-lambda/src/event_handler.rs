@@ -14,6 +14,8 @@ use infinity_agent_core::tools::thread::{ReportToParentTool, SpawnThreadTool};
 use infinity_agent_core::tools::toolset_loader::ToolsetLoader;
 use infinity_agent_core::tools::{Tool, ToolContext};
 
+use infinity_agent_core::traits::MessageSender;
+
 use rig::client::{CompletionClient, ProviderClient};
 
 use crate::conversation_history::DsqlConversationStore;
@@ -205,45 +207,83 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
 
         let active_thread_id = current_history.thread_id.clone();
 
-        let action = event_processor::run_completion(
-            &model,
-            &mut current_history,
-            &tool_names,
-            &tool_defs,
-            &active_thread_id,
-            &message_id,
-        )
-        .await
-        .map_err(|e| Error::from(format!("{}", e)))?;
+        // (b) Consume the completion stream, collecting text and the final action
+        use futures_util::StreamExt;
 
-        // (c) Execute the action
-        let user_id = current_history
-            .get_metadata()
-            .and_then(|m| m.get("user_id").and_then(|v| v.as_str()).map(String::from));
+        let (accumulated_text, final_action) = {
+            let mut completion_stream = std::pin::pin!(event_processor::run_completion(
+                &model,
+                &mut current_history,
+                &tool_names,
+                &tool_defs,
+                &active_thread_id,
+                &message_id,
+            ));
 
-        let tool_context = ToolContext {
-            message_sender: sender_clone.clone(),
-            group_id: active_thread_id,
-            input_queue_arn: input_queue_arn_clone,
-            rap_receiver_url: rap_receiver_url_clone,
-            user_id,
+            let mut text = String::new();
+            let mut action = None;
+
+            while let Some(event) = completion_stream.next().await {
+                match event.map_err(|e| Error::from(format!("{}", e)))? {
+                    event_processor::CompletionEvent::TextChunk(chunk) => {
+                        text.push_str(&chunk);
+                    }
+                    event_processor::CompletionEvent::Action(a) => {
+                        action = Some(a);
+                    }
+                }
+            }
+            (text, action)
         };
 
-        let tool_registry: std::collections::HashMap<String, &Box<dyn Tool<SqsMessageSender>>> =
-            tool_impls
-                .iter()
-                .map(|t| (t.name().to_string(), t))
-                .collect();
+        // Send accumulated text to output queue
+        if !accumulated_text.is_empty() {
+            let metadata = current_history
+                .get_metadata()
+                .unwrap_or(serde_json::json!({}));
+            let output_text = if let Some(prefix) = current_history.get_thread_nesting_prefix() {
+                format!("{} {}", prefix, accumulated_text)
+            } else {
+                accumulated_text
+            };
+            let output_msg = event_processor::OutputMessage {
+                text: output_text,
+                metadata,
+            };
+            sender
+                .send_to_output(&serde_json::to_string(&output_msg)?)
+                .await
+                .map_err(|e| Error::from(format!("{}", e)))?;
+        }
 
-        event_processor::execute_action(
-            action,
-            &mut current_history,
-            &tool_registry,
-            &tool_context,
-            &sender,
-        )
-        .await
-        .map_err(|e| Error::from(format!("{}", e)))?;
+        if let Some(action) = final_action {
+            let user_id = current_history
+                .get_metadata()
+                .and_then(|m| m.get("user_id").and_then(|v| v.as_str()).map(String::from));
+
+            let tool_context = ToolContext {
+                message_sender: sender_clone.clone(),
+                group_id: active_thread_id,
+                input_queue_arn: input_queue_arn_clone,
+                rap_receiver_url: rap_receiver_url_clone,
+                user_id,
+            };
+
+            let tool_registry: std::collections::HashMap<String, &Box<dyn Tool<SqsMessageSender>>> =
+                tool_impls
+                    .iter()
+                    .map(|t| (t.name().to_string(), t))
+                    .collect();
+
+            event_processor::execute_action(
+                action,
+                &mut current_history,
+                &tool_registry,
+                &tool_context,
+            )
+            .await
+            .map_err(|e| Error::from(format!("{}", e)))?;
+        }
     }
 
     Ok(())

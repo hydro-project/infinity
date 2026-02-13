@@ -43,17 +43,24 @@ pub enum PrepareResult {
 /// What the model wants to do after a completion stream finishes.
 pub enum CompletionAction {
     /// Model produced text and is done (no tool call).
-    Done { accumulated_text: String },
+    Done,
     /// Model wants to execute a tool call. Under the RAP protocol tools are
     /// fire-and-forget: the agent loop stops after dispatching the call and
     /// the result arrives as a new input message later.
     ExecuteToolCall {
-        accumulated_text: String,
         tool_name: String,
         tool_args: serde_json::Value,
         tool_call_id: String,
         call_id: Option<String>,
     },
+}
+
+/// Items yielded by the completion stream.
+pub enum CompletionEvent {
+    /// A chunk of text from the model.
+    TextChunk(String),
+    /// The terminal event — what to do next.
+    Action(CompletionAction),
 }
 
 // ── HistoryManager (unchanged from before) ──
@@ -590,185 +597,135 @@ where
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// (b) run_completion — stream the model, record history, handle retries
-//     for stream errors and unknown tools internally. Returns a final
-//     CompletionAction.
+// (b) run_completion — yields CompletionEvent items (text chunks and a
+//     terminal Action). Handles stream errors and unknown tools internally.
 // ═══════════════════════════════════════════════════════════════════════
 
-pub async fn run_completion<Mdl, C, S>(
-    model: &Mdl,
-    history: &mut HistoryManager<C, S>,
-    tool_names: &HashSet<String>,
-    tools: &[ToolDefinition],
-    group_id: &str,
-    message_id: &str,
-) -> Result<CompletionAction, BoxError>
+pub fn run_completion<'a, Mdl, C, S>(
+    model: &'a Mdl,
+    history: &'a mut HistoryManager<C, S>,
+    tool_names: &'a HashSet<String>,
+    tools: &'a [ToolDefinition],
+    group_id: &'a str,
+    message_id: &'a str,
+) -> impl futures_util::Stream<Item = Result<CompletionEvent, BoxError>> + 'a
 where
     Mdl: CompletionModel,
     C: ConversationStore,
     S: StateStore,
 {
-    let mut completion_counter: usize = 0;
+    async_stream::try_stream! {
+        let mut completion_counter: usize = 0;
 
-    loop {
-        match run_single_completion_stream(
-            model,
-            &mut completion_counter,
-            history,
-            tools,
-            group_id,
-            message_id,
-        )
-        .await
-        {
-            Ok(action) => {
-                // If it's a tool call for an unknown tool, inject error and retry
-                if let CompletionAction::ExecuteToolCall {
-                    ref tool_name,
-                    ref tool_call_id,
-                    ref call_id,
-                    ..
-                } = action
-                {
-                    if !tool_names.contains(tool_name.as_str()) {
-                        tracing::warn!(
-                            "Unknown tool '{}' called, injecting error and retrying",
-                            tool_name
-                        );
-                        let tool_result = Message::User {
-                            content: OneOrMany::one(UserContent::ToolResult(
-                                rig::message::ToolResult {
-                                    id: tool_call_id.clone(),
-                                    call_id: call_id.clone(),
-                                    content: OneOrMany::one(ToolResultContent::Text(
-                                        rig::agent::Text {
-                                            text: format!(
-                                                "Error: tool '{}' does not exist",
-                                                tool_name
-                                            ),
-                                        },
-                                    )),
-                                },
-                            )),
-                        };
-                        history
-                            .handle_content(tool_result, format!("{}-unknown-tool", tool_call_id))
-                            .await?;
-                        continue;
+        'outer: loop {
+            let stream_result = model
+                .stream(CompletionRequest {
+                    preamble: None,
+                    chat_history: history.get_history(),
+                    documents: vec![],
+                    tools: tools.to_vec(),
+                    temperature: None,
+                    max_tokens: None,
+                    tool_choice: None,
+                    additional_params: Some(serde_json::json!({
+                        "anthropic_beta": ["interleaved-thinking-2025-05-14"],
+                        "thinking": {
+                            "type": "enabled",
+                            "budget_tokens": 4096,
+                        }
+                    })),
+                })
+                .await;
+
+            let mut llm_stream = match stream_result {
+                Ok(s) => s,
+                Err(e) => {
+                    Err(Into::<BoxError>::into(e))?;
+                    unreachable!()
+                }
+            };
+
+            loop {
+                let res = match llm_stream.next().await {
+                    Some(r) => r,
+                    None => {
+                        tracing::warn!("Stream ended unexpectedly, removing trailing reasoning and retrying...");
+                        history.remove_trailing_reasoning();
+                        continue 'outer;
+                    }
+                };
+
+                let chunk = match res {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let err_str = format!("{}", e);
+                        if err_str.contains("unexpected end of stream") {
+                            tracing::warn!("Stream error (unexpected end), retrying...");
+                            history.remove_trailing_reasoning();
+                            continue 'outer;
+                        }
+                        Err(Into::<BoxError>::into(e))?;
+                        unreachable!()
+                    }
+                };
+
+                // Skip incomplete reasoning chunks
+                if let StreamedAssistantContent::Reasoning(ref r) = chunk {
+                    if r.signature.is_none() { continue; }
+                }
+
+                let completion_id = format!("{}-{}-completion-{}", group_id, message_id, completion_counter);
+                completion_counter += 1;
+
+                history.handle_completion(&chunk, completion_id);
+
+                match chunk {
+                    StreamedAssistantContent::Text(text) => {
+                        tracing::info!("[Text] {}", &text.text);
+                        yield CompletionEvent::TextChunk(text.text);
+                    }
+                    StreamedAssistantContent::ToolCall(call) => {
+                        tracing::info!("[Tool Call: {} with arguments {}]", &call.function.name, &call.function.arguments);
+
+                        // Unknown tool — inject error and retry the whole completion
+                        if !tool_names.contains(call.function.name.as_str()) {
+                            tracing::warn!("Unknown tool '{}' called, injecting error and retrying", call.function.name);
+                            let tool_result = Message::User {
+                                content: OneOrMany::one(UserContent::ToolResult(rig::message::ToolResult {
+                                    id: call.id.clone(),
+                                    call_id: call.call_id.clone(),
+                                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                                        text: format!("Error: tool '{}' does not exist", call.function.name),
+                                    })),
+                                })),
+                            };
+                            history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
+                            continue 'outer;
+                        }
+
+                        history.sync().await?;
+
+                        yield CompletionEvent::Action(CompletionAction::ExecuteToolCall {
+                            tool_name: call.function.name,
+                            tool_args: call.function.arguments,
+                            tool_call_id: call.id,
+                            call_id: call.call_id,
+                        });
+                        return;
+                    }
+                    StreamedAssistantContent::ToolCallDelta { .. } => {}
+                    StreamedAssistantContent::Reasoning(reasoning) => {
+                        tracing::info!("[Reasoning: {:?}]", reasoning.reasoning);
+                    }
+                    StreamedAssistantContent::Final(_) => {
+                        tracing::info!("Received final message");
+                        yield CompletionEvent::Action(CompletionAction::Done);
+                        return;
                     }
                 }
-                return Ok(action);
-            }
-            Err(e) if e.to_string().contains("unexpected end of stream") => {
-                tracing::warn!(
-                    "Stream ended unexpectedly, removing trailing reasoning and retrying..."
-                );
-                history.remove_trailing_reasoning();
-                continue;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-}
-
-/// Run a single completion stream. Returns a CompletionAction or an error.
-/// Does NOT handle retries — that's the caller's job.
-async fn run_single_completion_stream<Mdl, C, S>(
-    model: &Mdl,
-    completion_counter: &mut usize,
-    history: &mut HistoryManager<C, S>,
-    tools: &[ToolDefinition],
-    group_id: &str,
-    message_id: &str,
-) -> Result<CompletionAction, BoxError>
-where
-    Mdl: CompletionModel,
-    C: ConversationStore,
-    S: StateStore,
-{
-    let mut stream = model
-        .stream(CompletionRequest {
-            preamble: None,
-            chat_history: history.get_history(),
-            documents: vec![],
-            tools: tools.to_vec(),
-            temperature: None,
-            max_tokens: None,
-            tool_choice: None,
-            additional_params: Some(serde_json::json!({
-                "anthropic_beta": ["interleaved-thinking-2025-05-14"],
-                "thinking": {
-                    "type": "enabled",
-                    "budget_tokens": 4096,
-                }
-            })),
-        })
-        .await
-        .map_err(|e| -> BoxError { e.into() })?;
-
-    let mut accumulated_text = String::new();
-
-    loop {
-        let res = stream.next().await.ok_or("unexpected end of stream")?;
-        let chunk = res.map_err(|e| -> BoxError { e.into() })?;
-
-        // Skip incomplete reasoning chunks
-        if let StreamedAssistantContent::Reasoning(ref r) = chunk {
-            if r.signature.is_none() {
-                continue;
-            }
-        }
-
-        let completion_id = format!(
-            "{}-{}-completion-{}",
-            group_id, message_id, completion_counter
-        );
-        *completion_counter += 1;
-
-        history.handle_completion(&chunk, completion_id);
-
-        match chunk {
-            StreamedAssistantContent::Text(text) => {
-                tracing::info!("[Text] {}", &text.text);
-                accumulated_text.push_str(&text.text);
-            }
-            StreamedAssistantContent::ToolCall(call) => {
-                tracing::info!(
-                    "[Tool Call: {} with arguments {}]",
-                    &call.function.name,
-                    &call.function.arguments
-                );
-
-                if call.function.name != "sleep_until_event_or_input" {
-                    accumulated_text.push_str(&format!(
-                        "\n[Tool Call: {} with arguments {}]\n",
-                        &call.function.name, &call.function.arguments
-                    ));
-                }
-
-                // Sync history before returning the action
-                history.sync().await?;
-
-                return Ok(CompletionAction::ExecuteToolCall {
-                    accumulated_text,
-                    tool_name: call.function.name,
-                    tool_args: call.function.arguments,
-                    tool_call_id: call.id,
-                    call_id: call.call_id,
-                });
-            }
-            StreamedAssistantContent::ToolCallDelta { .. } => {}
-            StreamedAssistantContent::Reasoning(reasoning) => {
-                tracing::info!("[Reasoning: {:?}]", reasoning.reasoning);
-            }
-            StreamedAssistantContent::Final(_) => {
-                tracing::info!("Received final message");
-                break;
             }
         }
     }
-
-    Ok(CompletionAction::Done { accumulated_text })
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -781,75 +738,28 @@ pub async fn execute_action<M, C, S>(
     history: &mut HistoryManager<C, S>,
     tool_registry: &HashMap<String, &Box<dyn Tool<M>>>,
     tool_context: &ToolContext<M>,
-    output_sender: &M,
-) -> Result<Option<String>, BoxError>
+) -> Result<(), BoxError>
 where
     M: MessageSender + 'static,
     C: ConversationStore,
     S: StateStore,
 {
     match action {
-        CompletionAction::Done { accumulated_text } => {
+        CompletionAction::Done => {
             history.sync().await?;
-            emit_output(&accumulated_text, history, output_sender).await?;
-            Ok(Some(accumulated_text))
         }
         CompletionAction::ExecuteToolCall {
-            accumulated_text,
             tool_name,
             tool_args,
             tool_call_id,
             call_id,
         } => {
-            // Tool registry lookup is guaranteed to succeed here because
-            // run_completion already handled unknown tools internally.
             let tool = tool_registry
                 .get(&tool_name)
                 .expect("tool must exist after run_completion");
             tool.execute(tool_args, tool_call_id, call_id, tool_context)
                 .await?;
-
-            // Emit any accumulated text before the tool call
-            if !accumulated_text.is_empty() {
-                emit_output(&accumulated_text, history, output_sender).await?;
-            }
-
-            Ok(if accumulated_text.is_empty() {
-                None
-            } else {
-                Some(accumulated_text)
-            })
         }
     }
-}
-
-async fn emit_output<M, C, S>(
-    text: &str,
-    history: &HistoryManager<C, S>,
-    output_sender: &M,
-) -> Result<(), BoxError>
-where
-    M: MessageSender,
-    C: ConversationStore,
-    S: StateStore,
-{
-    if text.is_empty() {
-        return Ok(());
-    }
-
-    let metadata = history.get_metadata().unwrap_or(serde_json::json!({}));
-    let output_text = if let Some(prefix) = history.get_thread_nesting_prefix() {
-        format!("{} {}", prefix, text)
-    } else {
-        text.to_string()
-    };
-
-    let output_msg = OutputMessage {
-        text: output_text,
-        metadata,
-    };
-    output_sender
-        .send_to_output(&serde_json::to_string(&output_msg)?)
-        .await
-        .map_err(|e| Box::new(e) as BoxError)
+    Ok(())
 }

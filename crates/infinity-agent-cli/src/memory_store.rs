@@ -318,12 +318,6 @@ impl MessageSender for InMemoryMessageSender {
     async fn send_to_output(&self, body: &str) -> Result<(), MemoryError> {
         let mut sent = self.sent_output.lock().unwrap();
         sent.push(body.to_string());
-        // Also print to stdout for the CLI
-        if let Ok(output) = serde_json::from_str::<serde_json::Value>(body) {
-            if let Some(text) = output.get("text").and_then(|t| t.as_str()) {
-                println!("{}", text);
-            }
-        }
         Ok(())
     }
 }
