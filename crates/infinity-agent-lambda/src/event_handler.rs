@@ -236,6 +236,8 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             (text, action)
         };
 
+        current_history.sync().await?;
+
         // Send accumulated text to output queue
         if !accumulated_text.is_empty() {
             let metadata = current_history
@@ -275,14 +277,9 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                     .map(|t| (t.name().to_string(), t))
                     .collect();
 
-            event_processor::execute_action(
-                action,
-                &mut current_history,
-                &tool_registry,
-                &tool_context,
-            )
-            .await
-            .map_err(|e| Error::from(format!("{}", e)))?;
+            event_processor::execute_action(action, &tool_registry, &tool_context)
+                .await
+                .map_err(|e| Error::from(format!("{}", e)))?;
         }
     }
 
