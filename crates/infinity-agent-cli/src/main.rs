@@ -146,13 +146,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .map(|t| (t.name().to_string(), t))
                 .collect();
 
-            if let Err(e) = event_processor::execute_action(
-                action,
-                &mut current_history,
-                &tool_registry,
-                &tool_context,
-            )
-            .await
+            if let Err(e) =
+                event_processor::execute_action(action, &tool_registry, &tool_context).await
             {
                 eprintln!("Error: {}\n", e);
             }
