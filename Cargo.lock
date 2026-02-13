@@ -1784,6 +1784,7 @@ dependencies = [
 name = "infinity-agent-core"
 version = "0.1.0"
 dependencies = [
+ "async-stream",
  "async-trait",
  "chrono",
  "chrono-tz",
