@@ -1,3 +1,4 @@
+use futures_util::StreamExt;
 use rig_bedrock::client::Client;
 use tracing_subscriber::EnvFilter;
 
@@ -42,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         let mut input = String::new();
         if std::io::stdin().read_line(&mut input)? == 0 {
-            break; // EOF
+            break;
         }
         let input = input.trim();
         if input.is_empty() {
@@ -76,18 +77,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await;
 
         match prepare_result {
-            Ok(event_processor::PrepareResult::Handled) => {
-                println!("\n(no response)\n");
-                continue;
-            }
+            Ok(event_processor::PrepareResult::Handled) => continue,
             Err(e) => {
-                eprintln!("\nError: {}\n", e);
+                eprintln!("Error: {}\n", e);
                 continue;
             }
             Ok(event_processor::PrepareResult::Ready) => {}
         }
 
-        // (b) Run completion
+        // (b) Stream completion, printing text chunks as they arrive
         let tool_names: std::collections::HashSet<String> =
             tool_impls.iter().map(|t| t.name().to_string()).collect();
         let tool_defs: Vec<rig::completion::ToolDefinition> = tool_impls
@@ -101,54 +99,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         let active_thread_id = current_history.thread_id.clone();
 
-        let action = event_processor::run_completion(
-            &model,
-            &mut current_history,
-            &tool_names,
-            &tool_defs,
-            &active_thread_id,
-            &message_id,
-        )
-        .await;
+        let final_action = {
+            let mut completion_stream = std::pin::pin!(event_processor::run_completion(
+                &model,
+                &mut current_history,
+                &tool_names,
+                &tool_defs,
+                &active_thread_id,
+                &message_id,
+            ));
 
-        let action = match action {
-            Ok(a) => a,
-            Err(e) => {
-                eprintln!("\nError: {}\n", e);
-                continue;
+            let mut action = None;
+            while let Some(event) = completion_stream.next().await {
+                match event {
+                    Ok(event_processor::CompletionEvent::TextChunk(chunk)) => {
+                        print!("{}", chunk);
+                        std::io::stdout().flush().ok();
+                    }
+                    Ok(event_processor::CompletionEvent::Action(a)) => {
+                        action = Some(a);
+                    }
+                    Err(e) => {
+                        eprintln!("\nError: {}\n", e);
+                        break;
+                    }
+                }
             }
+            println!();
+            action
         };
 
         // (c) Execute the action
-        let tool_context = ToolContext {
-            message_sender: sender.clone(),
-            group_id: active_thread_id,
-            input_queue_arn: String::new(),
-            rap_receiver_url: String::new(),
-            user_id: None,
-        };
+        if let Some(action) = final_action {
+            let tool_context = ToolContext {
+                message_sender: sender.clone(),
+                group_id: active_thread_id.clone(),
+                input_queue_arn: String::new(),
+                rap_receiver_url: String::new(),
+                user_id: None,
+            };
+            let tool_registry: std::collections::HashMap<
+                String,
+                &Box<dyn Tool<InMemoryMessageSender>>,
+            > = tool_impls
+                .iter()
+                .map(|t| (t.name().to_string(), t))
+                .collect();
 
-        let tool_registry: std::collections::HashMap<
-            String,
-            &Box<dyn Tool<InMemoryMessageSender>>,
-        > = tool_impls
-            .iter()
-            .map(|t| (t.name().to_string(), t))
-            .collect();
-
-        let result = event_processor::execute_action(
-            action,
-            &mut current_history,
-            &tool_registry,
-            &tool_context,
-            &sender,
-        )
-        .await;
-
-        match result {
-            Ok(Some(text)) => println!("\n{}\n", text),
-            Ok(None) => println!("\n(no response)\n"),
-            Err(e) => eprintln!("\nError: {}\n", e),
+            if let Err(e) = event_processor::execute_action(
+                action,
+                &mut current_history,
+                &tool_registry,
+                &tool_context,
+            )
+            .await
+            {
+                eprintln!("Error: {}\n", e);
+            }
         }
     }
 
