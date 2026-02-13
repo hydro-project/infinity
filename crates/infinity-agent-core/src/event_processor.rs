@@ -703,8 +703,6 @@ where
                             continue 'outer;
                         }
 
-                        history.sync().await?;
-
                         yield CompletionEvent::Action(CompletionAction::ExecuteToolCall {
                             tool_name: call.function.name,
                             tool_args: call.function.arguments,
@@ -735,7 +733,6 @@ where
 
 pub async fn execute_action<M, C, S>(
     action: CompletionAction,
-    history: &mut HistoryManager<C, S>,
     tool_registry: &HashMap<String, &Box<dyn Tool<M>>>,
     tool_context: &ToolContext<M>,
 ) -> Result<(), BoxError>
@@ -745,9 +742,7 @@ where
     S: StateStore,
 {
     match action {
-        CompletionAction::Done => {
-            history.sync().await?;
-        }
+        CompletionAction::Done => {}
         CompletionAction::ExecuteToolCall {
             tool_name,
             tool_args,
