@@ -151,8 +151,8 @@ export class InfinityAgent extends Construct {
 
     // Create the leader Lambda function using cargo-lambda-cdk
     this.lambdaFunction = new RustFunction(this, 'LeaderFunction', {
-      manifestPath: props.codePath || path.join(__dirname, '../../..'),
-      binaryName: 'infinity-agents-leader',
+      manifestPath: props.codePath || path.join(__dirname, '../../../crates/infinity-agent-lambda'),
+      binaryName: 'infinity-agent-lambda',
       architecture: lambda.Architecture.ARM_64,
       timeout: cdk.Duration.minutes(15),
       memorySize: 128,

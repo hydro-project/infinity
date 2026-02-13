@@ -1,0 +1,23 @@
+[package]
+name = "infinity-agent-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "infinity-agent-cli"
+path = "src/main.rs"
+
+[dependencies]
+infinity-agent-core = { path = "../infinity-agent-core" }
+
+rig-core = { workspace = true }
+rig-bedrock = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "io-util", "io-std"] }
+futures-util = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rustls = { workspace = true }
