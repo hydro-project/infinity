@@ -71,7 +71,7 @@ export class GitHubEventToolSet extends RapToolSet {
     const githubWebhookIntegration = new apigateway.LambdaIntegration(githubWebhookReceiverFunction);
     props.webhookGateway.root.addResource('github').addResource('webhook').addMethod('POST', githubWebhookIntegration);
 
-    super(agent, id, { serverUrl: '', handler: checkGithubActionsToolFunction });
+    super(agent, id, { handler: checkGithubActionsToolFunction });
 
     this.webhookUrl = props.webhookGateway.url + 'github/webhook';
 

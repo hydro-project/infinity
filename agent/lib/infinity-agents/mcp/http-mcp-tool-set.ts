@@ -125,7 +125,6 @@ export class HTTPMCPToolSet extends RapToolSet {
     }
 
     super(agent, id, {
-      serverUrl: '',
       handler,
     });
 

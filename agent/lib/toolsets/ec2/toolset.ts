@@ -59,6 +59,6 @@ export class Ec2ToolSet extends RapToolSet {
 
     agent.grantRapAccess(ec2StateMonitorFunction);
 
-    super(agent, id, { serverUrl: '', handler: createEc2Function });
+    super(agent, id, { handler: createEc2Function });
   }
 }
