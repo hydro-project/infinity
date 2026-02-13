@@ -1,25 +1,35 @@
-[package]
-name = "infinity-agents-leader"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+members = [
+    "crates/infinity-agent-core",
+    "crates/infinity-agent-lambda",
+    "crates/infinity-agent-cli",
+]
+resolver = "2"
 
-[dependencies]
-aws_lambda_events = { version = "1.0.0", default-features = false, features = ["sqs"] }
-
-lambda_runtime = "1.0.1"
-tokio = { version = "1", features = ["macros"] }
-
-futures-util = "0.3"
+[workspace.dependencies]
+# Shared
 rig-core = { version = "0.24", default-features = false }
 rig-bedrock = "0.3"
-serde_json = "1"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros"] }
+futures-util = "0.3"
+async-trait = "0.1"
+chrono = "0.4"
+chrono-tz = "0.10"
+uuid = { version = "1", features = ["v4"] }
+url = "2"
+tracing = "0.1"
+
+# AWS (lambda crate)
+aws_lambda_events = { version = "1.0.0", default-features = false, features = ["sqs"] }
+lambda_runtime = "1.0.1"
 aws-sdk-dynamodb = { version = "1", default-features = false }
 aws-sdk-sqs = { version = "1", default-features = false }
 aws-sdk-ssm = { version = "1", default-features = false }
 aws-sdk-scheduler = { version = "1", default-features = false }
 aws-sdk-dsql = { version = "1", default-features = false }
-aws-config = { version = "1", default-features = false, features = [ "rt-tokio", "default-https-client" ] }
+aws-config = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client"] }
 aws-types = { version = "1", default-features = false }
 aws-sigv4 = { version = "1", default-features = false }
 aws-credential-types = { version = "1", default-features = false }
@@ -31,8 +41,3 @@ rustls = { version = "0.23", features = ["aws-lc-rs"] }
 http = "1"
 http-body-util = "0.1"
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "postgres", "json", "chrono", "uuid"] }
-chrono = "0.4"
-chrono-tz = "0.10"
-async-trait = "0.1"
-uuid = { version = "1", features = ["v4"] }
-url = "2"
