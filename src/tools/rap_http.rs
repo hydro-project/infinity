@@ -97,4 +97,55 @@ impl RapHttpClient {
         let response = self.http_client.request(request).await?;
         Ok(response.status())
     }
+
+    /// GET from a Lambda Function URL, signed with SigV4. Returns the response body as bytes.
+    pub async fn get_signed(&self, url: &str) -> Result<(hyper::StatusCode, Vec<u8>), Error> {
+        let parsed = url::Url::parse(url)?;
+        let host = parsed.host_str().ok_or("missing host in URL")?.to_string();
+
+        let creds = self.credentials_provider.provide_credentials().await?;
+        let identity = Identity::new(creds, None);
+
+        let mut signing_settings = SigningSettings::default();
+        signing_settings.signature_location = SignatureLocation::Headers;
+
+        let signing_params = SigningParams::builder()
+            .identity(&identity)
+            .region(&self.region)
+            .name("lambda")
+            .time(SystemTime::now())
+            .settings(signing_settings)
+            .build()?;
+
+        let signable_request = SignableRequest::new(
+            "GET",
+            url,
+            std::iter::once(("host", host.as_str()))
+                .chain(std::iter::once(("accept", "application/json"))),
+            SignableBody::empty(),
+        )?;
+
+        let (signing_instructions, _signature) =
+            sign(signable_request, &signing_params.into())?.into_parts();
+
+        let mut request = http::Request::builder()
+            .method("GET")
+            .uri(url)
+            .header("host", &host)
+            .header("accept", "application/json");
+
+        for (name, value) in signing_instructions.headers() {
+            request = request.header(name, value);
+        }
+
+        let request = request.body(http_body_util::Full::new(hyper::body::Bytes::new()))?;
+
+        let response = self.http_client.request(request).await?;
+        let status = response.status();
+
+        use http_body_util::BodyExt;
+        let body_bytes = response.into_body().collect().await?.to_bytes().to_vec();
+
+        Ok((status, body_bytes))
+    }
 }

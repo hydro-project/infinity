@@ -3,11 +3,11 @@ use aws_sdk_sqs::Client as SqsClient;
 use lambda_runtime::Error;
 
 pub mod config;
-pub mod lambda_mcp;
 pub mod lambda_tool;
 pub mod rap_http;
 pub mod sleep;
 pub mod thread;
+pub mod toolset_loader;
 
 // Context passed to tool implementations
 pub struct ToolContext {

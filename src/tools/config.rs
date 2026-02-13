@@ -2,54 +2,18 @@ use aws_sdk_dynamodb::Client as DynamoDbClient;
 use aws_sdk_ssm::Client as SsmClient;
 use serde::{Deserialize, Serialize};
 
-use super::{Tool, ToolSet, VecToolSet, lambda_mcp::LambdaMCP, lambda_tool::LambdaTool};
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ToolConfig {
-    Lambda {
-        name: String,
-        description: String,
-        parameters: serde_json::Value,
-        function_url: String,
-    },
-}
-
-impl ToolConfig {
-    pub fn into_tool(self) -> Box<dyn Tool> {
-        match self {
-            ToolConfig::Lambda {
-                name,
-                description,
-                parameters,
-                function_url,
-            } => Box::new(LambdaTool {
-                name,
-                description,
-                parameters,
-                function_url,
-            }),
-        }
-    }
-}
-
+/// Configuration for a single toolset server entry.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolSetConfig {
-    Vec { tools: Vec<ToolConfig> },
-    Mcp { name: String, function_url: String },
+    /// RAP toolset server — tools are loaded via `.well-known/rap-toolset`.
+    ToolsetServer { server_url: String },
 }
 
 impl ToolSetConfig {
-    pub fn into_tool_set(self) -> Box<dyn ToolSet> {
+    pub fn server_url(&self) -> &str {
         match self {
-            ToolSetConfig::Vec { tools } => {
-                let tool_impls = tools.into_iter().map(|t| t.into_tool()).collect();
-                Box::new(VecToolSet::new(tool_impls))
-            }
-            ToolSetConfig::Mcp { name, function_url } => {
-                Box::new(LambdaMCP::new(name, function_url))
-            }
+            ToolSetConfig::ToolsetServer { server_url } => server_url,
         }
     }
 }
@@ -114,10 +78,11 @@ impl ToolsConfig {
         Ok(config)
     }
 
-    pub fn into_tool_sets(self) -> Vec<Box<dyn ToolSet>> {
+    /// Extract all toolset server URLs from the config.
+    pub fn toolset_server_urls(&self) -> Vec<String> {
         self.tool_sets
-            .into_iter()
-            .map(|ts| ts.into_tool_set())
+            .iter()
+            .map(|ts| ts.server_url().to_string())
             .collect()
     }
 }

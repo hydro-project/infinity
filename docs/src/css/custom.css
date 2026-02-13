@@ -51,12 +51,6 @@
   letter-spacing: -0.02em;
 }
 
-@media (max-width: 996px) {
-  .hero-left h1 {
-    font-size: 2.5rem;
-  }
-}
-
 .hero-left h1 .gradient-text {
   background: linear-gradient(135deg, #79b8ff 0%, #3a7bd5 50%, #b392f0 100%);
   -webkit-background-clip: text;

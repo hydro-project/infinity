@@ -6,6 +6,46 @@ const dynamoClient = new DynamoDBClient({});
 const GITHUB_CHECKS_TABLE = process.env.GITHUB_CHECKS_TABLE;
 const SUBSCRIPTION_LOOKUP_TABLE = process.env.SUBSCRIPTION_LOOKUP_TABLE;
 
+const TOOLSET_MANIFEST = {
+  name: 'github-events',
+  description: 'Subscribe to and manage GitHub webhook event notifications',
+  endpoint: '',
+  tools: [
+    {
+      name: 'subscribe_github_events',
+      description:
+        'Subscribes to GitHub webhook events on a repository. Use filters to match specific events. If there is nothing to do until an event arrives, you may want to use the sleep tool to hibernate until you are woken up by an event. DO NOT re-subscribe after an `interrupt`, the subscription remains active automatically.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          owner: { type: 'string', description: 'GitHub repository owner (username or organization).' },
+          repo: { type: 'string', description: 'GitHub repository name.' },
+          event_type: { type: 'string', description: 'Optional: GitHub event type to filter on (e.g., "pull_request", "push", "issues").' },
+          sha: { type: 'string', description: 'Optional: Commit SHA to filter on.' },
+          pr_number: { type: 'number', description: 'Optional: Pull request number to filter on.' },
+          issue_number: { type: 'number', description: 'Optional: Issue number to filter on.' },
+          action: { type: 'string', description: 'Optional: Event action to filter on (e.g., "opened", "closed").' },
+          branch: { type: 'string', description: 'Optional: Branch name to filter on.' },
+          actor: { type: 'string', description: 'Optional: GitHub username to filter on.' },
+        },
+        required: ['owner', 'repo'],
+      },
+      annotations: { subscription: true },
+    },
+    {
+      name: 'cancel_github_subscription',
+      description: 'Cancels an active GitHub webhook event subscription.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          subscription_id: { type: 'string', description: 'The subscription ID returned when you created the subscription.' },
+        },
+        required: ['subscription_id'],
+      },
+    },
+  ],
+};
+
 async function handleSubscribe(args, id, call_id, rap_receiver_url, group_id) {
     const owner = args.owner;
     const repo = args.repo;
@@ -97,7 +137,18 @@ async function handleCancelSubscription(args) {
 }
 
 export const handler = awslambda.streamifyResponse(async (event, responseStream) => {
-    // Immediately signal OK to the invoker so the leader doesn't block
+    // Handle .well-known/rap-toolset discovery
+    if (event.requestContext?.http?.method === 'GET' && event.rawPath?.includes('.well-known/rap-toolset')) {
+        const manifest = { ...TOOLSET_MANIFEST };
+        if (!manifest.endpoint) {
+            manifest.endpoint = `https://${event.requestContext?.domainName || ''}`;
+        }
+        responseStream.write(JSON.stringify(manifest));
+        responseStream.end();
+        return;
+    }
+
+    // Tool invocation
     responseStream.write('OK');
     responseStream.end();
 

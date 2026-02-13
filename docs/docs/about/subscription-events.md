@@ -16,7 +16,7 @@ A subscription starts as a normal tool call. The agent invokes a tool like `subs
 
 The agent sees the confirmation and knows the subscription is active. At this point it can hibernate (e.g. call `sleep_until_event_or_input`) and wait for events to arrive.
 
-When a matching event occurs — a webhook fires, a price threshold is crossed, a new article is published — the tool (or its webhook handler) POSTs a `subscription_event` to the stored `callback_url`. See the [Subscription Events spec](/spec/subscription-events) for the exact payload format.
+When a matching event occurs — a webhook fires, a price threshold is crossed, a new article is published — the tool (or its webhook handler) POSTs a `subscription_event` to the stored `callback_url`. See the [Subscription Events spec](/spec/server/subscription-events) for the exact payload format.
 
 ## The problem: presenting events to the LLM
 

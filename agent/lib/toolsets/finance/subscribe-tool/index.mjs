@@ -6,6 +6,50 @@ const dynamoClient = new DynamoDBClient({});
 const SUBSCRIPTIONS_TABLE = process.env.SUBSCRIPTIONS_TABLE;
 const LOOKUP_TABLE = process.env.LOOKUP_TABLE;
 
+const TOOLSET_MANIFEST = {
+  name: 'finance-subscriptions',
+  description: 'Subscribe to stock price changes and news alerts',
+  endpoint: '',
+  tools: [
+    {
+      name: 'notify_price_change',
+      description: 'Subscribe to be notified when a stock price changes by more than a given threshold (in dollars). The agent will receive a notification event when the price moves. If there is nothing to do until a notification arrives, use the sleep tool to hibernate.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          symbol: { type: 'string', description: 'Stock ticker symbol (e.g. AAPL, TSLA, MSFT)' },
+          threshold: { type: 'number', description: 'Dollar amount of price change to trigger notification' },
+        },
+        required: ['symbol', 'threshold'],
+      },
+      annotations: { subscription: true },
+    },
+    {
+      name: 'notify_news',
+      description: 'Subscribe to Google News RSS for a search query. The agent will receive notification events when new articles matching the query are published. If there is nothing to do until a notification arrives, use the sleep tool to hibernate.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search query for Google News (e.g. "AAPL earnings", "Tesla stock")' },
+        },
+        required: ['query'],
+      },
+      annotations: { subscription: true },
+    },
+    {
+      name: 'cancel_finance_subscription',
+      description: 'Cancel an active finance subscription (price change or news).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          subscription_id: { type: 'string', description: 'The subscription ID to cancel' },
+        },
+        required: ['subscription_id'],
+      },
+    },
+  ],
+};
+
 async function handlePriceSubscription(args, id, callId, rapReceiverUrl, groupId) {
   const { symbol, threshold } = args;
   if (!symbol || threshold == null) {
@@ -110,7 +154,18 @@ async function handleCancel(args) {
 }
 
 export const handler = awslambda.streamifyResponse(async (event, responseStream) => {
-  // Immediately signal OK to the invoker so the leader doesn't block
+  // Handle .well-known/rap-toolset discovery
+  if (event.requestContext?.http?.method === 'GET' && event.rawPath?.includes('.well-known/rap-toolset')) {
+    const manifest = { ...TOOLSET_MANIFEST };
+    if (!manifest.endpoint) {
+      manifest.endpoint = `https://${event.requestContext?.domainName || ''}`;
+    }
+    responseStream.write(JSON.stringify(manifest));
+    responseStream.end();
+    return;
+  }
+
+  // Tool invocation — immediately signal OK
   responseStream.write('OK');
   responseStream.end();
 
