@@ -228,3 +228,148 @@ impl<M: MessageSender + 'static, C: ConversationStore + 'static> Tool<M> for Rep
         Ok(())
     }
 }
+
+/// Tool that closes a thread, returning control to the parent.
+pub struct CloseThreadTool<C: ConversationStore> {
+    pub conversation_store: C,
+}
+
+#[async_trait]
+impl<M: MessageSender + 'static, C: ConversationStore + 'static> Tool<M> for CloseThreadTool<C> {
+    fn name(&self) -> &str {
+        "close_thread"
+    }
+
+    fn description(&self) -> &str {
+        "Permanently shuts down the specified thread, marking it as complete. Use this from a thread that wants to close itself. Make sure to cancel any subscriptions you created before calling this. If the thread has additional information has not already been reported to the parent, include it in report_to_parent. Omit report_to_parent if there is nothing worth reporting."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "thread_id": {
+                    "type": "string",
+                    "description": "The ID of the thread to close."
+                },
+                "report_to_parent": {
+                    "type": "string",
+                    "description": "Optional report to send to the parent thread."
+                }
+            },
+            "required": ["thread_id"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        id: String,
+        call_id: Option<String>,
+        context: &ToolContext<M>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let thread_id = args["thread_id"].as_str().ok_or("thread_id is required")?;
+
+        if thread_id != context.group_id {
+            let tool_result = InputMessage {
+                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                    id: id.clone(),
+                    call_id,
+                    content: OneOrMany::one(ToolResultContent::Text(Text {
+                        text: format!(
+                            "Error: the provided thread ID to close {} does not match the current thread ID {}",
+                            thread_id, context.group_id
+                        ),
+                    })),
+                })),
+                group_id: context.group_id.clone(),
+                metadata: None,
+                synthetic: None,
+            };
+
+            context
+                .send_to_input_queue(
+                    &serde_json::to_string(&tool_result)?,
+                    &context.group_id,
+                    &id,
+                )
+                .await?;
+
+            return Ok(());
+        }
+
+        let report = args.get("report_to_parent").and_then(|v| v.as_str());
+
+        self.conversation_store
+            .close_thread(thread_id)
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+
+        tracing::info!("Closed thread {}", thread_id);
+
+        let is_subscription = self
+            .conversation_store
+            .is_subscription_event_thread(thread_id)
+            .await
+            .unwrap_or(false);
+
+        if let Some((parent_id, spawn_tool_call_id)) = self
+            .conversation_store
+            .get_thread_parent_info(thread_id)
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+        {
+            let report_text = if is_subscription {
+                if let Some(report_text) = report {
+                    Some(format!(
+                        "An event from your subscription {} was processed by a child thread. The subscription remains active. Report from the child:\n{}",
+                        spawn_tool_call_id, report_text
+                    ))
+                } else {
+                    None
+                }
+            } else if let Some(report_text) = report {
+                Some(format!(
+                    "Child thread with ID {} has shut down. Report from child thread:\n{}",
+                    thread_id, report_text
+                ))
+            } else {
+                Some(format!("Child thread with ID {} has shut down", thread_id))
+            };
+
+            if let Some(report_text) = report_text {
+                tracing::info!(
+                    "Sending report from thread {} to parent {} via tool call {}",
+                    thread_id,
+                    parent_id,
+                    spawn_tool_call_id
+                );
+
+                let report_message = InputMessage {
+                    content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                        id: String::new(),
+                        call_id: None,
+                        content: OneOrMany::one(ToolResultContent::Text(Text {
+                            text: report_text,
+                        })),
+                    })),
+                    group_id: parent_id,
+                    metadata: None,
+                    synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
+                        tool_call_id: spawn_tool_call_id,
+                    })),
+                };
+
+                context
+                    .send_to_input_queue(
+                        &serde_json::to_string(&report_message)?,
+                        &report_message.group_id,
+                        &id,
+                    )
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+}
