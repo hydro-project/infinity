@@ -340,6 +340,20 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     pub fn state_store(&self) -> &S {
         &self.state_store
     }
+
+    /// Mutate this HistoryManager in place to become a child thread.
+    /// Keeps the current history and metadata (the child inherits the parent context),
+    /// updates the thread_id and ancestor chain, and clears pending/processed state
+    /// since the child is brand new. No store round-trip needed.
+    pub fn fork_new(&mut self, sub_thread_id: String) {
+        // Parent becomes part of the ancestor chain
+        self.ancestor_chain.push(self.thread_id.clone());
+        self.thread_id = sub_thread_id;
+        self.processed_message_ids.clear();
+        self.processed_tool_calls.clear();
+        self.pending_items.clear();
+        self.pending_complete_tool_calls.clear();
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -352,7 +366,6 @@ pub async fn prepare_input<C, S, M>(
     message_id: String,
     current_history: &mut HistoryManager<C, S>,
     conversation_store: &C,
-    state_store: &S,
     output_sender: &M,
 ) -> Result<PrepareResult, BoxError>
 where
@@ -495,12 +508,7 @@ where
                 .await
                 .map_err(|e| Box::new(e) as BoxError)?;
 
-            *current_history = HistoryManager::new_with_history(
-                conversation_store.clone(),
-                state_store.clone(),
-                sub_thread_id.clone(),
-            )
-            .await?;
+            current_history.fork_new(sub_thread_id.clone());
 
             let event_call_id = uuid::Uuid::new_v4().to_string();
             let spawn_call_id = uuid::Uuid::new_v4().to_string();
@@ -555,7 +563,7 @@ where
                             function: rig::message::ToolFunction {
                                 name: "spawn_thread".to_string(),
                                 arguments: serde_json::json!({
-                                    "instructions": "Process the single subscription event above, and close the thread after processing this event with a report to the parent if appropriate. Only your report will be visible to the parent."
+                                    "instructions": "Process the single subscription event above, report to the parent if appropriate, then close the thread after processing this event. Only your report will be visible to the parent."
                                 }),
                             },
                         })),
@@ -731,15 +739,13 @@ where
 //     or emit output).
 // ═══════════════════════════════════════════════════════════════════════
 
-pub async fn execute_action<M, C, S>(
+pub async fn execute_action<M>(
     action: CompletionAction,
     tool_registry: &HashMap<String, &Box<dyn Tool<M>>>,
     tool_context: &ToolContext<M>,
 ) -> Result<(), BoxError>
 where
     M: MessageSender + 'static,
-    C: ConversationStore,
-    S: StateStore,
 {
     match action {
         CompletionAction::Done => {}

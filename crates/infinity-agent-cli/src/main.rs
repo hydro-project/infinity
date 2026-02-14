@@ -71,7 +71,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             message_id.clone(),
             &mut current_history,
             &conversation_store,
-            &state_store,
             &sender,
         )
         .await;
