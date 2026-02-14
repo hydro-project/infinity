@@ -10,7 +10,7 @@ use infinity_agent_core::event_processor;
 use infinity_agent_core::message::InputMessage;
 use infinity_agent_core::tools::config::ToolsConfig;
 use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
-use infinity_agent_core::tools::thread::{ReportToParentTool, SpawnThreadTool};
+use infinity_agent_core::tools::thread::{CloseThreadTool, ReportToParentTool, SpawnThreadTool};
 use infinity_agent_core::tools::toolset_loader::ToolsetLoader;
 use infinity_agent_core::tools::{Tool, ToolContext};
 
@@ -164,6 +164,9 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         tool_impls.push(Box::new(ReportToParentTool {
             conversation_store: conversation_store.clone(),
         }));
+        tool_impls.push(Box::new(CloseThreadTool {
+            conversation_store: conversation_store.clone(),
+        }));
 
         let sender_clone = sender.clone();
         let input_queue_arn_clone = input_queue_arn.clone();
@@ -183,7 +186,6 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             message_id.clone(),
             &mut current_history,
             &conversation_store,
-            &state_store,
             &sender,
         )
         .await
@@ -237,6 +239,22 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         };
 
         current_history.sync().await?;
+
+        // For root threads, append tool call info to the output so the user sees it
+        let mut accumulated_text = accumulated_text;
+        if let Some(event_processor::CompletionAction::ExecuteToolCall {
+            ref tool_name,
+            ref tool_args,
+            ..
+        }) = final_action
+        {
+            if tool_name != "sleep_until_event_or_input" {
+                accumulated_text.push_str(&format!(
+                    "\n[Tool Call: {} with arguments {}]\n",
+                    tool_name, tool_args
+                ));
+            }
+        }
 
         // Send accumulated text to output queue
         if !accumulated_text.is_empty() {
