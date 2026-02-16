@@ -14,10 +14,11 @@ rig-core = { workspace = true }
 rig-bedrock = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "io-util", "io-std"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "io-util", "io-std", "sync"] }
 futures-util = { workspace = true }
 async-trait = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rustls = { workspace = true }
+crossterm = "0.28"

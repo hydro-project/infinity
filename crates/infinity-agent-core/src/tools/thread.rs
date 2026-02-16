@@ -167,7 +167,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Repor
                 report_text
             )
         } else {
-            format!("Report from child thread:\n{}", report_text)
+            format!("Report from child thread: {}", report_text)
         };
 
         let report_message = InputMessage {
@@ -311,7 +311,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Close
                 }
             } else if let Some(report_text) = report {
                 Some(format!(
-                    "Child thread with ID {} has shut down. Report from child thread:\n{}",
+                    "Child thread with ID {} has shut down. Report from child thread: {}",
                     thread_id, report_text
                 ))
             } else {
