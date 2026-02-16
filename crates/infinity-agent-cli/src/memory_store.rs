@@ -110,19 +110,19 @@ impl ConversationStore for InMemoryConversationStore {
         Ok(())
     }
 
-    async fn get_current_message_order(&self, session_id: &str) -> Result<i64, MemoryError> {
-        let msgs = self.messages.lock().unwrap();
-        Ok(msgs.get(session_id).map(|v| v.len() as i64).unwrap_or(0))
-    }
-
     async fn spawn_thread(
         &self,
         parent_thread_id: &str,
-        spawn_message_order: i64,
         spawn_tool_call_id: &str,
+        is_for_subscription_event: bool,
     ) -> Result<String, MemoryError> {
         let new_id = uuid::Uuid::new_v4().to_string();
         let mut threads = self.threads.lock().unwrap();
+        let msgs = self.messages.lock().unwrap();
+        let spawn_message_order = msgs
+            .get(parent_thread_id)
+            .map(|v| v.len() as i64)
+            .unwrap_or(0);
         let root = threads
             .get(parent_thread_id)
             .map(|t| t.root_thread_id.clone())
@@ -135,7 +135,7 @@ impl ConversationStore for InMemoryConversationStore {
                 spawn_message_order: Some(spawn_message_order),
                 spawn_tool_call_id: Some(spawn_tool_call_id.to_string()),
                 closed: false,
-                is_subscription_event: false,
+                is_subscription_event: is_for_subscription_event,
             },
         );
         Ok(new_id)
@@ -160,14 +160,6 @@ impl ConversationStore for InMemoryConversationStore {
             .get(thread_id)
             .map(|t| t.is_subscription_event)
             .unwrap_or(false))
-    }
-
-    async fn mark_as_subscription_event(&self, thread_id: &str) -> Result<(), MemoryError> {
-        let mut threads = self.threads.lock().unwrap();
-        if let Some(t) = threads.get_mut(thread_id) {
-            t.is_subscription_event = true;
-        }
-        Ok(())
     }
 
     async fn get_thread_parent_info(

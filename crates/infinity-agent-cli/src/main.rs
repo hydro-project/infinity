@@ -71,12 +71,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             message_id.clone(),
             &mut current_history,
             &conversation_store,
-            &sender,
         )
         .await;
 
         match prepare_result {
             Ok(event_processor::PrepareResult::Handled) => continue,
+            Ok(event_processor::PrepareResult::OAuthRequired { auth_url }) => {
+                eprintln!(
+                    "OAuth required — open this URL to authenticate:\n  {}\n",
+                    auth_url
+                );
+                continue;
+            }
             Err(e) => {
                 eprintln!("Error: {}\n", e);
                 continue;

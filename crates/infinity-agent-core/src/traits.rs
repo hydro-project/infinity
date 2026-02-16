@@ -27,13 +27,11 @@ pub trait ConversationStore: Send + Sync + Clone {
         messages: Vec<(Message, String)>,
     ) -> Result<(), Self::Error>;
 
-    async fn get_current_message_order(&self, session_id: &str) -> Result<i64, Self::Error>;
-
     async fn spawn_thread(
         &self,
         parent_thread_id: &str,
-        spawn_message_order: i64,
         spawn_tool_call_id: &str,
+        is_for_subscription_event: bool,
     ) -> Result<String, Self::Error>;
 
     async fn is_thread_closed(&self, thread_id: &str) -> Result<bool, Self::Error>;
@@ -41,8 +39,6 @@ pub trait ConversationStore: Send + Sync + Clone {
     async fn close_thread(&self, thread_id: &str) -> Result<(), Self::Error>;
 
     async fn is_subscription_event_thread(&self, thread_id: &str) -> Result<bool, Self::Error>;
-
-    async fn mark_as_subscription_event(&self, thread_id: &str) -> Result<(), Self::Error>;
 
     async fn get_thread_parent_info(
         &self,

@@ -1,0 +1,109 @@
+---
+source: crates/infinity-agent-core/src/event_processor.rs
+expression: hm.history
+---
+[
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "subscribe"
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "id": null,
+    "content": [
+      {
+        "id": "tc-sub",
+        "call_id": null,
+        "function": {
+          "name": "subscribe_tool",
+          "arguments": {
+            "topic": "events"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "toolresult",
+        "id": "tc-sub",
+        "content": [
+          {
+            "type": "text",
+            "text": "subscribed successfully"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "id": null,
+    "content": [
+      {
+        "id": "[uuid]",
+        "call_id": null,
+        "function": {
+          "name": "subscribe_tool",
+          "arguments": {
+            "kind": "[redacted-kind]",
+            "topic": "events"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "toolresult",
+        "id": "[uuid]",
+        "content": [
+          {
+            "type": "text",
+            "text": "event payload"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "id": null,
+    "content": [
+      {
+        "id": "[uuid]",
+        "call_id": null,
+        "function": {
+          "name": "spawn_thread",
+          "arguments": {
+            "instructions": "Process the single subscription event above, report to the parent if appropriate, then close the thread after processing this event. Only your report will be visible to the parent."
+          }
+        }
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "toolresult",
+        "id": "[uuid]",
+        "content": [
+          {
+            "type": "text",
+            "text": "You are now INSIDE the thread for processing the single event above. Your thread ID is sub-thread-1, the parent which is still subscribing is thread-1."
+          }
+        ]
+      }
+    ]
+  }
+]
