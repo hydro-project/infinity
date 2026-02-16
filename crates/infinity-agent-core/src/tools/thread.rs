@@ -45,15 +45,9 @@ impl<M: MessageSender + 'static, C: ConversationStore + 'static> Tool<M> for Spa
         call_id: Option<String>,
         context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let spawn_order = self
-            .conversation_store
-            .get_current_message_order(&context.group_id)
-            .await
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-
         let new_thread_id = self
             .conversation_store
-            .spawn_thread(&context.group_id, spawn_order, &id)
+            .spawn_thread(&context.group_id, &id, false)
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 

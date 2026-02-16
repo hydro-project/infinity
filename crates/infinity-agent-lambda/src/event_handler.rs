@@ -186,13 +186,28 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             message_id.clone(),
             &mut current_history,
             &conversation_store,
-            &sender,
         )
         .await
         .map_err(|e| Error::from(format!("{}", e)))?;
 
-        if let event_processor::PrepareResult::Handled = prepare_result {
-            continue;
+        match prepare_result {
+            event_processor::PrepareResult::Handled => continue,
+            event_processor::PrepareResult::OAuthRequired { auth_url } => {
+                let metadata = current_history
+                    .get_metadata()
+                    .unwrap_or(serde_json::json!({}));
+                let oauth_msg = event_processor::OAuthOutputMessage {
+                    message_type: "oauth_required".to_string(),
+                    auth_url,
+                    metadata,
+                };
+                sender
+                    .send_to_output(&serde_json::to_string(&oauth_msg)?)
+                    .await
+                    .map_err(|e| Error::from(format!("{}", e)))?;
+                continue;
+            }
+            event_processor::PrepareResult::Ready => {}
         }
 
         // (b) Build tool definitions and run completion

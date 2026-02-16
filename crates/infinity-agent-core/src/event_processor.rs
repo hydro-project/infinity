@@ -33,11 +33,14 @@ pub struct OAuthOutputMessage {
 }
 
 /// The result of preparing an input message before sending it to the model.
+#[derive(Debug, PartialEq, Serialize)]
 pub enum PrepareResult {
     /// The input was processed and the history manager is ready for completion.
     Ready,
-    /// The input was handled without needing a completion (e.g. OAuth, duplicate, closed thread).
+    /// The input was handled without needing a completion (e.g. duplicate, closed thread).
     Handled,
+    /// An OAuth challenge must be forwarded to the user.
+    OAuthRequired { auth_url: String },
 }
 
 /// What the model wants to do after a completion stream finishes.
@@ -361,17 +364,15 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
 //     synthetics, subscription events, OAuth, dedup, closed threads.
 // ═══════════════════════════════════════════════════════════════════════
 
-pub async fn prepare_input<C, S, M>(
+pub async fn prepare_input<C, S>(
     input_msg: InputMessage,
     message_id: String,
     current_history: &mut HistoryManager<C, S>,
     conversation_store: &C,
-    output_sender: &M,
 ) -> Result<PrepareResult, BoxError>
 where
     C: ConversationStore,
     S: StateStore,
-    M: MessageSender,
 {
     // Skip messages for closed threads
     if conversation_store
@@ -391,24 +392,13 @@ where
         current_history.update_metadata(metadata).await?;
     }
 
-    // Handle OAuth required messages — forward to output, don't add to history
+    // Handle OAuth required messages — return to caller, don't add to history
     if let InputMessageContent::OAuth(oauth) = &input_msg.content {
-        if oauth.content_type == "oauth_required" {
-            tracing::info!("Received OAuth required message, forwarding to output");
-            let metadata = current_history
-                .get_metadata()
-                .unwrap_or(serde_json::json!({}));
-            let oauth_msg = OAuthOutputMessage {
-                message_type: "oauth_required".to_string(),
-                auth_url: oauth.auth_url.clone(),
-                metadata,
-            };
-            output_sender
-                .send_to_output(&serde_json::to_string(&oauth_msg)?)
-                .await
-                .map_err(|e| Box::new(e) as BoxError)?;
-            return Ok(PrepareResult::Handled);
-        }
+        assert!(oauth.content_type == "oauth_required");
+        tracing::info!("Received OAuth required message, returning to caller");
+        return Ok(PrepareResult::OAuthRequired {
+            auth_url: oauth.auth_url.clone(),
+        });
     }
 
     let user_content = match input_msg.content {
@@ -487,13 +477,8 @@ where
                 original_tool_call_id
             );
 
-            let spawn_order = conversation_store
-                .get_current_message_order(&input_msg.group_id)
-                .await
-                .map_err(|e| Box::new(e) as BoxError)?;
-
             let sub_thread_id = conversation_store
-                .spawn_thread(&input_msg.group_id, spawn_order, &original_tool_call_id)
+                .spawn_thread(&input_msg.group_id, &original_tool_call_id, true)
                 .await
                 .map_err(|e| Box::new(e) as BoxError)?;
 
@@ -502,11 +487,6 @@ where
                 sub_thread_id,
                 input_msg.group_id
             );
-
-            conversation_store
-                .mark_as_subscription_event(&sub_thread_id)
-                .await
-                .map_err(|e| Box::new(e) as BoxError)?;
 
             current_history.fork_new(sub_thread_id.clone());
 
@@ -763,4 +743,578 @@ where
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message::{
+        InputMessage, InputMessageContent, OAuthRequired, SyntheticKind, TaggedSyntheticKind,
+    };
+    use crate::traits::{ConversationStore, StateStore};
+    use async_trait::async_trait;
+    use rig::OneOrMany;
+    use rig::message::{
+        AssistantContent, Message, ToolCall, ToolFunction, ToolResult, ToolResultContent,
+        UserContent,
+    };
+    use std::collections::HashSet;
+
+    // ── Minimal error type ──
+
+    #[derive(Debug)]
+    struct TestError;
+    impl std::fmt::Display for TestError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "test error")
+        }
+    }
+    impl std::error::Error for TestError {}
+
+    // ── No-op ConversationStore ──
+
+    #[derive(Clone)]
+    struct StubConversationStore {
+        closed_threads: HashSet<String>,
+    }
+
+    impl StubConversationStore {
+        fn new() -> Self {
+            Self {
+                closed_threads: HashSet::new(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ConversationStore for StubConversationStore {
+        type Error = TestError;
+
+        async fn ensure_root_thread(&self, _thread_id: &str) -> Result<(), TestError> {
+            Ok(())
+        }
+        async fn load_history(&self, _session_id: &str) -> Result<Vec<Message>, TestError> {
+            Ok(vec![])
+        }
+        async fn load_history_up_to(
+            &self,
+            _session_id: &str,
+            _up_to_order: i64,
+        ) -> Result<Vec<Message>, TestError> {
+            Ok(vec![])
+        }
+        async fn load_history_with_ancestors(
+            &self,
+            _thread_id: &str,
+        ) -> Result<Vec<Message>, TestError> {
+            Ok(vec![])
+        }
+        async fn append_messages(
+            &self,
+            _session_id: &str,
+            _messages: Vec<(Message, String)>,
+        ) -> Result<(), TestError> {
+            Ok(())
+        }
+        async fn spawn_thread(
+            &self,
+            _parent_thread_id: &str,
+            _spawn_tool_call_id: &str,
+            _is_for_subscription_event: bool,
+        ) -> Result<String, TestError> {
+            Ok("sub-thread-1".to_string())
+        }
+        async fn is_thread_closed(&self, thread_id: &str) -> Result<bool, TestError> {
+            Ok(self.closed_threads.contains(thread_id))
+        }
+        async fn close_thread(&self, _thread_id: &str) -> Result<(), TestError> {
+            Ok(())
+        }
+        async fn is_subscription_event_thread(&self, _thread_id: &str) -> Result<bool, TestError> {
+            Ok(false)
+        }
+        async fn get_thread_parent_info(
+            &self,
+            _thread_id: &str,
+        ) -> Result<Option<(String, String)>, TestError> {
+            Ok(None)
+        }
+        async fn get_ancestor_chain(
+            &self,
+            _thread_id: &str,
+        ) -> Result<Vec<(String, i64)>, TestError> {
+            Ok(vec![])
+        }
+    }
+
+    // ── No-op StateStore ──
+
+    #[derive(Clone)]
+    struct StubStateStore;
+
+    #[async_trait]
+    impl StateStore for StubStateStore {
+        type Error = TestError;
+
+        async fn get_processed_ids(
+            &self,
+            _thread_id: &str,
+        ) -> Result<(HashSet<String>, HashSet<String>), TestError> {
+            Ok((HashSet::new(), HashSet::new()))
+        }
+        async fn add_processed_message_ids(
+            &self,
+            _thread_id: &str,
+            _message_ids: Vec<String>,
+        ) -> Result<(), TestError> {
+            Ok(())
+        }
+        async fn add_processed_tool_calls(
+            &self,
+            _thread_id: &str,
+            _tool_call_ids: Vec<String>,
+        ) -> Result<(), TestError> {
+            Ok(())
+        }
+        async fn get_metadata(
+            &self,
+            _root_thread_id: &str,
+        ) -> Result<Option<serde_json::Value>, TestError> {
+            Ok(None)
+        }
+        async fn set_metadata(
+            &self,
+            _root_thread_id: &str,
+            _metadata: serde_json::Value,
+        ) -> Result<(), TestError> {
+            Ok(())
+        }
+    }
+
+    // ── Helpers ──
+
+    async fn make_history(
+        store: &StubConversationStore,
+        initial_history: Vec<Message>,
+    ) -> HistoryManager<StubConversationStore, StubStateStore> {
+        let mut hm =
+            HistoryManager::new_with_history(store.clone(), StubStateStore, "thread-1".to_string())
+                .await
+                .unwrap();
+        hm.history = initial_history;
+        hm
+    }
+
+    fn user_text_msg(group_id: &str, text: &str) -> InputMessage {
+        InputMessage {
+            content: InputMessageContent::User(UserContent::text(text)),
+            group_id: group_id.to_string(),
+            metadata: None,
+            synthetic: None,
+        }
+    }
+
+    fn tool_call_msg(id: &str, name: &str, args: serde_json::Value) -> Message {
+        Message::Assistant {
+            id: None,
+            content: OneOrMany::one(AssistantContent::ToolCall(ToolCall {
+                id: id.to_string(),
+                call_id: None,
+                function: ToolFunction {
+                    name: name.to_string(),
+                    arguments: args,
+                },
+            })),
+        }
+    }
+
+    fn tool_result_input(
+        group_id: &str,
+        tool_call_id: &str,
+        result_text: &str,
+        synthetic: Option<SyntheticKind>,
+    ) -> InputMessage {
+        InputMessage {
+            content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                id: tool_call_id.to_string(),
+                call_id: None,
+                content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                    text: result_text.to_string(),
+                })),
+            })),
+            group_id: group_id.to_string(),
+            metadata: None,
+            synthetic,
+        }
+    }
+
+    // ── Tests ──
+
+    #[tokio::test]
+    async fn simple_user_message_on_empty_history() {
+        let store = StubConversationStore::new();
+        let mut hm = make_history(&store, vec![]).await;
+
+        let result = prepare_input(
+            user_text_msg("thread-1", "hello"),
+            "msg-1".to_string(),
+            &mut hm,
+            &store,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result, PrepareResult::Ready);
+        insta::assert_json_snapshot!(hm.history);
+    }
+
+    #[tokio::test]
+    async fn closed_thread_ignores() {
+        let store = StubConversationStore {
+            closed_threads: HashSet::from(["thread-1".to_string()]),
+        };
+        let mut hm = make_history(&store, vec![]).await;
+
+        let result = prepare_input(
+            user_text_msg("thread-1", "hello"),
+            "msg-1".to_string(),
+            &mut hm,
+            &store,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result, PrepareResult::Handled);
+        assert!(hm.history.is_empty());
+    }
+
+    #[tokio::test]
+    async fn oauth_required_returns_auth_url() {
+        let store = StubConversationStore::new();
+        let mut hm = make_history(&store, vec![]).await;
+
+        let input = InputMessage {
+            content: InputMessageContent::OAuth(OAuthRequired {
+                content_type: "oauth_required".to_string(),
+                id: "oauth-1".to_string(),
+                call_id: None,
+                auth_url: "https://example.com/auth".to_string(),
+            }),
+            group_id: "thread-1".to_string(),
+            metadata: None,
+            synthetic: None,
+        };
+
+        let result = prepare_input(input, "msg-1".to_string(), &mut hm, &store)
+            .await
+            .unwrap();
+
+        insta::assert_json_snapshot!(result);
+        assert!(hm.history.is_empty());
+    }
+
+    #[tokio::test]
+    async fn duplicate_message_returns_handled() {
+        let store = StubConversationStore::new();
+        let mut hm = make_history(&store, vec![]).await;
+
+        // First call succeeds
+        let r1 = prepare_input(
+            user_text_msg("thread-1", "hello"),
+            "msg-1".to_string(),
+            &mut hm,
+            &store,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(r1, PrepareResult::Ready));
+
+        // Same message_id again
+        let r2 = prepare_input(
+            user_text_msg("thread-1", "hello"),
+            "msg-1".to_string(),
+            &mut hm,
+            &store,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(r2, PrepareResult::Handled);
+        // History should still have only one user message
+        insta::assert_json_snapshot!(hm.history);
+    }
+
+    #[tokio::test]
+    async fn user_message_interrupts_pending_tool_call() {
+        let store = StubConversationStore::new();
+        // History has a user msg, then an assistant tool call that hasn't been answered
+        let initial = vec![
+            Message::User {
+                content: OneOrMany::one(UserContent::text("do something")),
+            },
+            tool_call_msg("tc-1", "some_tool", serde_json::json!({"x": 1})),
+        ];
+        let mut hm = make_history(&store, initial).await;
+
+        let result = prepare_input(
+            user_text_msg("thread-1", "actually, never mind"),
+            "msg-2".to_string(),
+            &mut hm,
+            &store,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result, PrepareResult::Ready);
+        // Should have: original user, tool call, synthetic interrupted result, new user msg
+        insta::assert_json_snapshot!(hm.history);
+    }
+
+    #[tokio::test]
+    async fn tool_result_appended_to_history() {
+        let store = StubConversationStore::new();
+        let initial = vec![
+            Message::User {
+                content: OneOrMany::one(UserContent::text("do something")),
+            },
+            tool_call_msg("tc-1", "some_tool", serde_json::json!({"x": 1})),
+        ];
+        let mut hm = make_history(&store, initial).await;
+
+        let input = tool_result_input("thread-1", "tc-1", "tool output", None);
+
+        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store)
+            .await
+            .unwrap();
+
+        assert_eq!(result, PrepareResult::Ready);
+        insta::assert_json_snapshot!(hm.history);
+    }
+
+    #[tokio::test]
+    async fn thread_report_synthetic_event() {
+        let store = StubConversationStore::new();
+        // Tool call already completed before the thread report arrives
+        let initial = vec![
+            Message::User {
+                content: OneOrMany::one(UserContent::text("subscribe")),
+            },
+            tool_call_msg(
+                "tc-sub",
+                "subscribe_tool",
+                serde_json::json!({"topic": "events"}),
+            ),
+            Message::User {
+                content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+                    id: "tc-sub".to_string(),
+                    call_id: None,
+                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                        text: "subscribed successfully".to_string(),
+                    })),
+                })),
+            },
+        ];
+        let mut hm = make_history(&store, initial).await;
+        hm.processed_tool_calls.insert("tc-sub".to_string());
+
+        let input = tool_result_input(
+            "thread-1",
+            "tc-sub",
+            "thread report data",
+            Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
+                tool_call_id: "tc-sub".to_string(),
+            })),
+        );
+
+        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store)
+            .await
+            .unwrap();
+
+        assert_eq!(result, PrepareResult::Ready);
+        // Should have: original user, original tool call, original result, synthetic tool call, synthetic result
+        insta::assert_json_snapshot!(
+            hm.history,
+            { "[3].content[0].id" => "[uuid]", "[4].content[0].id" => "[uuid]" }
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_report_tool_interruption() {
+        let store = StubConversationStore::new();
+        // Tool call is still pending when the thread report arrives
+        let initial = vec![
+            Message::User {
+                content: OneOrMany::one(UserContent::text("subscribe")),
+            },
+            tool_call_msg(
+                "tc-sub",
+                "subscribe_tool",
+                serde_json::json!({"topic": "events"}),
+            ),
+        ];
+        let mut hm = make_history(&store, initial).await;
+
+        let input = tool_result_input(
+            "thread-1",
+            "tc-sub",
+            "thread report data",
+            Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
+                tool_call_id: "tc-sub".to_string(),
+            })),
+        );
+
+        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store)
+            .await
+            .unwrap();
+
+        assert_eq!(result, PrepareResult::Ready);
+        insta::assert_json_snapshot!(
+            hm.history,
+            { "[3].content[0].id" => "[uuid]", "[4].content[0].id" => "[uuid]" }
+        );
+    }
+
+    #[tokio::test]
+    async fn subscription_event_spawned_thread() {
+        let store = StubConversationStore::new();
+        // Tool call already completed with a result before the event arrives
+        let initial = vec![
+            Message::User {
+                content: OneOrMany::one(UserContent::text("subscribe")),
+            },
+            tool_call_msg(
+                "tc-sub",
+                "subscribe_tool",
+                serde_json::json!({"topic": "events"}),
+            ),
+            Message::User {
+                content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+                    id: "tc-sub".to_string(),
+                    call_id: None,
+                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                        text: "subscribed successfully".to_string(),
+                    })),
+                })),
+            },
+        ];
+        let mut hm = make_history(&store, initial).await;
+
+        let input = tool_result_input(
+            "thread-1",
+            "tc-sub",
+            "event payload",
+            Some(SyntheticKind::Tagged(
+                TaggedSyntheticKind::SubscriptionEvent {
+                    tool_call_id: "tc-sub".to_string(),
+                },
+            )),
+        );
+
+        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store)
+            .await
+            .unwrap();
+
+        assert_eq!(result, PrepareResult::Ready);
+        assert_eq!(hm.thread_id, "sub-thread-1");
+        insta::assert_json_snapshot!(
+            hm.history,
+            {
+                "[3].content[0].id" => "[uuid]",
+                "[3].content[0].function.arguments.kind" => "[redacted-kind]",
+                "[4].content[0].id" => "[uuid]",
+                "[5].content[0].id" => "[uuid]",
+                "[6].content[0].id" => "[uuid]",
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn subscription_event_tool_interruption() {
+        let store = StubConversationStore::new();
+        // Tool call is still pending (no result yet) when the event arrives
+        let initial = vec![
+            Message::User {
+                content: OneOrMany::one(UserContent::text("subscribe")),
+            },
+            tool_call_msg(
+                "tc-sub",
+                "subscribe_tool",
+                serde_json::json!({"topic": "events"}),
+            ),
+        ];
+        let mut hm = make_history(&store, initial).await;
+
+        let input = tool_result_input(
+            "thread-1",
+            "tc-sub",
+            "event payload",
+            Some(SyntheticKind::Tagged(
+                TaggedSyntheticKind::SubscriptionEvent {
+                    tool_call_id: "tc-sub".to_string(),
+                },
+            )),
+        );
+
+        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store)
+            .await
+            .unwrap();
+
+        assert_eq!(result, PrepareResult::Ready);
+        assert_eq!(hm.thread_id, "sub-thread-1");
+        insta::assert_json_snapshot!(
+            hm.history,
+            {
+                "[3].content[0].id" => "[uuid]",
+                "[3].content[0].function.arguments.kind" => "[redacted-kind]",
+                "[4].content[0].id" => "[uuid]",
+                "[5].content[0].id" => "[uuid]",
+                "[6].content[0].id" => "[uuid]",
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn synthetic_with_missing_tool_call_returns_handled() {
+        let store = StubConversationStore::new();
+        // Empty history — no tool call to match
+        let mut hm = make_history(&store, vec![]).await;
+
+        let input = tool_result_input(
+            "thread-1",
+            "nonexistent-tc",
+            "some data",
+            Some(SyntheticKind::Tagged(
+                TaggedSyntheticKind::SubscriptionEvent {
+                    tool_call_id: "nonexistent-tc".to_string(),
+                },
+            )),
+        );
+
+        let result = prepare_input(input, "msg-1".to_string(), &mut hm, &store)
+            .await
+            .unwrap();
+
+        assert_eq!(result, PrepareResult::Handled);
+        assert!(hm.history.is_empty());
+    }
+
+    #[tokio::test]
+    async fn metadata_is_updated_before_processing() {
+        let store = StubConversationStore::new();
+        let mut hm = make_history(&store, vec![]).await;
+        assert!(hm.get_metadata().is_none());
+
+        let input = InputMessage {
+            content: InputMessageContent::User(UserContent::text("hi")),
+            group_id: "thread-1".to_string(),
+            metadata: Some(serde_json::json!({"user_id": "u-123"})),
+            synthetic: None,
+        };
+
+        let _ = prepare_input(input, "msg-1".to_string(), &mut hm, &store)
+            .await
+            .unwrap();
+
+        insta::assert_json_snapshot!(hm.get_metadata());
+    }
 }

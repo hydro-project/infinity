@@ -1,0 +1,7 @@
+---
+source: crates/infinity-agent-core/src/event_processor.rs
+expression: hm.get_metadata()
+---
+{
+  "user_id": "u-123"
+}

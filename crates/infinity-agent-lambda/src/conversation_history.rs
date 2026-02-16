@@ -255,25 +255,24 @@ impl ConversationStore for DsqlConversationStore {
         Ok(())
     }
 
-    async fn get_current_message_order(&self, session_id: &str) -> Result<i64, DsqlError> {
-        let max_order: Option<i64> = sqlx::query_scalar(
-            r#"SELECT COALESCE(MAX(message_order), 0)
-            FROM conversation_history WHERE session_id = $1"#,
-        )
-        .bind(session_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DsqlError(format!("Failed to get current message order: {}", e)))?;
-        Ok(max_order.unwrap_or(0))
-    }
-
     async fn spawn_thread(
         &self,
         parent_thread_id: &str,
-        spawn_message_order: i64,
         spawn_tool_call_id: &str,
+        is_for_subscription_event: bool,
     ) -> Result<String, DsqlError> {
         let new_thread_id = uuid::Uuid::new_v4().to_string();
+
+        let spawn_message_order: Option<i64> = sqlx::query_scalar(
+            r#"SELECT COALESCE(MAX(message_order), 0)
+            FROM conversation_history WHERE session_id = $1"#,
+        )
+        .bind(parent_thread_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DsqlError(format!("Failed to get current message order: {}", e)))?;
+        let spawn_message_order = spawn_message_order.unwrap_or(0);
+
         let root_thread_id: String = sqlx::query_scalar(
             r#"SELECT root_thread_id FROM thread_hierarchy WHERE thread_id = $1"#,
         )
@@ -283,14 +282,15 @@ impl ConversationStore for DsqlConversationStore {
         .map_err(|e| DsqlError(format!("Failed to find parent thread: {}", e)))?;
 
         sqlx::query(
-            r#"INSERT INTO thread_hierarchy (thread_id, parent_thread_id, root_thread_id, spawn_message_order, spawn_tool_call_id)
-            VALUES ($1, $2, $3, $4, $5)"#,
+            r#"INSERT INTO thread_hierarchy (thread_id, parent_thread_id, root_thread_id, spawn_message_order, spawn_tool_call_id, is_subscription_event)
+            VALUES ($1, $2, $3, $4, $5, $6)"#,
         )
         .bind(&new_thread_id)
         .bind(parent_thread_id)
         .bind(&root_thread_id)
         .bind(spawn_message_order)
         .bind(spawn_tool_call_id)
+        .bind(is_for_subscription_event)
         .execute(&self.pool)
         .await
         .map_err(|e| DsqlError(format!("Failed to spawn thread: {}", e)))?;
@@ -326,17 +326,6 @@ impl ConversationStore for DsqlConversationStore {
         .await
         .map_err(|e| DsqlError(format!("Failed to check subscription event: {}", e)))?;
         Ok(row.map(|(v,)| v).unwrap_or(false))
-    }
-
-    async fn mark_as_subscription_event(&self, thread_id: &str) -> Result<(), DsqlError> {
-        sqlx::query(
-            r#"UPDATE thread_hierarchy SET is_subscription_event = TRUE WHERE thread_id = $1"#,
-        )
-        .bind(thread_id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| DsqlError(format!("Failed to mark as subscription event: {}", e)))?;
-        Ok(())
     }
 
     async fn get_thread_parent_info(

@@ -1,0 +1,9 @@
+---
+source: crates/infinity-agent-core/src/event_processor.rs
+expression: result
+---
+{
+  "OAuthRequired": {
+    "auth_url": "https://example.com/auth"
+  }
+}
