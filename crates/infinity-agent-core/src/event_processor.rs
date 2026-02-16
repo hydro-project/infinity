@@ -12,7 +12,7 @@ use tracing;
 
 use crate::message::{InputMessage, InputMessageContent};
 use crate::tools::{Tool, ToolContext};
-use crate::traits::{ConversationStore, MessageSender, StateStore};
+use crate::traits::{ConversationStore, InputSender, StateStore};
 
 // ── Public types ──
 
@@ -725,7 +725,7 @@ pub async fn execute_action<M>(
     tool_context: &ToolContext<M>,
 ) -> Result<(), BoxError>
 where
-    M: MessageSender + 'static,
+    M: InputSender + 'static,
 {
     match action {
         CompletionAction::Done => {}

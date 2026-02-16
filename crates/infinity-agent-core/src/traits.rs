@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use rig::message::Message;
 
+use crate::message::InputMessage;
+
 /// Persistent conversation history storage (DSQL in Lambda, in-memory for CLI).
 #[async_trait]
 pub trait ConversationStore: Send + Sync + Clone {
@@ -89,21 +91,18 @@ pub trait StateStore: Send + Sync + Clone {
     ) -> Result<(), Self::Error>;
 }
 
-/// Abstraction over message delivery (SQS in Lambda, channel/direct in CLI).
+/// Abstraction over input message delivery (SQS in Lambda, channel/direct in CLI).
 #[async_trait]
-pub trait MessageSender: Send + Sync + Clone {
+pub trait InputSender: Send + Sync + Clone {
     type Error: std::error::Error + Send + Sync + 'static;
 
     /// Send a message to the input queue for processing.
     async fn send_to_input_queue(
         &self,
-        body: &str,
+        message: InputMessage,
         group_id: &str,
         dedup_id: &str,
     ) -> Result<(), Self::Error>;
-
-    /// Send a message to the output queue (user-facing responses).
-    async fn send_to_output(&self, body: &str) -> Result<(), Self::Error>;
 }
 
 /// Abstraction over HTTP client for tool invocation.

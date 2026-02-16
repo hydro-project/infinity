@@ -2,14 +2,14 @@ use async_trait::async_trait;
 use tracing;
 
 use super::{Tool, ToolContext};
-use crate::traits::MessageSender;
+use crate::traits::InputSender;
 
 /// A no-op tool that signals the agent should wait indefinitely until an external event or user input arrives.
 /// The agent loop will simply stop after this tool is invoked, and resume when new input comes in.
 pub struct SleepUntilEventOrInputTool;
 
 #[async_trait]
-impl<M: MessageSender + 'static> Tool<M> for SleepUntilEventOrInputTool {
+impl<M: InputSender + 'static> Tool<M> for SleepUntilEventOrInputTool {
     fn name(&self) -> &str {
         "sleep_until_event_or_input"
     }
