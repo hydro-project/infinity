@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use infinity_agent_core::traits::{ConversationStore, MessageSender, StateStore};
+use infinity_agent_core::message::InputMessage;
+use infinity_agent_core::traits::{ConversationStore, InputSender, StateStore};
 use rig::message::Message;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -280,36 +281,30 @@ impl StateStore for InMemoryStateStore {
 #[derive(Clone)]
 pub struct InMemoryMessageSender {
     pub sent_input: Arc<Mutex<Vec<(String, String, String)>>>,
-    pub sent_output: Arc<Mutex<Vec<String>>>,
 }
 
 impl InMemoryMessageSender {
     pub fn new() -> Self {
         Self {
             sent_input: Arc::new(Mutex::new(Vec::new())),
-            sent_output: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
 
 #[async_trait]
-impl MessageSender for InMemoryMessageSender {
+impl InputSender for InMemoryMessageSender {
     type Error = MemoryError;
 
     async fn send_to_input_queue(
         &self,
-        body: &str,
+        message: InputMessage,
         group_id: &str,
         dedup_id: &str,
     ) -> Result<(), MemoryError> {
+        let body = serde_json::to_string(&message)
+            .map_err(|e| MemoryError(format!("Failed to serialize InputMessage: {}", e)))?;
         let mut sent = self.sent_input.lock().unwrap();
-        sent.push((body.to_string(), group_id.to_string(), dedup_id.to_string()));
-        Ok(())
-    }
-
-    async fn send_to_output(&self, body: &str) -> Result<(), MemoryError> {
-        let mut sent = self.sent_output.lock().unwrap();
-        sent.push(body.to_string());
+        sent.push((body, group_id.to_string(), dedup_id.to_string()));
         Ok(())
     }
 }

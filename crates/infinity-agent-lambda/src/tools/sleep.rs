@@ -5,8 +5,11 @@ use aws_sdk_scheduler::{
 };
 use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use chrono_tz::Tz;
-use infinity_agent_core::message::{InputMessage, InputMessageContent};
 use infinity_agent_core::tools::{Tool, ToolContext};
+use infinity_agent_core::{
+    message::{InputMessage, InputMessageContent},
+    traits::InputSender,
+};
 use rig::{
     OneOrMany,
     agent::Text,
@@ -93,11 +96,8 @@ impl Tool<SqsMessageSender> for SleepTool {
 
         if seconds <= 0 {
             context
-                .send_to_input_queue(
-                    &serde_json::to_string(&tool_result_msg)?,
-                    &context.group_id,
-                    &id,
-                )
+                .message_sender
+                .send_to_input_queue(tool_result_msg, &context.group_id, &id)
                 .await?;
         } else if seconds <= MAX_SQS_DELAY_SECONDS {
             send_to_delay_queue(
@@ -222,11 +222,8 @@ impl Tool<SqsMessageSender> for SleepUntilTool {
 
         if target_utc <= now {
             context
-                .send_to_input_queue(
-                    &serde_json::to_string(&tool_result_msg)?,
-                    &context.group_id,
-                    &id,
-                )
+                .message_sender
+                .send_to_input_queue(tool_result_msg, &context.group_id, &id)
                 .await?;
             return Ok(());
         }
