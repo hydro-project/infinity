@@ -276,18 +276,16 @@ impl StateStore for InMemoryStateStore {
     }
 }
 
-// ── In-memory message sender ──
+// ── In-memory message sender (pushes to mpsc) ──
 
 #[derive(Clone)]
 pub struct InMemoryMessageSender {
-    pub sent_input: Arc<Mutex<Vec<(InputMessage, String, String)>>>,
+    tx: tokio::sync::mpsc::UnboundedSender<(InputMessage, String)>,
 }
 
 impl InMemoryMessageSender {
-    pub fn new() -> Self {
-        Self {
-            sent_input: Arc::new(Mutex::new(Vec::new())),
-        }
+    pub fn new(tx: tokio::sync::mpsc::UnboundedSender<(InputMessage, String)>) -> Self {
+        Self { tx }
     }
 }
 
@@ -298,11 +296,12 @@ impl InputSender for InMemoryMessageSender {
     async fn send_to_input_queue(
         &self,
         message: InputMessage,
-        group_id: &str,
+        _group_id: &str,
         dedup_id: &str,
     ) -> Result<(), MemoryError> {
-        let mut sent = self.sent_input.lock().unwrap();
-        sent.push((message, group_id.to_string(), dedup_id.to_string()));
+        self.tx
+            .send((message, dedup_id.to_string()))
+            .map_err(|e| MemoryError(format!("channel send failed: {}", e)))?;
         Ok(())
     }
 }
