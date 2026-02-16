@@ -280,7 +280,7 @@ impl StateStore for InMemoryStateStore {
 
 #[derive(Clone)]
 pub struct InMemoryMessageSender {
-    pub sent_input: Arc<Mutex<Vec<(String, String, String)>>>,
+    pub sent_input: Arc<Mutex<Vec<(InputMessage, String, String)>>>,
 }
 
 impl InMemoryMessageSender {
@@ -301,10 +301,8 @@ impl InputSender for InMemoryMessageSender {
         group_id: &str,
         dedup_id: &str,
     ) -> Result<(), MemoryError> {
-        let body = serde_json::to_string(&message)
-            .map_err(|e| MemoryError(format!("Failed to serialize InputMessage: {}", e)))?;
         let mut sent = self.sent_input.lock().unwrap();
-        sent.push((body, group_id.to_string(), dedup_id.to_string()));
+        sent.push((message, group_id.to_string(), dedup_id.to_string()));
         Ok(())
     }
 }
