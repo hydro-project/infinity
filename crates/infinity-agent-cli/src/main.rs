@@ -7,10 +7,12 @@ mod memory_store;
 use infinity_agent_core::event_processor;
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
 use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
+use infinity_agent_core::tools::thread::{CloseThreadTool, ReportToParentTool, SpawnThreadTool};
 use infinity_agent_core::tools::{Tool, ToolContext};
 use memory_store::{InMemoryConversationStore, InMemoryMessageSender, InMemoryStateStore};
 use rig::client::{CompletionClient, ProviderClient};
 use rig::message::UserContent;
+use std::io::Write;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -33,36 +35,64 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Infinity Agent CLI — thread {}", thread_id);
     println!("Type your messages below. Ctrl+C to exit.\n");
 
-    let tool_impls: Vec<Box<dyn Tool<InMemoryMessageSender>>> =
-        vec![Box::new(SleepUntilEventOrInputTool)];
+    let tool_impls: Vec<Box<dyn Tool<InMemoryMessageSender>>> = vec![
+        Box::new(SleepUntilEventOrInputTool),
+        Box::new(SpawnThreadTool {
+            conversation_store: conversation_store.clone(),
+        }),
+        Box::new(ReportToParentTool {
+            conversation_store: conversation_store.clone(),
+        }),
+        Box::new(CloseThreadTool {
+            conversation_store: conversation_store.clone(),
+        }),
+    ];
 
     loop {
-        print!("> ");
-        use std::io::Write;
-        std::io::stdout().flush()?;
+        // First drain any queued messages from tool executions (e.g. thread spawns),
+        // only prompt the user when the internal queue is empty.
+        let (input_msg, message_id) = {
+            let queued = {
+                let mut q = sender.sent_input.lock().unwrap();
+                if q.is_empty() {
+                    None
+                } else {
+                    Some(q.remove(0))
+                }
+            };
+            if let Some((msg, _group_id, dedup_id)) = queued {
+                println!();
+                (msg, dedup_id)
+            } else {
+                print!("> ");
+                std::io::stdout().flush()?;
 
-        let mut input = String::new();
-        if std::io::stdin().read_line(&mut input)? == 0 {
-            break;
-        }
-        let input = input.trim();
-        if input.is_empty() {
-            continue;
-        }
+                let mut input = String::new();
+                if std::io::stdin().read_line(&mut input)? == 0 {
+                    break;
+                }
+                let input = input.trim();
+                if input.is_empty() {
+                    continue;
+                }
 
-        let message_id = uuid::Uuid::new_v4().to_string();
-        let input_msg = InputMessage {
-            content: InputMessageContent::User(UserContent::text(input)),
-            group_id: thread_id.clone(),
-            metadata: None,
-            synthetic: None,
+                let msg = InputMessage {
+                    content: InputMessageContent::User(UserContent::text(input)),
+                    group_id: thread_id.clone(),
+                    metadata: None,
+                    synthetic: None,
+                };
+                (msg, uuid::Uuid::new_v4().to_string())
+            }
         };
+
+        let active_group_id = input_msg.group_id.clone();
 
         // (a) Create history and prepare input
         let mut current_history = event_processor::HistoryManager::new_with_history(
             conversation_store.clone(),
             state_store.clone(),
-            thread_id.clone(),
+            active_group_id.clone(),
         )
         .await?;
 
@@ -103,6 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .collect();
 
         let active_thread_id = current_history.thread_id.clone();
+        let thread_prefix = current_history.get_thread_nesting_prefix();
 
         let final_action = {
             let mut completion_stream = std::pin::pin!(event_processor::run_completion(
@@ -115,9 +146,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             ));
 
             let mut action = None;
+            let mut printed_prefix = false;
+            let mut printed_anything = false;
             while let Some(event) = completion_stream.next().await {
                 match event {
                     Ok(event_processor::CompletionEvent::TextChunk(chunk)) => {
+                        printed_anything = true;
+
+                        if !printed_prefix {
+                            if let Some(ref prefix) = thread_prefix {
+                                print!("{} ", prefix);
+                            }
+                            printed_prefix = true;
+                        }
                         print!("{}", chunk);
                         std::io::stdout().flush().ok();
                     }
@@ -130,9 +171,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     }
                 }
             }
-            println!();
+
+            if printed_anything {
+                println!();
+            }
+
             action
         };
+
+        current_history.sync().await?;
+
+        // Log tool calls the same way the lambda does
+        if let Some(event_processor::CompletionAction::ExecuteToolCall {
+            ref tool_name,
+            ref tool_args,
+            ..
+        }) = final_action
+        {
+            if tool_name != "sleep_until_event_or_input" {
+                if let Some(ref prefix) = thread_prefix {
+                    println!(
+                        "{} [Tool Call: {} with arguments {}]",
+                        prefix, tool_name, tool_args
+                    );
+                } else {
+                    println!("[Tool Call: {} with arguments {}]", tool_name, tool_args);
+                }
+            }
+        }
 
         // (c) Execute the action
         if let Some(action) = final_action {
