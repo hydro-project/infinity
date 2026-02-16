@@ -1,8 +1,13 @@
 use futures_util::StreamExt;
+use rig::client::{CompletionClient, ProviderClient};
+use rig::completion::CompletionModel;
+use rig::message::{AssistantContent, Message, ToolResultContent, UserContent};
 use rig_bedrock::client::Client;
+use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
 mod memory_store;
+mod terminal;
 
 use infinity_agent_core::event_processor;
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
@@ -10,31 +15,63 @@ use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
 use infinity_agent_core::tools::thread::{CloseThreadTool, ReportToParentTool, SpawnThreadTool};
 use infinity_agent_core::tools::{Tool, ToolContext};
 use memory_store::{InMemoryConversationStore, InMemoryMessageSender, InMemoryStateStore};
-use rig::client::{CompletionClient, ProviderClient};
-use rig::message::UserContent;
-use std::io::Write;
+use terminal::DisplayEvent;
+
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn main() -> Result<(), BoxError> {
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .expect("Failed to install default CryptoProvider");
 
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
+    let log_file = std::fs::File::create("/tmp/infinity-agent-cli.log").ok();
+    if let Some(file) = log_file {
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .with_writer(std::sync::Mutex::new(file))
+            .with_ansi(false)
+            .init();
+    }
 
     let conversation_store = InMemoryConversationStore::new();
     let state_store = InMemoryStateStore::new();
-    let sender = InMemoryMessageSender::new();
+
+    let (input_tx, input_rx) = mpsc::unbounded_channel::<(InputMessage, String)>();
+    let sender = InMemoryMessageSender::new(input_tx.clone());
 
     let client = Client::from_env();
     let model = client.completion_model("global.anthropic.claude-haiku-4-5-20251001-v1:0");
 
     let thread_id = uuid::Uuid::new_v4().to_string();
-    println!("Infinity Agent CLI — thread {}", thread_id);
-    println!("Type your messages below. Ctrl+C to exit.\n");
+    let (display_tx, display_rx) = mpsc::unbounded_channel::<DisplayEvent>();
 
+    let agent_handle = tokio::spawn(agent_loop(
+        input_rx,
+        display_tx,
+        model,
+        conversation_store,
+        state_store,
+        sender,
+    ));
+
+    let result = terminal::run(input_tx, display_rx, thread_id).await;
+    agent_handle.abort();
+    result
+}
+
+// ── Agent loop ──────────────────────────────────────────────────────────────
+
+async fn agent_loop<Mdl>(
+    mut rx: mpsc::UnboundedReceiver<(InputMessage, String)>,
+    display_tx: mpsc::UnboundedSender<DisplayEvent>,
+    model: Mdl,
+    conversation_store: InMemoryConversationStore,
+    state_store: InMemoryStateStore,
+    sender: InMemoryMessageSender,
+) where
+    Mdl: CompletionModel + Send + Sync + 'static,
+{
     let tool_impls: Vec<Box<dyn Tool<InMemoryMessageSender>>> = vec![
         Box::new(SleepUntilEventOrInputTool),
         Box::new(SpawnThreadTool {
@@ -48,53 +85,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }),
     ];
 
-    loop {
-        // First drain any queued messages from tool executions (e.g. thread spawns),
-        // only prompt the user when the internal queue is empty.
-        let (input_msg, message_id) = {
-            let queued = {
-                let mut q = sender.sent_input.lock().unwrap();
-                if q.is_empty() {
-                    None
-                } else {
-                    Some(q.remove(0))
-                }
-            };
-            if let Some((msg, _group_id, dedup_id)) = queued {
-                println!();
-                (msg, dedup_id)
-            } else {
-                print!("> ");
-                std::io::stdout().flush()?;
-
-                let mut input = String::new();
-                if std::io::stdin().read_line(&mut input)? == 0 {
-                    break;
-                }
-                let input = input.trim();
-                if input.is_empty() {
-                    continue;
-                }
-
-                let msg = InputMessage {
-                    content: InputMessageContent::User(UserContent::text(input)),
-                    group_id: thread_id.clone(),
-                    metadata: None,
-                    synthetic: None,
-                };
-                (msg, uuid::Uuid::new_v4().to_string())
-            }
-        };
-
+    while let Some((input_msg, message_id)) = rx.recv().await {
         let active_group_id = input_msg.group_id.clone();
 
-        // (a) Create history and prepare input
-        let mut current_history = event_processor::HistoryManager::new_with_history(
+        let mut current_history = match event_processor::HistoryManager::new_with_history(
             conversation_store.clone(),
             state_store.clone(),
             active_group_id.clone(),
         )
-        .await?;
+        .await
+        {
+            Ok(h) => h,
+            Err(e) => {
+                let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
+                continue;
+            }
+        };
+
+        // Echo to the terminal — subscription events vs user input.
+        if let Some(synth) = input_msg.synthetic.as_ref() {
+            if let InputMessageContent::User(UserContent::ToolResult(res)) = &input_msg.content {
+                if let ToolResultContent::Text(text) = res.content.first() {
+                    let orig_call = current_history.get_history().into_iter().find(|h| {
+                        if let Message::Assistant { content, .. } = h
+                            && let AssistantContent::ToolCall(c) = content.first()
+                        {
+                            c.id == synth.tool_call_id()
+                        } else {
+                            false
+                        }
+                    });
+
+                    if let Some(h) = orig_call
+                        && let Message::Assistant { content, .. } = h
+                        && let AssistantContent::ToolCall(c) = content.first()
+                    {
+                        let _ = display_tx.send(DisplayEvent::SubscriptionEvent {
+                            name: format!("{}({})", c.function.name, c.function.arguments),
+                            text: text.text,
+                            prefix: current_history.get_thread_nesting_prefix(),
+                        });
+                    }
+                }
+            }
+        } else if let InputMessageContent::User(UserContent::ToolResult(res)) = &input_msg.content
+            && let ToolResultContent::Text(text) = res.content.first()
+        {
+            let _ = display_tx.send(DisplayEvent::ToolResult {
+                text: text.text,
+                prefix: current_history.get_thread_nesting_prefix(),
+            });
+        } else if let InputMessageContent::User(UserContent::Text(ref text)) = input_msg.content {
+            let _ = display_tx.send(DisplayEvent::UserInput(text.text.clone()));
+        }
 
         let prepare_result = event_processor::prepare_input(
             input_msg,
@@ -107,20 +150,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         match prepare_result {
             Ok(event_processor::PrepareResult::Handled) => continue,
             Ok(event_processor::PrepareResult::OAuthRequired { auth_url }) => {
-                eprintln!(
-                    "OAuth required — open this URL to authenticate:\n  {}\n",
+                let _ = display_tx.send(DisplayEvent::Info(format!(
+                    "OAuth required — open this URL:\n  {}",
                     auth_url
-                );
+                )));
                 continue;
             }
             Err(e) => {
-                eprintln!("Error: {}\n", e);
+                let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
                 continue;
             }
             Ok(event_processor::PrepareResult::Ready) => {}
         }
 
-        // (b) Stream completion, printing text chunks as they arrive
         let tool_names: std::collections::HashSet<String> =
             tool_impls.iter().map(|t| t.name().to_string()).collect();
         let tool_defs: Vec<rig::completion::ToolDefinition> = tool_impls
@@ -136,7 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let thread_prefix = current_history.get_thread_nesting_prefix();
 
         let final_action = {
-            let mut completion_stream = std::pin::pin!(event_processor::run_completion(
+            let mut stream = std::pin::pin!(event_processor::run_completion(
                 &model,
                 &mut current_history,
                 &tool_names,
@@ -144,44 +186,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 &active_thread_id,
                 &message_id,
             ));
-
             let mut action = None;
-            let mut printed_prefix = false;
-            let mut printed_anything = false;
-            while let Some(event) = completion_stream.next().await {
-                match event {
+            let mut started = false;
+            let mut any_text = false;
+            while let Some(ev) = stream.next().await {
+                match ev {
                     Ok(event_processor::CompletionEvent::TextChunk(chunk)) => {
-                        printed_anything = true;
-
-                        if !printed_prefix {
-                            if let Some(ref prefix) = thread_prefix {
-                                print!("{} ", prefix);
-                            }
-                            printed_prefix = true;
+                        any_text = true;
+                        if !started {
+                            let _ = display_tx.send(DisplayEvent::StartOutput {
+                                prefix: thread_prefix.clone(),
+                            });
+                            started = true;
                         }
-                        print!("{}", chunk);
-                        std::io::stdout().flush().ok();
+                        let _ = display_tx.send(DisplayEvent::TextChunk(chunk));
                     }
                     Ok(event_processor::CompletionEvent::Action(a)) => {
                         action = Some(a);
                     }
                     Err(e) => {
-                        eprintln!("\nError: {}\n", e);
+                        let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
                         break;
                     }
                 }
             }
-
-            if printed_anything {
-                println!();
+            if any_text {
+                let _ = display_tx.send(DisplayEvent::ResponseDone);
             }
-
             action
         };
 
-        current_history.sync().await?;
+        current_history.sync().await.ok();
 
-        // Log tool calls the same way the lambda does
         if let Some(event_processor::CompletionAction::ExecuteToolCall {
             ref tool_name,
             ref tool_args,
@@ -189,18 +225,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }) = final_action
         {
             if tool_name != "sleep_until_event_or_input" {
-                if let Some(ref prefix) = thread_prefix {
-                    println!(
-                        "{} [Tool Call: {} with arguments {}]",
-                        prefix, tool_name, tool_args
-                    );
-                } else {
-                    println!("[Tool Call: {} with arguments {}]", tool_name, tool_args);
-                }
+                let _ = display_tx.send(DisplayEvent::ToolCall {
+                    name: tool_name.clone(),
+                    args: tool_args.clone(),
+                    prefix: thread_prefix.clone(),
+                });
             }
         }
 
-        // (c) Execute the action
         if let Some(action) = final_action {
             let tool_context = ToolContext {
                 message_sender: sender.clone(),
@@ -216,14 +248,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .iter()
                 .map(|t| (t.name().to_string(), t))
                 .collect();
-
             if let Err(e) =
                 event_processor::execute_action(action, &tool_registry, &tool_context).await
             {
-                eprintln!("Error: {}\n", e);
+                let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
             }
         }
     }
-
-    Ok(())
 }
