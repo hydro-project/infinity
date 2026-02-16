@@ -1,0 +1,78 @@
+---
+source: crates/infinity-agent-core/src/event_processor.rs
+expression: hm.history
+---
+[
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "subscribe"
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "id": null,
+    "content": [
+      {
+        "id": "tc-sub",
+        "call_id": null,
+        "function": {
+          "name": "subscribe_tool",
+          "arguments": {
+            "topic": "events"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "toolresult",
+        "id": "tc-sub",
+        "content": [
+          {
+            "type": "text",
+            "text": "subscribed successfully"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "id": null,
+    "content": [
+      {
+        "id": "[uuid]",
+        "call_id": null,
+        "function": {
+          "name": "subscribe_tool",
+          "arguments": {
+            "kind": "thread_report:tc-sub",
+            "topic": "events"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "toolresult",
+        "id": "[uuid]",
+        "content": [
+          {
+            "type": "text",
+            "text": "thread report data"
+          }
+        ]
+      }
+    ]
+  }
+]
