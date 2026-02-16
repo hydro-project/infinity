@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use aws_sdk_sqs::Client as SqsClient;
-use infinity_agent_core::traits::MessageSender;
+use infinity_agent_core::message::InputMessage;
+use infinity_agent_core::traits::InputSender;
 
 #[derive(Clone)]
 pub struct SqsMessageSender {
@@ -18,16 +19,34 @@ impl std::fmt::Display for SqsError {
 }
 impl std::error::Error for SqsError {}
 
+impl SqsMessageSender {
+    pub async fn send_to_output(&self, body: &str) -> Result<(), SqsError> {
+        if self.output_queue_url.is_empty() {
+            return Ok(());
+        }
+        self.sqs_client
+            .send_message()
+            .queue_url(&self.output_queue_url)
+            .message_body(body)
+            .send()
+            .await
+            .map_err(|e| SqsError(format!("Failed to send to output queue: {}", e)))?;
+        Ok(())
+    }
+}
+
 #[async_trait]
-impl MessageSender for SqsMessageSender {
+impl InputSender for SqsMessageSender {
     type Error = SqsError;
 
     async fn send_to_input_queue(
         &self,
-        body: &str,
+        message: InputMessage,
         group_id: &str,
         dedup_id: &str,
     ) -> Result<(), SqsError> {
+        let body = serde_json::to_string(&message)
+            .map_err(|e| SqsError(format!("Failed to serialize InputMessage: {}", e)))?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -41,20 +60,6 @@ impl MessageSender for SqsMessageSender {
             .send()
             .await
             .map_err(|e| SqsError(format!("Failed to send to input queue: {}", e)))?;
-        Ok(())
-    }
-
-    async fn send_to_output(&self, body: &str) -> Result<(), SqsError> {
-        if self.output_queue_url.is_empty() {
-            return Ok(());
-        }
-        self.sqs_client
-            .send_message()
-            .queue_url(&self.output_queue_url)
-            .message_body(body)
-            .send()
-            .await
-            .map_err(|e| SqsError(format!("Failed to send to output queue: {}", e)))?;
         Ok(())
     }
 }

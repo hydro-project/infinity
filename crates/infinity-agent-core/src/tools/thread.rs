@@ -8,7 +8,7 @@ use tracing;
 
 use super::{Tool, ToolContext};
 use crate::message::{InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind};
-use crate::traits::{ConversationStore, MessageSender};
+use crate::traits::{ConversationStore, InputSender};
 
 /// Tool that spawns a new child thread and returns its ID.
 pub struct SpawnThreadTool<C: ConversationStore> {
@@ -16,7 +16,7 @@ pub struct SpawnThreadTool<C: ConversationStore> {
 }
 
 #[async_trait]
-impl<M: MessageSender + 'static, C: ConversationStore + 'static> Tool<M> for SpawnThreadTool<C> {
+impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for SpawnThreadTool<C> {
     fn name(&self) -> &str {
         "spawn_thread"
     }
@@ -90,19 +90,14 @@ impl<M: MessageSender + 'static, C: ConversationStore + 'static> Tool<M> for Spa
         };
 
         context
-            .send_to_input_queue(
-                &serde_json::to_string(&parent_result)?,
-                &context.group_id,
-                &id,
-            )
+            .message_sender
+            .send_to_input_queue(parent_result, &context.group_id, &id)
             .await?;
 
+        let child_group_id = child_result.group_id.clone();
         context
-            .send_to_input_queue(
-                &serde_json::to_string(&child_result)?,
-                &child_result.group_id,
-                &id,
-            )
+            .message_sender
+            .send_to_input_queue(child_result, &child_group_id, &id)
             .await?;
 
         Ok(())
@@ -115,7 +110,7 @@ pub struct ReportToParentTool<C: ConversationStore> {
 }
 
 #[async_trait]
-impl<M: MessageSender + 'static, C: ConversationStore + 'static> Tool<M> for ReportToParentTool<C> {
+impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for ReportToParentTool<C> {
     fn name(&self) -> &str {
         "report_to_parent"
     }
@@ -190,12 +185,10 @@ impl<M: MessageSender + 'static, C: ConversationStore + 'static> Tool<M> for Rep
             })),
         };
 
+        let report_group_id = report_message.group_id.clone();
         context
-            .send_to_input_queue(
-                &serde_json::to_string(&report_message)?,
-                &report_message.group_id,
-                &id,
-            )
+            .message_sender
+            .send_to_input_queue(report_message, &report_group_id, &id)
             .await?;
 
         let tool_result = InputMessage {
@@ -212,11 +205,8 @@ impl<M: MessageSender + 'static, C: ConversationStore + 'static> Tool<M> for Rep
         };
 
         context
-            .send_to_input_queue(
-                &serde_json::to_string(&tool_result)?,
-                &context.group_id,
-                &id,
-            )
+            .message_sender
+            .send_to_input_queue(tool_result, &context.group_id, &id)
             .await?;
 
         Ok(())
@@ -229,7 +219,7 @@ pub struct CloseThreadTool<C: ConversationStore> {
 }
 
 #[async_trait]
-impl<M: MessageSender + 'static, C: ConversationStore + 'static> Tool<M> for CloseThreadTool<C> {
+impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for CloseThreadTool<C> {
     fn name(&self) -> &str {
         "close_thread"
     }
@@ -282,11 +272,8 @@ impl<M: MessageSender + 'static, C: ConversationStore + 'static> Tool<M> for Clo
             };
 
             context
-                .send_to_input_queue(
-                    &serde_json::to_string(&tool_result)?,
-                    &context.group_id,
-                    &id,
-                )
+                .message_sender
+                .send_to_input_queue(tool_result, &context.group_id, &id)
                 .await?;
 
             return Ok(());
@@ -354,12 +341,10 @@ impl<M: MessageSender + 'static, C: ConversationStore + 'static> Tool<M> for Clo
                     })),
                 };
 
+                let report_group_id = report_message.group_id.clone();
                 context
-                    .send_to_input_queue(
-                        &serde_json::to_string(&report_message)?,
-                        &report_message.group_id,
-                        &id,
-                    )
+                    .message_sender
+                    .send_to_input_queue(report_message, &report_group_id, &id)
                     .await?;
             }
         }

@@ -14,8 +14,6 @@ use infinity_agent_core::tools::thread::{CloseThreadTool, ReportToParentTool, Sp
 use infinity_agent_core::tools::toolset_loader::ToolsetLoader;
 use infinity_agent_core::tools::{Tool, ToolContext};
 
-use infinity_agent_core::traits::MessageSender;
-
 use rig::client::{CompletionClient, ProviderClient};
 
 use crate::conversation_history::DsqlConversationStore;
