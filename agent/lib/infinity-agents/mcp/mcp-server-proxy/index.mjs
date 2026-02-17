@@ -701,7 +701,7 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
         await ensureServerInstalled();
     }
 
-    const { arguments: args, id, call_id, rap_receiver_url, group_id, operation, user_id } = body;
+    const { arguments: args, id, call_id, callback_url, group_id, operation, user_id } = body;
 
     console.log('Processing MCP request:', { operation, args, id, call_id, user_id });
 
@@ -728,7 +728,7 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
                 throw new Error(`Unknown operation: ${operation}`);
             }
 
-            await sendToolResult(rap_receiver_url, group_id, id, call_id, result);
+            await sendToolResult(callback_url, group_id, id, call_id, result);
         } catch (error) {
             if (error instanceof OAuthRequiredError) {
                 // For list_tools, initiate OAuth flow
@@ -744,7 +744,7 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
 
                     // Store the pending request with PKCE verifier, metadata, and client info
                     await storePendingOAuthRequest(id, {
-                        operation, args, id, call_id, rap_receiver_url, group_id, user_id,
+                        operation, args, id, call_id, callback_url, group_id, user_id,
                         codeVerifier: pkce.codeVerifier,
                         tokenEndpoint: oauthMetadata.tokenEndpoint,
                         resource: oauthMetadata.resource,
@@ -754,11 +754,11 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
 
                     // Build the authorization URL with the registered client ID
                     const authUrl = buildAuthorizationUrl(oauthMetadata, clientRegistration, id, user_id, pkce.codeChallenge);
-                    await sendOAuthUrl(rap_receiver_url, group_id, id, call_id, authUrl);
+                    await sendOAuthUrl(callback_url, group_id, id, call_id, authUrl);
                 } else {
                     // For other operations, tell the agent to call list_tools first
                     await sendToolResult(
-                        rap_receiver_url, group_id, id, call_id,
+                        callback_url, group_id, id, call_id,
                         'Authorization required. Please call the list_tools operation first to complete the OAuth flow.'
                     );
                 }
@@ -770,7 +770,7 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
         }
     } catch (error) {
         console.error('Error processing MCP request:', error);
-        await sendToolResult(rap_receiver_url, group_id, id, call_id, `MCP tool error: ${error.message}`);
+        await sendToolResult(callback_url, group_id, id, call_id, `MCP tool error: ${error.message}`);
     }
 });
 
@@ -881,7 +881,7 @@ async function handleOAuthCallback(event) {
 
             // Send the result back to the agent
             await sendToolResult(
-                pendingRequest.rap_receiver_url,
+                pendingRequest.callback_url,
                 pendingRequest.group_id,
                 pendingRequest.id,
                 pendingRequest.call_id,

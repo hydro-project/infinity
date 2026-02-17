@@ -236,3 +236,53 @@ new RapToolSet(agent, 'ExternalTools', {
 ```
 
 The runtime will fetch the toolset definition from `https://tools.example.com/.well-known/rap-toolset` and dispatch invocations to whatever `endpoint` the toolset declares.
+
+
+## Local development
+
+You can develop and test RAP tools locally using the [CLI](/docs/infinity-runtime/local-cli) without deploying any infrastructure. Write your tool as a plain Node.js (or any language) HTTP server:
+
+```javascript
+import { createServer } from 'node:http';
+
+const server = createServer(async (req, res) => {
+  if (req.method === 'GET' && req.url?.includes('.well-known/rap-toolset')) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      name: 'my-tool',
+      endpoint: `http://${req.headers.host}`,
+      tools: [{ name: 'do_thing', description: '...', inputSchema: { type: 'object' } }],
+    }));
+    return;
+  }
+
+  // Acknowledge immediately
+  res.writeHead(200);
+  res.end('OK');
+
+  // Read body, process, POST result back to callback_url
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const { arguments: args, id, call_id, callback_url, group_id } = JSON.parse(Buffer.concat(chunks));
+
+  await fetch(callback_url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'tool_result', group_id, id, call_id, text: 'Done!' }),
+  });
+});
+
+server.listen(3001, '127.0.0.1');
+```
+
+No SigV4 signing needed — the CLI's callback server accepts plain HTTP. Point the CLI at your server with a `rap-servers.json` config file:
+
+```json
+{
+  "tool_sets": [
+    { "type": "toolset_server", "server_url": "http://127.0.0.1:3001" }
+  ]
+}
+```
+
+The `get-time` tool includes a ready-to-run local server at `agent/lib/toolsets/get-time/get-time-tool/local.mjs` — use it as a reference.

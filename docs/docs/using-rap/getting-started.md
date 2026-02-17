@@ -11,7 +11,7 @@ The [Infinity Runtime](/docs/infinity-runtime/overview) is the reference agent r
 |---|---|---|
 | State | In-memory, lost on exit | Persistent (Aurora DSQL) |
 | Hibernation | Blocks in-process | RAP Callback wake-up |
-| Tool servers | Local only | Remote HTTP (Function URLs) |
+| Tool servers | Local HTTP servers | Remote HTTP (Function URLs) |
 | Infrastructure | None | CDK deploy |
 | Best for | Development, testing | Production, long-running agents |
 
@@ -36,7 +36,7 @@ cd InfinityAgents
 cargo run -p infinity-agent-cli
 ```
 
-This gives you a streaming chat interface where you can interact with the agent, see tool calls and results in real time, and test threading and hibernation flows. See [Local CLI](/docs/infinity-runtime/local-cli) for details and limitations.
+This gives you a streaming chat interface where you can interact with the agent, see tool calls and results in real time, and test threading and hibernation flows. The CLI also supports loading local RAP tool servers — see [Local CLI](/docs/infinity-runtime/local-cli) for details on configuration and limitations.
 
 ## Durable Cloud Agent
 

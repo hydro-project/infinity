@@ -7,10 +7,13 @@ use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
 mod memory_store;
+mod rap_callback;
+mod rap_tools;
 mod terminal;
 
 use infinity_agent_core::event_processor;
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
+use infinity_agent_core::tools::config::ToolsConfig;
 use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
 use infinity_agent_core::tools::thread::{CloseThreadTool, ReportToParentTool, SpawnThreadTool};
 use infinity_agent_core::tools::{Tool, ToolContext};
@@ -40,6 +43,39 @@ async fn main() -> Result<(), BoxError> {
     let (input_tx, input_rx) = mpsc::unbounded_channel::<(InputMessage, String)>();
     let sender = InMemoryMessageSender::new(input_tx.clone());
 
+    // Start the RAP callback server so tools can POST results back
+    let callback_url = rap_callback::start_callback_server(input_tx.clone())
+        .await
+        .expect("Failed to start RAP callback server");
+
+    // Load RAP tool servers from config file
+    let rap_config_path =
+        std::env::var("RAP_CONFIG").unwrap_or_else(|_| "rap-servers.json".to_string());
+    let rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>> =
+        if let Ok(config) = ToolsConfig::from_file(&rap_config_path) {
+            let urls = config.toolset_server_urls();
+            if !urls.is_empty() {
+                match rap_tools::load_rap_tools(&urls).await {
+                    Ok(tools) => {
+                        eprintln!(
+                            "Loaded {} RAP tool(s) from {}",
+                            tools.len(),
+                            rap_config_path
+                        );
+                        tools
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: failed to load RAP tools: {}", e);
+                        Vec::new()
+                    }
+                }
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
     let client = Client::from_env();
     let model = client.completion_model("global.anthropic.claude-haiku-4-5-20251001-v1:0");
 
@@ -53,6 +89,8 @@ async fn main() -> Result<(), BoxError> {
         conversation_store,
         state_store,
         sender,
+        callback_url,
+        rap_tools,
     ));
 
     let result = terminal::run(input_tx, display_rx, thread_id).await;
@@ -69,10 +107,12 @@ async fn agent_loop<Mdl>(
     conversation_store: InMemoryConversationStore,
     state_store: InMemoryStateStore,
     sender: InMemoryMessageSender,
+    callback_url: String,
+    rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>>,
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
-    let tool_impls: Vec<Box<dyn Tool<InMemoryMessageSender>>> = vec![
+    let mut tool_impls: Vec<Box<dyn Tool<InMemoryMessageSender>>> = vec![
         Box::new(SleepUntilEventOrInputTool),
         Box::new(SpawnThreadTool {
             conversation_store: conversation_store.clone(),
@@ -84,6 +124,7 @@ async fn agent_loop<Mdl>(
             conversation_store: conversation_store.clone(),
         }),
     ];
+    tool_impls.extend(rap_tools);
 
     while let Some((input_msg, message_id)) = rx.recv().await {
         let active_group_id = input_msg.group_id.clone();
@@ -238,7 +279,7 @@ async fn agent_loop<Mdl>(
                 message_sender: sender.clone(),
                 group_id: active_thread_id.clone(),
                 input_queue_arn: String::new(),
-                rap_receiver_url: String::new(),
+                callback_url: callback_url.clone(),
                 user_id: None,
             };
             let tool_registry: std::collections::HashMap<
