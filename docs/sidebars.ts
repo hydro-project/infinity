@@ -28,10 +28,11 @@ const sidebars: SidebarsConfig = {
       label: 'Infinity Runtime',
       items: [
         'infinity-runtime/overview',
+        'infinity-runtime/cloud-deployment',
+        'infinity-runtime/local-cli',
         'infinity-runtime/hibernation',
         'infinity-runtime/built-in-tools',
         'infinity-runtime/threading',
-        'infinity-runtime/local-cli',
       ],
     },
   ],

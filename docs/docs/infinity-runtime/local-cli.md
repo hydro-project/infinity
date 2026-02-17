@@ -1,5 +1,5 @@
 ---
-sidebar_position: 5
+sidebar_position: 3
 ---
 
 # In-Memory Local CLI
@@ -94,7 +94,9 @@ The CLI ships with the same core tools as the Lambda runtime:
 
 | Tool | Description |
 |------|-------------|
-| `sleep_until_event_or_input` | Hibernation — pauses the agent loop until a new message arrives |
+| `sleep` | Hibernate for a fixed number of seconds (in-memory `tokio::time::sleep` timer) |
+| `sleep_until` | Hibernate until a specific date/time/timezone (in-memory timer) |
+| `sleep_until_event_or_input` | Hibernate indefinitely — pauses the agent loop until a new message arrives |
 | `spawn_thread` | Creates a child thread with its own conversation history |
 | `report_to_parent` | Sends a result back to the parent thread |
 | `close_thread` | Marks a thread as complete |
@@ -104,7 +106,7 @@ The CLI ships with the same core tools as the Lambda runtime:
 The CLI is designed for local development and testing. There are a few things it can't do that the cloud runtime handles:
 
 - **No persistent state.** Conversation history and thread state live in memory. If the process exits, everything is lost.
-- **Process must stay running during hibernation.** When the agent calls `sleep_until_event_or_input`, the CLI just waits on the channel. The Lambda runtime uses EventBridge Scheduler to wake up later — the CLI can't do that.
+- **Process must stay running during hibernation.** All sleep tools (`sleep`, `sleep_until`, `sleep_until_event_or_input`) use in-memory timers and channels. The Lambda runtime exits and is restarted by SQS/EventBridge — the CLI process must stay alive for the duration.
 - **RAP HTTP tools work, remote tools behind a firewall do not.** The CLI can invoke any RAP tool server reachable over HTTP from your machine. Local tool servers work out of the box. Remote tool servers that require SigV4 auth (Lambda Function URLs) or are behind a VPC/firewall won't be reachable — use the cloud runtime for those.
 - **No OAuth flows.** OAuth challenges require a publicly reachable callback endpoint that the CLI doesn't expose.
 - **Single model.** The CLI is hardcoded to `claude-haiku-4-5` via Bedrock. Change the model ID in `main.rs` if you need a different one.
