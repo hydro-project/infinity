@@ -45,4 +45,4 @@ The runtime can integrate MCP servers through a proxy layer. See [MCP Compatibil
 
 ## Implementation flexibility
 
-The protocol doesn't prescribe how the runtime is built. The reference implementation (the [Infinity Runtime](/docs/infinity-runtime/overview)) is a Rust Lambda function using Amazon Bedrock, but any process that can receive messages, call an LLM, POST HTTP requests, and persist state can serve as a RAP runtime. See [Building a Runtime](/docs/using-rap/building-a-runtime) for implementation guidance.
+The protocol doesn't prescribe how the runtime is built. The reference implementation (the [Infinity Runtime](/docs/infinity-runtime/overview)) is a Rust crate that runs as both a Lambda function and a local CLI, using Amazon Bedrock for completions. But any process that can receive messages, call an LLM, POST HTTP requests, and persist state can serve as a RAP runtime. See [Building a Runtime](/docs/using-rap/building-a-runtime) for implementation guidance.
