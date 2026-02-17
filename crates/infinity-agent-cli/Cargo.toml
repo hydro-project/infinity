@@ -22,3 +22,8 @@ tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rustls = { workspace = true }
 crossterm = "0.28"
+hyper = { workspace = true }
+hyper-util = { workspace = true, features = ["tokio"] }
+http = { workspace = true }
+http-body-util = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

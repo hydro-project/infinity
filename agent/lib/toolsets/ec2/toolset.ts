@@ -37,7 +37,7 @@ export class Ec2ToolSet extends RapToolSet {
       timeout: cdk.Duration.seconds(30),
       recursiveLoop: lambda.RecursiveLoop.ALLOW,
       environment: {
-        RAP_RECEIVER_URL: agent.rapReceiverUrl,
+        RAP_CALLBACK_URL: agent.rapReceiverUrl,
       },
     });
     ec2StateMonitorFunction.addToRolePolicy(

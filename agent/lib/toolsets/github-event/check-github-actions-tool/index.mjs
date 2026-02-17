@@ -46,7 +46,7 @@ const TOOLSET_MANIFEST = {
   ],
 };
 
-async function handleSubscribe(args, id, call_id, rap_receiver_url, group_id) {
+async function handleSubscribe(args, id, call_id, callback_url, group_id) {
     const owner = args.owner;
     const repo = args.repo;
     
@@ -72,7 +72,7 @@ async function handleSubscribe(args, id, call_id, rap_receiver_url, group_id) {
         toolCallId: { S: id },
         callId: { S: call_id || '' },
         groupId: { S: group_id },
-        rapReceiverUrl: { S: rap_receiver_url },
+        rapReceiverUrl: { S: callback_url },
         owner: { S: owner },
         repo: { S: repo },
         filters: { S: JSON.stringify(filters) },
@@ -154,7 +154,7 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
 
     try {
         const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
-        const { arguments: args, id, call_id, rap_receiver_url, group_id, tool_name } = body;
+        const { arguments: args, id, call_id, callback_url, group_id, tool_name } = body;
 
         console.log('Processing request:', { tool_name, args, id, call_id });
 
@@ -164,14 +164,14 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
             if (tool_name === 'cancel_github_subscription' || args.subscription_id) {
                 resultText = await handleCancelSubscription(args);
             } else {
-                resultText = await handleSubscribe(args, id, call_id, rap_receiver_url, group_id);
+                resultText = await handleSubscribe(args, id, call_id, callback_url, group_id);
             }
 
-            await sendToolResult(rap_receiver_url, group_id, id, call_id, resultText);
+            await sendToolResult(callback_url, group_id, id, call_id, resultText);
             console.log('Sent response via RAP');
         } catch (error) {
             console.error('Error processing request:', error);
-            await sendToolResult(rap_receiver_url, group_id, id, call_id, `Error: ${error.message}`);
+            await sendToolResult(callback_url, group_id, id, call_id, `Error: ${error.message}`);
         }
     } catch (error) {
         console.error('Error parsing request:', error);

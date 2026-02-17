@@ -3,7 +3,7 @@ import { sendToolResult } from 'rap-js';
 
 const ec2Client = new EC2Client({});
 
-const RAP_RECEIVER_URL = process.env.RAP_RECEIVER_URL;
+const RAP_CALLBACK_URL = process.env.RAP_CALLBACK_URL || process.env.RAP_RECEIVER_URL;
 
 export const handler = async (event) => {
     console.log('Received EC2 state change event:', JSON.stringify(event, null, 2));
@@ -42,7 +42,7 @@ export const handler = async (event) => {
         const instanceType = tags.InstanceType;
         const amiId = tags.AmiId;
 
-        await sendToolResult(RAP_RECEIVER_URL, groupId, toolCallId, callId,
+        await sendToolResult(RAP_CALLBACK_URL, groupId, toolCallId, callId,
             `EC2 instance is now running! Type: ${instanceType}, AMI: ${amiId}, Instance ID: ${instanceId}`);
 
         console.log('Sent tool result via RAP');

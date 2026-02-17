@@ -29,4 +29,4 @@ All sleep tools are interruptible. If a user message or subscription event arriv
 
 ## Utility tools
 
-**`get_time()`** — Returns the current time in multiple timezones. Useful before `sleep_until` to know what time it is now.
+**`get_time()`** — Returns the current time in a specified timezone. This is a RAP tool server (not a built-in), available as a CDK construct (`GetTimeToolSet`) or as a [local standalone server](/docs/infinity-runtime/local-cli#running-a-local-tool-server) for CLI development.

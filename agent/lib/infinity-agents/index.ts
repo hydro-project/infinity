@@ -165,7 +165,7 @@ export class InfinityAgent extends Construct {
         SCHEDULER_ROLE_ARN: this.schedulerRole.roleArn,
         DELAY_QUEUE_URL: this.delayQueue.queueUrl,
         DSQL_CLUSTER_ENDPOINT: this.dsqlCluster.attrEndpoint,
-        RAP_RECEIVER_URL: this.rapReceiverUrl,
+        RAP_CALLBACK_URL: this.rapReceiverUrl,
         RUST_BACKTRACE: '1',
       },
     });

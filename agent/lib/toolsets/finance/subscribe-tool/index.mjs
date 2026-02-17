@@ -50,7 +50,7 @@ const TOOLSET_MANIFEST = {
   ],
 };
 
-async function handlePriceSubscription(args, id, callId, rapReceiverUrl, groupId) {
+async function handlePriceSubscription(args, id, callId, callbackUrl, groupId) {
   const { symbol, threshold } = args;
   if (!symbol || threshold == null) {
     return 'Error: symbol and threshold are required';
@@ -71,7 +71,7 @@ async function handlePriceSubscription(args, id, callId, rapReceiverUrl, groupId
       toolCallId: { S: id },
       callId: { S: callId || '' },
       groupId: { S: groupId },
-      rapReceiverUrl: { S: rapReceiverUrl },
+      rapReceiverUrl: { S: callbackUrl },
       createdAt: { N: Date.now().toString() },
     },
   }));
@@ -88,7 +88,7 @@ async function handlePriceSubscription(args, id, callId, rapReceiverUrl, groupId
   return `Subscribed to price changes for ${symbol.toUpperCase()} with threshold ${threshold}. Subscription ID: ${id}`;
 }
 
-async function handleNewsSubscription(args, id, callId, rapReceiverUrl, groupId) {
+async function handleNewsSubscription(args, id, callId, callbackUrl, groupId) {
   const { query } = args;
   if (!query) {
     return 'Error: query is required';
@@ -108,7 +108,7 @@ async function handleNewsSubscription(args, id, callId, rapReceiverUrl, groupId)
       toolCallId: { S: id },
       callId: { S: callId || '' },
       groupId: { S: groupId },
-      rapReceiverUrl: { S: rapReceiverUrl },
+      rapReceiverUrl: { S: callbackUrl },
       createdAt: { N: Date.now().toString() },
     },
   }));
@@ -171,24 +171,24 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
 
   try {
     const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
-    const { arguments: args, id, call_id, rap_receiver_url, group_id, operation } = body;
+    const { arguments: args, id, call_id, callback_url, group_id, operation } = body;
 
     let result;
     if (operation === 'cancel_finance_subscription') {
       result = await handleCancel(args);
     } else if (operation === 'notify_price_change') {
-      result = await handlePriceSubscription(args, id, call_id, rap_receiver_url, group_id);
+      result = await handlePriceSubscription(args, id, call_id, callback_url, group_id);
     } else if (operation === 'notify_news') {
-      result = await handleNewsSubscription(args, id, call_id, rap_receiver_url, group_id);
+      result = await handleNewsSubscription(args, id, call_id, callback_url, group_id);
     } else {
       result = `Unknown tool: ${operation}`;
     }
-    await sendToolResult(rap_receiver_url, group_id, id, call_id, result);
+    await sendToolResult(callback_url, group_id, id, call_id, result);
   } catch (err) {
     console.error('Error:', err);
     try {
       const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
-      await sendToolResult(body.rap_receiver_url, body.group_id, body.id, body.call_id, `Error: ${err.message}`);
+      await sendToolResult(body.callback_url, body.group_id, body.id, body.call_id, `Error: ${err.message}`);
     } catch (e) {
       console.error('Failed to send error result:', e);
     }

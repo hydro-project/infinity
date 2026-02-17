@@ -9,6 +9,7 @@ use rig_bedrock::client::Client;
 use infinity_agent_core::event_processor;
 use infinity_agent_core::message::InputMessage;
 use infinity_agent_core::tools::config::ToolsConfig;
+use infinity_agent_core::tools::rap_tool::RapTool;
 use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
 use infinity_agent_core::tools::thread::{CloseThreadTool, ReportToParentTool, SpawnThreadTool};
 use infinity_agent_core::tools::toolset_loader::ToolsetLoader;
@@ -18,7 +19,6 @@ use rig::client::{CompletionClient, ProviderClient};
 
 use crate::conversation_history::DsqlConversationStore;
 use crate::state_store::DynamoDbStateStore;
-use crate::tools::lambda_tool::LambdaTool;
 use crate::tools::rap_http::RapHttpClient;
 use crate::tools::sleep::{SleepTool, SleepUntilTool};
 use crate::tools::sqs_sender::SqsMessageSender;
@@ -102,7 +102,9 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
 
     let input_queue_url = std::env::var("INPUT_QUEUE_URL").unwrap_or_default();
     let input_queue_arn = std::env::var("INPUT_QUEUE_ARN").unwrap_or_default();
-    let rap_receiver_url = std::env::var("RAP_RECEIVER_URL").unwrap_or_default();
+    let callback_url = std::env::var("RAP_CALLBACK_URL")
+        .or_else(|_| std::env::var("RAP_RECEIVER_URL"))
+        .unwrap_or_default();
 
     let sender = SqsMessageSender {
         sqs_client: sqs_client.clone(),
@@ -130,11 +132,11 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                     for ts in loaded {
                         let endpoint = ts.manifest.endpoint.clone();
                         for def in ts.manifest.tools {
-                            tool_impls.push(Box::new(LambdaTool {
+                            tool_impls.push(Box::new(RapTool {
                                 name: def.name,
                                 description: def.description,
                                 parameters: def.input_schema,
-                                function_url: endpoint.clone(),
+                                endpoint: endpoint.clone(),
                                 http_client: http_client.clone(),
                             }));
                         }
@@ -168,7 +170,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
 
         let sender_clone = sender.clone();
         let input_queue_arn_clone = input_queue_arn.clone();
-        let rap_receiver_url_clone = rap_receiver_url.clone();
+        let callback_url_clone = callback_url.clone();
 
         // (a) Create history and prepare input
         let mut current_history = event_processor::HistoryManager::new_with_history(
@@ -298,7 +300,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 message_sender: sender_clone.clone(),
                 group_id: active_thread_id,
                 input_queue_arn: input_queue_arn_clone,
-                rap_receiver_url: rap_receiver_url_clone,
+                callback_url: callback_url_clone,
                 user_id,
             };
 

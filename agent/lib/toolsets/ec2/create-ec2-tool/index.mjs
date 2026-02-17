@@ -43,7 +43,7 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
 
   try {
     const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
-    const { arguments: args, id, call_id, rap_receiver_url, group_id } = body;
+    const { arguments: args, id, call_id, callback_url, group_id } = body;
 
     console.log('Processing create_ec2 request:', { args, id, call_id });
 
@@ -74,7 +74,7 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
       console.log('EventBridge will notify when instance reaches running state');
     } catch (error) {
       console.error('Error creating EC2 instance:', error);
-      await sendToolResult(rap_receiver_url, group_id, id, call_id,
+      await sendToolResult(callback_url, group_id, id, call_id,
         `Failed to create EC2 instance: ${error.message}`);
     }
   } catch (error) {
