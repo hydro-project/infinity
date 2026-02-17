@@ -1,4 +1,5 @@
 pub mod config;
+pub mod rap_tool;
 pub mod sleep;
 pub mod thread;
 pub mod toolset_loader;
@@ -11,7 +12,7 @@ pub struct ToolContext<M: InputSender> {
     pub message_sender: M,
     pub group_id: String,
     pub input_queue_arn: String,
-    pub rap_receiver_url: String,
+    pub callback_url: String,
     pub user_id: Option<String>,
 }
 

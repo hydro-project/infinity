@@ -300,7 +300,7 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
 
   try {
     const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
-    const { arguments: args, id, call_id, rap_receiver_url, group_id, operation } = body;
+    const { arguments: args, id, call_id, callback_url, group_id, operation } = body;
 
     let result;
     switch (operation) {
@@ -311,12 +311,12 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
       case 'get_portfolio': result = await handleGetPortfolio(args); break;
       default: result = `Unknown tool: ${operation}`;
     }
-    await sendToolResult(rap_receiver_url, group_id, id, call_id, result);
+    await sendToolResult(callback_url, group_id, id, call_id, result);
   } catch (err) {
     console.error('Error:', err);
     try {
       const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
-      await sendToolResult(body.rap_receiver_url, body.group_id, body.id, body.call_id, `Error: ${err.message}`);
+      await sendToolResult(body.callback_url, body.group_id, body.id, body.call_id, `Error: ${err.message}`);
     } catch (e) {
       console.error('Failed to send error result:', e);
     }

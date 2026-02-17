@@ -46,7 +46,7 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
 
   try {
     const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
-    const { arguments: args, id, call_id, rap_receiver_url, group_id } = body;
+    const { arguments: args, id, call_id, callback_url, group_id } = body;
 
     console.log('Processing get_time request:', { args, id, call_id });
 
@@ -62,7 +62,7 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
       ? `Current time in ${args.timezone}: ${localTime}`
       : `Current UTC time: ${timeString}`;
 
-    await sendToolResult(rap_receiver_url, group_id, id, call_id, resultText);
+    await sendToolResult(callback_url, group_id, id, call_id, resultText);
     console.log('Successfully sent tool result via RAP');
   } catch (error) {
     console.error('Error processing request:', error);
