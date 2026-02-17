@@ -3,10 +3,9 @@ import React from 'react';
 export default function ProtocolComparison(): React.JSX.Element {
   return (
     <section className="comparison-section">
-      <h2>MCP is synchronous. RAP is not.</h2>
+      <h2>Backwards-Compatible with MCP.</h2>
       <p>
-        MCP blocks the agent while tools run. RAP lets the agent hibernate and
-        resume when results arrive — whether that takes 100ms or 3 days.
+        RAP includes a compatibility layer for MCP servers. RAP agents can hibernate during MCP tool calls — whether that takes 100ms or 3 days.
       </p>
       <div className="comparison-grid">
         <div className="comparison-card">

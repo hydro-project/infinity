@@ -1,11 +1,15 @@
 ---
-sidebar_position: 3
+sidebar_position: 4
 title: Hibernation
 ---
 
 # How Infinity Achieves Hibernation
 
 RAP defines hibernation as a protocol-level concept — the runtime exits after dispatching tool calls and restarts when results arrive. The Infinity Runtime implements this on AWS using Lambda, SQS, and EventBridge Scheduler.
+
+:::note
+This page covers the cloud runtime's hibernation implementation. The [local CLI](/docs/infinity-runtime/local-cli) achieves the same behavior using in-memory timers and channels — the process stays alive but the agent loop idles between messages.
+:::
 
 ## The execution model
 

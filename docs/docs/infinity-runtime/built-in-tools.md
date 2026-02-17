@@ -1,5 +1,5 @@
 ---
-sidebar_position: 2
+sidebar_position: 5
 title: Built-in Tools
 ---
 
@@ -9,13 +9,13 @@ The Infinity Runtime ships with a set of built-in tools that are available to ev
 
 ## Sleep tools
 
-While RAP's hibernation means the runtime exits after every tool call, sometimes you want the agent to explicitly wait before continuing. The sleep tools schedule a future wake-up message on the input queue.
+While RAP's hibernation means the runtime exits after every tool call, sometimes you want the agent to explicitly wait before continuing. The sleep tools schedule a future wake-up message. Both the cloud runtime and the local CLI support all three sleep tools — the difference is the underlying mechanism.
 
-**`sleep(seconds)`** — Hibernate for a fixed duration. Delays ≤ 900 seconds use SQS `DelaySeconds` via a relay queue. Longer delays use EventBridge Scheduler to create a one-time schedule.
+**`sleep(seconds)`** — Hibernate for a fixed duration. In the cloud, delays ≤ 900 seconds use SQS `DelaySeconds` via a relay queue; longer delays use EventBridge Scheduler. In the CLI, a `tokio::time::sleep` timer fires in a spawned task and delivers the result through the in-memory channel.
 
 **`sleep_until(date, time, timezone)`** — Hibernate until a specific wall-clock time. Useful for "wake me when the market opens at 9:30 AM Eastern." Converts the target to a UTC delay and uses the same mechanism as `sleep`. Returns immediately if the target is in the past.
 
-**`sleep_until_event_or_input()`** — Hibernate indefinitely. A no-op — the runtime exits without scheduling anything. The agent wakes when the next message arrives naturally: user input or subscription event. This is the tool agents use after setting up subscriptions when there's nothing else to do.
+**`sleep_until_event_or_input()`** — Hibernate indefinitely. The runtime stops without scheduling anything. The agent wakes when the next message arrives naturally: user input or subscription event. This is the tool agents use after setting up subscriptions when there's nothing else to do.
 
 All sleep tools are interruptible. If a user message or subscription event arrives while the agent is sleeping, the runtime processes it immediately. The pending sleep result arrives later and is appended to history normally.
 
