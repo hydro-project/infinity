@@ -20,6 +20,8 @@ async-trait = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
 rustls = { workspace = true }
 crossterm = "0.28"
 hyper = { workspace = true }

@@ -9,6 +9,7 @@ use tracing_subscriber::EnvFilter;
 mod memory_store;
 mod rap_callback;
 mod rap_tools;
+mod sleep_tools;
 mod terminal;
 
 use infinity_agent_core::event_processor;
@@ -18,6 +19,7 @@ use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
 use infinity_agent_core::tools::thread::{CloseThreadTool, ReportToParentTool, SpawnThreadTool};
 use infinity_agent_core::tools::{Tool, ToolContext};
 use memory_store::{InMemoryConversationStore, InMemoryMessageSender, InMemoryStateStore};
+use sleep_tools::{SleepTool, SleepUntilTool};
 use terminal::DisplayEvent;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -114,6 +116,8 @@ async fn agent_loop<Mdl>(
 {
     let mut tool_impls: Vec<Box<dyn Tool<InMemoryMessageSender>>> = vec![
         Box::new(SleepUntilEventOrInputTool),
+        Box::new(SleepTool),
+        Box::new(SleepUntilTool),
         Box::new(SpawnThreadTool {
             conversation_store: conversation_store.clone(),
         }),
