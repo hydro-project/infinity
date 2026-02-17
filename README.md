@@ -6,7 +6,7 @@ This project is a proof-of-concept of Infinity Agents: a new runtime and archite
 
 This prototype uses Lambda + SQS + EventBridge to enable agents that can sleep for arbitrary durations without consuming resources. When an agent needs to wait (for CI/CD subscriptions, long tool calls, user input, rate limits, etc.), it can immediately hibernate and consume zero resources. The agent resumes exactly where it left off when woken.
 
-See [docs/architecture.md](docs/architecture.md) for details on the hibernation mechanism and system design.
+See [the docs](docs/) for details on the hibernation mechanism and system design.
 
 ## Quick Start
 
@@ -45,7 +45,7 @@ export class MyAgent extends InfinityAgent {
 }
 ```
 
-See [docs/cdk-usage.md](docs/cdk-usage.md) for complete CDK documentation.
+See [CDK docs](docs/docs/infinity-runtime/cloud-deployment) for complete CDK documentation.
 
 ## Key Features
 
@@ -55,7 +55,7 @@ See [docs/cdk-usage.md](docs/cdk-usage.md) for complete CDK documentation.
 - **Tool abstraction** - Each tool is an independent Lambda with its own queue
 - **MCP support** - Wrap any MCP server as a tool set
 - **Conversation state** - DynamoDB stores durable conversation history to ensure fault tolerance
-- **Threaded execution** - Agents can spawn nested child threads to decompose tasks into parallel sub-work, each with inherited context truncated at the spawn point. See [docs/threaded-execution.md](docs/threaded-execution.md) for details.
+- **Threaded execution** - Agents can spawn nested child threads to decompose tasks into parallel sub-work, each with inherited context truncated at the spawn point. See [Threading](docs/docs/infinity-runtime/threading) for details.
 
 ## Project Structure
 - `src/` - Infinity Agent Leader (Rust, Bedrock streaming, tool orchestration)
