@@ -33,6 +33,13 @@ const sidebars: SidebarsConfig = {
         'infinity-runtime/threading',
       ],
     },
+    {
+      type: 'category',
+      label: 'Local CLI',
+      items: [
+        'local-cli/overview',
+      ],
+    },
   ],
 };
 
