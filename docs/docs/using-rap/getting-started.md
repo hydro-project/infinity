@@ -5,7 +5,7 @@ title: Getting Started
 
 # Getting Started
 
-There are two ways to run a RAP agent with the Infinity Runtime: locally with the CLI for fast iteration, or deployed to AWS for durable, production-grade execution.
+The [Infinity Runtime](/docs/infinity-runtime/overview) is the reference agent runtime for RAP. There are two ways to run the Infinity Runtime: locally with the CLI for fast iteration, or deployed to AWS for durable, production-grade execution.
 
 | | Local CLI | Cloud (Lambda) |
 |---|---|---|
@@ -14,8 +14,6 @@ There are two ways to run a RAP agent with the Infinity Runtime: locally with th
 | Tool servers | Local only | Remote HTTP (Function URLs) |
 | Infrastructure | None | CDK deploy |
 | Best for | Development, testing | Production, long-running agents |
-
-## Prerequisites
 
 Both paths need:
 
@@ -38,7 +36,7 @@ cd InfinityAgents
 cargo run -p infinity-agent-cli
 ```
 
-This gives you a streaming chat interface where you can interact with the agent, see tool calls and results in real time, and test threading and hibernation flows. See [Local CLI](/docs/local-cli/overview) for details and limitations.
+This gives you a streaming chat interface where you can interact with the agent, see tool calls and results in real time, and test threading and hibernation flows. See [Local CLI](/docs/infinity-runtime/local-cli) for details and limitations.
 
 ## Durable Cloud Agent
 
@@ -92,5 +90,5 @@ The framework handles wiring — Function URLs, IAM permissions, tool configurat
 - [Build a RAP Tool](/docs/using-rap/building-a-rap-tool) — create a custom tool that speaks RAP
 - [Build a Runtime](/docs/using-rap/building-a-runtime) — implement your own RAP-compatible runtime
 - [Built-in Tools](/docs/infinity-runtime/built-in-tools) — sleep, threading, and utility tools
-- [Local CLI](/docs/local-cli/overview) — in-memory CLI details and limitations
+- [Local CLI](/docs/infinity-runtime/local-cli) — in-memory CLI details and limitations
 - [Specification](/spec/overview) — the full protocol reference

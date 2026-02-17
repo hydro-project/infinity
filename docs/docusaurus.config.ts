@@ -34,6 +34,7 @@ const config: Config = {
       {
         docs: {
           sidebarPath: './sidebars.ts',
+          sidebarCollapsed: false,
         },
         blog: false,
         theme: {
@@ -51,6 +52,7 @@ const config: Config = {
         path: 'spec',
         routeBasePath: 'spec',
         sidebarPath: './sidebarsSpec.ts',
+        sidebarCollapsed: false,
       },
     ],
   ],

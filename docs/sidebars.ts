@@ -31,13 +31,7 @@ const sidebars: SidebarsConfig = {
         'infinity-runtime/hibernation',
         'infinity-runtime/built-in-tools',
         'infinity-runtime/threading',
-      ],
-    },
-    {
-      type: 'category',
-      label: 'Local CLI',
-      items: [
-        'local-cli/overview',
+        'infinity-runtime/local-cli',
       ],
     },
   ],
