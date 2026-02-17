@@ -15,19 +15,6 @@ cargo run -p infinity-agent-cli
 
 The CLI needs Bedrock credentials in your environment. The standard `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` variables work, or any credential chain that the AWS SDK picks up (SSO, instance profile, etc.).
 
-## How It Works
-
-The CLI runs two concurrent tasks:
-
-- **Agent loop** — reads messages from an in-memory channel, runs the prepare → completion → execute cycle against Bedrock, and emits display events.
-- **Terminal UI** — captures keystrokes, renders streaming model output in the terminal's native scrollback, and keeps a fixed input bar at the bottom separated by a horizontal rule.
-
-User input and tool-spawned messages (thread spawns, subscription events) all feed into the same `mpsc` channel, so the agent processes them in order just like the Lambda runtime processes SQS messages.
-
-On startup, the CLI also launches a local HTTP callback server on a random port. This is the `callback_url` that gets passed to RAP tool servers, allowing them to POST results back to the agent.
-
-### Terminal Interface
-
 The terminal uses a VT100 scroll region so output scrolls naturally in your terminal's scrollback buffer. The bottom of the screen shows:
 
 ```
@@ -106,8 +93,8 @@ The CLI ships with the same core tools as the Lambda runtime:
 The CLI is designed for local development and testing. There are a few things it can't do that the cloud runtime handles:
 
 - **No persistent state.** Conversation history and thread state live in memory. If the process exits, everything is lost.
-- **Process must stay running during hibernation.** All sleep tools (`sleep`, `sleep_until`, `sleep_until_event_or_input`) use in-memory timers and channels. The Lambda runtime exits and is restarted by SQS/EventBridge — the CLI process must stay alive for the duration.
-- **RAP HTTP tools work, remote tools behind a firewall do not.** The CLI can invoke any RAP tool server reachable over HTTP from your machine. Local tool servers work out of the box. Remote tool servers that require SigV4 auth (Lambda Function URLs) or are behind a VPC/firewall won't be reachable — use the cloud runtime for those.
+- **Process must stay running during hibernation.** All sleep tools use in-memory timers and channels. The Lambda runtime exits and is restarted by SQS/EventBridge — the CLI process must stay alive for the duration.
+- **Callback URL must be reachable.** Remote tool servers need to POST results back to this URL, so if your machine is behind a firewall or NAT, remote tools won't be able to deliver results. Local tool servers work fine since they're on the same machine.
 - **No OAuth flows.** OAuth challenges require a publicly reachable callback endpoint that the CLI doesn't expose.
 - **Single model.** The CLI is hardcoded to `claude-haiku-4-5` via Bedrock. Change the model ID in `main.rs` if you need a different one.
 
