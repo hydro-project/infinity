@@ -1,6 +1,5 @@
 ---
-sidebar_position: 1
-title: In-Memory Local CLI
+sidebar_position: 5
 ---
 
 # In-Memory Local CLI
