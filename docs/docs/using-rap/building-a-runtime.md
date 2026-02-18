@@ -319,7 +319,7 @@ This is a minimal runtime to demonstrate the protocol. A production runtime woul
 
 - **Subscription event handling** — requires generating [synthetic tool calls](/docs/about/subscription-events#synthetic-tool-calls) to present events to the LLM in a way it can reason about. See [Subscription Events](/docs/about/subscription-events) for the full design.
 - **Concurrency control** — serialize messages within a thread (e.g. with a queue or database lock). See [Agent Runtime](/docs/about/agent-runtime#interruption-model).
-- **Hibernation** — for a serverless deployment, replace the Express server with a Lambda triggered by SQS, and use scheduled messages for sleep. See [Infinity Runtime Hibernation](/docs/infinity-runtime/hibernation).
+- **Hibernation** — for a serverless deployment, replace the Express server with a Lambda triggered by SQS, and use scheduled messages for sleep. See [Agent Hibernation](/docs/about/architecture#hibernation).
 - **Authentication** — sign requests to tool servers with SigV4 or bearer tokens, and authenticate callback requests to prevent unauthorized message injection.
 - **Streaming** — stream LLM responses to the user instead of waiting for the full completion.
 - **Toolset validation** — validate fetched toolset definitions against the [schema requirements](/spec/basic/toolsets#validation) before making tools available to the LLM.

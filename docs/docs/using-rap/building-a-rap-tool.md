@@ -1,15 +1,15 @@
 ---
 sidebar_position: 2
-title: Building a RAP Tool
+title: Building a RAP Server
 ---
 
-# Building a RAP Tool
+# Building a RAP Server
 
-A RAP tool is an HTTP service that does three things: serves a [toolset definition](/spec/basic/toolsets) so runtimes can discover it, accepts [tool invocations](/spec/basic/tool-invocation) and acknowledges them immediately, and delivers [tool results](/spec/basic/tool-result) asynchronously to a callback URL. You can build one in any language on any platform — the only requirement is HTTP.
+A RAP server is an HTTP service that does three things: serves a [toolset definition](/spec/basic/toolsets) so runtimes can discover it, accepts [tool invocations](/spec/basic/tool-invocation) and acknowledges them immediately, and delivers [tool results](/spec/basic/tool-result) asynchronously to a callback URL. You can build one in any language on any platform — the only requirement is HTTP.
 
-## What your tool needs to do
+## RAP Server Architecture
 
-Your tool is a single HTTP endpoint that handles two kinds of requests:
+Your server is a single HTTP endpoint that handles two kinds of requests:
 
 - **GET `/.well-known/rap-toolset`** — Return your toolset definition (discovery)
 - **POST to your endpoint** — Receive a tool invocation, acknowledge it, process it, and POST the result back
@@ -30,7 +30,7 @@ sequenceDiagram
 
 The runtime never waits for your tool to finish. It dispatches the invocation, gets the HTTP 200 acknowledgement, persists its state, and exits. Your tool does its work on its own schedule and delivers the result whenever it's ready — milliseconds or days later.
 
-## Defining your toolset
+## Defining a toolset
 
 The toolset definition tells runtimes what operations your tool supports. It's a JSON object served at `/.well-known/rap-toolset` relative to your endpoint base URL. See the [Toolsets spec](/spec/basic/toolsets) for the full schema.
 

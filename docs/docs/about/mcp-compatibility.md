@@ -28,7 +28,6 @@ sequenceDiagram
     M-->>P: initialize result
     P->>M: JSON-RPC tools/call
     M-->>P: tool result
-    P->>M: terminate process
 
     P->>R: POST tool_result to callback URL
 
@@ -37,7 +36,7 @@ sequenceDiagram
 
 This turns a synchronous MCP call into an asynchronous RAP call. An MCP tool that takes 30 seconds to respond no longer blocks the agent for 30 seconds — the runtime hibernates at zero cost and resumes when the result arrives.
 
-## Two transport modes
+## MCP Transport Modes
 
 The proxy supports two ways of connecting to MCP servers, depending on how the server is deployed.
 
@@ -71,7 +70,7 @@ new HTTPMCPToolSet(this, 'RemoteServer', {
 });
 ```
 
-## Session continuity with Mcp-Session-Id
+## Stateful Session Continuity
 
 MCP includes a session mechanism (`Mcp-Session-Id` header) that allows clients to resume sessions with a server. The proxy uses this to bridge MCP's session model with RAP's ephemeral execution.
 

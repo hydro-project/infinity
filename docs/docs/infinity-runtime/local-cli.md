@@ -1,10 +1,15 @@
 ---
-sidebar_position: 3
+sidebar_position: 2
 ---
 
 # In-Memory Local CLI
 
 The Infinity Agent CLI lets you run a RAP agent locally from your terminal. It connects directly to Amazon Bedrock, keeps conversation history in memory, and gives you a live streaming interface to interact with the agent — no AWS infrastructure required.
+
+The CLI is useful for:
+- Developing and testing RAP tool servers locally
+- Iterating on agent behavior without deploying infrastructure
+- Testing conversation flows and threading logic
 
 ## Quick Start
 
@@ -51,7 +56,7 @@ Create a `rap-servers.json` file in the repo root (or set `RAP_CONFIG` to point 
 
 Each entry points to a local HTTP server that serves `/.well-known/rap-toolset` for discovery. The CLI fetches toolset definitions at startup and makes the tools available to the LLM.
 
-### Running a local tool server
+### Running a Local RAP Server
 
 The `get-time` tool includes a standalone local server:
 
@@ -65,7 +70,7 @@ cargo run -p infinity-agent-cli
 
 The tool server handles both discovery (`GET /.well-known/rap-toolset`) and invocations (`POST /`). When invoked, it acknowledges immediately and POSTs the result back to the CLI's callback URL using plain HTTP — no SigV4 signing needed for local development.
 
-### Writing your own local tool server
+### Writing Your Own RAP Server
 
 Any HTTP server that implements the RAP protocol works. Your server needs to:
 
@@ -97,13 +102,3 @@ The CLI is designed for local development and testing. There are a few things it
 - **Callback URL must be reachable.** Remote tool servers need to POST results back to this URL, so if your machine is behind a firewall or NAT, remote tools won't be able to deliver results. Local tool servers work fine since they're on the same machine.
 - **No OAuth flows.** OAuth challenges require a publicly reachable callback endpoint that the CLI doesn't expose.
 - **Single model.** The CLI is hardcoded to `claude-haiku-4-5` via Bedrock. Change the model ID in `main.rs` if you need a different one.
-
-## When to Use It
-
-The CLI is useful for:
-
-- Iterating on agent behavior without deploying infrastructure
-- Testing conversation flows and threading logic
-- Debugging tool call sequences
-- Developing and testing RAP tool servers locally
-- Developing new built-in tools before wiring them into the CDK stack

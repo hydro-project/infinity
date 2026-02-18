@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 380" font-family="'Segoe UI', system-ui, -apple-system, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#ED7100"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4ade80"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#C925D1"/>
+    </marker>
+    <marker id="arrow-cyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#01A88D"/>
+    </marker>
+  </defs>
+
+  <!-- User -->
+  <rect x="10" y="160" width="110" height="60" rx="8" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+  <text x="65" y="194" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">User Input</text>
+
+  <!-- SQS FIFO -->
+  <rect x="185" y="160" width="140" height="60" rx="8" fill="#1a1a2e" stroke="#E7157B" stroke-width="1.5"/>
+  <image href="/img/icon-sqs.svg" x="197" y="175" width="28" height="28"/>
+  <text x="233" y="186" fill="#E7157B" font-size="11" font-weight="900">SQS</text>
+  <text x="233" y="204" fill="#e2e8f0" font-size="13" font-weight="600">Input Queue</text>
+
+  <!-- Agent Lambda -->
+  <rect x="410" y="160" width="155" height="60" rx="8" fill="#1a2332" stroke="#ED7100" stroke-width="1.5"/>
+  <image href="/img/icon-lambda.svg" x="422" y="175" width="28" height="28"/>
+  <text x="458" y="186" fill="#ED7100" font-size="11" font-weight="900">Lambda</text>
+  <text x="458" y="204" fill="#e2e8f0" font-size="13" font-weight="600">Infinity Runtime</text>
+
+  <!-- Aurora DSQL (above left) -->
+  <rect x="330" y="30" width="155" height="60" rx="8" fill="#1a2332" stroke="#C925D1" stroke-width="1.5"/>
+  <image href="/img/icon-aurora.svg" x="342" y="45" width="28" height="28"/>
+  <text x="378" y="56" fill="#C925D1" font-size="11" font-weight="900">Aurora DSQL</text>
+  <text x="378" y="74" fill="#e2e8f0" font-size="13" font-weight="600">Durable State</text>
+
+  <!-- Bedrock (above right) -->
+  <rect x="540" y="30" width="130" height="60" rx="8" fill="#1a2332" stroke="#01A88D" stroke-width="1.5"/>
+  <image href="/img/icon-bedrock.svg" x="552" y="45" width="28" height="28"/>
+  <text x="588" y="64" fill="#01A88D" font-size="13" font-weight="900">Bedrock</text>
+
+  <!-- Output (right) -->
+  <rect x="680" y="160" width="130" height="60" rx="8" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+  <text x="745" y="194" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">Agent Output</text>
+
+  <!-- RAP Receiver -->
+  <rect x="185" y="295" width="140" height="60" rx="8" fill="#1a2332" stroke="#ED7100" stroke-width="1.5"/>
+  <image href="/img/icon-lambda.svg" x="197" y="310" width="28" height="28"/>
+  <text x="233" y="321" fill="#ED7100" font-size="11" font-weight="900">Lambda</text>
+  <text x="233" y="339" fill="#e2e8f0" font-size="13" font-weight="600">RAP Receiver</text>
+
+  <!-- RAP Servers (below Agent Lambda) -->
+  <rect x="420" y="295" width="130" height="60" rx="8" fill="#1a2332" stroke="#475569" stroke-width="1.5"/>
+  <text x="485" y="332" text-anchor="middle" fill="#e2e8f0" font-size="13" font-weight="600">RAP Servers</text>
+
+  <!-- ARROWS -->
+  <line x1="120" y1="190" x2="180" y2="190" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="150" y="182" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="700">message</text>
+  <line x1="325" y1="190" x2="405" y2="190" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="365" y="182" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="700">trigger</text>
+  <line x1="460" y1="155" x2="430" y2="95" stroke="#C925D1" stroke-width="1.5" marker-end="url(#arrow-blue)"/>
+  <text x="454" y="130" fill="#C925D1" font-size="10" font-weight="700">persist</text>
+  <line x1="515" y1="155" x2="580" y2="95" stroke="#01A88D" stroke-width="1.5" marker-end="url(#arrow-cyan)"/>
+  <text x="565" y="125" fill="#01A88D" font-size="10" font-weight="700">LLM call</text>
+  <line x1="565" y1="190" x2="675" y2="190" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="620" y="182" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="700">response</text>
+  <line x1="487" y1="225" x2="487" y2="290" stroke="#ED7100" stroke-width="1.5" marker-end="url(#arrow-amber)"/>
+  <text x="502" y="262" fill="#ED7100" font-size="10" font-weight="700">POST</text>
+  <text x="502" y="274" fill="#ED7100" font-size="10" font-weight="700">invocation</text>
+  <line x1="420" y1="325" x2="330" y2="325" stroke="#4ade80" stroke-width="1.5" marker-end="url(#arrow-green)"/>
+  <text x="375" y="307" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="700">POST</text>
+  <text x="375" y="319" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="700">tool_result</text>
+  <line x1="255" y1="290" x2="255" y2="225" stroke="#4ade80" stroke-width="1.5" marker-end="url(#arrow-green)"/>
+  <text x="270" y="262" fill="#4ade80" font-size="10" font-weight="700">enqueue</text>
+</svg>
