@@ -8,7 +8,7 @@ const sidebars: SidebarsConfig = {
       label: 'About RAP',
       items: [
         'about/architecture',
-        'about/tool-servers',
+        'about/rap-servers',
         'about/subscription-events',
         'about/agent-runtime',
         'about/mcp-compatibility',
@@ -28,9 +28,8 @@ const sidebars: SidebarsConfig = {
       label: 'Infinity Runtime',
       items: [
         'infinity-runtime/overview',
-        'infinity-runtime/cloud-deployment',
         'infinity-runtime/local-cli',
-        'infinity-runtime/hibernation',
+        'infinity-runtime/cloud-deployment',
         'infinity-runtime/built-in-tools',
         'infinity-runtime/threading',
       ],
