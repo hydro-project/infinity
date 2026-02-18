@@ -16,7 +16,7 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Using RAP',
+      label: 'Develop with RAP',
       items: [
         'using-rap/getting-started',
         'using-rap/building-a-rap-tool',

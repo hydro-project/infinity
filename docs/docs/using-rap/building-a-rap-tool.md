@@ -275,7 +275,7 @@ const server = createServer(async (req, res) => {
 server.listen(3001, '127.0.0.1');
 ```
 
-No SigV4 signing needed — the CLI's callback server accepts plain HTTP. Point the CLI at your server with a `rap-servers.json` config file:
+Point the CLI at your server with a `rap-servers.json` config file:
 
 ```json
 {
@@ -285,4 +285,4 @@ No SigV4 signing needed — the CLI's callback server accepts plain HTTP. Point 
 }
 ```
 
-The `get-time` tool includes a ready-to-run local server at `agent/lib/toolsets/get-time/get-time-tool/local.mjs` — use it as a reference.
+The `get-time` tool includes a ready-to-run local server at `agent/lib/toolsets/get-time/get-time-tool/local.mjs`, which you can use as a reference when building local RAP tools.
