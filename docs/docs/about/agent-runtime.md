@@ -9,6 +9,8 @@ The agent runtime is the host process that connects an LLM to RAP tools. It's th
 
 The runtime manages the conversation lifecycle: it receives inputs, maintains conversation state, runs LLM completions, dispatches tool calls, and delivers output. Tools never interact with the LLM directly — the runtime mediates everything.
 
+The protocol doesn't prescribe how the runtime is built. The reference implementation (the [Infinity Runtime](/docs/infinity-runtime/overview)) is a Rust crate that runs as both a Lambda function and a local CLI, using Amazon Bedrock for completions. But any process that can receive messages, call an LLM, POST HTTP requests, and persist state can serve as a RAP runtime. See [Building a Runtime](/docs/using-rap/building-a-runtime) for implementation guidance.
+
 ## Core responsibilities
 
 **Conversation state.** The runtime owns the conversation history. Because the runtime is ephemeral (it exits between tool calls), state must be persisted to durable storage and reloaded on each invocation. The runtime is the single source of truth for what the LLM has seen and said.
@@ -38,11 +40,3 @@ Because the runtime is stateless and message-driven, interruptions are handled n
 This means agents are always responsive to users, even while waiting for long-running operations.
 
 Runtimes need to be careful about concurrency within a single conversation thread. If two messages for the same thread arrive close together (e.g. a user message and a tool result), processing them simultaneously could corrupt conversation state. The Infinity Runtime handles this by using a FIFO queue with message group IDs — messages within a thread are serialized, while different threads process concurrently. Other implementations might use database locks, optimistic concurrency control, or single-threaded processing per thread. The key invariant: within a thread, messages must be processed one at a time.
-
-## MCP compatibility
-
-The runtime can integrate MCP servers through a proxy layer. See [MCP Compatibility](/docs/about/mcp-compatibility) for how this works.
-
-## Implementation flexibility
-
-The protocol doesn't prescribe how the runtime is built. The reference implementation (the [Infinity Runtime](/docs/infinity-runtime/overview)) is a Rust crate that runs as both a Lambda function and a local CLI, using Amazon Bedrock for completions. But any process that can receive messages, call an LLM, POST HTTP requests, and persist state can serve as a RAP runtime. See [Building a Runtime](/docs/using-rap/building-a-runtime) for implementation guidance.

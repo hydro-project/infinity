@@ -18,15 +18,11 @@ The agent sees the confirmation and knows the subscription is active. At this po
 
 When a matching event occurs — a webhook fires, a price threshold is crossed, a new article is published — the tool (or its webhook handler) POSTs a `subscription_event` to the stored `callback_url`. See the [Subscription Events spec](/spec/server/subscription-events) for the exact payload format.
 
-## The problem: presenting events to the LLM
+## Synthetic tool calls
 
 When a subscription event arrives, the runtime needs to show it to the LLM in a way that makes sense in the conversation. The challenge is that the original subscription tool call already has a result (the confirmation message). You can't just append a second result for the same tool call — the LLM would be confused.
 
-RAP solves this with synthetic tool calls.
-
-## Synthetic tool calls
-
-A synthetic tool call is a fabricated assistant message that the runtime injects into conversation history. It looks like the LLM called the subscription tool again, but it was actually created by the runtime to carry the event data.
+RAP solves this with synthetic tool calls. A synthetic tool call is a fabricated assistant message that the runtime injects into conversation history. It looks like the LLM called the subscription tool again, but it was actually created by the runtime to carry the event data.
 
 When a subscription event arrives, the runtime:
 
