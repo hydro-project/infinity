@@ -1,5 +1,5 @@
 import { EC2Client, DescribeTagsCommand } from '@aws-sdk/client-ec2';
-import { sendToolResult } from 'rap-js';
+import { sendToolResult } from '../../../infinity-agents/rap-js/index.mjs';
 
 const ec2Client = new EC2Client({});
 

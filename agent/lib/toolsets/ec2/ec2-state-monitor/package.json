@@ -1,9 +1,0 @@
-{
-  "name": "ec2-state-monitor",
-  "version": "1.0.0",
-  "type": "module",
-  "dependencies": {
-    "@aws-sdk/client-ec2": "^3.0.0",
-    "rap-js": "file:../../../infinity-agents/rap-js"
-  }
-}

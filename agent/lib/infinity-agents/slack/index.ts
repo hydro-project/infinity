@@ -1,10 +1,11 @@
 import { Construct } from 'constructs';
 import * as cdk from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as path from 'path';
-import { InfinityAgent } from '../index';
+import { InfinityAgent, NODEJS_BUNDLING_DEFAULTS } from '../index';
 
 export interface SlackIntegrationProps {
   /**
@@ -24,10 +25,11 @@ export class SlackIntegration extends Construct {
     super(agent, id);
 
     // Slack Receiver Lambda (receives Slack events, sends to agent input queue)
-    const slackReceiverFunction = new lambda.Function(this, 'ReceiverFunction', {
+    const slackReceiverFunction = new NodejsFunction(this, 'ReceiverFunction', {
+      entry: path.join(__dirname, 'slack-receiver', 'index.mjs'),
       runtime: lambda.Runtime.NODEJS_24_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, 'slack-receiver')),
+      handler: 'handler',
+      bundling: NODEJS_BUNDLING_DEFAULTS,
       timeout: cdk.Duration.seconds(30),
       environment: {
         AGENT_INPUT_QUEUE_URL: agent.inputQueue.queueUrl,
@@ -42,10 +44,11 @@ export class SlackIntegration extends Construct {
     props.webhookGateway.root.addResource('slack').addResource('events').addMethod('POST', slackIntegration);
 
     // Slack Responder Lambda (receives agent outputs, posts to Slack)
-    const slackResponderFunction = new lambda.Function(this, 'ResponderFunction', {
+    const slackResponderFunction = new NodejsFunction(this, 'ResponderFunction', {
+      entry: path.join(__dirname, 'slack-responder', 'index.mjs'),
       runtime: lambda.Runtime.NODEJS_24_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, 'slack-responder')),
+      handler: 'handler',
+      bundling: NODEJS_BUNDLING_DEFAULTS,
       timeout: cdk.Duration.seconds(30),
       environment: {
         SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN || '',

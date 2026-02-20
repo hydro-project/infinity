@@ -1,8 +1,0 @@
-{
-  "name": "get-time-tool",
-  "version": "1.0.0",
-  "type": "module",
-  "dependencies": {
-    "rap-js": "file:../../../infinity-agents/rap-js"
-  }
-}

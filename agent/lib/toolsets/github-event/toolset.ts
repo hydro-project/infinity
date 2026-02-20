@@ -1,10 +1,11 @@
 import * as cdk from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as path from 'path';
 
-import { InfinityAgent } from '../../infinity-agents';
+import { InfinityAgent, NODEJS_BUNDLING_DEFAULTS } from '../../infinity-agents';
 import { RapToolSet } from '../../infinity-agents/tools';
 
 export interface GitHubToolSetProps {
@@ -39,10 +40,11 @@ export class GitHubEventToolSet extends RapToolSet {
     });
 
     // Tool handler Lambda (serves both .well-known and tool invocations)
-    const checkGithubActionsToolFunction = new lambda.Function(agent, 'CheckActionsFunction', {
+    const checkGithubActionsToolFunction = new NodejsFunction(agent, 'CheckActionsFunction', {
+      entry: path.join(__dirname, 'check-github-actions-tool', 'index.mjs'),
       runtime: lambda.Runtime.NODEJS_24_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, 'check-github-actions-tool')),
+      handler: 'handler',
+      bundling: NODEJS_BUNDLING_DEFAULTS,
       timeout: cdk.Duration.seconds(30),
       recursiveLoop: lambda.RecursiveLoop.ALLOW,
       environment: {
@@ -54,10 +56,11 @@ export class GitHubEventToolSet extends RapToolSet {
     subscriptionLookupTable.grantReadWriteData(checkGithubActionsToolFunction);
 
     // GitHub Webhook Receiver (not a tool — receives external webhooks)
-    const githubWebhookReceiverFunction = new lambda.Function(agent, 'WebhookReceiverFunction', {
+    const githubWebhookReceiverFunction = new NodejsFunction(agent, 'WebhookReceiverFunction', {
+      entry: path.join(__dirname, 'github-webhook-receiver', 'index.mjs'),
       runtime: lambda.Runtime.NODEJS_24_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, 'github-webhook-receiver')),
+      handler: 'handler',
+      bundling: NODEJS_BUNDLING_DEFAULTS,
       timeout: cdk.Duration.seconds(30),
       recursiveLoop: lambda.RecursiveLoop.ALLOW,
       environment: {

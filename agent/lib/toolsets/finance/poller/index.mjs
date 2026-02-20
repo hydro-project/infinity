@@ -1,5 +1,5 @@
 import { DynamoDBClient, ScanCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
-import { sendSubscriptionEvent } from 'rap-js';
+import { sendSubscriptionEvent } from '../../../infinity-agents/rap-js/index.mjs';
 import { XMLParser } from 'fast-xml-parser';
 
 const dynamoClient = new DynamoDBClient({});

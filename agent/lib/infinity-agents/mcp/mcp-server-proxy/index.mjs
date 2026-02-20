@@ -1,5 +1,5 @@
 import { spawn, execSync } from 'child_process';
-import { sendToolResult as rapSendToolResult, sendOAuthUrl as rapSendOAuthUrl } from 'rap-js';
+import { sendToolResult as rapSendToolResult, sendOAuthUrl as rapSendOAuthUrl } from '../../rap-js/index.mjs';
 import { DynamoDBClient, GetItemCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
 
 const dynamoClient = new DynamoDBClient({});
