@@ -1,11 +1,12 @@
 import * as cdk from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as path from 'path';
 
-import { InfinityAgent } from '../../infinity-agents';
+import { InfinityAgent, NODEJS_BUNDLING_DEFAULTS } from '../../infinity-agents';
 import { RapToolSet } from '../../infinity-agents/tools';
 
 /**
@@ -14,10 +15,11 @@ import { RapToolSet } from '../../infinity-agents/tools';
  */
 export class Ec2ToolSet extends RapToolSet {
   constructor(agent: InfinityAgent, id: string) {
-    const createEc2Function = new lambda.Function(agent, 'CreateEc2Function', {
+    const createEc2Function = new NodejsFunction(agent, 'CreateEc2Function', {
+      entry: path.join(__dirname, 'create-ec2-tool', 'index.mjs'),
       runtime: lambda.Runtime.NODEJS_24_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, 'create-ec2-tool')),
+      handler: 'handler',
+      bundling: NODEJS_BUNDLING_DEFAULTS,
       timeout: cdk.Duration.seconds(60),
       recursiveLoop: lambda.RecursiveLoop.ALLOW,
     });
@@ -30,10 +32,11 @@ export class Ec2ToolSet extends RapToolSet {
     );
 
     // EC2 State Monitor — EventBridge listener, not a tool the LLM calls
-    const ec2StateMonitorFunction = new lambda.Function(agent, 'StateMonitorFunction', {
+    const ec2StateMonitorFunction = new NodejsFunction(agent, 'StateMonitorFunction', {
+      entry: path.join(__dirname, 'ec2-state-monitor', 'index.mjs'),
       runtime: lambda.Runtime.NODEJS_24_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, 'ec2-state-monitor')),
+      handler: 'handler',
+      bundling: NODEJS_BUNDLING_DEFAULTS,
       timeout: cdk.Duration.seconds(30),
       recursiveLoop: lambda.RecursiveLoop.ALLOW,
       environment: {

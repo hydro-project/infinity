@@ -1,5 +1,5 @@
 import { DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
-import { sendToolResult } from 'rap-js';
+import { sendToolResult } from '../../../infinity-agents/rap-js/index.mjs';
 
 const dynamoClient = new DynamoDBClient({});
 

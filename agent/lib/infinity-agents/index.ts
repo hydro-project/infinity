@@ -1,6 +1,7 @@
 import { Construct } from 'constructs';
 import * as cdk from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction, OutputFormat } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -11,6 +12,13 @@ import { RustFunction } from 'cargo-lambda-cdk';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { ToolSetConfig } from './tools/tool-set';
 import * as path from 'path';
+
+/** Shared bundling defaults for all Node.js lambdas in this project. */
+export const NODEJS_BUNDLING_DEFAULTS = {
+  format: OutputFormat.ESM,
+  externalModules: ['@aws-sdk/*', 'awslambda'],
+  mainFields: ['module', 'main'],
+};
 
 export interface InfinityAgentsProps {
   /**
@@ -106,10 +114,11 @@ export class InfinityAgent extends Construct {
       visibilityTimeout: cdk.Duration.seconds(30),
     });
 
-    const delayRelayFunction = new lambda.Function(this, 'DelayRelayFunction', {
+    const delayRelayFunction = new NodejsFunction(this, 'DelayRelayFunction', {
+      entry: path.join(__dirname, 'delay-relay', 'index.mjs'),
       runtime: lambda.Runtime.NODEJS_24_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, 'delay-relay')),
+      handler: 'handler',
+      bundling: NODEJS_BUNDLING_DEFAULTS,
       timeout: cdk.Duration.seconds(30),
       memorySize: 128,
       environment: {
@@ -128,10 +137,11 @@ export class InfinityAgent extends Construct {
 
     // RAP (Reactive Agent Protocol) HTTP receiver Lambda.
     // Tool Lambdas POST their results here instead of sending directly to SQS.
-    const rapReceiverFunction = new lambda.Function(this, 'RapReceiverFunction', {
+    const rapReceiverFunction = new NodejsFunction(this, 'RapReceiverFunction', {
+      entry: path.join(__dirname, 'rap-receiver', 'index.mjs'),
       runtime: lambda.Runtime.NODEJS_24_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, 'rap-receiver')),
+      handler: 'handler',
+      bundling: NODEJS_BUNDLING_DEFAULTS,
       timeout: cdk.Duration.seconds(30),
       memorySize: 128,
       environment: {
