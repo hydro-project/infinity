@@ -1,9 +1,0 @@
-{
-  "name": "github-webhook-receiver",
-  "version": "1.0.0",
-  "type": "module",
-  "dependencies": {
-    "@aws-sdk/client-dynamodb": "^3.0.0",
-    "rap-js": "file:../../../infinity-agents/rap-js"
-  }
-}

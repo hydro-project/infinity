@@ -3,7 +3,7 @@ import React from 'react';
 export default function SwarmSection(): React.JSX.Element {
   return (
     <section className="swarm-section">
-      <h2>Built for Swarms</h2>
+      <h2>Designed for Swarms</h2>
       <p>
         Agents spawn child threads for parallel work. Each child reports back
         via subscriptions — the parent stays focused while the swarm fans out.

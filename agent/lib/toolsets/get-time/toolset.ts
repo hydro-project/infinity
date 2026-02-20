@@ -1,8 +1,9 @@
 import * as cdk from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as path from 'path';
 
-import { InfinityAgent } from '../../infinity-agents';
+import { InfinityAgent, NODEJS_BUNDLING_DEFAULTS } from '../../infinity-agents';
 import { RapToolSet } from '../../infinity-agents/tools';
 
 /**
@@ -11,10 +12,11 @@ import { RapToolSet } from '../../infinity-agents/tools';
  */
 export class GetTimeToolSet extends RapToolSet {
   constructor(agent: InfinityAgent, id: string) {
-    const handler = new lambda.Function(agent, 'GetTimeFunction', {
+    const handler = new NodejsFunction(agent, 'GetTimeFunction', {
+      entry: path.join(__dirname, 'get-time-tool', 'index.mjs'),
       runtime: lambda.Runtime.NODEJS_24_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, 'get-time-tool')),
+      handler: 'handler',
+      bundling: NODEJS_BUNDLING_DEFAULTS,
       timeout: cdk.Duration.seconds(30),
       recursiveLoop: lambda.RecursiveLoop.ALLOW,
     });

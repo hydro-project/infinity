@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { DynamoDBClient, QueryCommand } from '@aws-sdk/client-dynamodb';
-import { sendSubscriptionEvent } from 'rap-js';
+import { sendSubscriptionEvent } from '../../../infinity-agents/rap-js/index.mjs';
 
 const dynamoClient = new DynamoDBClient({});
 
