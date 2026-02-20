@@ -1,4 +1,4 @@
-import { sendToolResult } from 'rap-js';
+import { sendToolResult } from '../../../infinity-agents/rap-js/index.mjs';
 import { buildManifest, processGetTime } from './tool.mjs';
 
 /**

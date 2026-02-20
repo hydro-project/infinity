@@ -13,12 +13,17 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "aws-cdk": "^2.1033.0",
+    "esbuild": "^0.24.0",
     "ts-node": "^10.9.0",
     "typescript": "^5.0.0"
   },
   "dependencies": {
+    "@aws-crypto/sha256-js": "^5.0.0",
+    "@smithy/protocol-http": "^4.0.0",
+    "@smithy/signature-v4": "^4.0.0",
     "aws-cdk-lib": "^2.231.0",
     "cargo-lambda-cdk": "^0.0.31",
-    "constructs": "^10.0.0"
+    "constructs": "^10.0.0",
+    "fast-xml-parser": "^4.5.0"
   }
 }

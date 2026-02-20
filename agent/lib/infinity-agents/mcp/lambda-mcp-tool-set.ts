@@ -1,7 +1,8 @@
 import * as cdk from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as path from 'path';
-import { InfinityAgent } from '..';
+import { InfinityAgent, NODEJS_BUNDLING_DEFAULTS } from '..';
 import { RapToolSet } from '../tools';
 
 export interface LambdaMCPToolSetProps {
@@ -34,10 +35,11 @@ export class LambdaMCPToolSet extends RapToolSet {
   public readonly handler: lambda.Function;
 
   constructor(agent: InfinityAgent, id: string, props: LambdaMCPToolSetProps) {
-    const handler = new lambda.Function(agent, `${id}Handler`, {
+    const handler = new NodejsFunction(agent, `${id}Handler`, {
+      entry: path.join(__dirname, 'mcp-server-proxy', 'index.mjs'),
       runtime: lambda.Runtime.NODEJS_24_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, 'mcp-server-proxy')),
+      handler: 'handler',
+      bundling: NODEJS_BUNDLING_DEFAULTS,
       timeout: cdk.Duration.seconds(60),
       memorySize: 512,
       recursiveLoop: lambda.RecursiveLoop.ALLOW,

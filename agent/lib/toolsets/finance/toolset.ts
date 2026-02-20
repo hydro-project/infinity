@@ -1,12 +1,13 @@
 import * as cdk from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as path from 'path';
 import { Construct } from 'constructs';
 
-import { InfinityAgent } from '../../infinity-agents';
+import { InfinityAgent, NODEJS_BUNDLING_DEFAULTS } from '../../infinity-agents';
 import { RapToolSet } from '../../infinity-agents/tools';
 
 /**
@@ -41,10 +42,11 @@ export class FinanceToolSet extends Construct {
 
     // --- Subscriptions toolset ---
 
-    const subscribeFunction = new lambda.Function(this, 'SubscribeFunction', {
+    const subscribeFunction = new NodejsFunction(this, 'SubscribeFunction', {
+      entry: path.join(__dirname, 'subscribe-tool', 'index.mjs'),
       runtime: lambda.Runtime.NODEJS_24_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, 'subscribe-tool')),
+      handler: 'handler',
+      bundling: NODEJS_BUNDLING_DEFAULTS,
       timeout: cdk.Duration.seconds(30),
       recursiveLoop: lambda.RecursiveLoop.ALLOW,
       environment: {
@@ -61,10 +63,11 @@ export class FinanceToolSet extends Construct {
 
     // --- Poller Lambda (EventBridge scheduled, not a tool) ---
 
-    const pollerFunction = new lambda.Function(this, 'PollerFunction', {
+    const pollerFunction = new NodejsFunction(this, 'PollerFunction', {
+      entry: path.join(__dirname, 'poller', 'index.mjs'),
       runtime: lambda.Runtime.NODEJS_24_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, 'poller')),
+      handler: 'handler',
+      bundling: NODEJS_BUNDLING_DEFAULTS,
       timeout: cdk.Duration.minutes(2),
       recursiveLoop: lambda.RecursiveLoop.ALLOW,
       environment: {
@@ -81,10 +84,11 @@ export class FinanceToolSet extends Construct {
 
     // --- Paper trading toolset ---
 
-    const tradingFunction = new lambda.Function(this, 'TradingFunction', {
+    const tradingFunction = new NodejsFunction(this, 'TradingFunction', {
+      entry: path.join(__dirname, 'paper-trading-tool', 'index.mjs'),
       runtime: lambda.Runtime.NODEJS_24_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, 'paper-trading-tool')),
+      handler: 'handler',
+      bundling: NODEJS_BUNDLING_DEFAULTS,
       timeout: cdk.Duration.seconds(30),
       recursiveLoop: lambda.RecursiveLoop.ALLOW,
       environment: {
