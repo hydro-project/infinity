@@ -41,17 +41,14 @@ impl SandboxBackend for LocalBackend {
         let tmp = tempfile::tempdir().map_err(SandboxError::Io)?;
         let sandbox_dir = tmp.keep();
 
-        jj::jj_git_clone(&state.remote_uri, &sandbox_dir).await?;
-
-        // Configure author so all commits in this sandbox have valid metadata
-        jj::jj_configure_author(&sandbox_dir).await?;
-
-        // If we have a previous bookmark, fetch and edit to it
-        if state.bookmark.is_some() {
-            let bookmark = format!("sandbox-{}@origin", state.group_id);
-            jj::jj_git_fetch(&sandbox_dir).await?;
-            jj::jj_new(&sandbox_dir, &bookmark).await?;
-        }
+        let bookmark = format!("sandbox-{}", &state.group_id);
+        jj::jj_git_clone(
+            &state.remote_uri,
+            &sandbox_dir,
+            &bookmark,
+            state.bookmark.is_none(),
+        )
+        .await?;
 
         Ok(sandbox_dir)
     }
