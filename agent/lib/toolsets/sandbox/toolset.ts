@@ -32,14 +32,14 @@ export class SandboxToolSet extends RapToolSet {
       natGateways: 1,
     });
 
-    const fileSystem = new efs.FileSystem(agent, `${id}FileSystem`, {
+    const fileSystem = new efs.FileSystem(agent, `${id}FileSystem-jj`, {
       vpc,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
       performanceMode: efs.PerformanceMode.GENERAL_PURPOSE,
       throughputMode: efs.ThroughputMode.ELASTIC,
     });
 
-    const accessPoint = fileSystem.addAccessPoint(`${id}AccessPoint`, {
+    const accessPoint = fileSystem.addAccessPoint(`${id}AccessPoint-jj`, {
       path: '/sandbox-repos',
       createAcl: { ownerGid: '1001', ownerUid: '1001', permissions: '755' },
       posixUser: { gid: '1001', uid: '1001' },
