@@ -45,8 +45,8 @@ impl EfsBackend {
 
     /// Run `git fetch` inside a bare repo to pull latest changes from the upstream remote.
     async fn git_fetch_upstream(bare_path: &PathBuf) -> Result<(), SandboxError> {
-        let output = tokio::process::Command::new("git")
-            .args(["fetch", "origin"])
+        let output = tokio::process::Command::new("jj")
+            .args(["git", "fetch"])
             .current_dir(bare_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -83,25 +83,31 @@ impl SandboxBackend for EfsBackend {
         }
 
         // Create a bare clone on EFS
-        let output = tokio::process::Command::new("git")
-            .args(["clone", "--bare", repo, bare_path.to_str().unwrap()])
+        let output = tokio::process::Command::new("jj")
+            .args([
+                "git",
+                "clone",
+                "--no-colocate",
+                repo,
+                bare_path.to_str().unwrap(),
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| SandboxError::CommandError(format!("git clone --bare failed: {e}")))?;
+            .map_err(|e| SandboxError::CommandError(format!("jj git clone failed: {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(SandboxError::CommandError(format!(
-                "git clone --bare failed: {stderr}"
+                "jj git clone failed: {stderr}"
             )));
         }
 
         tracing::info!(
             group_id = %group_id,
             path = %bare_path.display(),
-            "created bare repo on EFS"
+            "created jj repo on EFS"
         );
         Ok(bare_path.to_string_lossy().to_string())
     }
@@ -112,14 +118,14 @@ impl SandboxBackend for EfsBackend {
         let tmp = tempfile::tempdir().map_err(SandboxError::Io)?;
         let sandbox_dir = tmp.keep();
 
-        jj::jj_git_clone(&state.remote_uri, &sandbox_dir).await?;
-        jj::jj_configure_author(&sandbox_dir).await?;
-
-        if state.bookmark.is_some() {
-            let bookmark = format!("sandbox-{}@origin", state.group_id);
-            jj::jj_git_fetch(&sandbox_dir).await?;
-            jj::jj_new(&sandbox_dir, &bookmark).await?;
-        }
+        let bookmark = format!("sandbox-{}", &state.group_id);
+        jj::jj_git_clone(
+            &state.remote_uri,
+            &sandbox_dir,
+            &bookmark,
+            state.bookmark.is_none(),
+        )
+        .await?;
 
         Ok(sandbox_dir)
     }
