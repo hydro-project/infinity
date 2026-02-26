@@ -26,4 +26,6 @@ RUN curl -fsSL "https://github.com/jj-vcs/jj/releases/download/v${JJ_VERSION}/jj
 # Copy the compiled binary
 COPY --from=builder /build/target/lambda/sandbox-remote/bootstrap ${LAMBDA_RUNTIME_DIR}/bootstrap
 
+ENV XDG_CONFIG_HOME /tmp
+
 CMD ["bootstrap"]
