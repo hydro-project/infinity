@@ -1,0 +1,14 @@
+[package]
+name = "sandbox-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "process"] }
+axum = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }

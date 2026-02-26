@@ -2,3 +2,6 @@ target/
 .env
 .env.local
 node_modules/
+
+# Lambda layer build artifacts
+jj-layer/
