@@ -1,0 +1,30 @@
+[package]
+name = "sandbox-remote"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "sandbox-remote"
+path = "src/main.rs"
+
+[dependencies]
+sandbox-core = { path = "../sandbox-core" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "fs"] }
+axum = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+aws-sdk-dynamodb = { workspace = true }
+aws-config = { workspace = true }
+aws-credential-types = { workspace = true }
+aws-sigv4 = { workspace = true }
+aws-smithy-runtime-api = { workspace = true }
+url = { workspace = true }
+lambda_http = { workspace = true }
+lambda-extension = "1"
+anyhow = "1"
+tower = "0.5"
