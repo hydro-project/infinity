@@ -24,6 +24,7 @@ const INPUT_QUEUE_URL = process.env.INPUT_QUEUE_URL;
 export const handler = async (event) => {
   try {
     const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+    console.log("Received body", body);
 
     if (!body || !body.type || !body.group_id) {
       return respond(400, { error: 'Missing required fields: type, group_id' });

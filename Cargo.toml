@@ -3,6 +3,9 @@ members = [
     "crates/infinity-agent-core",
     "crates/infinity-agent-lambda",
     "crates/infinity-agent-cli",
+    "crates/sandbox-core",
+    "crates/sandbox-local",
+    "crates/sandbox-remote",
 ]
 resolver = "2"
 
@@ -41,3 +44,12 @@ rustls = { version = "0.23", features = ["aws-lc-rs"] }
 http = "1"
 http-body-util = "0.1"
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "postgres", "json", "chrono", "uuid"] }
+
+# Sandbox crates
+thiserror = "2"
+tempfile = "3"
+axum = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "ansi"] }
+aws-sdk-s3 = { version = "1", default-features = false }  # currently unused
+lambda_http = { version = "0.15", default-features = false, features = ["apigw_http"] }

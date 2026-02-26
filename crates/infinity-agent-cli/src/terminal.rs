@@ -135,7 +135,17 @@ pub async fn run(
                             mid_stream = false;
                         }
                         let prefix_str = prefix.map(|p| format!("{} ", p)).unwrap_or_default();
-                        output_line_into(&mut buf, &format!("\n{}\x1b[32m✓ {}\x1b[0m", prefix_str, text))?;
+                        let lines: Vec<&str> = text.lines().collect();
+                        if let Some((first, rest)) = lines.split_first() {
+                            output_line_into(&mut buf, &format!("\n{}\x1b[32m✓ {}\x1b[0m", prefix_str, first))?;
+                            // Indent continuation lines to align with the first line's text
+                            let indent = format!("{}  ", prefix_str);
+                            for line in rest {
+                                output_line_into(&mut buf, &format!("{}\x1b[32m{}\x1b[0m", indent, line))?;
+                            }
+                        } else {
+                            output_line_into(&mut buf, &format!("\n{}\x1b[32m✓\x1b[0m", prefix_str))?;
+                        }
                         draw_input_bar_into(&mut buf, &input_buf)?;
                         queue!(buf, cursor::Show)?;
                         stdout.write_all(&buf)?;
