@@ -11,7 +11,7 @@ resolver = "2"
 
 [workspace.dependencies]
 # Shared
-rig-core = { version = "0.24", default-features = false }
+rig-core = { version = "0.31", default-features = false }
 rig-bedrock = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -23,13 +23,12 @@ chrono-tz = "0.10"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "ansi"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "default-tls"] }
 
-# AWS (lambda crate)
-aws_lambda_events = { version = "1.0.0", default-features = false, features = ["sqs"] }
-lambda_runtime = "1.0.1"
+# AWS crates
 aws-sdk-dynamodb = { version = "1", default-features = false }
 aws-sdk-sqs = { version = "1", default-features = false }
-aws-sdk-ssm = { version = "1", default-features = false }
 aws-sdk-scheduler = { version = "1", default-features = false }
 aws-sdk-dsql = { version = "1", default-features = false }
 aws-config = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client"] }
@@ -37,19 +36,9 @@ aws-types = { version = "1", default-features = false }
 aws-sigv4 = { version = "1", default-features = false }
 aws-credential-types = { version = "1", default-features = false }
 aws-smithy-runtime-api = { version = "1", default-features = false }
-hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "tokio"] }
-hyper-rustls = { version = "0.27", features = ["http2", "aws-lc-rs", "tls12"] }
-rustls = { version = "0.23", features = ["aws-lc-rs"] }
-http = "1"
-http-body-util = "0.1"
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "postgres", "json", "chrono", "uuid"] }
 
 # Sandbox crates
 thiserror = "2"
 tempfile = "3"
 axum = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter", "ansi"] }
-aws-sdk-s3 = { version = "1", default-features = false }  # currently unused
-lambda_http = { version = "0.15", default-features = false, features = ["apigw_http"] }
