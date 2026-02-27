@@ -26,10 +26,6 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
-    rustls::crypto::aws_lc_rs::default_provider()
-        .install_default()
-        .expect("Failed to install default CryptoProvider");
-
     let log_file = std::fs::File::create("/tmp/infinity-agent-cli.log").ok();
     if let Some(file) = log_file {
         tracing_subscriber::fmt()

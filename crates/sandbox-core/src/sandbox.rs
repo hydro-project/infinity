@@ -10,8 +10,6 @@ pub struct ExecResult {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: i32,
-    /// The new working copy commit after execution.
-    pub new_commit: String,
 }
 
 /// Trait for the sandbox backend.
@@ -26,6 +24,13 @@ pub trait SandboxBackend: Send + Sync {
     /// Spin up a sandbox temp dir with a jj clone pointing at the remote,
     /// checked out to the given working copy commit.
     async fn create_sandbox(&self, state: &RepoState) -> Result<PathBuf, SandboxError>;
+
+    /// Execute a command inside the sandbox directory.
+    async fn execute_command(
+        &self,
+        sandbox_dir: &PathBuf,
+        command: &str,
+    ) -> Result<ExecResult, SandboxError>;
 
     /// Push the updated working copy from the sandbox back to the remote.
     async fn push_sandbox(&self, sandbox_dir: &PathBuf, group_id: &str)

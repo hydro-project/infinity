@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 
 use sandbox_core::error::SandboxError;
 use sandbox_core::jj;
-use sandbox_core::sandbox::SandboxBackend;
+use sandbox_core::sandbox::{ExecResult, SandboxBackend};
 use sandbox_core::types::RepoState;
 
 /// Local sandbox backend.
@@ -20,12 +20,15 @@ use sandbox_core::types::RepoState;
 pub struct LocalBackend {
     /// group_id -> cached sandbox directory
     cache: Mutex<HashMap<String, PathBuf>>,
+    /// Whether to use macOS sandbox-exec for command execution.
+    sandbox_enabled: bool,
 }
 
 impl LocalBackend {
-    pub fn new() -> Self {
+    pub fn new(sandbox_enabled: bool) -> Self {
         Self {
             cache: Mutex::new(HashMap::new()),
+            sandbox_enabled,
         }
     }
 }
@@ -94,6 +97,67 @@ impl SandboxBackend for LocalBackend {
         }
 
         Ok(sandbox_dir)
+    }
+
+    /// Execute a command in the sandbox.
+    ///
+    /// On macOS, uses `sandbox-exec` to restrict filesystem write access to
+    /// only the sandbox directory. On other platforms, falls back to plain bash.
+    async fn execute_command(
+        &self,
+        sandbox_dir: &PathBuf,
+        command: &str,
+    ) -> Result<ExecResult, SandboxError> {
+        let output = if cfg!(target_os = "macos") && self.sandbox_enabled {
+            let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
+            let sandbox_dir_str = abs_sandbox.to_string_lossy();
+
+            let tmp = tempfile::tempdir().map_err(SandboxError::Io)?;
+            let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
+            let tmp_str = abs_tmp.to_string_lossy();
+
+            let profile = format!(
+                "(version 1)\n\
+                 (debug deny)\n\
+                 (allow default)\n\
+                 (deny file-write*)\n\
+                 (allow file-write*\n\
+                     (subpath \"{sandbox_dir_str}\")\n\
+                     (subpath \"{tmp_str}\"))\n\
+                 (allow file-write-data\n\
+                     (require-all\n\
+                         (path \"/dev/null\")\n\
+                         (vnode-type CHARACTER-DEVICE)))"
+            );
+            let result = tokio::process::Command::new("sandbox-exec")
+                .args(["-p", &profile, "bash", "-c", command])
+                .env("TMPDIR", abs_tmp.as_os_str())
+                .current_dir(sandbox_dir)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+                .map_err(|e| SandboxError::CommandError(format!("failed to run command: {e}")))?;
+
+            // Clean up the scratch tmpdir (best-effort).
+            drop(tmp);
+            result
+        } else {
+            tokio::process::Command::new("bash")
+                .args(["-c", command])
+                .current_dir(sandbox_dir)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+                .map_err(|e| SandboxError::CommandError(format!("failed to run command: {e}")))?
+        };
+
+        Ok(ExecResult {
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            exit_code: output.status.code().unwrap_or(-1),
+        })
     }
 
     /// Push the sandbox's working copy back to the local git remote.
