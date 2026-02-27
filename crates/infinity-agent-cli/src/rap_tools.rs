@@ -8,7 +8,6 @@ use infinity_agent_core::tools::toolset_loader::ToolsetLoader;
 use infinity_agent_core::traits::{HttpClient, InputSender, ToolsetCache};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tracing;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 

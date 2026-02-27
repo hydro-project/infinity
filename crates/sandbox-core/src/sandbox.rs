@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 
@@ -28,14 +28,13 @@ pub trait SandboxBackend: Send + Sync {
     /// Execute a command inside the sandbox directory.
     async fn execute_command(
         &self,
-        sandbox_dir: &PathBuf,
+        sandbox_dir: &Path,
         command: &str,
     ) -> Result<ExecResult, SandboxError>;
 
     /// Push the updated working copy from the sandbox back to the remote.
-    async fn push_sandbox(&self, sandbox_dir: &PathBuf, group_id: &str)
-        -> Result<(), SandboxError>;
+    async fn push_sandbox(&self, sandbox_dir: &Path, group_id: &str) -> Result<(), SandboxError>;
 
     /// Clean up the sandbox temp dir.
-    async fn cleanup_sandbox(&self, sandbox_dir: &PathBuf) -> Result<(), SandboxError>;
+    async fn cleanup_sandbox(&self, sandbox_dir: &Path) -> Result<(), SandboxError>;
 }

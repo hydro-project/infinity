@@ -14,6 +14,12 @@ pub struct PlainCallbackClient {
     client: reqwest::Client,
 }
 
+impl Default for PlainCallbackClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PlainCallbackClient {
     pub fn new() -> Self {
         Self {

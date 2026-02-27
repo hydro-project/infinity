@@ -46,7 +46,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     // Load tools configuration
     let tools_config = if let Ok(ddb_key) = std::env::var("TOOLS_CONFIG_DDB_KEY") {
         match ToolsConfig::from_json(
-            &dynamodb_client
+            dynamodb_client
                 .get_item()
                 .table_name(&table_name)
                 .key(
@@ -250,13 +250,12 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             ref tool_args,
             ..
         }) = final_action
+            && tool_name != "sleep_until_event_or_input"
         {
-            if tool_name != "sleep_until_event_or_input" {
-                accumulated_text.push_str(&format!(
-                    "\n[Tool Call: {} with arguments {}]\n",
-                    tool_name, tool_args
-                ));
-            }
+            accumulated_text.push_str(&format!(
+                "\n[Tool Call: {} with arguments {}]\n",
+                tool_name, tool_args
+            ));
         }
 
         // Send accumulated text to output queue
@@ -292,10 +291,10 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 user_id,
             };
 
-            let tool_registry: std::collections::HashMap<String, &Box<dyn Tool<SqsMessageSender>>> =
+            let tool_registry: std::collections::HashMap<String, &dyn Tool<SqsMessageSender>> =
                 tool_impls
                     .iter()
-                    .map(|t| (t.name().to_string(), t))
+                    .map(|t| (t.name().to_string(), t.as_ref()))
                     .collect();
 
             event_processor::execute_action(action, &tool_registry, &tool_context)
