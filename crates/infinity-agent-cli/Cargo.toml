@@ -19,13 +19,11 @@ futures-util = { workspace = true }
 async-trait = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
-rustls = { workspace = true }
 crossterm = "0.28"
-hyper = { workspace = true }
-hyper-util = { workspace = true, features = ["tokio"] }
-http = { workspace = true }
-http-body-util = { workspace = true }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+reqwest = { workspace = true }

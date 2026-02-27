@@ -68,18 +68,6 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 None
             }
         }
-    } else if let Ok(ssm_param) = std::env::var("TOOLS_CONFIG_SSM_PARAM") {
-        let ssm_client = aws_sdk_ssm::Client::new(&config);
-        match ssm_client.get_parameter().name(&ssm_param).send().await {
-            Ok(resp) => {
-                let value = resp.parameter().and_then(|p| p.value()).unwrap_or("{}");
-                ToolsConfig::from_json(value).ok()
-            }
-            Err(e) => {
-                tracing::warn!("Failed to load tools config from SSM: {}", e);
-                None
-            }
-        }
     } else {
         let config_path =
             std::env::var("TOOLS_CONFIG_PATH").unwrap_or_else(|_| "tools.json".to_string());

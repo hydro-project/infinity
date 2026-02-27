@@ -221,11 +221,15 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 id: None,
                 content: OneOrMany::one(AssistantContent::Reasoning(r.clone())),
             },
-            StreamedAssistantContent::ToolCall(call) => Message::Assistant {
+            StreamedAssistantContent::ToolCall {
+                tool_call: call, ..
+            } => Message::Assistant {
                 id: None,
                 content: OneOrMany::one(AssistantContent::ToolCall(call.clone())),
             },
-            StreamedAssistantContent::ToolCallDelta { .. } | StreamedAssistantContent::Final(_) => {
+            StreamedAssistantContent::ToolCallDelta { .. }
+            | StreamedAssistantContent::ReasoningDelta { .. }
+            | StreamedAssistantContent::Final(_) => {
                 return;
             }
         };
@@ -457,6 +461,8 @@ where
                             name: original_call.function.name.clone(),
                             arguments: synthetic_args,
                         },
+                        additional_params: None,
+                        signature: None,
                     })),
                 };
                 current_history
@@ -511,6 +517,8 @@ where
                         name: original_call.function.name.clone(),
                         arguments: synthetic_args,
                     },
+                    additional_params: None,
+                    signature: None,
                 })),
             };
 
@@ -546,6 +554,8 @@ where
                                     "instructions": "Process the single subscription event above, report to the parent if appropriate, then close the thread after processing this event. Only your report will be visible to the parent."
                                 }),
                             },
+                            additional_params: None,
+                            signature: None,
                         })),
                     },
                     format!("{}-spawn-call", spawn_call_id),
@@ -608,6 +618,7 @@ where
         'outer: loop {
             let stream_result = model
                 .stream(CompletionRequest {
+                    model: None,
                     preamble: None,
                     chat_history: history.get_history(),
                     documents: vec![],
@@ -622,6 +633,7 @@ where
                             "budget_tokens": 4096,
                         }
                     })),
+                    output_schema: None,
                 })
                 .await;
 
@@ -659,7 +671,7 @@ where
 
                 // Skip incomplete reasoning chunks
                 if let StreamedAssistantContent::Reasoning(ref r) = chunk {
-                    if r.signature.is_none() { continue; }
+                    if r.first_signature().is_none() { continue; }
                 }
 
                 let completion_id = format!("{}-{}-completion-{}", group_id, message_id, completion_counter);
@@ -672,7 +684,7 @@ where
                         tracing::info!("[Text] {}", &text.text);
                         yield CompletionEvent::TextChunk(text.text);
                     }
-                    StreamedAssistantContent::ToolCall(call) => {
+                    StreamedAssistantContent::ToolCall { tool_call: call, .. } => {
                         tracing::info!("[Tool Call: {} with arguments {}]", &call.function.name, &call.function.arguments);
 
                         // Unknown tool — inject error and retry the whole completion
@@ -701,8 +713,9 @@ where
                     }
                     StreamedAssistantContent::ToolCallDelta { .. } => {}
                     StreamedAssistantContent::Reasoning(reasoning) => {
-                        eprintln!("[Reasoning: {:?}]", reasoning.reasoning);
+                        eprintln!("[Reasoning: {:?}]", reasoning.first_text());
                     }
+                    StreamedAssistantContent::ReasoningDelta { .. } => {}
                     StreamedAssistantContent::Final(_) => {
                         tracing::info!("Received final message");
                         yield CompletionEvent::Action(CompletionAction::Done);
@@ -924,6 +937,8 @@ mod tests {
                     name: name.to_string(),
                     arguments: args,
                 },
+                additional_params: None,
+                signature: None,
             })),
         }
     }

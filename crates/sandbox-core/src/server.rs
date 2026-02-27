@@ -1,4 +1,3 @@
-use std::process::Stdio;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -217,18 +216,14 @@ async fn handle_execute_command<B: SandboxBackend, M: MetadataStore, C: Callback
 
     run_jj(&sandbox_dir, &["describe", "-m", &args.command]).await?;
 
-    let output = tokio::process::Command::new("bash")
-        .args(["-c", &args.command])
-        .current_dir(&sandbox_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| SandboxError::CommandError(format!("failed to run command: {e}")))?;
+    let exec_result = state
+        .backend
+        .execute_command(&sandbox_dir, &args.command)
+        .await?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let exit_code = output.status.code().unwrap_or(-1);
+    let stdout = exec_result.stdout;
+    let stderr = exec_result.stderr;
+    let exit_code = exec_result.exit_code;
 
     state
         .backend
