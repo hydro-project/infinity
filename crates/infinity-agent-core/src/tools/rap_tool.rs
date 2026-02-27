@@ -71,7 +71,7 @@ impl<H: HttpClient + 'static, M: InputSender + 'static> Tool<M> for RapTool<H> {
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
-        if status < 200 || status >= 300 {
+        if !(200..300).contains(&status) {
             tracing::warn!("RAP tool {} returned status {}", self.name, status);
         }
         tracing::info!("Invoked RAP tool {} (status: {})", self.name, status);

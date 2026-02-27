@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
@@ -61,7 +61,7 @@ impl SandboxBackend for LocalBackend {
             )));
         }
         // Return the absolute path as the remote URI
-        let abs = path.canonicalize().map_err(|e| SandboxError::Io(e))?;
+        let abs = path.canonicalize().map_err(SandboxError::Io)?;
         Ok(abs.to_string_lossy().to_string())
     }
 
@@ -105,7 +105,7 @@ impl SandboxBackend for LocalBackend {
     /// only the sandbox directory. On other platforms, falls back to plain bash.
     async fn execute_command(
         &self,
-        sandbox_dir: &PathBuf,
+        sandbox_dir: &Path,
         command: &str,
     ) -> Result<ExecResult, SandboxError> {
         let output = if cfg!(target_os = "macos") && self.sandbox_enabled {
@@ -161,18 +161,14 @@ impl SandboxBackend for LocalBackend {
     }
 
     /// Push the sandbox's working copy back to the local git remote.
-    async fn push_sandbox(
-        &self,
-        sandbox_dir: &PathBuf,
-        group_id: &str,
-    ) -> Result<(), SandboxError> {
+    async fn push_sandbox(&self, sandbox_dir: &Path, group_id: &str) -> Result<(), SandboxError> {
         let bookmark = format!("sandbox-{group_id}");
         jj::jj_push_working_copy(sandbox_dir, &bookmark).await
     }
 
     /// No-op for the local backend — sandboxes are cached and cleaned up
     /// when the `LocalBackend` is dropped.
-    async fn cleanup_sandbox(&self, _sandbox_dir: &PathBuf) -> Result<(), SandboxError> {
+    async fn cleanup_sandbox(&self, _sandbox_dir: &Path) -> Result<(), SandboxError> {
         Ok(())
     }
 }

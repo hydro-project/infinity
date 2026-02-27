@@ -301,14 +301,10 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Close
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
         {
             let report_text = if is_subscription {
-                if let Some(report_text) = report {
-                    Some(format!(
+                report.map(|report_text| format!(
                         "An event from your subscription {} was processed by a child thread. The subscription remains active. Report from the child:\n{}",
                         spawn_tool_call_id, report_text
                     ))
-                } else {
-                    None
-                }
             } else if let Some(report_text) = report {
                 Some(format!(
                     "Child thread with ID {} has shut down. Report from child thread: {}",

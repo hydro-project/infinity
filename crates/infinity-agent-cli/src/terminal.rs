@@ -279,7 +279,7 @@ fn draw_input_bar_into(buf: &mut Vec<u8>, input_buf: &str) -> Result<(), BoxErro
     // extra row reserved for that.
     let cursor_pos = prompt.len();
     let cursor_row_offset = cursor_pos / cols;
-    let text_lines = ((prompt.len().max(1) + cols - 1) / cols) as u16;
+    let text_lines = prompt.len().max(1).div_ceil(cols) as u16;
     // We need enough rows for the text *and* the cursor row.
     let input_lines = text_lines.max(cursor_row_offset as u16 + 1);
     let reserved = 1 + input_lines;

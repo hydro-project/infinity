@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use async_trait::async_trait;
@@ -133,7 +133,7 @@ impl SandboxBackend for EfsBackend {
     /// Execute a command in the sandbox using bash.
     async fn execute_command(
         &self,
-        sandbox_dir: &PathBuf,
+        sandbox_dir: &Path,
         command: &str,
     ) -> Result<ExecResult, SandboxError> {
         let output = tokio::process::Command::new("bash")
@@ -153,17 +153,13 @@ impl SandboxBackend for EfsBackend {
     }
 
     /// Push the sandbox's working copy back to the EFS bare repo.
-    async fn push_sandbox(
-        &self,
-        sandbox_dir: &PathBuf,
-        group_id: &str,
-    ) -> Result<(), SandboxError> {
+    async fn push_sandbox(&self, sandbox_dir: &Path, group_id: &str) -> Result<(), SandboxError> {
         let bookmark = format!("sandbox-{group_id}");
         jj::jj_push_working_copy(sandbox_dir, &bookmark).await
     }
 
     /// Remove the temp sandbox directory.
-    async fn cleanup_sandbox(&self, sandbox_dir: &PathBuf) -> Result<(), SandboxError> {
+    async fn cleanup_sandbox(&self, sandbox_dir: &Path) -> Result<(), SandboxError> {
         run_jj(sandbox_dir, &["workspace", "forget"]).await?;
         tokio::fs::remove_dir_all(sandbox_dir)
             .await

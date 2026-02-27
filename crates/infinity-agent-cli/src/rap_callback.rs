@@ -17,7 +17,6 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
-use tracing;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 

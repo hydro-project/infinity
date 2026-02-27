@@ -174,28 +174,23 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 );
                 return Ok(false);
             }
-        } else if let Some(Message::Assistant { content, .. }) = self.history.last() {
-            if let AssistantContent::ToolCall(tool_call) = content.first() {
-                if !self.processed_tool_calls.contains(tool_call.id.as_str()) {
-                    tracing::info!("Tool call {} interrupted by new user message", tool_call.id);
-                    let synthetic_result = Message::User {
-                        content: OneOrMany::one(UserContent::ToolResult(
-                            rig::message::ToolResult {
-                                id: tool_call.id.clone(),
-                                call_id: tool_call.call_id.clone(),
-                                content: OneOrMany::one(ToolResultContent::Text(
-                                    rig::agent::Text {
-                                        text: "Tool call interrupted by user".to_string(),
-                                    },
-                                )),
-                            },
-                        )),
-                    };
-                    self.history.push(synthetic_result.clone());
-                    self.append_pending(synthetic_result, format!("{}-interrupted", tool_call.id));
-                    self.mark_tool_call_complete(tool_call.id.clone());
-                }
-            }
+        } else if let Some(Message::Assistant { content, .. }) = self.history.last()
+            && let AssistantContent::ToolCall(tool_call) = content.first()
+            && !self.processed_tool_calls.contains(tool_call.id.as_str())
+        {
+            tracing::info!("Tool call {} interrupted by new user message", tool_call.id);
+            let synthetic_result = Message::User {
+                content: OneOrMany::one(UserContent::ToolResult(rig::message::ToolResult {
+                    id: tool_call.id.clone(),
+                    call_id: tool_call.call_id.clone(),
+                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                        text: "Tool call interrupted by user".to_string(),
+                    })),
+                })),
+            };
+            self.history.push(synthetic_result.clone());
+            self.append_pending(synthetic_result, format!("{}-interrupted", tool_call.id));
+            self.mark_tool_call_complete(tool_call.id.clone());
         }
 
         self.history.push(message.clone());
@@ -238,10 +233,10 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     }
 
     fn append_pending(&mut self, message: Message, message_id: String) {
-        if let Message::User { content } = &message {
-            if let UserContent::ToolResult(result) = content.first() {
-                self.mark_tool_call_complete(result.id.clone());
-            }
+        if let Message::User { content } = &message
+            && let UserContent::ToolResult(result) = content.first()
+        {
+            self.mark_tool_call_complete(result.id.clone());
         }
         self.pending_items.push(PendingItem {
             message,
@@ -670,9 +665,8 @@ where
                 };
 
                 // Skip incomplete reasoning chunks
-                if let StreamedAssistantContent::Reasoning(ref r) = chunk {
-                    if r.first_signature().is_none() { continue; }
-                }
+                if let StreamedAssistantContent::Reasoning(ref r) = chunk
+                    && r.first_signature().is_none() { continue; }
 
                 let completion_id = format!("{}-{}-completion-{}", group_id, message_id, completion_counter);
                 completion_counter += 1;
@@ -734,7 +728,7 @@ where
 
 pub async fn execute_action<M>(
     action: CompletionAction,
-    tool_registry: &HashMap<String, &Box<dyn Tool<M>>>,
+    tool_registry: &HashMap<String, &dyn Tool<M>>,
     tool_context: &ToolContext<M>,
 ) -> Result<(), BoxError>
 where
