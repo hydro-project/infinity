@@ -24,7 +24,7 @@ aws-credential-types = { workspace = true }
 aws-sigv4 = { workspace = true }
 aws-smithy-runtime-api = { workspace = true }
 url = { workspace = true }
-lambda_http = { workspace = true }
+lambda_http = { version = "1", default-features = false, features = ["apigw_http"] }
 lambda-extension = "1"
 anyhow = "1"
 tower = "0.5"

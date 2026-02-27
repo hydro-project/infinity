@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 use sandbox_core::error::SandboxError;
 use sandbox_core::jj::{self, run_jj};
-use sandbox_core::sandbox::SandboxBackend;
+use sandbox_core::sandbox::{ExecResult, SandboxBackend};
 use sandbox_core::types::RepoState;
 
 /// EFS-backed sandbox backend for remote (Lambda) mode.
@@ -128,6 +128,28 @@ impl SandboxBackend for EfsBackend {
         .await?;
 
         Ok(sandbox_dir)
+    }
+
+    /// Execute a command in the sandbox using bash.
+    async fn execute_command(
+        &self,
+        sandbox_dir: &PathBuf,
+        command: &str,
+    ) -> Result<ExecResult, SandboxError> {
+        let output = tokio::process::Command::new("bash")
+            .args(["-c", command])
+            .current_dir(sandbox_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| SandboxError::CommandError(format!("failed to run command: {e}")))?;
+
+        Ok(ExecResult {
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            exit_code: output.status.code().unwrap_or(-1),
+        })
     }
 
     /// Push the sandbox's working copy back to the EFS bare repo.
