@@ -79,7 +79,7 @@ async fn main() -> Result<(), BoxError> {
         };
 
     let client = Client::from_env();
-    let model = client.completion_model("global.anthropic.claude-haiku-4-5-20251001-v1:0");
+    let model = client.completion_model("global.anthropic.claude-sonnet-4-6");
 
     let thread_id = uuid::Uuid::new_v4().to_string();
     let (display_tx, display_rx) = mpsc::unbounded_channel::<DisplayEvent>();

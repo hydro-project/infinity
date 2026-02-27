@@ -1,4 +1,7 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::Command;
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 
@@ -9,12 +12,36 @@ use sandbox_core::types::RepoState;
 
 /// Local sandbox backend.
 /// The "remote" is just the original local git directory.
-/// Each sandbox is a temp dir with a jj clone pointing at that local path.
-pub struct LocalBackend;
+/// Each sandbox is a temp dir with a jj workspace pointing at that local path.
+///
+/// Sandbox directories are cached by group_id so that repeated
+/// `create_sandbox` calls for the same group reuse the existing workspace
+/// instead of running `jj workspace add` every time.
+pub struct LocalBackend {
+    /// group_id -> cached sandbox directory
+    cache: Mutex<HashMap<String, PathBuf>>,
+}
 
 impl LocalBackend {
     pub fn new() -> Self {
-        Self
+        Self {
+            cache: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl Drop for LocalBackend {
+    fn drop(&mut self) {
+        let cache = self.cache.get_mut().unwrap_or_else(|e| e.into_inner());
+        for (group_id, dir) in cache.drain() {
+            tracing::info!(group_id = %group_id, dir = %dir.display(), "dropping cached sandbox");
+            // Best-effort: forget the jj workspace then remove the directory.
+            let _ = Command::new("jj")
+                .args(["workspace", "forget"])
+                .current_dir(&dir)
+                .status();
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }
 
@@ -35,9 +62,19 @@ impl SandboxBackend for LocalBackend {
         Ok(abs.to_string_lossy().to_string())
     }
 
-    /// Create a temp dir and jj git clone from the local remote into it.
-    /// If this group has been used before, fetch and restore to the bookmark.
+    /// Create a sandbox for the given group. If a cached directory already
+    /// exists for this group_id it is returned directly; otherwise a new
+    /// temp dir is created and `jj workspace add` is run.
     async fn create_sandbox(&self, state: &RepoState) -> Result<PathBuf, SandboxError> {
+        // Fast path: return cached dir if we already have one.
+        {
+            let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(dir) = cache.get(&state.group_id) {
+                tracing::info!(group_id = %state.group_id, "reusing cached sandbox");
+                return Ok(dir.clone());
+            }
+        }
+
         let tmp = tempfile::tempdir().map_err(SandboxError::Io)?;
         let sandbox_dir = tmp.keep();
 
@@ -49,6 +86,12 @@ impl SandboxBackend for LocalBackend {
             state.bookmark.is_none(),
         )
         .await?;
+
+        // Store in cache for future reuse.
+        {
+            let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            cache.insert(state.group_id.clone(), sandbox_dir.clone());
+        }
 
         Ok(sandbox_dir)
     }
@@ -63,10 +106,9 @@ impl SandboxBackend for LocalBackend {
         jj::jj_push_working_copy(sandbox_dir, &bookmark).await
     }
 
-    /// Remove the temp sandbox directory.
-    async fn cleanup_sandbox(&self, sandbox_dir: &PathBuf) -> Result<(), SandboxError> {
-        tokio::fs::remove_dir_all(sandbox_dir)
-            .await
-            .map_err(SandboxError::Io)
+    /// No-op for the local backend — sandboxes are cached and cleaned up
+    /// when the `LocalBackend` is dropped.
+    async fn cleanup_sandbox(&self, _sandbox_dir: &PathBuf) -> Result<(), SandboxError> {
+        Ok(())
     }
 }

@@ -98,7 +98,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     let toolset_loader = ToolsetLoader::new(http_client.clone(), toolset_cache);
 
     let client = Client::from_env();
-    let model = client.completion_model("global.anthropic.claude-haiku-4-5-20251001-v1:0");
+    let model = client.completion_model("global.anthropic.claude-sonnet-4-6");
 
     let input_queue_url = std::env::var("INPUT_QUEUE_URL").unwrap_or_default();
     let input_queue_arn = std::env::var("INPUT_QUEUE_ARN").unwrap_or_default();
