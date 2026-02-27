@@ -113,7 +113,7 @@ impl<H: HttpClient, C: ToolsetCache> ToolsetLoader<H, C> {
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
-        if status < 200 || status >= 300 {
+        if !(200..300).contains(&status) {
             let body_str = String::from_utf8_lossy(&body);
             return Err(format!(
                 "Toolset fetch from {} returned status {}: {}",

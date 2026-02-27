@@ -39,10 +39,7 @@ impl MetadataStore for DynamoMetadataStore {
             .ok_or_else(|| SandboxError::MetadataError("missing remote_uri".into()))?
             .clone();
 
-        let bookmark = item
-            .get("bookmark")
-            .and_then(|v| v.as_s().ok())
-            .map(|s| s.clone());
+        let bookmark = item.get("bookmark").and_then(|v| v.as_s().ok()).cloned();
 
         Ok(Some(RepoState {
             group_id: group_id.to_string(),

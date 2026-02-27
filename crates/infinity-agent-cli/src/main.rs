@@ -98,6 +98,7 @@ async fn main() -> Result<(), BoxError> {
 
 // ── Agent loop ──────────────────────────────────────────────────────────────
 
+#[expect(clippy::too_many_arguments, reason = "internal")]
 async fn agent_loop<Mdl>(
     mut rx: mpsc::UnboundedReceiver<(InputMessage, String)>,
     display_tx: mpsc::UnboundedSender<DisplayEvent>,
@@ -145,28 +146,28 @@ async fn agent_loop<Mdl>(
 
         // Echo to the terminal — subscription events vs user input.
         if let Some(synth) = input_msg.synthetic.as_ref() {
-            if let InputMessageContent::User(UserContent::ToolResult(res)) = &input_msg.content {
-                if let ToolResultContent::Text(text) = res.content.first() {
-                    let orig_call = current_history.get_history().into_iter().find(|h| {
-                        if let Message::Assistant { content, .. } = h
-                            && let AssistantContent::ToolCall(c) = content.first()
-                        {
-                            c.id == synth.tool_call_id()
-                        } else {
-                            false
-                        }
-                    });
-
-                    if let Some(h) = orig_call
-                        && let Message::Assistant { content, .. } = h
+            if let InputMessageContent::User(UserContent::ToolResult(res)) = &input_msg.content
+                && let ToolResultContent::Text(text) = res.content.first()
+            {
+                let orig_call = current_history.get_history().into_iter().find(|h| {
+                    if let Message::Assistant { content, .. } = h
                         && let AssistantContent::ToolCall(c) = content.first()
                     {
-                        let _ = display_tx.send(DisplayEvent::SubscriptionEvent {
-                            name: format!("{}({})", c.function.name, c.function.arguments),
-                            text: text.text,
-                            prefix: current_history.get_thread_nesting_prefix(),
-                        });
+                        c.id == synth.tool_call_id()
+                    } else {
+                        false
                     }
+                });
+
+                if let Some(h) = orig_call
+                    && let Message::Assistant { content, .. } = h
+                    && let AssistantContent::ToolCall(c) = content.first()
+                {
+                    let _ = display_tx.send(DisplayEvent::SubscriptionEvent {
+                        name: format!("{}({})", c.function.name, c.function.arguments),
+                        text: text.text,
+                        prefix: current_history.get_thread_nesting_prefix(),
+                    });
                 }
             }
         } else if let InputMessageContent::User(UserContent::ToolResult(res)) = &input_msg.content
@@ -264,14 +265,13 @@ async fn agent_loop<Mdl>(
             ref tool_args,
             ..
         }) = final_action
+            && tool_name != "sleep_until_event_or_input"
         {
-            if tool_name != "sleep_until_event_or_input" {
-                let _ = display_tx.send(DisplayEvent::ToolCall {
-                    name: tool_name.clone(),
-                    args: tool_args.clone(),
-                    prefix: thread_prefix.clone(),
-                });
-            }
+            let _ = display_tx.send(DisplayEvent::ToolCall {
+                name: tool_name.clone(),
+                args: tool_args.clone(),
+                prefix: thread_prefix.clone(),
+            });
         }
 
         if let Some(action) = final_action {
@@ -282,13 +282,11 @@ async fn agent_loop<Mdl>(
                 callback_url: callback_url.clone(),
                 user_id: None,
             };
-            let tool_registry: std::collections::HashMap<
-                String,
-                &Box<dyn Tool<InMemoryMessageSender>>,
-            > = tool_impls
-                .iter()
-                .map(|t| (t.name().to_string(), t))
-                .collect();
+            let tool_registry: std::collections::HashMap<String, &dyn Tool<InMemoryMessageSender>> =
+                tool_impls
+                    .iter()
+                    .map(|t| (t.name().to_string(), t.as_ref()))
+                    .collect();
             if let Err(e) =
                 event_processor::execute_action(action, &tool_registry, &tool_context).await
             {

@@ -9,7 +9,6 @@ use infinity_agent_core::traits::ConversationStore;
 use lambda_runtime::Error;
 use rig::message::Message;
 use sqlx::{Pool, Postgres, Row, postgres::PgConnectOptions};
-use tracing;
 
 #[derive(Clone)]
 pub struct DsqlConversationStore {

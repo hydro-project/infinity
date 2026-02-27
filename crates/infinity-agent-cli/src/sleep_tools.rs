@@ -10,7 +10,6 @@ use rig::{
     agent::Text,
     message::{ToolResult, ToolResultContent, UserContent},
 };
-use tracing;
 
 pub struct SleepTool;
 

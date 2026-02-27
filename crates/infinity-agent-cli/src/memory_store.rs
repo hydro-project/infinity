@@ -21,6 +21,7 @@ impl std::error::Error for MemoryError {}
 #[derive(Clone)]
 pub struct InMemoryConversationStore {
     /// session_id -> ordered messages
+    #[expect(clippy::type_complexity, reason = "shared state")]
     messages: Arc<Mutex<HashMap<String, Vec<(Message, String)>>>>,
     /// thread_id -> ThreadInfo
     threads: Arc<Mutex<HashMap<String, ThreadInfo>>>,
@@ -203,6 +204,7 @@ impl ConversationStore for InMemoryConversationStore {
 
 #[derive(Clone)]
 pub struct InMemoryStateStore {
+    #[expect(clippy::type_complexity, reason = "shared state")]
     processed_ids: Arc<Mutex<HashMap<String, (HashSet<String>, HashSet<String>)>>>,
     metadata: Arc<Mutex<HashMap<String, serde_json::Value>>>,
 }

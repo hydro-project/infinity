@@ -13,7 +13,7 @@ pub async fn run_jj(dir: &Path, args: &[&str]) -> Result<(), SandboxError> {
         .map_err(|e| SandboxError::JujutsuError(format!("failed to spawn jj: {e}")))?;
 
     if !status.success() {
-        return Err(SandboxError::JujutsuError(format!("jj failed")));
+        return Err(SandboxError::JujutsuError("jj failed".to_string()));
     }
 
     Ok(())
