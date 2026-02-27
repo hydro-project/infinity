@@ -4,15 +4,29 @@ use sandbox_core::sandbox::SandboxBackend;
 use sandbox_core::server::build_router;
 
 /// Run the sandbox RAP server locally with axum::serve.
+/// Uses graceful shutdown on Ctrl+C so that the backend's `Drop`
+/// implementation runs and cached sandboxes are cleaned up.
 pub async fn run_server<B: SandboxBackend + 'static, M: MetadataStore + 'static>(
     backend: B,
     metadata: M,
     port: u16,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (app, _tracker) = build_router(backend, metadata, PlainCallbackClient::new());
+    let (app, tracker) = build_router(backend, metadata, PlainCallbackClient::new());
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     tracing::info!("sandbox RAP server listening on port {port}");
-    axum::serve(listener, app).await?;
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to listen for ctrl+c");
+            tracing::info!("received ctrl+c, shutting down gracefully");
+        })
+        .await?;
+
+    // Drain any in-flight background tasks before exiting
+    tracker.drain().await;
+
     Ok(())
 }

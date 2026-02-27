@@ -4,7 +4,7 @@ use std::process::Stdio;
 use crate::error::SandboxError;
 
 /// Run a jj command in the given directory and return stdout.
-async fn run_jj(dir: &Path, args: &[&str]) -> Result<(), SandboxError> {
+pub async fn run_jj(dir: &Path, args: &[&str]) -> Result<(), SandboxError> {
     let status = tokio::process::Command::new("jj")
         .args(args)
         .current_dir(dir)
@@ -74,7 +74,6 @@ async fn jj_configure_author(dir: &Path) -> Result<(), SandboxError> {
 /// then create a bookmark and push it.
 pub async fn jj_push_working_copy(dir: &Path, bookmark_name: &str) -> Result<(), SandboxError> {
     run_jj(dir, &["bookmark", "set", bookmark_name]).await?;
-    run_jj(dir, &["workspace", "forget"]).await?;
 
     Ok(())
 }
