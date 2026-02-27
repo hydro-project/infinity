@@ -196,7 +196,7 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
     state.metadata.put(&repo_state).await?;
 
     tracing::info!(group_id = %invocation.group_id, remote = %remote_uri, "repo cloned");
-    Ok(format!("Repository initialized."))
+    Ok("Repository initialized.".to_string())
 }
 
 async fn handle_execute_command<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
