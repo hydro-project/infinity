@@ -12,6 +12,7 @@ use tracing;
 
 use crate::callback::CallbackClient;
 use crate::error::SandboxError;
+use crate::jj::run_jj;
 use crate::metadata::MetadataStore;
 use crate::sandbox::SandboxBackend;
 use crate::types::{CloneRepoArgs, ExecuteCommandArgs, RepoState};
@@ -213,6 +214,8 @@ async fn handle_execute_command<B: SandboxBackend, M: MetadataStore, C: Callback
         .ok_or_else(|| SandboxError::RepoNotFound(invocation.group_id.clone()))?;
 
     let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;
+
+    run_jj(&sandbox_dir, &["describe", "-m", &args.command]).await?;
 
     let output = tokio::process::Command::new("bash")
         .args(["-c", &args.command])

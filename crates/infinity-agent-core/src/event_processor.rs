@@ -701,7 +701,7 @@ where
                     }
                     StreamedAssistantContent::ToolCallDelta { .. } => {}
                     StreamedAssistantContent::Reasoning(reasoning) => {
-                        tracing::info!("[Reasoning: {:?}]", reasoning.reasoning);
+                        eprintln!("[Reasoning: {:?}]", reasoning.reasoning);
                     }
                     StreamedAssistantContent::Final(_) => {
                         tracing::info!("Received final message");
