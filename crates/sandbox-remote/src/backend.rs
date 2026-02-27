@@ -4,7 +4,7 @@ use std::process::Stdio;
 use async_trait::async_trait;
 
 use sandbox_core::error::SandboxError;
-use sandbox_core::jj;
+use sandbox_core::jj::{self, run_jj};
 use sandbox_core::sandbox::SandboxBackend;
 use sandbox_core::types::RepoState;
 
@@ -142,6 +142,7 @@ impl SandboxBackend for EfsBackend {
 
     /// Remove the temp sandbox directory.
     async fn cleanup_sandbox(&self, sandbox_dir: &PathBuf) -> Result<(), SandboxError> {
+        run_jj(sandbox_dir, &["workspace", "forget"]).await?;
         tokio::fs::remove_dir_all(sandbox_dir)
             .await
             .map_err(SandboxError::Io)
