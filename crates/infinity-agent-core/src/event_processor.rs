@@ -707,7 +707,7 @@ where
                     }
                     StreamedAssistantContent::ToolCallDelta { .. } => {}
                     StreamedAssistantContent::Reasoning(reasoning) => {
-                        eprintln!("[Reasoning: {:?}]", reasoning.first_text());
+                        tracing::info!("[Reasoning: {:?}]", reasoning.first_text());
                     }
                     StreamedAssistantContent::ReasoningDelta { .. } => {}
                     StreamedAssistantContent::Final(_) => {
