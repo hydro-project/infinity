@@ -6,6 +6,7 @@ use rig_bedrock::client::Client;
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
+mod inline_viewport;
 mod memory_store;
 mod rap_callback;
 mod rap_tools;
