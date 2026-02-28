@@ -1,17 +1,31 @@
-use crossterm::{
-    cursor,
-    event::{self, Event, KeyCode, KeyModifiers},
-    queue, terminal,
-};
+use crate::inline_viewport::InlineViewport;
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
+use ratatui::{
+    crossterm::{
+        Command, cursor,
+        event::{self, Event, KeyCode, KeyModifiers},
+        queue,
+        style::{
+            Attribute as CAttribute, Color as CColor, Colors, Print, SetAttribute,
+            SetBackgroundColor, SetColors, SetForegroundColor,
+        },
+        terminal::{self as cterm},
+    },
+    layout::{Constraint, Layout, Position},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph},
+};
 use rig::message::UserContent;
-use std::io::Write;
+use std::fmt;
+use std::io::{self, Write};
 use tokio::sync::mpsc;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
+const VIEWPORT_HEIGHT: u16 = 2;
+
 pub enum DisplayEvent {
-    /// Signals the start of a new model output stream.
     StartOutput {
         prefix: Option<String>,
     },
@@ -40,195 +54,137 @@ pub async fn run(
     mut display_rx: mpsc::UnboundedReceiver<DisplayEvent>,
     thread_id: String,
 ) -> Result<(), BoxError> {
-    let mut stdout = std::io::stdout();
+    cterm::enable_raw_mode()?;
 
-    terminal::enable_raw_mode()?;
-    let rows = terminal::size()?.1;
-    set_scroll_region(&mut stdout, 0, rows.saturating_sub(3))?;
-    queue!(stdout, cursor::MoveTo(0, rows.saturating_sub(3)))?;
-    stdout.flush()?;
+    let mut viewport = InlineViewport::new(VIEWPORT_HEIGHT)?;
 
-    output_line(
-        &mut stdout,
-        &format!("Infinity Agent CLI — thread {}", thread_id),
-    )?;
-    output_line(&mut stdout, "Type your messages below. Ctrl+C to exit.")?;
-    output_line(&mut stdout, "")?;
+    print_above(&mut viewport, |w| {
+        write!(w, "\r\nInfinity Agent CLI — thread {}\r\n", thread_id)?;
+        write!(w, "Type your messages below. Ctrl+C to exit.\r\n")
+    })?;
 
     let mut input_buf = String::new();
     let mut mid_stream = false;
 
-    draw_input_bar(&mut stdout, &input_buf)?;
+    draw_input_bar(&mut viewport, &input_buf)?;
 
     loop {
         tokio::select! {
             biased;
 
             evt = display_rx.recv() => {
-                match evt.expect("agent loop terminated unexpectedly") {
+                let evt = evt.expect("agent loop terminated unexpectedly");
+                match evt {
                     DisplayEvent::StartOutput { prefix } => {
-                        let mut buf = Vec::new();
-                        queue!(buf, cursor::Hide)?;
-                        if mid_stream {
-                            queue!(buf, cursor::RestorePosition)?;
-                            write!(buf, "\r\n")?;
-                        }
-                        queue!(buf, cursor::MoveTo(0, scroll_region_bottom()))?;
-                        write!(buf, "\r\n")?;
-                        if let Some(p) = prefix {
-                            write!(buf, "{} ", p)?;
-                        }
-                        queue!(buf, cursor::SavePosition)?;
+                        end_stream(&mut viewport, &mut mid_stream)?;
                         mid_stream = true;
-                        draw_input_bar_into(&mut buf, &input_buf)?;
-                        queue!(buf, cursor::Show)?;
-                        stdout.write_all(&buf)?;
-                        stdout.flush()?;
+                        print_above(&mut viewport, |w| {
+                            write!(w, "\r\n")?;
+                            if let Some(p) = prefix {
+                                write!(w, "{} ", p)?;
+                            }
+                            Ok(())
+                        })?;
                     }
                     DisplayEvent::TextChunk(chunk) => {
-                        let mut buf = Vec::new();
-                        queue!(buf, cursor::Hide)?;
-                        queue!(buf, cursor::RestorePosition)?;
                         let sanitized = chunk.replace('\n', "\r\n");
-                        write!(buf, "{}", sanitized)?;
-                        queue!(buf, cursor::SavePosition)?;
-                        draw_input_bar_into(&mut buf, &input_buf)?;
-                        queue!(buf, cursor::Show)?;
-                        stdout.write_all(&buf)?;
-                        stdout.flush()?;
+                        print_above(&mut viewport, |w| write!(w, "{}", sanitized))?;
                     }
                     DisplayEvent::ResponseDone => {
-                        if mid_stream {
-                            let mut buf = Vec::new();
-                            queue!(buf, cursor::Hide)?;
-                            queue!(buf, cursor::RestorePosition)?;
-                            write!(buf, "\r\n")?;
-                            mid_stream = false;
-                            draw_input_bar_into(&mut buf, &input_buf)?;
-                            queue!(buf, cursor::Show)?;
-                            stdout.write_all(&buf)?;
-                            stdout.flush()?;
-                        }
+                        end_stream(&mut viewport, &mut mid_stream)?;
                     }
                     DisplayEvent::ToolCall { name, args, prefix } => {
-                        let mut buf = Vec::new();
-                        queue!(buf, cursor::Hide)?;
-                        if mid_stream {
-                            queue!(buf, cursor::RestorePosition)?;
-                            write!(buf, "\r\n")?;
-                            mid_stream = false;
-                        }
-                        let prefix_str = prefix.map(|p| format!("{} ", p)).unwrap_or_default();
-                        let line = format!("\n{}\x1b[34m◆ {}({})\x1b[0m", prefix_str, name, args);
-                        output_line_into(&mut buf, &line)?;
-                        draw_input_bar_into(&mut buf, &input_buf)?;
-                        queue!(buf, cursor::Show)?;
-                        stdout.write_all(&buf)?;
-                        stdout.flush()?;
+                        end_stream(&mut viewport, &mut mid_stream)?;
+                        let pfx = prefix.map(|p| format!("{} ", p)).unwrap_or_default();
+                        print_line_above(&mut viewport, Line::from(vec![
+                            Span::raw(pfx),
+                            Span::styled(format!("◆ {}({})", name, args), Style::default().fg(Color::Blue)),
+                        ]))?;
                     }
                     DisplayEvent::ToolResult { text, prefix } => {
-                        let mut buf = Vec::new();
-                        queue!(buf, cursor::Hide)?;
-                        if mid_stream {
-                            queue!(buf, cursor::RestorePosition)?;
-                            write!(buf, "\r\n")?;
-                            mid_stream = false;
-                        }
-                        let prefix_str = prefix.map(|p| format!("{} ", p)).unwrap_or_default();
+                        end_stream(&mut viewport, &mut mid_stream)?;
+                        let pfx = prefix.map(|p| format!("{} ", p)).unwrap_or_default();
                         let lines: Vec<&str> = text.lines().collect();
                         if let Some((first, rest)) = lines.split_first() {
-                            output_line_into(&mut buf, &format!("\n{}\x1b[32m✓ {}\x1b[0m", prefix_str, first))?;
-                            // Indent continuation lines to align with the first line's text
-                            let indent = format!("{}  ", prefix_str);
+                            print_line_above(&mut viewport, Line::from(vec![
+                                Span::raw(pfx.clone()),
+                                Span::styled(format!("✓ {}", first), Style::default().fg(Color::Green)),
+                            ]))?;
+                            let indent = format!("{}  ", pfx);
                             for line in rest {
-                                output_line_into(&mut buf, &format!("{}\x1b[32m{}\x1b[0m", indent, line))?;
+                                print_line_above(&mut viewport, Line::from(vec![
+                                    Span::raw(indent.clone()),
+                                    Span::styled(line.to_string(), Style::default().fg(Color::Green)),
+                                ]))?;
                             }
                         } else {
-                            output_line_into(&mut buf, &format!("\n{}\x1b[32m✓\x1b[0m", prefix_str))?;
+                            print_line_above(&mut viewport, Line::from(vec![
+                                Span::raw(pfx),
+                                Span::styled("✓", Style::default().fg(Color::Green)),
+                            ]))?;
                         }
-                        draw_input_bar_into(&mut buf, &input_buf)?;
-                        queue!(buf, cursor::Show)?;
-                        stdout.write_all(&buf)?;
-                        stdout.flush()?;
                     }
-                    DisplayEvent::Info(line) => {
-                        let mut buf = Vec::new();
-                        queue!(buf, cursor::Hide)?;
-                        if mid_stream {
-                            queue!(buf, cursor::RestorePosition)?;
-                            write!(buf, "\r\n")?;
-                            mid_stream = false;
-                        }
-                        output_line_into(&mut buf, &line)?;
-                        draw_input_bar_into(&mut buf, &input_buf)?;
-                        queue!(buf, cursor::Show)?;
-                        stdout.write_all(&buf)?;
-                        stdout.flush()?;
+                    DisplayEvent::Info(text) => {
+                        end_stream(&mut viewport, &mut mid_stream)?;
+                        print_line_above(&mut viewport, Line::from(text))?;
                     }
                     DisplayEvent::UserInput(text) => {
-                        let mut buf = Vec::new();
-                        queue!(buf, cursor::Hide)?;
-                        if mid_stream {
-                            queue!(buf, cursor::RestorePosition)?;
-                            write!(buf, "\r\n")?;
-                            mid_stream = false;
-                        }
-                        output_line_into(&mut buf, &format!("\n\x1b[1m> {}\x1b[0m", text))?;
-                        draw_input_bar_into(&mut buf, &input_buf)?;
-                        queue!(buf, cursor::Show)?;
-                        stdout.write_all(&buf)?;
-                        stdout.flush()?;
+                        end_stream(&mut viewport, &mut mid_stream)?;
+                        print_line_above(&mut viewport, Line::from(vec![
+                            Span::styled(format!("> {}", text), Style::default().add_modifier(Modifier::BOLD)),
+                        ]))?;
                     }
                     DisplayEvent::SubscriptionEvent { name, text, prefix } => {
-                        let mut buf = Vec::new();
-                        queue!(buf, cursor::Hide)?;
-                        if mid_stream {
-                            queue!(buf, cursor::RestorePosition)?;
-                            write!(buf, "\r\n")?;
-                            mid_stream = false;
-                        }
-                        let prefix_str = prefix.map(|p| format!("[{}] ", p)).unwrap_or_default();
-                        output_line_into(&mut buf, &format!("\n{}\x1b[38;5;208m⚡{}: {}\x1b[0m", prefix_str, name, text))?;
-                        draw_input_bar_into(&mut buf, &input_buf)?;
-                        queue!(buf, cursor::Show)?;
-                        stdout.write_all(&buf)?;
-                        stdout.flush()?;
+                        end_stream(&mut viewport, &mut mid_stream)?;
+                        let pfx = prefix.map(|p| format!("[{}] ", p)).unwrap_or_default();
+                        print_line_above(&mut viewport, Line::from(vec![
+                            Span::raw(pfx),
+                            Span::styled(format!("⚡{}: {}", name, text), Style::default().fg(Color::Indexed(208))),
+                        ]))?;
                     }
                 }
+                draw_input_bar(&mut viewport, &input_buf)?;
             }
 
             _ = poll_crossterm_event() => {
                 while event::poll(std::time::Duration::ZERO)? {
-                    if let Event::Key(key) = event::read()? {
-                        match (key.code, key.modifiers) {
-                            (KeyCode::Char('c') | KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
-                                cleanup(&mut stdout)?;
-                                return Ok(());
-                            }
-                            (KeyCode::Enter, _) => {
-                                let text = input_buf.trim().to_string();
-                                input_buf.clear();
-                                if !text.is_empty() {
-                                    let msg = InputMessage {
-                                        content: InputMessageContent::User(UserContent::text(&text)),
-                                        group_id: thread_id.clone(),
-                                        metadata: None,
-                                        synthetic: None,
-                                    };
-                                    let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
-                                }
-                                draw_input_bar(&mut stdout, &input_buf)?;
-                            }
-                            (KeyCode::Backspace, _) => {
-                                input_buf.pop();
-                                draw_input_bar(&mut stdout, &input_buf)?;
-                            }
-                            (KeyCode::Char(ch), _) => {
-                                input_buf.push(ch);
-                                draw_input_bar(&mut stdout, &input_buf)?;
-                            }
-                            _ => {}
+                    match event::read()? {
+                        Event::Resize(_, _) => {
+                            viewport.handle_resize()?;
+                            draw_input_bar(&mut viewport, &input_buf)?;
                         }
+                        Event::Key(key) => {
+                            match (key.code, key.modifiers) {
+                                (KeyCode::Char('c') | KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                    cleanup()?;
+                                    return Ok(());
+                                }
+                                (KeyCode::Enter, _) => {
+                                    let text = input_buf.trim().to_string();
+                                    input_buf.clear();
+                                    if !text.is_empty() {
+                                        let msg = InputMessage {
+                                            content: InputMessageContent::User(UserContent::text(&text)),
+                                            group_id: thread_id.clone(),
+                                            metadata: None,
+                                            synthetic: None,
+                                        };
+                                        let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
+                                    }
+                                    draw_input_bar(&mut viewport, &input_buf)?;
+                                }
+                                (KeyCode::Backspace, _) => {
+                                    input_buf.pop();
+                                    draw_input_bar(&mut viewport, &input_buf)?;
+                                }
+                                (KeyCode::Char(ch), _) => {
+                                    input_buf.push(ch);
+                                    draw_input_bar(&mut viewport, &input_buf)?;
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -236,88 +192,76 @@ pub async fn run(
     }
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── Scroll-region helpers ───────────────────────────────────────────────────
 
-fn set_scroll_region(w: &mut impl Write, top: u16, bottom: u16) -> Result<(), BoxError> {
-    write!(w, "\x1b[{};{}r", top + 1, bottom + 1)?;
-    w.flush()?;
+fn print_above(
+    viewport: &mut InlineViewport,
+    writer: impl FnOnce(&mut io::Stdout) -> io::Result<()>,
+) -> Result<(), BoxError> {
+    let vp_top = viewport.scroll_region_bottom();
+    let mut stdout = io::stdout();
+
+    queue!(stdout, cursor::Hide)?;
+    queue!(stdout, SetScrollRegion(1..vp_top))?;
+    queue!(stdout, cursor::RestorePosition)?;
+
+    writer(&mut stdout)?;
+
+    queue!(stdout, cursor::SavePosition)?;
+    queue!(stdout, ResetScrollRegion)?;
+
+    // don't show the cursor here or flush, that will be handled in printing input bar
+
     Ok(())
 }
 
-fn output_line(w: &mut impl Write, text: &str) -> Result<(), BoxError> {
-    write!(w, "{}\r\n", text)?;
-    w.flush()?;
-    Ok(())
+fn print_line_above(viewport: &mut InlineViewport, line: Line<'_>) -> Result<(), BoxError> {
+    print_above(viewport, |w| {
+        write!(w, "\r\n")?;
+        write_spans(w, line.iter())
+    })
 }
 
-fn output_line_into(buf: &mut Vec<u8>, text: &str) -> Result<(), BoxError> {
-    let scroll_bottom = scroll_region_bottom();
-    queue!(buf, cursor::MoveTo(0, scroll_bottom))?;
-    write!(buf, "{}\r\n", text)?;
-    Ok(())
-}
-
-fn scroll_region_bottom() -> u16 {
-    let rows = terminal::size().map(|(_, r)| r).unwrap_or(24);
-    rows.saturating_sub(3)
-}
-
-fn draw_input_bar(w: &mut impl Write, input_buf: &str) -> Result<(), BoxError> {
-    let mut buf = Vec::new();
-    draw_input_bar_into(&mut buf, input_buf)?;
-    w.write_all(&buf)?;
-    w.flush()?;
-    Ok(())
-}
-
-fn draw_input_bar_into(buf: &mut Vec<u8>, input_buf: &str) -> Result<(), BoxError> {
-    let (cols, rows) = terminal::size()?;
-    let cols = cols.max(1) as usize;
-    let prompt = format!("> {}", input_buf);
-    // The cursor sits *after* the last character. If the text fills the line
-    // exactly, the cursor wraps to column 0 of the next row, so we need an
-    // extra row reserved for that.
-    let cursor_pos = prompt.len();
-    let cursor_row_offset = cursor_pos / cols;
-    let text_lines = prompt.len().max(1).div_ceil(cols) as u16;
-    // We need enough rows for the text *and* the cursor row.
-    let input_lines = text_lines.max(cursor_row_offset as u16 + 1);
-    let reserved = 1 + input_lines;
-    let scroll_bottom = rows.saturating_sub(reserved + 1);
-
-    write!(buf, "\x1b[{};{}r", 1, scroll_bottom + 1)?;
-
-    let sep_row = rows.saturating_sub(reserved);
-    queue!(buf, cursor::MoveTo(0, sep_row))?;
-    let sep: String = "─".repeat(cols);
-    write!(buf, "{}", sep)?;
-
-    for i in 0..input_lines {
-        let row = sep_row + 1 + i;
-        let start = i as usize * cols;
-        let end = ((i as usize + 1) * cols).min(prompt.len());
-        let slice = if start < prompt.len() {
-            &prompt[start..end]
-        } else {
-            ""
-        };
-        queue!(buf, cursor::MoveTo(0, row))?;
-        write!(buf, "{:<width$}", slice, width = cols)?;
+fn end_stream(viewport: &mut InlineViewport, mid_stream: &mut bool) -> Result<(), BoxError> {
+    if *mid_stream {
+        print_above(viewport, |w| write!(w, "\r\n"))?;
+        *mid_stream = false;
     }
-
-    let cursor_row = sep_row + 1 + cursor_row_offset as u16;
-    let cursor_col = (cursor_pos % cols) as u16;
-    queue!(buf, cursor::MoveTo(cursor_col, cursor_row))?;
     Ok(())
 }
 
-fn cleanup(w: &mut impl Write) -> Result<(), BoxError> {
-    write!(w, "\x1b[r")?;
-    terminal::disable_raw_mode()?;
-    let rows = terminal::size()?.1;
-    queue!(w, cursor::MoveTo(0, rows))?;
-    writeln!(w)?;
-    w.flush()?;
+// ── Viewport drawing ────────────────────────────────────────────────────────
+
+fn draw_input_bar(viewport: &mut InlineViewport, input_buf: &str) -> Result<(), BoxError> {
+    let prompt = format!("> {}", input_buf);
+    viewport.draw(|frame| {
+        let area = frame.area();
+        let [sep_area, input_area] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+
+        frame.render_widget(Block::default().borders(Borders::TOP), sep_area);
+        frame.render_widget(
+            Paragraph::new(prompt.as_str()).style(Style::default()),
+            input_area,
+        );
+
+        let cursor_x = input_area.x + prompt.len() as u16;
+        frame.set_cursor_position(Position::new(
+            cursor_x.min(input_area.right().saturating_sub(1)),
+            input_area.y,
+        ));
+    })?;
+    Ok(())
+}
+
+fn cleanup() -> Result<(), BoxError> {
+    let mut stdout = io::stdout();
+    queue!(stdout, ResetScrollRegion)?;
+    cterm::disable_raw_mode()?;
+    let rows = cterm::size()?.1;
+    queue!(stdout, cursor::MoveTo(0, rows))?;
+    writeln!(stdout)?;
+    stdout.flush()?;
     Ok(())
 }
 
@@ -327,4 +271,100 @@ async fn poll_crossterm_event() {
     })
     .await
     .ok();
+}
+
+// ── Span writing ────────────────────────────────────────────────────────────
+
+fn write_spans<'a>(
+    w: &mut impl Write,
+    spans: impl Iterator<Item = &'a Span<'a>>,
+) -> io::Result<()> {
+    let mut fg = Color::Reset;
+    let mut bg = Color::Reset;
+    let mut mods = Modifier::empty();
+
+    for span in spans {
+        let mut next = mods;
+        next.insert(span.style.add_modifier);
+        next.remove(span.style.sub_modifier);
+        if next != mods {
+            apply_mod_diff(w, mods, next)?;
+            mods = next;
+        }
+
+        let nfg = span.style.fg.unwrap_or(Color::Reset);
+        let nbg = span.style.bg.unwrap_or(Color::Reset);
+        if nfg != fg || nbg != bg {
+            queue!(w, SetColors(Colors::new(nfg.into(), nbg.into())))?;
+            fg = nfg;
+            bg = nbg;
+        }
+
+        queue!(w, Print(&span.content))?;
+    }
+
+    queue!(
+        w,
+        SetForegroundColor(CColor::Reset),
+        SetBackgroundColor(CColor::Reset),
+        SetAttribute(CAttribute::Reset),
+    )
+}
+
+fn apply_mod_diff(w: &mut impl Write, from: Modifier, to: Modifier) -> io::Result<()> {
+    let removed = from - to;
+    if removed.contains(Modifier::BOLD) {
+        queue!(w, SetAttribute(CAttribute::NormalIntensity))?;
+        if to.contains(Modifier::DIM) {
+            queue!(w, SetAttribute(CAttribute::Dim))?;
+        }
+    }
+    if removed.contains(Modifier::ITALIC) {
+        queue!(w, SetAttribute(CAttribute::NoItalic))?;
+    }
+    if removed.contains(Modifier::UNDERLINED) {
+        queue!(w, SetAttribute(CAttribute::NoUnderline))?;
+    }
+    if removed.contains(Modifier::DIM) {
+        queue!(w, SetAttribute(CAttribute::NormalIntensity))?;
+    }
+    if removed.contains(Modifier::REVERSED) {
+        queue!(w, SetAttribute(CAttribute::NoReverse))?;
+    }
+
+    let added = to - from;
+    if added.contains(Modifier::BOLD) {
+        queue!(w, SetAttribute(CAttribute::Bold))?;
+    }
+    if added.contains(Modifier::ITALIC) {
+        queue!(w, SetAttribute(CAttribute::Italic))?;
+    }
+    if added.contains(Modifier::UNDERLINED) {
+        queue!(w, SetAttribute(CAttribute::Underlined))?;
+    }
+    if added.contains(Modifier::DIM) {
+        queue!(w, SetAttribute(CAttribute::Dim))?;
+    }
+    if added.contains(Modifier::REVERSED) {
+        queue!(w, SetAttribute(CAttribute::Reverse))?;
+    }
+    Ok(())
+}
+
+// ── Custom crossterm commands ───────────────────────────────────────────────
+
+struct SetScrollRegion(std::ops::Range<u16>);
+
+impl Command for SetScrollRegion {
+    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        write!(f, "\x1b[{};{}r", self.0.start, self.0.end)
+    }
+}
+
+struct ResetScrollRegion;
+
+impl Command for ResetScrollRegion {
+    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        write!(f, "\x1b[r")
+    }
 }
