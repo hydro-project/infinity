@@ -1,4 +1,4 @@
-use crate::inline_viewport::InlineViewport;
+use crate::{inline_viewport::InlineViewport, modifier_diff::ModifierDiff};
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
 use ratatui::{
     crossterm::{
@@ -288,7 +288,11 @@ fn write_spans<'a>(
         next.insert(span.style.add_modifier);
         next.remove(span.style.sub_modifier);
         if next != mods {
-            apply_mod_diff(w, mods, next)?;
+            ModifierDiff {
+                from: mods,
+                to: next,
+            }
+            .queue(w)?;
             mods = next;
         }
 
@@ -309,49 +313,6 @@ fn write_spans<'a>(
         SetBackgroundColor(CColor::Reset),
         SetAttribute(CAttribute::Reset),
     )
-}
-
-fn apply_mod_diff(w: &mut impl Write, from: Modifier, to: Modifier) -> io::Result<()> {
-    let removed = from - to;
-    if removed.contains(Modifier::BOLD) {
-        queue!(w, SetAttribute(CAttribute::NormalIntensity))?;
-    }
-    if removed.contains(Modifier::ITALIC) {
-        queue!(w, SetAttribute(CAttribute::NoItalic))?;
-    }
-    if removed.contains(Modifier::UNDERLINED) {
-        queue!(w, SetAttribute(CAttribute::NoUnderline))?;
-    }
-    if removed.contains(Modifier::DIM) {
-        queue!(w, SetAttribute(CAttribute::NormalIntensity))?;
-    }
-    if removed.contains(Modifier::REVERSED) {
-        queue!(w, SetAttribute(CAttribute::NoReverse))?;
-    }
-    if removed.contains(Modifier::CROSSED_OUT) {
-        queue!(w, SetAttribute(CAttribute::NotCrossedOut))?;
-    }
-
-    let added = to - from;
-    if added.contains(Modifier::BOLD) {
-        queue!(w, SetAttribute(CAttribute::Bold))?;
-    }
-    if added.contains(Modifier::ITALIC) {
-        queue!(w, SetAttribute(CAttribute::Italic))?;
-    }
-    if added.contains(Modifier::UNDERLINED) {
-        queue!(w, SetAttribute(CAttribute::Underlined))?;
-    }
-    if added.contains(Modifier::DIM) {
-        queue!(w, SetAttribute(CAttribute::Dim))?;
-    }
-    if added.contains(Modifier::REVERSED) {
-        queue!(w, SetAttribute(CAttribute::Reverse))?;
-    }
-    if added.contains(Modifier::CROSSED_OUT) {
-        queue!(w, SetAttribute(CAttribute::CrossedOut))?;
-    }
-    Ok(())
 }
 
 // ── Custom crossterm commands ───────────────────────────────────────────────
