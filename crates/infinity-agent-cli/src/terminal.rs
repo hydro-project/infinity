@@ -37,6 +37,7 @@ pub enum DisplayEvent {
     },
     ToolResult {
         text: String,
+        display_as: Option<String>,
         prefix: Option<String>,
     },
     Info(String),
@@ -101,10 +102,11 @@ pub async fn run(
                             Span::styled(format!("◆ {}({})", name, args), Style::default().fg(Color::Blue)),
                         ]))?;
                     }
-                    DisplayEvent::ToolResult { text, prefix } => {
+                    DisplayEvent::ToolResult { text, display_as, prefix } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
                         let pfx = prefix.map(|p| format!("{} ", p)).unwrap_or_default();
-                        let lines: Vec<&str> = text.lines().collect();
+                        let display_text = display_as.as_deref().unwrap_or(&text);
+                        let lines: Vec<&str> = display_text.lines().collect();
                         if let Some((first, rest)) = lines.split_first() {
                             print_line_above(&mut viewport, Line::from(vec![
                                 Span::raw(pfx.clone()),
@@ -168,6 +170,7 @@ pub async fn run(
                                             group_id: thread_id.clone(),
                                             metadata: None,
                                             synthetic: None,
+                                            display_as: None,
                                         };
                                         let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
                                     }
