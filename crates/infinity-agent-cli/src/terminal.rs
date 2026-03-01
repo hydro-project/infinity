@@ -149,11 +149,21 @@ pub async fn run(
             }
 
             _ = poll_crossterm_event() => {
+                let mut got_resize = false;
                 while event::poll(std::time::Duration::ZERO)? {
-                    match event::read()? {
-                        Event::Resize(_, _) => {
+                    let event = event::read()?;
+                    if got_resize {
+                        if matches!(event, Event::Resize(_, _)) {
+                            continue;
+                        } else {
                             viewport.handle_resize()?;
-                            draw_input_bar(&mut viewport, &input_buf)?;
+                            got_resize = false;
+                        }
+                    }
+
+                    match event {
+                        Event::Resize(_, _) => {
+                            got_resize = true;
                         }
                         Event::Key(key) => {
                             match (key.code, key.modifiers) {
@@ -189,6 +199,11 @@ pub async fn run(
                         }
                         _ => {}
                     }
+                }
+
+                if got_resize {
+                    viewport.handle_resize()?;
+                    draw_input_bar(&mut viewport, &input_buf)?;
                 }
             }
         }
