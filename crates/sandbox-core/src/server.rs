@@ -14,7 +14,9 @@ use crate::error::SandboxError;
 use crate::jj::run_jj;
 use crate::metadata::MetadataStore;
 use crate::sandbox::SandboxBackend;
-use crate::types::{CloneRepoArgs, ExecuteCommandArgs, RepoState};
+use crate::types::{
+    CloneRepoArgs, EditFileArgs, ExecuteCommandArgs, GrepArgs, ReadFileArgs, RepoState,
+};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -142,6 +144,9 @@ async fn invoke_handler<
         let result_text = match invocation.operation.as_str() {
             "clone_repo" => handle_clone_repo(&state_clone, &invocation).await,
             "execute_command" => handle_execute_command(&state_clone, &invocation).await,
+            "read_file" => handle_read_file(&state_clone, &invocation).await,
+            "edit_file" => handle_edit_file(&state_clone, &invocation).await,
+            "grep" => handle_grep(&state_clone, &invocation).await,
             _ => Err(SandboxError::Other(format!(
                 "unknown operation: {}",
                 invocation.operation
@@ -199,40 +204,40 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
     Ok("Repository initialized.".to_string())
 }
 
-async fn handle_execute_command<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
+/// Run an action inside a sandbox: create → action → push → update metadata → cleanup.
+///
+/// The closure receives the sandbox directory path and returns the tool result string.
+/// The `jj_description` is used to label the jj commit for this operation.
+async fn with_sandbox<B, M, C, F, Fut>(
     state: &AppState<B, M, C>,
-    invocation: &RapInvocation,
-) -> Result<String, SandboxError> {
-    let args: ExecuteCommandArgs = serde_json::from_value(invocation.arguments.clone())
-        .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
-
+    group_id: &str,
+    jj_description: &str,
+    action: F,
+) -> Result<String, SandboxError>
+where
+    B: SandboxBackend,
+    M: MetadataStore,
+    C: CallbackClient,
+    F: FnOnce(std::path::PathBuf) -> Fut,
+    Fut: std::future::Future<Output = Result<String, SandboxError>>,
+{
     let repo_state = state
         .metadata
-        .get(&invocation.group_id)
+        .get(group_id)
         .await?
-        .ok_or_else(|| SandboxError::RepoNotFound(invocation.group_id.clone()))?;
+        .ok_or_else(|| SandboxError::RepoNotFound(group_id.to_string()))?;
 
     let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;
 
-    run_jj(&sandbox_dir, &["describe", "-m", &args.command]).await?;
+    run_jj(&sandbox_dir, &["describe", "-m", jj_description]).await?;
 
-    let exec_result = state
-        .backend
-        .execute_command(&sandbox_dir, &args.command)
-        .await?;
+    let result = action(sandbox_dir.clone()).await;
 
-    let stdout = exec_result.stdout;
-    let stderr = exec_result.stderr;
-    let exit_code = exec_result.exit_code;
+    state.backend.push_sandbox(&sandbox_dir, group_id).await?;
 
-    state
-        .backend
-        .push_sandbox(&sandbox_dir, &invocation.group_id)
-        .await?;
-
-    let bookmark = format!("sandbox-{}", invocation.group_id);
+    let bookmark = format!("sandbox-{}", group_id);
     let updated_state = RepoState {
-        group_id: invocation.group_id.clone(),
+        group_id: group_id.to_string(),
         remote_uri: repo_state.remote_uri.clone(),
         bookmark: Some(bookmark.clone()),
     };
@@ -242,25 +247,216 @@ async fn handle_execute_command<B: SandboxBackend, M: MetadataStore, C: Callback
         tracing::warn!("failed to cleanup sandbox: {e}");
     }
 
-    tracing::info!(group_id = %invocation.group_id, bookmark = %bookmark, exit_code, "command executed");
+    tracing::info!(group_id = %group_id, bookmark = %bookmark, "sandbox operation complete");
 
-    let mut result = String::new();
-    if !stdout.is_empty() {
-        result.push_str(&stdout);
-    }
-    if !stderr.is_empty() {
-        if !result.is_empty() {
-            result.push('\n');
-        }
-        result.push_str("[stderr]\n");
-        result.push_str(&stderr);
-    }
-    if result.is_empty() {
-        result = format!("Command completed with exit code {exit_code}");
-    } else {
-        result.push_str(&format!("\n[exit code: {exit_code}]"));
-    }
-    Ok(result)
+    result
+}
+
+async fn handle_execute_command<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
+    state: &AppState<B, M, C>,
+    invocation: &RapInvocation,
+) -> Result<String, SandboxError> {
+    let args: ExecuteCommandArgs = serde_json::from_value(invocation.arguments.clone())
+        .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
+
+    let command = args.command.clone();
+    let backend = &state.backend;
+
+    with_sandbox(
+        state,
+        &invocation.group_id,
+        &args.command,
+        |sandbox_dir| async move {
+            let exec_result = backend.execute_command(&sandbox_dir, &command).await?;
+
+            let stdout = exec_result.stdout;
+            let stderr = exec_result.stderr;
+            let exit_code = exec_result.exit_code;
+
+            let mut result = String::new();
+            if !stdout.is_empty() {
+                result.push_str(&stdout);
+            }
+            if !stderr.is_empty() {
+                if !result.is_empty() {
+                    result.push('\n');
+                }
+                result.push_str("[stderr]\n");
+                result.push_str(&stderr);
+            }
+            if result.is_empty() {
+                result = format!("Command completed with exit code {exit_code}");
+            } else {
+                result.push_str(&format!("\n[exit code: {exit_code}]"));
+            }
+            Ok(result)
+        },
+    )
+    .await
+}
+
+async fn handle_read_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
+    state: &AppState<B, M, C>,
+    invocation: &RapInvocation,
+) -> Result<String, SandboxError> {
+    let args: ReadFileArgs = serde_json::from_value(invocation.arguments.clone())
+        .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
+
+    let description = format!("read_file: {}", args.path);
+
+    with_sandbox(
+        state,
+        &invocation.group_id,
+        &description,
+        |sandbox_dir| async move {
+            let file_path = sandbox_dir.join(&args.path);
+            let content = tokio::fs::read_to_string(&file_path)
+                .await
+                .map_err(|e| SandboxError::Io(e))?;
+
+            let lines: Vec<&str> = content.lines().collect();
+            let total_lines = lines.len();
+
+            let start = args.start_line.unwrap_or(1).max(1);
+            let end = args.end_line.unwrap_or(total_lines).min(total_lines);
+
+            if start > total_lines {
+                return Ok(format!(
+                    "File has {total_lines} lines, but start_line is {start}"
+                ));
+            }
+
+            let selected: Vec<String> = lines[start - 1..end]
+                .iter()
+                .enumerate()
+                .map(|(i, line)| format!("{:>4}  {}", start + i, line))
+                .collect();
+
+            Ok(format!(
+                "<file name=\"{}\" lines=\"{total_lines}\">\n{}\n</file>",
+                args.path,
+                selected.join("\n")
+            ))
+        },
+    )
+    .await
+}
+
+async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
+    state: &AppState<B, M, C>,
+    invocation: &RapInvocation,
+) -> Result<String, SandboxError> {
+    let args: EditFileArgs = serde_json::from_value(invocation.arguments.clone())
+        .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
+
+    let description = format!("edit_file: {}", args.path);
+
+    with_sandbox(
+        state,
+        &invocation.group_id,
+        &description,
+        |sandbox_dir| async move {
+            let file_path = sandbox_dir.join(&args.path);
+            let content = tokio::fs::read_to_string(&file_path)
+                .await
+                .map_err(|e| SandboxError::Io(e))?;
+
+            let matches: Vec<_> = content.match_indices(&args.old_str).collect();
+
+            if matches.is_empty() {
+                return Err(SandboxError::Other(format!(
+                    "old_str not found in {}",
+                    args.path
+                )));
+            }
+            if matches.len() > 1 {
+                return Err(SandboxError::Other(format!(
+                    "old_str matches {} locations in {} — must be unique",
+                    matches.len(),
+                    args.path
+                )));
+            }
+
+            let new_content = content.replacen(&args.old_str, &args.new_str, 1);
+            tokio::fs::write(&file_path, &new_content)
+                .await
+                .map_err(|e| SandboxError::Io(e))?;
+
+            Ok(format!("Replaced text in {}", args.path))
+        },
+    )
+    .await
+}
+
+async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
+    state: &AppState<B, M, C>,
+    invocation: &RapInvocation,
+) -> Result<String, SandboxError> {
+    let args: GrepArgs = serde_json::from_value(invocation.arguments.clone())
+        .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
+
+    let description = format!("grep: {}", args.query);
+    let backend = &state.backend;
+
+    with_sandbox(
+        state,
+        &invocation.group_id,
+        &description,
+        |sandbox_dir| async move {
+            let mut cmd_parts = vec!["rg".to_string(), "--line-number".to_string()];
+
+            // Context lines
+            cmd_parts.push("-C".to_string());
+            cmd_parts.push("2".to_string());
+
+            // Max count to avoid huge output
+            cmd_parts.push("--max-count".to_string());
+            cmd_parts.push("50".to_string());
+
+            if args.case_sensitive != Some(true) {
+                cmd_parts.push("--ignore-case".to_string());
+            }
+
+            if let Some(ref pattern) = args.include_pattern {
+                cmd_parts.push("--glob".to_string());
+                cmd_parts.push(pattern.clone());
+            }
+
+            if let Some(ref pattern) = args.exclude_pattern {
+                cmd_parts.push("--glob".to_string());
+                cmd_parts.push(format!("!{pattern}"));
+            }
+
+            cmd_parts.push("--".to_string());
+            cmd_parts.push(args.query.clone());
+
+            let command = cmd_parts
+                .iter()
+                .map(|p| {
+                    if p.contains(' ') || p.contains('\'') || p.contains('"') || p.contains('\\') {
+                        format!("'{}'", p.replace('\'', "'\\''"))
+                    } else {
+                        p.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            let exec_result = backend.execute_command(&sandbox_dir, &command).await?;
+
+            if exec_result.stdout.is_empty() && exec_result.exit_code == 1 {
+                return Ok("No matches found.".to_string());
+            }
+
+            let mut output = exec_result.stdout;
+            if !exec_result.stderr.is_empty() {
+                output.push_str("\n[stderr]\n");
+                output.push_str(&exec_result.stderr);
+            }
+            Ok(output)
+        },
+    )
+    .await
 }
 
 fn build_manifest(endpoint: &str) -> ToolsetManifest {
@@ -295,6 +491,76 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                         }
                     },
                     "required": ["command"]
+                }),
+            },
+            ToolDef {
+                name: "read_file".to_string(),
+                description: "Read the content of a single file with optional line range specification. Returns the file content with line numbers. Use start_line and end_line to focus on specific sections of large files.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to the file to read, relative to the repository root"
+                        },
+                        "start_line": {
+                            "type": "number",
+                            "description": "Starting line number, 1-indexed (optional)"
+                        },
+                        "end_line": {
+                            "type": "number",
+                            "description": "Ending line number, 1-indexed, inclusive (optional)"
+                        }
+                    },
+                    "required": ["path"]
+                }),
+            },
+            ToolDef {
+                name: "edit_file".to_string(),
+                description: "Replace text in a file. The old_str must match exactly one location in the file. The new_str will replace it. Ensure old_str is unique and includes enough context to identify a single location.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to the file to edit, relative to the repository root"
+                        },
+                        "old_str": {
+                            "type": "string",
+                            "description": "The exact string to find in the file (must match exactly one location)"
+                        },
+                        "new_str": {
+                            "type": "string",
+                            "description": "The replacement string"
+                        }
+                    },
+                    "required": ["path", "old_str", "new_str"]
+                }),
+            },
+            ToolDef {
+                name: "grep".to_string(),
+                description: "Fast text-based regex search that finds exact pattern matches within files using ripgrep. Search results include line numbers, file paths, and 2 lines of context around each match. Results are capped at 50 matches.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The regex pattern to search for (Rust regex syntax)"
+                        },
+                        "includePattern": {
+                            "type": "string",
+                            "description": "Glob pattern for files to include (e.g. '**/*.rs')"
+                        },
+                        "excludePattern": {
+                            "type": "string",
+                            "description": "Glob pattern for files to exclude"
+                        },
+                        "caseSensitive": {
+                            "type": "boolean",
+                            "description": "Whether the search should be case sensitive (defaults to false)"
+                        }
+                    },
+                    "required": ["query"]
                 }),
             },
         ],
