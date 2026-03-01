@@ -90,6 +90,7 @@ impl Tool<SqsMessageSender> for SleepTool {
             group_id: context.group_id.clone(),
             metadata: None,
             synthetic: None,
+            display_as: None,
         };
 
         const MAX_SQS_DELAY_SECONDS: i64 = 900;
@@ -218,6 +219,7 @@ impl Tool<SqsMessageSender> for SleepUntilTool {
             group_id: context.group_id.clone(),
             metadata: None,
             synthetic: None,
+            display_as: None,
         };
 
         if target_utc <= now {

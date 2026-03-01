@@ -37,6 +37,8 @@ struct RapToolResult {
     id: String,
     call_id: Option<String>,
     text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_as: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -142,7 +144,9 @@ async fn invoke_handler<
     let state_clone = state.clone();
     let handle = tokio::spawn(async move {
         let result_text = match invocation.operation.as_str() {
-            "clone_repo" => handle_clone_repo(&state_clone, &invocation).await,
+            "clone_repo" => handle_clone_repo(&state_clone, &invocation)
+                .await
+                .map(|t| (t, None)),
             "execute_command" => handle_execute_command(&state_clone, &invocation).await,
             "read_file" => handle_read_file(&state_clone, &invocation).await,
             "edit_file" => handle_edit_file(&state_clone, &invocation).await,
@@ -153,9 +157,9 @@ async fn invoke_handler<
             ))),
         };
 
-        let text = match result_text {
-            Ok(t) => t,
-            Err(e) => format!("Error: {e}"),
+        let (text, display_as) = match result_text {
+            Ok((t, d)) => (t, d),
+            Err(e) => (format!("Error: {e}"), None),
         };
 
         let tool_result = RapToolResult {
@@ -164,6 +168,7 @@ async fn invoke_handler<
             id: invocation.id.clone(),
             call_id: invocation.call_id.clone(),
             text,
+            display_as,
         };
 
         let body = serde_json::to_string(&tool_result).unwrap();
@@ -206,20 +211,21 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
 
 /// Run an action inside a sandbox: create → action → push → update metadata → cleanup.
 ///
-/// The closure receives the sandbox directory path and returns the tool result string.
-/// The `jj_description` is used to label the jj commit for this operation.
+/// The closure receives the sandbox directory path and returns `(text, display_as)`.
+/// `text` is the full result sent to the model; `display_as` is an optional short
+/// summary shown in the CLI instead of the full text.
 async fn with_sandbox<B, M, C, F, Fut>(
     state: &AppState<B, M, C>,
     group_id: &str,
     jj_description: &str,
     action: F,
-) -> Result<String, SandboxError>
+) -> Result<(String, Option<String>), SandboxError>
 where
     B: SandboxBackend,
     M: MetadataStore,
     C: CallbackClient,
     F: FnOnce(std::path::PathBuf) -> Fut,
-    Fut: std::future::Future<Output = Result<String, SandboxError>>,
+    Fut: std::future::Future<Output = Result<(String, Option<String>), SandboxError>>,
 {
     let repo_state = state
         .metadata
@@ -255,7 +261,7 @@ where
 async fn handle_execute_command<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
-) -> Result<String, SandboxError> {
+) -> Result<(String, Option<String>), SandboxError> {
     let args: ExecuteCommandArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
@@ -289,7 +295,7 @@ async fn handle_execute_command<B: SandboxBackend, M: MetadataStore, C: Callback
             } else {
                 result.push_str(&format!("\n[exit code: {exit_code}]"));
             }
-            Ok(result)
+            Ok((result, None))
         },
     )
     .await
@@ -298,7 +304,7 @@ async fn handle_execute_command<B: SandboxBackend, M: MetadataStore, C: Callback
 async fn handle_read_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
-) -> Result<String, SandboxError> {
+) -> Result<(String, Option<String>), SandboxError> {
     let args: ReadFileArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
@@ -321,9 +327,8 @@ async fn handle_read_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
             let end = args.end_line.unwrap_or(total_lines).min(total_lines);
 
             if start > total_lines {
-                return Ok(format!(
-                    "File has {total_lines} lines, but start_line is {start}"
-                ));
+                let msg = format!("File has {total_lines} lines, but start_line is {start}");
+                return Ok((msg.clone(), Some(msg)));
             }
 
             let selected: Vec<String> = lines[start - 1..end]
@@ -332,11 +337,23 @@ async fn handle_read_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
                 .map(|(i, line)| format!("{:>4}  {}", start + i, line))
                 .collect();
 
-            Ok(format!(
+            let read_count = end - start + 1;
+            let display = if start == 1 && end == total_lines {
+                format!("Read {} ({} lines)", args.path, total_lines)
+            } else {
+                format!(
+                    "Read {} lines of {} (lines {}-{})",
+                    read_count, args.path, start, end
+                )
+            };
+
+            let text = format!(
                 "<file name=\"{}\" lines=\"{total_lines}\">\n{}\n</file>",
                 args.path,
                 selected.join("\n")
-            ))
+            );
+
+            Ok((text, Some(display)))
         },
     )
     .await
@@ -345,7 +362,7 @@ async fn handle_read_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
 async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
-) -> Result<String, SandboxError> {
+) -> Result<(String, Option<String>), SandboxError> {
     let args: EditFileArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
@@ -382,7 +399,10 @@ async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
                 .await
                 .map_err(|e| SandboxError::Io(e))?;
 
-            Ok(format!("Replaced text in {}", args.path))
+            // Build a unified diff for display
+            let display = build_edit_diff(&args.path, &args.old_str, &args.new_str);
+
+            Ok((format!("Replaced text in {}", args.path), Some(display)))
         },
     )
     .await
@@ -391,11 +411,12 @@ async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
 async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
-) -> Result<String, SandboxError> {
+) -> Result<(String, Option<String>), SandboxError> {
     let args: GrepArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
     let description = format!("grep: {}", args.query);
+    let query_for_display = args.query.clone();
     let backend = &state.backend;
 
     with_sandbox(
@@ -445,18 +466,58 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
             let exec_result = backend.execute_command(&sandbox_dir, &command).await?;
 
             if exec_result.stdout.is_empty() && exec_result.exit_code == 1 {
-                return Ok("No matches found.".to_string());
+                let display = format!("Searched for '{}' — no matches", query_for_display);
+                return Ok(("No matches found.".to_string(), Some(display)));
             }
+
+            let stdout = &exec_result.stdout;
+
+            // Build summary: count matching files and match lines
+            let mut files = std::collections::HashSet::new();
+            let mut match_count = 0usize;
+            for line in stdout.lines() {
+                // Match lines have the format "file:line:content" (colon after line number)
+                // Context lines have "file-line-content" (dash after line number)
+                if let Some(colon1) = line.find(':') {
+                    let rest = &line[colon1 + 1..];
+                    if let Some(colon2) = rest.find(':') {
+                        if rest[..colon2].parse::<usize>().is_ok() {
+                            files.insert(&line[..colon1]);
+                            match_count += 1;
+                        }
+                    }
+                }
+            }
+
+            let display = format!(
+                "Searched for '{}' — {} match(es) across {} file(s)",
+                query_for_display,
+                match_count,
+                files.len()
+            );
 
             let mut output = exec_result.stdout;
             if !exec_result.stderr.is_empty() {
                 output.push_str("\n[stderr]\n");
                 output.push_str(&exec_result.stderr);
             }
-            Ok(output)
+            Ok((output, Some(display)))
         },
     )
     .await
+}
+
+/// Build a pretty-printed unified diff for display in the CLI.
+fn build_edit_diff(path: &str, old_str: &str, new_str: &str) -> String {
+    let mut diff = format!("--- {}\n+++ {}\n", path, path);
+    for line in old_str.lines() {
+        diff.push_str(&format!("- {}\n", line));
+    }
+    for line in new_str.lines() {
+        diff.push_str(&format!("+ {}\n", line));
+    }
+    diff.truncate(diff.trim_end().len());
+    diff
 }
 
 fn build_manifest(endpoint: &str) -> ToolsetManifest {

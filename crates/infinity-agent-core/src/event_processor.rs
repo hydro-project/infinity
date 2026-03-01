@@ -918,6 +918,7 @@ mod tests {
             group_id: group_id.to_string(),
             metadata: None,
             synthetic: None,
+            display_as: None,
         }
     }
 
@@ -954,6 +955,7 @@ mod tests {
             group_id: group_id.to_string(),
             metadata: None,
             synthetic,
+            display_as: None,
         }
     }
 
@@ -1012,6 +1014,7 @@ mod tests {
             group_id: "thread-1".to_string(),
             metadata: None,
             synthetic: None,
+            display_as: None,
         };
 
         let result = prepare_input(input, "msg-1".to_string(), &mut hm, &store)
@@ -1318,6 +1321,7 @@ mod tests {
             group_id: "thread-1".to_string(),
             metadata: Some(serde_json::json!({"user_id": "u-123"})),
             synthetic: None,
+            display_as: None,
         };
 
         let _ = prepare_input(input, "msg-1".to_string(), &mut hm, &store)
