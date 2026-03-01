@@ -2,8 +2,9 @@ use ratatui::{
     buffer::Buffer,
     crossterm::{
         Command,
-        cursor::{self, MoveDown, MoveUp},
+        cursor::{self, MoveDown, MoveUp, SavePosition},
         queue,
+        style::Print,
         terminal::{self as cterm, Clear},
     },
     layout::{Position, Rect},
@@ -145,10 +146,13 @@ impl InlineViewport {
     /// cursor position (end of scrollback). Restores the saved cursor,
     /// then uses `MoveToNextLine` / `MoveToColumn` to reach each cell,
     /// avoiding any absolute coordinates.
-    pub fn draw<F>(&mut self, render_fn: F) -> io::Result<()>
+    pub fn draw<F>(&mut self, desired_lines: u16, render_fn: F) -> io::Result<()>
     where
         F: FnOnce(&mut ViewportFrame),
     {
+        let old_height = self.height;
+        self.height = desired_lines;
+
         let area = self.area();
         self.buffers[self.current] = Buffer::empty(area);
 
@@ -171,7 +175,7 @@ impl InlineViewport {
 
         let mut stdout = io::stdout();
         let is_clearing_due_to_resize = self.request_clear;
-        let (should_clear, updates) = if self.request_clear || vertical_shift > 0 {
+        let (should_clear, updates) = if self.request_clear || ideal_viewport_y != self.viewport_y {
             self.request_clear = false;
             (true, Buffer::empty(area).diff(current))
         } else {
@@ -192,6 +196,18 @@ impl InlineViewport {
             // wait until the region stabilizes
             for _ in 0..vertical_shift {
                 queue!(stdout, MoveDown(1))?;
+            }
+
+            if ideal_viewport_y < self.viewport_y {
+                let shift_up = self.viewport_y - ideal_viewport_y;
+                queue!(stdout, MoveDown(old_height))?;
+                for _ in 0..shift_up {
+                    queue!(stdout, Print("\r\n"))?;
+                    self.viewport_y -= 1;
+                }
+                queue!(stdout, cursor::RestorePosition)?;
+                queue!(stdout, cursor::MoveUp(shift_up))?;
+                queue!(stdout, SavePosition)?;
             }
         }
 
