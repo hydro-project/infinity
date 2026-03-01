@@ -77,7 +77,7 @@ async fn main() -> Result<(), BoxError> {
         };
 
     let client = Client::from_env();
-    let model = client.completion_model("global.anthropic.claude-sonnet-4-6");
+    let model = client.completion_model("global.anthropic.claude-opus-4-6-v1");
 
     let thread_id = uuid::Uuid::new_v4().to_string();
     let (display_tx, display_rx) = mpsc::unbounded_channel::<DisplayEvent>();
