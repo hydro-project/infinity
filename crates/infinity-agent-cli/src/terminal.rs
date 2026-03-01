@@ -315,9 +315,6 @@ fn apply_mod_diff(w: &mut impl Write, from: Modifier, to: Modifier) -> io::Resul
     let removed = from - to;
     if removed.contains(Modifier::BOLD) {
         queue!(w, SetAttribute(CAttribute::NormalIntensity))?;
-        if to.contains(Modifier::DIM) {
-            queue!(w, SetAttribute(CAttribute::Dim))?;
-        }
     }
     if removed.contains(Modifier::ITALIC) {
         queue!(w, SetAttribute(CAttribute::NoItalic))?;
@@ -330,6 +327,9 @@ fn apply_mod_diff(w: &mut impl Write, from: Modifier, to: Modifier) -> io::Resul
     }
     if removed.contains(Modifier::REVERSED) {
         queue!(w, SetAttribute(CAttribute::NoReverse))?;
+    }
+    if removed.contains(Modifier::CROSSED_OUT) {
+        queue!(w, SetAttribute(CAttribute::NotCrossedOut))?;
     }
 
     let added = to - from;
@@ -347,6 +347,9 @@ fn apply_mod_diff(w: &mut impl Write, from: Modifier, to: Modifier) -> io::Resul
     }
     if added.contains(Modifier::REVERSED) {
         queue!(w, SetAttribute(CAttribute::Reverse))?;
+    }
+    if added.contains(Modifier::CROSSED_OUT) {
+        queue!(w, SetAttribute(CAttribute::CrossedOut))?;
     }
     Ok(())
 }
