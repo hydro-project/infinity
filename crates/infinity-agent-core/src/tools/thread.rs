@@ -63,7 +63,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
                 call_id: call_id.clone(),
                 content: OneOrMany::one(ToolResultContent::Text(Text {
                     text: format!(
-                        "Child thread is successfully spawned and has ID: {}. You will be notified automatically if the child has anything to report.",
+                        "Child thread is successfully spawned and has ID: {}. You will be notified automatically when the child has anything to report. Make sure that you **do not** do the task assigned to the child thread.",
                         new_thread_id
                     ),
                 })),
@@ -71,6 +71,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             group_id: context.group_id.clone(),
             metadata: None,
             synthetic: None,
+            display_as: None,
         };
 
         let child_result = InputMessage {
@@ -87,6 +88,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             group_id: new_thread_id,
             metadata: None,
             synthetic: None,
+            display_as: None,
         };
 
         context
@@ -183,6 +185,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Repor
             synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
                 tool_call_id: spawn_tool_call_id,
             })),
+            display_as: None,
         };
 
         let report_group_id = report_message.group_id.clone();
@@ -202,6 +205,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Repor
             group_id: context.group_id.clone(),
             metadata: None,
             synthetic: None,
+            display_as: None,
         };
 
         context
@@ -269,6 +273,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Close
                 group_id: context.group_id.clone(),
                 metadata: None,
                 synthetic: None,
+                display_as: None,
             };
 
             context
@@ -335,6 +340,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Close
                     synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
                         tool_call_id: spawn_tool_call_id,
                     })),
+                    display_as: None,
                 };
 
                 let report_group_id = report_message.group_id.clone();

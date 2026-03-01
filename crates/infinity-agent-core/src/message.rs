@@ -66,4 +66,9 @@ pub struct InputMessage {
     pub metadata: Option<serde_json::Value>,
     #[serde(default)]
     pub synthetic: Option<SyntheticKind>,
+    /// Optional short display text for the CLI. When present, the CLI shows
+    /// this instead of the full tool result text. The model still sees the
+    /// full text.
+    #[serde(default)]
+    pub display_as: Option<String>,
 }

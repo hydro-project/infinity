@@ -177,6 +177,7 @@ async fn agent_loop<Mdl>(
         {
             let _ = display_tx.send(DisplayEvent::ToolResult {
                 text: text.text,
+                display_as: input_msg.display_as.clone(),
                 prefix: current_history.get_thread_nesting_prefix(),
             });
         } else if let InputMessageContent::User(UserContent::Text(ref text)) = input_msg.content {
