@@ -542,7 +542,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
             },
             ToolDef {
                 name: "execute_command".to_string(),
-                description: "Execute a bash command in a sandboxed copy of the repository. The sandbox is an isolated temporary directory with the repo's current state. All filesystem changes are tracked and persisted via jujutsu.".to_string(),
+                description: "Execute a bash command in a sandboxed copy of the repository. The sandbox is an isolated temporary directory with the repo's current state. There is no need to cd to folders like /tmp before running commands.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {

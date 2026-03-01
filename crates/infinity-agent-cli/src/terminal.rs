@@ -14,7 +14,7 @@ use ratatui::{
     layout::{Constraint, Layout, Position},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 use rig::message::UserContent;
 use std::fmt;
@@ -174,6 +174,7 @@ pub async fn run(
                                 (KeyCode::Enter, _) => {
                                     let text = input_buf.trim().to_string();
                                     input_buf.clear();
+                                    draw_input_bar(&mut viewport, &input_buf)?;
                                     if !text.is_empty() {
                                         let msg = InputMessage {
                                             content: InputMessageContent::User(UserContent::text(&text)),
@@ -184,7 +185,6 @@ pub async fn run(
                                         };
                                         let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
                                     }
-                                    draw_input_bar(&mut viewport, &input_buf)?;
                                 }
                                 (KeyCode::Backspace, _) => {
                                     input_buf.pop();
@@ -252,16 +252,21 @@ fn end_stream(viewport: &mut InlineViewport, mid_stream: &mut bool) -> Result<()
 
 fn draw_input_bar(viewport: &mut InlineViewport, input_buf: &str) -> Result<(), BoxError> {
     let prompt = format!("> {}", input_buf);
-    viewport.draw(|frame| {
+    let current_width = viewport.area().width;
+    let mut desired_lines = 1; // border
+
+    let input_widget = Paragraph::new(prompt.as_str())
+        .style(Style::default())
+        .wrap(Wrap { trim: true });
+    desired_lines += input_widget.line_count(current_width);
+
+    viewport.draw(desired_lines as u16, |frame| {
         let area = frame.area();
         let [sep_area, input_area] =
             Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
 
         frame.render_widget(Block::default().borders(Borders::TOP), sep_area);
-        frame.render_widget(
-            Paragraph::new(prompt.as_str()).style(Style::default()),
-            input_area,
-        );
+        frame.render_widget(input_widget, input_area);
 
         let cursor_x = input_area.x + prompt.len() as u16;
         frame.set_cursor_position(Position::new(
