@@ -31,7 +31,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             "properties": {
                 "instructions": {
                     "type": "string",
-                    "description": "Instructions for the spawned thread describing what it should do"
+                    "description": "Instructions for the spawned thread describing what it should do. Make sure to include in the instructions what **you plan to do while the thread runs** to make sure the child thread doesn't accidentally duplicate your work."
                 }
             },
             "required": ["instructions"]
@@ -79,7 +79,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
                 call_id,
                 content: OneOrMany::one(ToolResultContent::Text(Text {
                     text: format!(
-                        "You are now INSIDE the thread that you requested to create. Follow the instructions in the tool call. Be careful not to get confused by the context before this call, which is from the parent thread. Your thread ID is {}",
+                        "You are now INSIDE the thread that you requested to create. Follow the instructions in the tool call parameters for **THIS TOOL CALL**. Be careful not to get confused by the context before this call, which is from the parent thread. Your thread ID is {}",
                         new_thread_id
                     ),
                 })),
