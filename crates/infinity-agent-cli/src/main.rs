@@ -8,6 +8,7 @@ use tracing_subscriber::EnvFilter;
 
 mod inline_viewport;
 mod memory_store;
+mod modifier_diff;
 mod rap_callback;
 mod rap_tools;
 mod sleep_tools;
