@@ -59,6 +59,7 @@ impl<M: InputSender + 'static> Tool<M> for SleepTool {
                 group_id: group_id.clone(),
                 metadata: None,
                 synthetic: None,
+                display_as: None,
             };
             if let Err(e) = sender.send_to_input_queue(msg, &group_id, &id).await {
                 tracing::error!("Failed to deliver sleep result: {}", e);
@@ -150,6 +151,7 @@ impl<M: InputSender + 'static> Tool<M> for SleepUntilTool {
                 group_id: group_id.clone(),
                 metadata: None,
                 synthetic: None,
+                display_as: None,
             };
             if let Err(e) = sender.send_to_input_queue(msg, &group_id, &id).await {
                 tracing::error!("Failed to deliver sleep_until result: {}", e);

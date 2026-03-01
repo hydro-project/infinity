@@ -35,6 +35,8 @@ struct RapCallback {
     tool_call_id: Option<String>,
     #[serde(default)]
     auth_url: Option<String>,
+    #[serde(default)]
+    display_as: Option<String>,
 }
 
 struct CallbackState {
@@ -114,18 +116,22 @@ async fn handle(req: Request<Incoming>, state: Arc<CallbackState>) -> Response<F
     );
 
     let input_msg = match cb.msg_type.as_str() {
-        "tool_result" => InputMessage {
-            content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                id: cb.id.unwrap_or_default(),
-                call_id: cb.call_id,
-                content: rig::OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                    text: cb.text.unwrap_or_default(),
+        "tool_result" => {
+            let display_as = cb.display_as;
+            InputMessage {
+                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                    id: cb.id.unwrap_or_default(),
+                    call_id: cb.call_id,
+                    content: rig::OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                        text: cb.text.unwrap_or_default(),
+                    })),
                 })),
-            })),
-            group_id: cb.group_id,
-            metadata: None,
-            synthetic: None,
-        },
+                group_id: cb.group_id,
+                metadata: None,
+                synthetic: None,
+                display_as,
+            }
+        }
         "subscription_event" => {
             let tool_call_id = cb.tool_call_id.unwrap_or_default();
             InputMessage {
@@ -141,6 +147,7 @@ async fn handle(req: Request<Incoming>, state: Arc<CallbackState>) -> Response<F
                 synthetic: Some(SyntheticKind::Tagged(
                     TaggedSyntheticKind::SubscriptionEvent { tool_call_id },
                 )),
+                display_as: None,
             }
         }
         "oauth" => InputMessage {
@@ -153,6 +160,7 @@ async fn handle(req: Request<Incoming>, state: Arc<CallbackState>) -> Response<F
             group_id: cb.group_id,
             metadata: None,
             synthetic: None,
+            display_as: None,
         },
         other => {
             return ok_response(StatusCode::BAD_REQUEST, &format!("Unknown type: {}", other));
