@@ -102,8 +102,6 @@ impl InlineViewport {
     }
 
     pub fn scroll_region_bottom(&mut self) -> u16 {
-        // self.viewport_y
-        self.viewport_y = self.terminal_size.1.saturating_sub(self.height);
         self.terminal_size.1.saturating_sub(self.height)
     }
 
@@ -157,7 +155,6 @@ impl InlineViewport {
         self.buffers[self.current] = Buffer::empty(area);
 
         let ideal_viewport_y = self.terminal_size.1.saturating_sub(self.height);
-        let vertical_shift = ideal_viewport_y.saturating_sub(self.viewport_y);
 
         let cursor_position;
         {
@@ -193,11 +190,6 @@ impl InlineViewport {
         }
 
         if !is_clearing_due_to_resize {
-            // wait until the region stabilizes
-            for _ in 0..vertical_shift {
-                queue!(stdout, MoveDown(1))?;
-            }
-
             if ideal_viewport_y < self.viewport_y {
                 let shift_up = self.viewport_y - ideal_viewport_y;
                 queue!(stdout, MoveDown(old_height))?;
