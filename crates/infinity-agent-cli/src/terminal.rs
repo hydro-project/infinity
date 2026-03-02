@@ -155,9 +155,10 @@ pub async fn run(
                         print_line_above(&mut viewport, Line::from(text))?;
                     }
                     DisplayEvent::UserInput(text) => {
+                        let sanitized = text.replace('\n', "\r\n");
                         end_stream(&mut viewport, &mut mid_stream)?;
                         print_line_above(&mut viewport, Line::from(vec![
-                            Span::styled(format!("> {}", text), Style::default().add_modifier(Modifier::BOLD)),
+                            Span::styled(format!("> {}", sanitized), Style::default().add_modifier(Modifier::BOLD)),
                         ]))?;
 
                         thinking = true;
@@ -195,47 +196,30 @@ pub async fn run(
                             got_resize = true;
                         }
                         Event::Key(key) => {
-                            match (key.code, key.modifiers) {
-                                (KeyCode::Char('c') | KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
-                                    cleanup()?;
-                                    return Ok(());
-                                }
-                                (KeyCode::Enter, _) => {
-                                    if !input.is_empty() {
-                                        let text = input.take_text();
-                                        let trimmed = text.trim().to_string();
-                                        let msg = InputMessage {
-                                            content: InputMessageContent::User(UserContent::text(&trimmed)),
-                                            group_id: thread_id.clone(),
-                                            metadata: None,
-                                            synthetic: None,
-                                            display_as: None,
-                                        };
-                                        let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
+                            // Let the input area handle the keystroke first.
+                            if !input.handle_keystroke(key) {
+                                // Input didn't consume it — handle at the terminal level.
+                                match (key.code, key.modifiers) {
+                                    (KeyCode::Char('c') | KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                        cleanup()?;
+                                        return Ok(());
                                     }
+                                    (KeyCode::Enter, _) => {
+                                        if !input.is_empty() {
+                                            let text = input.take_text();
+                                            let trimmed = text.trim().to_string();
+                                            let msg = InputMessage {
+                                                content: InputMessageContent::User(UserContent::text(&trimmed)),
+                                                group_id: thread_id.clone(),
+                                                metadata: None,
+                                                synthetic: None,
+                                                display_as: None,
+                                            };
+                                            let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
+                                        }
+                                    }
+                                    _ => {}
                                 }
-                                (KeyCode::Backspace, _) => {
-                                    input.backspace();
-                                }
-                                (KeyCode::Delete, _) => {
-                                    input.delete();
-                                }
-                                (KeyCode::Left, _) => {
-                                    input.move_left();
-                                }
-                                (KeyCode::Right, _) => {
-                                    input.move_right();
-                                }
-                                (KeyCode::Home, _) => {
-                                    input.move_home();
-                                }
-                                (KeyCode::End, _) => {
-                                    input.move_end();
-                                }
-                                (KeyCode::Char(ch), _) => {
-                                    input.insert_char(ch);
-                                }
-                                _ => {}
                             }
                         }
                         _ => {}
