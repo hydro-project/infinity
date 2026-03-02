@@ -174,13 +174,15 @@ impl InlineViewport {
 
         let mut stdout = io::stdout();
         let is_clearing_due_to_resize = self.request_clear;
-        let (should_clear, updates) =
-            if self.request_clear || ideal_viewport_y != self.last_effective_viewport_y {
-                self.request_clear = false;
-                (true, Buffer::empty(area).diff(current))
-            } else {
-                (false, previous.diff(current))
-            };
+        let (should_clear, updates) = if self.request_clear
+            || ideal_viewport_y != self.last_effective_viewport_y
+            || self.height < old_height
+        {
+            self.request_clear = false;
+            (true, Buffer::empty(area).diff(current))
+        } else {
+            (false, previous.diff(current))
+        };
 
         queue!(stdout, cursor::Hide)?;
         queue!(stdout, DisableWrap)?;
