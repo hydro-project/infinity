@@ -1,5 +1,6 @@
 use ratatui::{
     buffer::Buffer,
+    crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
     layout::{Position, Rect},
     style::Color,
     widgets::Widget,
@@ -80,6 +81,159 @@ impl TextInput {
 
     pub fn move_end(&mut self) {
         self.cursor = self.buf.len();
+    }
+
+    /// Move cursor one word to the left (Option+Left / Ctrl+Left).
+    pub fn move_word_left(&mut self) {
+        // Skip whitespace to the left, then skip non-whitespace.
+        let before = &self.buf[..self.cursor];
+        let trimmed = before.trim_end();
+        if trimmed.is_empty() {
+            self.cursor = 0;
+            return;
+        }
+        // Find the start of the current word
+        if let Some((i, _)) = trimmed
+            .char_indices()
+            .rev()
+            .find(|(_, c)| c.is_whitespace())
+        {
+            // `i` is the byte index of the space; skip past it
+            self.cursor = i + trimmed[i..].chars().next().unwrap().len_utf8();
+        } else {
+            self.cursor = 0;
+        }
+    }
+
+    /// Move cursor one word to the right (Option+Right / Ctrl+Right).
+    pub fn move_word_right(&mut self) {
+        let after = &self.buf[self.cursor..];
+        // Skip non-whitespace, then skip whitespace.
+        let skip_word = after
+            .char_indices()
+            .find(|(_, c)| c.is_whitespace())
+            .map(|(i, _)| i)
+            .unwrap_or(after.len());
+        let rest = &after[skip_word..];
+        let skip_space = rest
+            .char_indices()
+            .find(|(_, c)| !c.is_whitespace())
+            .map(|(i, _)| i)
+            .unwrap_or(rest.len());
+        self.cursor += skip_word + skip_space;
+    }
+
+    /// Delete the word to the left of the cursor (Option+Backspace).
+    pub fn delete_word_left(&mut self) {
+        let start = self.cursor;
+        self.move_word_left();
+        self.buf.drain(self.cursor..start);
+    }
+
+    /// Insert a newline at the cursor (Shift+Enter).
+    pub fn insert_newline(&mut self) {
+        self.insert_char('\n');
+    }
+
+    /// Handle a key event. Returns `true` if the event was consumed by the
+    /// input area, `false` if it should fall through to other handlers.
+    pub fn handle_keystroke(&mut self, key: KeyEvent) -> bool {
+        let mods = key.modifiers;
+        let ctrl = mods.contains(KeyModifiers::CONTROL);
+        let alt = mods.contains(KeyModifiers::ALT);
+
+        match key.code {
+            // ── Word-level navigation (Option/Alt + arrows) ─────────
+            // On macOS, Option+Left/Right emit Alt+b / Alt+f (escape
+            // sequences \x1bb / \x1bf) rather than Alt+Arrow.
+            KeyCode::Left if alt => {
+                self.move_word_left();
+                true
+            }
+            KeyCode::Right if alt => {
+                self.move_word_right();
+                true
+            }
+            KeyCode::Char('b') if alt => {
+                self.move_word_left();
+                true
+            }
+            KeyCode::Char('f') if alt => {
+                self.move_word_right();
+                true
+            }
+
+            // ── Emacs-style line nav ────────────────────────────────
+            KeyCode::Char('a') if ctrl => {
+                self.move_home();
+                true
+            }
+            KeyCode::Char('e') if ctrl => {
+                self.move_end();
+                true
+            }
+
+            // ── Ctrl+C clears input; falls through if already empty ─
+            KeyCode::Char('c') if ctrl => {
+                if !self.is_empty() {
+                    self.buf.clear();
+                    self.cursor = 0;
+                    true
+                } else {
+                    false
+                }
+            }
+
+            // ── Let Ctrl+<key> combos we don't handle fall through ──
+            KeyCode::Char(_) if ctrl => false,
+
+            // ── Delete word left (Option+Backspace / Alt+Backspace) ──
+            KeyCode::Backspace if alt => {
+                self.delete_word_left();
+                true
+            }
+
+            // ── Alt+Enter → newline ──────────────────────────────────
+            KeyCode::Enter if alt => {
+                self.insert_newline();
+                true
+            }
+
+            // ── Plain Enter → not ours, let terminal submit ─────────
+            KeyCode::Enter => false,
+
+            // ── Basic editing ───────────────────────────────────────
+            KeyCode::Backspace => {
+                self.backspace();
+                true
+            }
+            KeyCode::Delete => {
+                self.delete();
+                true
+            }
+            KeyCode::Left => {
+                self.move_left();
+                true
+            }
+            KeyCode::Right => {
+                self.move_right();
+                true
+            }
+            KeyCode::Home => {
+                self.move_home();
+                true
+            }
+            KeyCode::End => {
+                self.move_end();
+                true
+            }
+            KeyCode::Char(ch) => {
+                self.insert_char(ch);
+                true
+            }
+
+            _ => false,
+        }
     }
 
     /// Take the current text, clear the buffer, and reset the cursor.
@@ -211,6 +365,7 @@ impl TextInput {
 }
 
 /// Word-wrap `text` into lines of at most `max_width` display columns.
+/// Handles explicit newlines and soft-wraps long lines.
 /// Returns a vec of string slices (borrowed from `text`).
 fn wrap_lines<'a>(text: &'a str, max_width: usize) -> Vec<&'a str> {
     if text.is_empty() {
@@ -223,32 +378,44 @@ fn wrap_lines<'a>(text: &'a str, max_width: usize) -> Vec<&'a str> {
     }
 
     let mut lines: Vec<&'a str> = Vec::new();
-    let mut remaining = text;
 
-    while !remaining.is_empty() {
-        let char_count = remaining.chars().count();
-        if char_count <= max_width {
-            lines.push(remaining);
-            break;
+    // First split on hard newlines, then soft-wrap each segment.
+    for segment in text.split('\n') {
+        // For empty segments (consecutive newlines), push an empty slice
+        // that still points into `text` so pointer arithmetic works.
+        if segment.is_empty() {
+            // Use the byte position of this segment within text.
+            let offset = segment.as_ptr() as usize - text.as_ptr() as usize;
+            lines.push(&text[offset..offset]);
+            continue;
         }
 
-        // Find the byte index of the max_width-th character
-        let break_byte = remaining
-            .char_indices()
-            .nth(max_width)
-            .map(|(i, _)| i)
-            .unwrap_or(remaining.len());
+        let mut remaining = segment;
+        while !remaining.is_empty() {
+            let char_count = remaining.chars().count();
+            if char_count <= max_width {
+                lines.push(remaining);
+                break;
+            }
 
-        // Try to break at the last space within the first max_width chars
-        let segment = &remaining[..break_byte];
-        if let Some(space_pos) = segment.rfind(' ') {
-            lines.push(&remaining[..space_pos]);
-            // Skip the space
-            remaining = &remaining[space_pos + 1..];
-        } else {
-            // No space found — hard break at max_width
-            lines.push(segment);
-            remaining = &remaining[break_byte..];
+            // Find the byte index of the max_width-th character
+            let break_byte = remaining
+                .char_indices()
+                .nth(max_width)
+                .map(|(i, _)| i)
+                .unwrap_or(remaining.len());
+
+            // Try to break at the last space within the first max_width chars
+            let seg = &remaining[..break_byte];
+            if let Some(space_pos) = seg.rfind(' ') {
+                lines.push(&remaining[..space_pos]);
+                // Skip the space
+                remaining = &remaining[space_pos + 1..];
+            } else {
+                // No space found — hard break at max_width
+                lines.push(seg);
+                remaining = &remaining[break_byte..];
+            }
         }
     }
 
