@@ -102,7 +102,16 @@ impl TextInput {
             return PAD_Y * 2 + 1;
         }
         let lines = wrap_lines(&self.buf, inner_w as usize);
-        let text_rows = lines.len().max(1) as u16;
+        let mut text_rows = lines.len().max(1) as u16;
+
+        // If the cursor sits past a full last line, it will render on an
+        // extra row — make sure we reserve space for it.
+        if let Some(last) = lines.last() {
+            if last.chars().count() >= inner_w as usize && self.cursor == self.buf.len() {
+                text_rows += 1;
+            }
+        }
+
         PAD_Y * 2 + text_rows
     }
 
@@ -142,19 +151,38 @@ impl TextInput {
             let line_byte_start = line.as_ptr() as usize - buf_start;
             let line_byte_end = line_byte_start + line.len();
             if !found_cursor && self.cursor >= line_byte_start && self.cursor <= line_byte_end {
-                cursor_row = row_idx as u16;
                 let offset = self.cursor.saturating_sub(line_byte_start);
-                let prefix = &line[..offset.min(line.len())];
-                cursor_col = prefix.chars().count() as u16;
+                let col = line[..offset.min(line.len())].chars().count();
+
+                // If the cursor is at the end of a line that is exactly
+                // max_width chars wide, it should appear at column 0 of
+                // the next visual row (like a real text editor).
+                let line_full = line.chars().count() >= inner.width as usize;
+                if offset == line.len() && line_full {
+                    // Let the next iteration (or the fallback below)
+                    // place the cursor on the following row.
+                    continue;
+                }
+
+                cursor_row = row_idx as u16;
+                cursor_col = col as u16;
                 found_cursor = true;
             }
         }
 
-        // If cursor is past all content (e.g. empty buffer), place at 0,0
+        // Cursor is past all wrapped content — place it at col 0 of the
+        // next row (happens when the last line is exactly full) or at the
+        // end of the last line.
         if !found_cursor {
-            cursor_row = lines.len().saturating_sub(1) as u16;
             if let Some(last) = lines.last() {
-                cursor_col = last.chars().count() as u16;
+                let last_full = last.chars().count() >= inner.width as usize;
+                if last_full && self.cursor == self.buf.len() {
+                    cursor_row = lines.len() as u16;
+                    cursor_col = 0;
+                } else {
+                    cursor_row = lines.len().saturating_sub(1) as u16;
+                    cursor_col = last.chars().count() as u16;
+                }
             }
         }
 
@@ -175,7 +203,7 @@ impl TextInput {
 
         RenderResult {
             cursor_position: Position::new(
-                (inner.x + cursor_col).min(inner.right().saturating_sub(1)),
+                inner.x + cursor_col,
                 (inner.y + cursor_row).min(inner.bottom().saturating_sub(1)),
             ),
         }
