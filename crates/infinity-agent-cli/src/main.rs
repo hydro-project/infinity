@@ -15,7 +15,7 @@ mod sleep_tools;
 mod terminal;
 mod text_input;
 
-use infinity_agent_core::event_processor;
+use infinity_agent_core::event_processor::{self, CompletionAction};
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
 use infinity_agent_core::tools::config::ToolsConfig;
 use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
@@ -81,7 +81,7 @@ async fn main() -> Result<(), BoxError> {
     let model = client.completion_model("global.anthropic.claude-opus-4-6-v1");
 
     let thread_id = uuid::Uuid::new_v4().to_string();
-    let (display_tx, display_rx) = mpsc::unbounded_channel::<DisplayEvent>();
+    let (display_tx, display_rx) = mpsc::unbounded_channel::<DisplayEvent<_>>();
 
     let agent_handle = tokio::spawn(agent_loop(
         input_rx,
@@ -94,7 +94,13 @@ async fn main() -> Result<(), BoxError> {
         rap_tools,
     ));
 
-    let result = terminal::run(input_tx, display_rx, thread_id).await;
+    let result = terminal::run(
+        input_tx,
+        display_rx,
+        thread_id,
+        "claude-opus-4-6".to_string(),
+    )
+    .await;
     agent_handle.abort();
     result
 }
@@ -104,7 +110,7 @@ async fn main() -> Result<(), BoxError> {
 #[expect(clippy::too_many_arguments, reason = "internal")]
 async fn agent_loop<Mdl>(
     mut rx: mpsc::UnboundedReceiver<(InputMessage, String)>,
-    display_tx: mpsc::UnboundedSender<DisplayEvent>,
+    display_tx: mpsc::UnboundedSender<DisplayEvent<Mdl::StreamingResponse>>,
     model: Mdl,
     conversation_store: InMemoryConversationStore,
     state_store: InMemoryStateStore,
@@ -235,6 +241,7 @@ async fn agent_loop<Mdl>(
             let mut action = None;
             let mut started = false;
             let mut any_text = false;
+            let mut resp = None;
             while let Some(ev) = stream.next().await {
                 match ev {
                     Ok(event_processor::CompletionEvent::TextChunk(chunk)) => {
@@ -253,6 +260,9 @@ async fn agent_loop<Mdl>(
                     Ok(event_processor::CompletionEvent::ThinkingEnd) => {
                         let _ = display_tx.send(DisplayEvent::ThinkingEnd);
                     }
+                    Ok(event_processor::CompletionEvent::Action(CompletionAction::Done(r))) => {
+                        resp = Some(r);
+                    }
                     Ok(event_processor::CompletionEvent::Action(a)) => {
                         action = Some(a);
                     }
@@ -262,8 +272,8 @@ async fn agent_loop<Mdl>(
                     }
                 }
             }
-            if any_text {
-                let _ = display_tx.send(DisplayEvent::ResponseDone);
+            if any_text && let Some(resp) = resp {
+                let _ = display_tx.send(DisplayEvent::ResponseDone(thread_prefix.clone(), resp));
             }
             action
         };
