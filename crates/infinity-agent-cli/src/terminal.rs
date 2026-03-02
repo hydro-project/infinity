@@ -98,13 +98,10 @@ pub async fn run(
                         thinking = true;
                         thinking_start = Instant::now();
                     }
-                    DisplayEvent::ThinkingEnd => {
-                        thinking = false;
-                    }
+                    DisplayEvent::ThinkingEnd => {}
                     DisplayEvent::StartOutput { prefix } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
                         mid_stream = true;
-                        thinking = false;
                         print_above(&mut viewport, |w| {
                             write!(w, "\r\n")?;
                             if let Some(p) = prefix {
@@ -119,6 +116,7 @@ pub async fn run(
                     }
                     DisplayEvent::ResponseDone => {
                         end_stream(&mut viewport, &mut mid_stream)?;
+                        thinking = false;
                     }
                     DisplayEvent::ToolCall { name, args, prefix } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
@@ -278,6 +276,12 @@ fn print_above(
 
     queue!(stdout, cursor::SavePosition)?;
     queue!(stdout, ResetScrollRegion)?;
+    queue!(stdout, cursor::RestorePosition)?;
+
+    stdout.flush()?;
+
+    let cursor_position = cursor::position().unwrap();
+    viewport.viewport_y = cursor_position.1 + 1;
 
     // don't show the cursor here or flush, that will be handled in printing input bar
 

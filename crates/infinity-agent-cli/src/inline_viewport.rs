@@ -2,7 +2,7 @@ use ratatui::{
     buffer::Buffer,
     crossterm::{
         Command,
-        cursor::{self, MoveDown, MoveUp, SavePosition},
+        cursor::{self, MoveUp, SavePosition},
         queue,
         style::Print,
         terminal::{self as cterm, Clear},
@@ -42,7 +42,8 @@ impl Command for MoveToNextLine {
 pub struct InlineViewport {
     height: u16,
     terminal_size: (u16, u16),
-    viewport_y: u16,
+    pub viewport_y: u16,
+    last_effective_viewport_y: u16,
     buffers: [Buffer; 2],
     current: usize,
     request_clear: bool,
@@ -94,6 +95,7 @@ impl InlineViewport {
         Ok(Self {
             height,
             viewport_y,
+            last_effective_viewport_y: viewport_y,
             terminal_size,
             buffers: [Buffer::empty(area), Buffer::empty(area)],
             current: 0,
@@ -173,7 +175,7 @@ impl InlineViewport {
         let mut stdout = io::stdout();
         let is_clearing_due_to_resize = self.request_clear;
         let (should_clear, updates) = if self.request_clear
-            || ideal_viewport_y < self.viewport_y
+            || ideal_viewport_y != self.last_effective_viewport_y
             || self.height != old_height
         {
             self.request_clear = false;
@@ -192,10 +194,11 @@ impl InlineViewport {
             queue!(stdout, Clear(cterm::ClearType::FromCursorDown))?;
         }
 
+        self.last_effective_viewport_y = self.viewport_y;
         if !is_clearing_due_to_resize {
             if ideal_viewport_y < self.viewport_y {
                 let shift_up = self.viewport_y - ideal_viewport_y;
-                queue!(stdout, MoveDown(old_height))?;
+                queue!(stdout, MoveToNextLine(old_height))?;
                 for _ in 0..shift_up {
                     queue!(stdout, Print("\r\n"))?;
                     self.viewport_y -= 1;
@@ -203,6 +206,11 @@ impl InlineViewport {
                 queue!(stdout, cursor::RestorePosition)?;
                 queue!(stdout, cursor::MoveUp(shift_up))?;
                 queue!(stdout, SavePosition)?;
+            } else if ideal_viewport_y > self.viewport_y {
+                let shift_down = ideal_viewport_y - self.viewport_y;
+                queue!(stdout, cursor::RestorePosition)?;
+                queue!(stdout, MoveToNextLine(shift_down))?;
+                self.last_effective_viewport_y = ideal_viewport_y;
             }
         }
 
