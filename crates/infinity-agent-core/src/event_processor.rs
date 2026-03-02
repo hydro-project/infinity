@@ -44,9 +44,9 @@ pub enum PrepareResult {
 }
 
 /// What the model wants to do after a completion stream finishes.
-pub enum CompletionAction {
+pub enum CompletionAction<R> {
     /// Model produced text and is done (no tool call).
-    Done,
+    Done(R),
     /// Model wants to execute a tool call. Under the RAP protocol tools are
     /// fire-and-forget: the agent loop stops after dispatching the call and
     /// the result arrives as a new input message later.
@@ -59,11 +59,11 @@ pub enum CompletionAction {
 }
 
 /// Items yielded by the completion stream.
-pub enum CompletionEvent {
+pub enum CompletionEvent<R> {
     /// A chunk of text from the model.
     TextChunk(String),
     /// The terminal event — what to do next.
-    Action(CompletionAction),
+    Action(CompletionAction<R>),
     /// The model has started thinking (reasoning).
     ThinkingStart,
     /// The model has stopped thinking (reasoning).
@@ -605,7 +605,7 @@ pub fn run_completion<'a, Mdl, C, S>(
     tools: &'a [ToolDefinition],
     group_id: &'a str,
     message_id: &'a str,
-) -> impl futures_util::Stream<Item = Result<CompletionEvent, BoxError>> + 'a
+) -> impl futures_util::Stream<Item = Result<CompletionEvent<Mdl::StreamingResponse>, BoxError>> + 'a
 where
     Mdl: CompletionModel,
     C: ConversationStore,
@@ -716,7 +716,7 @@ where
                             tool_call_id: call.id,
                             call_id: call.call_id,
                         });
-                        return;
+                        // return;
                     }
                     StreamedAssistantContent::ToolCallDelta { .. } => {}
                     StreamedAssistantContent::Reasoning(reasoning) => {
@@ -732,12 +732,12 @@ where
                             yield CompletionEvent::ThinkingStart;
                         }
                     }
-                    StreamedAssistantContent::Final(_) => {
+                    StreamedAssistantContent::Final(r) => {
                         if is_thinking {
                             yield CompletionEvent::ThinkingEnd;
                         }
                         tracing::info!("Received final message");
-                        yield CompletionEvent::Action(CompletionAction::Done);
+                        yield CompletionEvent::Action(CompletionAction::Done(r));
                         return;
                     }
                 }
@@ -751,8 +751,8 @@ where
 //     or emit output).
 // ═══════════════════════════════════════════════════════════════════════
 
-pub async fn execute_action<M>(
-    action: CompletionAction,
+pub async fn execute_action<M, R>(
+    action: CompletionAction<R>,
     tool_registry: &HashMap<String, &dyn Tool<M>>,
     tool_context: &ToolContext<M>,
 ) -> Result<(), BoxError>
@@ -760,7 +760,7 @@ where
     M: InputSender + 'static,
 {
     match action {
-        CompletionAction::Done => {}
+        CompletionAction::Done(_) => {}
         CompletionAction::ExecuteToolCall {
             tool_name,
             tool_args,

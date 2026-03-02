@@ -21,6 +21,7 @@ use ratatui::{
     widgets::{Block, Borders},
 };
 use rig::message::UserContent;
+use rig_bedrock::streaming::BedrockStreamingResponse;
 use std::fmt;
 use std::io::{self, Write};
 use std::time::Instant;
@@ -30,7 +31,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 const VIEWPORT_HEIGHT: u16 = 2;
 
-pub enum DisplayEvent {
+pub enum DisplayEvent<R> {
     StartOutput {
         prefix: Option<String>,
     },
@@ -46,7 +47,7 @@ pub enum DisplayEvent {
         prefix: Option<String>,
     },
     Info(String),
-    ResponseDone,
+    ResponseDone(Option<String>, R),
     UserInput(String),
     SubscriptionEvent {
         name: String,
@@ -59,8 +60,9 @@ pub enum DisplayEvent {
 
 pub async fn run(
     input_tx: mpsc::UnboundedSender<(InputMessage, String)>,
-    mut display_rx: mpsc::UnboundedReceiver<DisplayEvent>,
+    mut display_rx: mpsc::UnboundedReceiver<DisplayEvent<BedrockStreamingResponse>>,
     thread_id: String,
+    model_name: String,
 ) -> Result<(), BoxError> {
     cterm::enable_raw_mode()?;
 
@@ -75,8 +77,16 @@ pub async fn run(
     let mut mid_stream = false;
     let mut thinking = false;
     let mut thinking_start = Instant::now();
+    let mut total_tokens_used = 0;
 
-    draw_input_bar(&mut viewport, &input, thinking, &thinking_start)?;
+    draw_input_bar(
+        &mut viewport,
+        &input,
+        thinking,
+        &thinking_start,
+        &model_name,
+        total_tokens_used,
+    )?;
 
     loop {
         // When thinking, tick every 50ms for animation; otherwise wait indefinitely
@@ -114,7 +124,11 @@ pub async fn run(
                         let sanitized = chunk.replace('\n', "\r\n");
                         print_above(&mut viewport, |w| write!(w, "{}", sanitized))?;
                     }
-                    DisplayEvent::ResponseDone => {
+                    DisplayEvent::ResponseDone(prefix, r) => {
+                        if prefix.is_none() {
+                            let usage = r.usage.unwrap();
+                            total_tokens_used += usage.total_tokens as usize;
+                        }
                         end_stream(&mut viewport, &mut mid_stream)?;
                         thinking = false;
                     }
@@ -149,6 +163,9 @@ pub async fn run(
                                 Span::styled("✓", Style::default().fg(Color::Green)),
                             ]))?;
                         }
+
+                        thinking = true;
+                        thinking_start = Instant::now();
                     }
                     DisplayEvent::Info(text) => {
                         end_stream(&mut viewport, &mut mid_stream)?;
@@ -173,7 +190,7 @@ pub async fn run(
                         ]))?;
                     }
                 }
-                draw_input_bar(&mut viewport, &input, thinking, &thinking_start)?;
+                draw_input_bar(&mut viewport, &input, thinking, &thinking_start, &model_name, total_tokens_used)?;
             }
 
             _ = poll_crossterm_event() => {
@@ -231,7 +248,7 @@ pub async fn run(
                 }
 
                 if got_resize || any_change || thinking {
-                    draw_input_bar(&mut viewport, &input, thinking, &thinking_start)?;
+                    draw_input_bar(&mut viewport, &input, thinking, &thinking_start, &model_name, total_tokens_used)?;
                 }
             }
 
@@ -294,24 +311,37 @@ fn draw_input_bar(
     input: &TextInput,
     thinking: bool,
     thinking_start: &Instant,
+    model_name: &str,
+    total_tokens_used: usize,
 ) -> Result<(), BoxError> {
+    const MAX_CONTEXT: usize = 200_000;
+
     let current_width = viewport.area().width;
     let input_height = input.preferred_height(current_width);
-    let mut desired_lines = 1 + input_height; // border + input widget
+    let mut desired_lines = 1 + input_height + 1; // border + input + status row
 
     // Add one row for the thinking animation bar
     if thinking {
         desired_lines += 1;
     }
 
+    let pct = if MAX_CONTEXT > 0 {
+        ((total_tokens_used as f64 / MAX_CONTEXT as f64) * 100.0).min(100.0)
+    } else {
+        0.0
+    };
+    let status_right = format!("{:.0}% context used", pct);
+    let status_left = model_name.to_string();
+
     viewport.draw(desired_lines, |frame| {
         let area = frame.area();
 
         if thinking {
-            let [thinking_area, sep_area, input_area] = Layout::vertical([
+            let [thinking_area, sep_area, input_area, status_area] = Layout::vertical([
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Min(1),
+                Constraint::Length(1),
             ])
             .areas(area);
 
@@ -323,9 +353,15 @@ fn draw_input_bar(
             if let Some(pos) = cursor_pos {
                 frame.set_cursor_position(pos);
             }
+
+            render_status_row(frame, status_area, &status_left, &status_right);
         } else {
-            let [sep_area, input_area] =
-                Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+            let [sep_area, input_area, status_area] = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .areas(area);
 
             frame.render_widget(Block::default().borders(Borders::TOP), sep_area);
 
@@ -334,6 +370,8 @@ fn draw_input_bar(
             if let Some(pos) = cursor_pos {
                 frame.set_cursor_position(pos);
             }
+
+            render_status_row(frame, status_area, &status_left, &status_right);
         }
     })?;
     Ok(())
@@ -403,6 +441,45 @@ fn render_thinking_bar(
     }
 
     frame.render_widget(ThinkingWidget { elapsed_s }, area);
+}
+
+fn render_status_row(
+    frame: &mut crate::inline_viewport::ViewportFrame,
+    area: ratatui::layout::Rect,
+    left: &str,
+    right: &str,
+) {
+    let w = area.width as usize;
+    if w == 0 {
+        return;
+    }
+
+    // Pad the middle so left and right are flush to their edges
+    let left_len = left.chars().count().min(w);
+    let right_len = right.chars().count().min(w.saturating_sub(left_len));
+    let pad = w.saturating_sub(left_len + right_len);
+
+    let line = Line::from(vec![
+        Span::styled(
+            &left[..left
+                .char_indices()
+                .nth(left_len)
+                .map(|(i, _)| i)
+                .unwrap_or(left.len())],
+            Style::default().fg(Color::Rgb(140, 140, 140)),
+        ),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(
+            &right[..right
+                .char_indices()
+                .nth(right_len)
+                .map(|(i, _)| i)
+                .unwrap_or(right.len())],
+            Style::default().fg(Color::Rgb(140, 140, 140)),
+        ),
+    ]);
+
+    frame.render_widget(line, area);
 }
 
 fn cleanup() -> Result<(), BoxError> {
