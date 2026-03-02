@@ -64,6 +64,10 @@ pub enum CompletionEvent {
     TextChunk(String),
     /// The terminal event — what to do next.
     Action(CompletionAction),
+    /// The model has started thinking (reasoning).
+    ThinkingStart,
+    /// The model has stopped thinking (reasoning).
+    ThinkingEnd,
 }
 
 // ── HistoryManager (unchanged from before) ──
@@ -609,6 +613,7 @@ where
 {
     async_stream::try_stream! {
         let mut completion_counter: usize = 0;
+        let mut is_thinking = false;
 
         'outer: loop {
             let stream_result = model
@@ -675,10 +680,18 @@ where
 
                 match chunk {
                     StreamedAssistantContent::Text(text) => {
+                        if is_thinking {
+                            is_thinking = false;
+                            yield CompletionEvent::ThinkingEnd;
+                        }
                         tracing::info!("[Text] {}", &text.text);
                         yield CompletionEvent::TextChunk(text.text);
                     }
                     StreamedAssistantContent::ToolCall { tool_call: call, .. } => {
+                        if is_thinking {
+                            is_thinking = false;
+                            yield CompletionEvent::ThinkingEnd;
+                        }
                         tracing::info!("[Tool Call: {} with arguments {}]", &call.function.name, &call.function.arguments);
 
                         // Unknown tool — inject error and retry the whole completion
@@ -707,10 +720,22 @@ where
                     }
                     StreamedAssistantContent::ToolCallDelta { .. } => {}
                     StreamedAssistantContent::Reasoning(reasoning) => {
+                        if is_thinking {
+                            is_thinking = false;
+                            yield CompletionEvent::ThinkingEnd;
+                        }
                         tracing::info!("[Reasoning: {:?}]", reasoning.first_text());
                     }
-                    StreamedAssistantContent::ReasoningDelta { .. } => {}
+                    StreamedAssistantContent::ReasoningDelta { .. } => {
+                        if !is_thinking {
+                            is_thinking = true;
+                            yield CompletionEvent::ThinkingStart;
+                        }
+                    }
                     StreamedAssistantContent::Final(_) => {
+                        if is_thinking {
+                            yield CompletionEvent::ThinkingEnd;
+                        }
                         tracing::info!("Received final message");
                         yield CompletionEvent::Action(CompletionAction::Done);
                         return;
