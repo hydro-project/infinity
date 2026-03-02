@@ -1,4 +1,8 @@
-use crate::{inline_viewport::InlineViewport, modifier_diff::ModifierDiff};
+use crate::{
+    inline_viewport::InlineViewport,
+    modifier_diff::ModifierDiff,
+    text_input::{TextInput, TextInputWidget},
+};
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
 use ratatui::{
     crossterm::{
@@ -11,14 +15,15 @@ use ratatui::{
         },
         terminal::{self as cterm},
     },
-    layout::{Constraint, Layout, Position},
+    layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders},
 };
 use rig::message::UserContent;
 use std::fmt;
 use std::io::{self, Write};
+use std::time::Instant;
 use tokio::sync::mpsc;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -48,6 +53,8 @@ pub enum DisplayEvent {
         text: String,
         prefix: Option<String>,
     },
+    ThinkingStart,
+    ThinkingEnd,
 }
 
 pub async fn run(
@@ -64,21 +71,40 @@ pub async fn run(
         write!(w, "Type your messages below. Ctrl+C to exit.\r\n")
     })?;
 
-    let mut input_buf = String::new();
+    let mut input = TextInput::new();
     let mut mid_stream = false;
+    let mut thinking = false;
+    let mut thinking_start = Instant::now();
 
-    draw_input_bar(&mut viewport, &input_buf)?;
+    draw_input_bar(&mut viewport, &input, thinking, &thinking_start)?;
 
     loop {
+        // When thinking, tick every 50ms for animation; otherwise wait indefinitely
+        let tick_timeout = if thinking {
+            tokio::time::sleep(tokio::time::Duration::from_millis(16))
+        } else {
+            // Sleep forever (effectively disabled)
+            tokio::time::sleep(tokio::time::Duration::from_secs(86400))
+        };
+        tokio::pin!(tick_timeout);
+
         tokio::select! {
             biased;
 
             evt = display_rx.recv() => {
                 let evt = evt.expect("agent loop terminated unexpectedly");
                 match evt {
+                    DisplayEvent::ThinkingStart => {
+                        thinking = true;
+                        thinking_start = Instant::now();
+                    }
+                    DisplayEvent::ThinkingEnd => {
+                        thinking = false;
+                    }
                     DisplayEvent::StartOutput { prefix } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
                         mid_stream = true;
+                        thinking = false;
                         print_above(&mut viewport, |w| {
                             write!(w, "\r\n")?;
                             if let Some(p) = prefix {
@@ -135,6 +161,9 @@ pub async fn run(
                         print_line_above(&mut viewport, Line::from(vec![
                             Span::styled(format!("> {}", text), Style::default().add_modifier(Modifier::BOLD)),
                         ]))?;
+
+                        thinking = true;
+                        thinking_start = Instant::now();
                     }
                     DisplayEvent::SubscriptionEvent { name, text, prefix } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
@@ -145,12 +174,14 @@ pub async fn run(
                         ]))?;
                     }
                 }
-                draw_input_bar(&mut viewport, &input_buf)?;
+                draw_input_bar(&mut viewport, &input, thinking, &thinking_start)?;
             }
 
             _ = poll_crossterm_event() => {
                 let mut got_resize = false;
+                let mut any_change = false;
                 while event::poll(std::time::Duration::ZERO)? {
+                    any_change = true;
                     let event = event::read()?;
                     if got_resize {
                         if matches!(event, Event::Resize(_, _)) {
@@ -172,12 +203,11 @@ pub async fn run(
                                     return Ok(());
                                 }
                                 (KeyCode::Enter, _) => {
-                                    let text = input_buf.trim().to_string();
-                                    input_buf.clear();
-                                    draw_input_bar(&mut viewport, &input_buf)?;
-                                    if !text.is_empty() {
+                                    if !input.is_empty() {
+                                        let text = input.take_text();
+                                        let trimmed = text.trim().to_string();
                                         let msg = InputMessage {
-                                            content: InputMessageContent::User(UserContent::text(&text)),
+                                            content: InputMessageContent::User(UserContent::text(&trimmed)),
                                             group_id: thread_id.clone(),
                                             metadata: None,
                                             synthetic: None,
@@ -187,12 +217,25 @@ pub async fn run(
                                     }
                                 }
                                 (KeyCode::Backspace, _) => {
-                                    input_buf.pop();
-                                    draw_input_bar(&mut viewport, &input_buf)?;
+                                    input.backspace();
+                                }
+                                (KeyCode::Delete, _) => {
+                                    input.delete();
+                                }
+                                (KeyCode::Left, _) => {
+                                    input.move_left();
+                                }
+                                (KeyCode::Right, _) => {
+                                    input.move_right();
+                                }
+                                (KeyCode::Home, _) => {
+                                    input.move_home();
+                                }
+                                (KeyCode::End, _) => {
+                                    input.move_end();
                                 }
                                 (KeyCode::Char(ch), _) => {
-                                    input_buf.push(ch);
-                                    draw_input_bar(&mut viewport, &input_buf)?;
+                                    input.insert_char(ch);
                                 }
                                 _ => {}
                             }
@@ -203,8 +246,16 @@ pub async fn run(
 
                 if got_resize {
                     viewport.handle_resize()?;
-                    draw_input_bar(&mut viewport, &input_buf)?;
                 }
+
+                if got_resize || any_change || thinking {
+                    draw_input_bar(&mut viewport, &input, thinking, &thinking_start)?;
+                }
+            }
+
+            _ = &mut tick_timeout, if thinking => {
+                // Animation tick — redraw the input bar to advance the gradient
+
             }
         }
     }
@@ -250,31 +301,120 @@ fn end_stream(viewport: &mut InlineViewport, mid_stream: &mut bool) -> Result<()
 
 // ── Viewport drawing ────────────────────────────────────────────────────────
 
-fn draw_input_bar(viewport: &mut InlineViewport, input_buf: &str) -> Result<(), BoxError> {
-    let prompt = format!("> {}", input_buf);
+fn draw_input_bar(
+    viewport: &mut InlineViewport,
+    input: &TextInput,
+    thinking: bool,
+    thinking_start: &Instant,
+) -> Result<(), BoxError> {
     let current_width = viewport.area().width;
-    let mut desired_lines = 1; // border
+    let input_height = input.preferred_height(current_width);
+    let mut desired_lines = 1 + input_height; // border + input widget
 
-    let input_widget = Paragraph::new(prompt.as_str())
-        .style(Style::default())
-        .wrap(Wrap { trim: true });
-    desired_lines += input_widget.line_count(current_width);
+    // Add one row for the thinking animation bar
+    if thinking {
+        desired_lines += 1;
+    }
 
-    viewport.draw(desired_lines as u16, |frame| {
+    viewport.draw(desired_lines, |frame| {
         let area = frame.area();
-        let [sep_area, input_area] =
-            Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
 
-        frame.render_widget(Block::default().borders(Borders::TOP), sep_area);
-        frame.render_widget(input_widget, input_area);
+        if thinking {
+            let [thinking_area, sep_area, input_area] = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(1),
+            ])
+            .areas(area);
 
-        let cursor_x = input_area.x + prompt.len() as u16;
-        frame.set_cursor_position(Position::new(
-            cursor_x.min(input_area.right().saturating_sub(1)),
-            input_area.y,
-        ));
+            render_thinking_bar(frame, thinking_area, thinking_start);
+            frame.render_widget(Block::default().borders(Borders::TOP), sep_area);
+
+            let mut cursor_pos = None;
+            frame.render_widget(TextInputWidget::new(input, &mut cursor_pos), input_area);
+            if let Some(pos) = cursor_pos {
+                frame.set_cursor_position(pos);
+            }
+        } else {
+            let [sep_area, input_area] =
+                Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+
+            frame.render_widget(Block::default().borders(Borders::TOP), sep_area);
+
+            let mut cursor_pos = None;
+            frame.render_widget(TextInputWidget::new(input, &mut cursor_pos), input_area);
+            if let Some(pos) = cursor_pos {
+                frame.set_cursor_position(pos);
+            }
+        }
     })?;
     Ok(())
+}
+
+/// Render an 8-column pulsing purple gradient bar fixed at the left edge.
+/// Each column uses a different block character to simulate wave height,
+/// with a sine wave rippling across the columns over time.
+fn render_thinking_bar(
+    frame: &mut crate::inline_viewport::ViewportFrame,
+    area: ratatui::layout::Rect,
+    thinking_start: &Instant,
+) {
+    use ratatui::buffer::Buffer;
+    use ratatui::widgets::Widget;
+
+    // Base purple gradient across 8 columns (dark edges → bright center)
+    const GRADIENT: [(u8, u8, u8); 8] = [
+        (60, 20, 80),
+        (90, 30, 120),
+        (130, 50, 170),
+        (170, 70, 210),
+        (190, 90, 240),
+        (170, 70, 210),
+        (130, 50, 170),
+        (90, 30, 120),
+    ];
+
+    // Block characters from shortest to tallest
+    const BLOCKS: [char; 5] = ['▁', '▂', '▄', '▆', '█'];
+
+    if area.width == 0 {
+        return;
+    }
+
+    let elapsed_s = thinking_start.elapsed().as_secs_f64();
+
+    struct ThinkingWidget {
+        elapsed_s: f64,
+    }
+
+    impl Widget for ThinkingWidget {
+        fn render(self, area: ratatui::layout::Rect, buf: &mut Buffer) {
+            let cols = (area.width as usize).min(GRADIENT.len());
+            let y = area.y;
+            for col in 0..cols {
+                // Sine wave: each column is phase-shifted so it ripples across
+                let phase = self.elapsed_s * std::f64::consts::TAU / 1.2 - (col as f64) * 0.7;
+                let wave = (phase.sin() * 0.5 + 0.5) as f32; // 0.0 → 1.0
+
+                // Pick block character based on wave height
+                let block_idx = (wave * (BLOCKS.len() - 1) as f32).round() as usize;
+                let ch = BLOCKS[block_idx.min(BLOCKS.len() - 1)];
+
+                // Brightness also follows the wave
+                let (r, g, b) = GRADIENT[col];
+                let dim = 0.3_f32;
+                let t = dim + (1.0 - dim) * wave;
+                let r = (r as f32 * t) as u8;
+                let g = (g as f32 * t) as u8;
+                let b = (b as f32 * t) as u8;
+
+                let x = area.x + col as u16;
+                buf[(x, y)].set_char(ch).set_fg(Color::Rgb(r, g, b));
+            }
+        }
+    }
+
+    frame.render_widget(ThinkingWidget { elapsed_s }, area);
 }
 
 fn cleanup() -> Result<(), BoxError> {
@@ -290,7 +430,7 @@ fn cleanup() -> Result<(), BoxError> {
 
 async fn poll_crossterm_event() {
     tokio::task::spawn_blocking(|| {
-        let _ = event::poll(std::time::Duration::from_millis(50));
+        let _ = event::poll(std::time::Duration::from_millis(16));
     })
     .await
     .ok();
