@@ -13,6 +13,7 @@ mod rap_callback;
 mod rap_tools;
 mod sleep_tools;
 mod terminal;
+mod text_input;
 
 use infinity_agent_core::event_processor;
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
@@ -245,6 +246,12 @@ async fn agent_loop<Mdl>(
                             started = true;
                         }
                         let _ = display_tx.send(DisplayEvent::TextChunk(chunk));
+                    }
+                    Ok(event_processor::CompletionEvent::ThinkingStart) => {
+                        let _ = display_tx.send(DisplayEvent::ThinkingStart);
+                    }
+                    Ok(event_processor::CompletionEvent::ThinkingEnd) => {
+                        let _ = display_tx.send(DisplayEvent::ThinkingEnd);
                     }
                     Ok(event_processor::CompletionEvent::Action(a)) => {
                         action = Some(a);

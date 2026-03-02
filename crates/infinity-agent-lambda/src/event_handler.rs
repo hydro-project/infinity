@@ -236,6 +236,8 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                     event_processor::CompletionEvent::Action(a) => {
                         action = Some(a);
                     }
+                    event_processor::CompletionEvent::ThinkingStart
+                    | event_processor::CompletionEvent::ThinkingEnd => {}
                 }
             }
             (text, action)
