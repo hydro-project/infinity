@@ -143,7 +143,8 @@ impl TextInput {
             let line_byte_end = line_byte_start + line.len();
             if !found_cursor && self.cursor >= line_byte_start && self.cursor <= line_byte_end {
                 cursor_row = row_idx as u16;
-                let prefix = &line[..self.cursor - line_byte_start];
+                let offset = self.cursor.saturating_sub(line_byte_start);
+                let prefix = &line[..offset.min(line.len())];
                 cursor_col = prefix.chars().count() as u16;
                 found_cursor = true;
             }
@@ -185,7 +186,9 @@ impl TextInput {
 /// Returns a vec of string slices (borrowed from `text`).
 fn wrap_lines<'a>(text: &'a str, max_width: usize) -> Vec<&'a str> {
     if text.is_empty() {
-        return vec![""];
+        // Return a slice of `text` (not a string literal) so pointer
+        // arithmetic in the caller stays valid.
+        return vec![&text[..0]];
     }
     if max_width == 0 {
         return vec![text];
