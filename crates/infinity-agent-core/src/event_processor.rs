@@ -323,6 +323,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         let mut labels: Vec<String> = self
             .ancestor_chain
             .iter()
+            .skip(1)
             .map(|id| {
                 if id.len() > 8 {
                     id[..8].to_string()

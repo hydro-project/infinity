@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 
 use sandbox_core::error::SandboxError;
-use sandbox_core::jj;
+use sandbox_core::jj::{self, run_jj};
 use sandbox_core::sandbox::{ExecResult, SandboxBackend};
 use sandbox_core::types::RepoState;
 
@@ -82,13 +82,31 @@ impl SandboxBackend for LocalBackend {
         let sandbox_dir = tmp.keep();
 
         let bookmark = format!("sandbox-{}", &state.group_id);
-        jj::jj_git_clone(
+        let res = jj::jj_git_clone(
             &state.remote_uri,
             &sandbox_dir,
             &bookmark,
             state.bookmark.is_none(),
         )
-        .await?;
+        .await;
+
+        if res.as_ref().is_err_and(|e| match e {
+            SandboxError::JujutsuError(e) if e.contains("It looks like this is a git repo.") => {
+                true
+            }
+            _ => false,
+        }) {
+            run_jj(&PathBuf::from(&state.remote_uri), &["git", "init"]).await?;
+            jj::jj_git_clone(
+                &state.remote_uri,
+                &sandbox_dir,
+                &bookmark,
+                state.bookmark.is_none(),
+            )
+            .await?;
+        } else {
+            res?;
+        }
 
         // Store in cache for future reuse.
         {
