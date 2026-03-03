@@ -3,6 +3,7 @@ use rig::client::{CompletionClient, ProviderClient};
 use rig::completion::CompletionModel;
 use rig::message::{AssistantContent, Message, ToolResultContent, UserContent};
 use rig_bedrock::client::Client;
+use rig_bedrock::streaming::{BedrockStreamingResponse, BedrockUsage};
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
@@ -21,6 +22,7 @@ use infinity_agent_core::tools::config::ToolsConfig;
 use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
 use infinity_agent_core::tools::thread::{CloseThreadTool, ReportToParentTool, SpawnThreadTool};
 use infinity_agent_core::tools::{Tool, ToolContext};
+use infinity_agent_core::traits::ConversationStore;
 use memory_store::{InMemoryConversationStore, InMemoryMessageSender, InMemoryStateStore};
 use sleep_tools::{SleepTool, SleepUntilTool};
 use terminal::DisplayEvent;
@@ -38,8 +40,31 @@ async fn main() -> Result<(), BoxError> {
             .init();
     }
 
-    let conversation_store = InMemoryConversationStore::new();
+    std::fs::create_dir_all(".infinity").ok();
+
+    let store_path = ".infinity/store.json";
+    let session_path = ".infinity/session.json";
+
+    // Try to load persisted store, fall back to empty.
+    let conversation_store = InMemoryConversationStore::load_from_file(store_path)
+        .unwrap_or_else(|_| InMemoryConversationStore::new());
     let state_store = InMemoryStateStore::new();
+
+    // Try to load persisted thread_id, fall back to new.
+    let (thread_id, initial_tokens_used) = {
+        let session = std::fs::read_to_string(session_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        let tid = session
+            .as_ref()
+            .and_then(|v| v.get("thread_id")?.as_str().map(String::from))
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let tokens = session
+            .as_ref()
+            .and_then(|v| v.get("total_tokens_used")?.as_u64())
+            .unwrap_or(0) as usize;
+        (tid, tokens)
+    };
 
     let (input_tx, input_rx) = mpsc::unbounded_channel::<(InputMessage, String)>();
     let sender = InMemoryMessageSender::new(input_tx.clone());
@@ -47,69 +72,72 @@ async fn main() -> Result<(), BoxError> {
     let client = Client::from_env();
     let model = client.completion_model("global.anthropic.claude-opus-4-6-v1");
 
-    let thread_id = uuid::Uuid::new_v4().to_string();
     let (display_tx, display_rx) = mpsc::unbounded_channel::<DisplayEvent<_>>();
+
+    // Clone the store so the agent loop owns one copy and we keep one for saving.
+    let agent_store = conversation_store.clone();
 
     // Spawn a task that boots the agent (callback server, RAP config, tool loading)
     // then enters the agent loop. Info messages go to the terminal via display_tx.
     let agent_display_tx = display_tx.clone();
     let agent_input_tx = input_tx.clone();
-    let agent_handle = tokio::spawn(async move {
-        // Start the RAP callback server so tools can POST results back
-        let callback_url = rap_callback::start_callback_server(agent_input_tx)
-            .await
-            .expect("Failed to start RAP callback server");
 
-        // Ensure .infinity/rap.json exists, creating it with defaults if needed
-        let rap_config_path = ".infinity/rap.json";
-        if !std::path::Path::new(rap_config_path).exists() {
-            std::fs::create_dir_all(".infinity").ok();
-            let default_config = ToolsConfig {
-                tool_sets: Vec::new(),
-            };
-            let json = serde_json::to_string_pretty(&default_config)
-                .expect("failed to serialize default rap config");
-            std::fs::write(rap_config_path, json).expect("failed to write .infinity/rap.json");
-            let _ = agent_display_tx.send(DisplayEvent::Info(
-                "Initialized .infinity/rap.json".to_string(),
-            ));
-        }
+    // Start the RAP callback server so tools can POST results back
+    let callback_url = rap_callback::start_callback_server(agent_input_tx)
+        .await
+        .expect("Failed to start RAP callback server");
 
-        // Load RAP tool servers from config file
-        let rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>> =
-            match ToolsConfig::from_file(rap_config_path).ok() {
-                Some(config) => {
-                    let urls = config.toolset_server_urls();
-                    if !urls.is_empty() {
-                        match rap_tools::load_rap_tools(&urls).await {
-                            Ok(tools) => {
-                                let _ = agent_display_tx.send(DisplayEvent::Info(format!(
-                                    "Loaded {} RAP tool(s) from {}",
-                                    tools.len(),
-                                    rap_config_path
-                                )));
-                                tools
-                            }
-                            Err(e) => {
-                                let _ = agent_display_tx.send(DisplayEvent::Info(format!(
-                                    "Warning: failed to load RAP tools: {}",
-                                    e
-                                )));
-                                Vec::new()
-                            }
+    // Ensure .infinity/rap.json exists, creating it with defaults if needed
+    let rap_config_path = ".infinity/rap.json";
+    if !std::path::Path::new(rap_config_path).exists() {
+        std::fs::create_dir_all(".infinity").ok();
+        let default_config = ToolsConfig {
+            tool_sets: Vec::new(),
+        };
+        let json = serde_json::to_string_pretty(&default_config)
+            .expect("failed to serialize default rap config");
+        std::fs::write(rap_config_path, json).expect("failed to write .infinity/rap.json");
+        let _ = agent_display_tx.send(DisplayEvent::Info(
+            "Initialized .infinity/rap.json".to_string(),
+        ));
+    }
+
+    // Load RAP tool servers from config file
+    let rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>> =
+        match ToolsConfig::from_file(rap_config_path).ok() {
+            Some(config) => {
+                let urls = config.toolset_server_urls();
+                if !urls.is_empty() {
+                    match rap_tools::load_rap_tools(&urls).await {
+                        Ok(tools) => {
+                            let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                                "Loaded {} RAP tool(s) from {}",
+                                tools.len(),
+                                rap_config_path
+                            )));
+                            tools
                         }
-                    } else {
-                        Vec::new()
+                        Err(e) => {
+                            let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                                "Warning: failed to load RAP tools: {}",
+                                e
+                            )));
+                            Vec::new()
+                        }
                     }
+                } else {
+                    Vec::new()
                 }
-                None => Vec::new(),
-            };
+            }
+            None => Vec::new(),
+        };
 
+    let agent_handle = tokio::spawn(async move {
         agent_loop(
             input_rx,
             agent_display_tx,
             model,
-            conversation_store,
+            agent_store,
             state_store,
             sender,
             callback_url,
@@ -118,15 +146,98 @@ async fn main() -> Result<(), BoxError> {
         .await;
     });
 
+    // Replay persisted history to the terminal so previous messages are visible.
+    if let Ok(history) = conversation_store.load_history(&thread_id).await {
+        for message in &history {
+            match message {
+                Message::User { content } => match content.first() {
+                    UserContent::Text(text) => {
+                        let _ = display_tx.send(DisplayEvent::UserInput(text.text.clone()));
+                        let _ = display_tx.send(DisplayEvent::StartOutput { prefix: None });
+                    }
+                    UserContent::ToolResult(res) => {
+                        if let ToolResultContent::Text(text) = res.content.first() {
+                            let _ = display_tx.send(DisplayEvent::ToolResult {
+                                text: text.text,
+                                display_as: None,
+                                prefix: None,
+                            });
+                        }
+                    }
+                    _ => {}
+                },
+                Message::Assistant { content, .. } => match content.first() {
+                    AssistantContent::Text(text) => {
+                        let _ = display_tx.send(DisplayEvent::TextChunk(text.text));
+                    }
+                    AssistantContent::ToolCall(call) => {
+                        let _ = display_tx.send(DisplayEvent::ToolCall {
+                            name: call.function.name.clone(),
+                            args: call.function.arguments.clone(),
+                            prefix: None,
+                        });
+                    }
+                    _ => {}
+                },
+            }
+        }
+
+        let _ = display_tx.send(DisplayEvent::ResponseDone(
+            None,
+            BedrockStreamingResponse {
+                usage: Some(BedrockUsage {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: initial_tokens_used as i32,
+                }),
+            },
+        ));
+    }
+
+    let (new_session_tx, mut new_session_rx) = mpsc::unbounded_channel::<String>();
+
+    // Track the active thread_id so we can save the latest on shutdown.
+    let active_thread_id = std::sync::Arc::new(std::sync::Mutex::new(thread_id.clone()));
+    let active_thread_id_for_listener = active_thread_id.clone();
+
+    // Listen for new-session signals from the terminal (Ctrl+N).
+    tokio::spawn(async move {
+        while let Some(new_id) = new_session_rx.recv().await {
+            *active_thread_id_for_listener.lock().unwrap() = new_id;
+        }
+    });
+
     let result = terminal::run(
         input_tx,
         display_rx,
         thread_id,
         "claude-opus-4-6".to_string(),
+        new_session_tx,
     )
     .await;
     agent_handle.abort();
-    result
+
+    // Persist store and session on shutdown.
+    let final_thread_id = active_thread_id.lock().unwrap().clone();
+    let final_tokens = match &result {
+        Ok(tokens) => *tokens,
+        Err(_) => initial_tokens_used,
+    };
+    if let Err(e) = conversation_store.save_to_file(store_path) {
+        eprintln!("Warning: failed to save conversation store: {}", e);
+    }
+    let session_json = serde_json::json!({
+        "thread_id": final_thread_id,
+        "total_tokens_used": final_tokens,
+    });
+    if let Err(e) = std::fs::write(
+        session_path,
+        serde_json::to_string_pretty(&session_json).unwrap(),
+    ) {
+        eprintln!("Warning: failed to save session: {}", e);
+    }
+
+    result.map(|_| ())
 }
 
 // ── Agent loop ──────────────────────────────────────────────────────────────
