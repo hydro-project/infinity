@@ -509,15 +509,28 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
 
 /// Build a pretty-printed unified diff for display in the CLI.
 fn build_edit_diff(path: &str, old_str: &str, new_str: &str) -> String {
-    let mut diff = format!("--- {}\n+++ {}\n", path, path);
-    for line in old_str.lines() {
-        diff.push_str(&format!("- {}\n", line));
+    use similar::{ChangeTag, TextDiff};
+
+    let diff = TextDiff::from_lines(old_str, new_str);
+    let mut out = format!("--- {}\n+++ {}", path, path);
+
+    for hunk in diff.unified_diff().context_radius(3).iter_hunks() {
+        out.push_str(&format!("\n{}", hunk.header()));
+        for change in hunk.iter_changes() {
+            let sign = match change.tag() {
+                ChangeTag::Delete => "-",
+                ChangeTag::Insert => "+",
+                ChangeTag::Equal => " ",
+            };
+            out.push_str(&format!("{} {}", sign, change));
+            if change.missing_newline() {
+                out.push('\n');
+            }
+        }
     }
-    for line in new_str.lines() {
-        diff.push_str(&format!("+ {}\n", line));
-    }
-    diff.truncate(diff.trim_end().len());
-    diff
+
+    out.truncate(out.trim_end().len());
+    out
 }
 
 fn build_manifest(endpoint: &str) -> ToolsetManifest {
