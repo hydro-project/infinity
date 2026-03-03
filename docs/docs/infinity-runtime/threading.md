@@ -61,14 +61,17 @@ Children can send results to the parent at any time using `report_to_parent`:
 📥 Result:     "Report sent to parent thread."
 ```
 
-The parent sees this as a [synthetic tool call](/docs/about/subscription-events#synthetic-tool-calls) — the same mechanism used for subscription events. The runtime injects a synthetic `spawn_thread` call and result into the parent's history:
+The parent sees this as a [synthetic tool call](/docs/about/subscription-events#synthetic-tool-calls) — the same mechanism used for subscription events. The runtime injects a synthetic `receive_event` call and result into the parent's history:
 
 ```
 [Parent thread]
 
-🔧 Synthetic:  spawn_thread({
-                 instructions: "Review src/auth.ts for security issues",
-                 kind: "thread_report:call_spawn_a1b2"
+🔧 Synthetic:  receive_event({
+                 original_tool_name: "spawn_thread",
+                 original_tool_call_id: "call_spawn_a1b2",
+                 original_args: {
+                   instructions: "Review src/auth.ts for security issues"
+                 }
                })
 📥 Result:     "Report from child thread: Critical: SQL injection in
                 auth.ts line 42. The user input is interpolated directly
@@ -95,9 +98,12 @@ The parent sees the report via the same synthetic tool call mechanism:
 ```
 [Parent thread]
 
-🔧 Synthetic:  spawn_thread({
-                 instructions: "Review src/auth.ts for security issues",
-                 kind: "thread_report:call_spawn_a1b2"
+🔧 Synthetic:  receive_event({
+                 original_tool_name: "spawn_thread",
+                 original_tool_call_id: "call_spawn_a1b2",
+                 original_args: {
+                   instructions: "Review src/auth.ts for security issues"
+                 }
                })
 📥 Result:     "Child thread thread_a1b2 has shut down. Report:
                 Review complete. 1 critical issue, 2 warnings."
@@ -112,9 +118,10 @@ The child is seeded with the event data and instructions to process it:
 ```
 [Auto-spawned child for subscription event]
 
-🔧 Synthetic:  subscribe_github_events({
-                 owner: "acme", repo: "api",
-                 kind: "interrupt:call_abc123 (subscription remains active)"
+🔧 Synthetic:  receive_event({
+                 original_tool_name: "subscribe_github_events",
+                 original_tool_call_id: "call_abc123",
+                 original_args: { owner: "acme", repo: "api" }
                })
 📥 Result:     {"event_type": "pull_request", "action": "opened", "number": 42}
 
