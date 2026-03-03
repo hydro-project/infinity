@@ -35,7 +35,10 @@ pub enum DisplayEvent<R> {
     StartOutput {
         prefix: Option<String>,
     },
-    TextChunk(String),
+    TextChunk {
+        prefix: Option<String>,
+        chunk: String,
+    },
     ToolCall {
         name: String,
         args: serde_json::Value,
@@ -116,87 +119,98 @@ pub async fn run(
                     }
                     DisplayEvent::ThinkingEnd => {}
                     DisplayEvent::StartOutput { prefix } => {
-                        end_stream(&mut viewport, &mut mid_stream)?;
-                        stream_start = true;
-                        if let Some(p) = prefix {
-                            mid_stream = true;
-                            print_above(&mut viewport, |w| {
-                                write!(w, "\r\n")?;
-                                write!(w, "{} ", p)
-                            })?;
+                        if prefix.is_none() {
+                            end_stream(&mut viewport, &mut mid_stream)?;
+                            stream_start = true;
                         }
+                        // if let Some(p) = prefix {
+                        //     mid_stream = true;
+                        //     print_above(&mut viewport, |w| {
+                        //         write!(w, "\r\n")?;
+                        //         write!(w, "{} ", p)
+                        //     })?;
+                        // }
                     }
-                    DisplayEvent::TextChunk(chunk) => {
-                        let chunk = if stream_start {
-                            stream_start = false;
-                            chunk.trim_start().to_string()
-                        } else {
-                            chunk
-                        };
+                    DisplayEvent::TextChunk {
+                        prefix,
+                        chunk
+                    } => {
+                        if prefix.is_none() {
+                            let chunk = if stream_start {
+                                stream_start = false;
+                                chunk.trim_start().to_string()
+                            } else {
+                                chunk
+                            };
 
-                        if !chunk.is_empty() {
-                            let first_chunk = !mid_stream;
-                            mid_stream = true;
-                            let sanitized = chunk.replace('\n', "\r\n");
-                            print_above(&mut viewport, |w| {
-                                if first_chunk {
-                                    write!(w, "\r\n")?;
-                                }
-                                write!(w, "{}", sanitized)
-                            })?;
+                            if !chunk.is_empty() {
+                                let first_chunk = !mid_stream;
+                                mid_stream = true;
+                                let sanitized = chunk.replace('\n', "\r\n");
+                                print_above(&mut viewport, |w| {
+                                    if first_chunk {
+                                        write!(w, "\r\n")?;
+                                    }
+                                    write!(w, "{}", sanitized)
+                                })?;
+                            }
                         }
                     }
                     DisplayEvent::ResponseDone(prefix, r) => {
                         if prefix.is_none() {
                             let usage = r.usage.unwrap();
                             total_tokens_used = usage.total_tokens as usize;
+                            end_stream(&mut viewport, &mut mid_stream)?;
+                            thinking = false;
                         }
-                        end_stream(&mut viewport, &mut mid_stream)?;
-                        thinking = false;
                     }
                     DisplayEvent::ToolCall { name, args, prefix } => {
-                        end_stream(&mut viewport, &mut mid_stream)?;
-                        let pfx = prefix.map(|p| format!("{} ", p)).unwrap_or_default();
-                        print_line_above(&mut viewport, Line::from(vec![
-                            Span::raw(pfx),
-                            Span::styled(format!("◆ {}({})", name, args), Style::default().fg(Color::Blue)),
-                        ]))?;
-                    }
-                    DisplayEvent::ToolResult { text, display_as, prefix } => {
-                        end_stream(&mut viewport, &mut mid_stream)?;
-                        let pfx = prefix.map(|p| format!("{} ", p)).unwrap_or_default();
-                        let display_text = display_as.as_deref().unwrap_or(&text);
-                        let lines: Vec<&str> = display_text.lines().collect();
-                        if let Some((first, rest)) = lines.split_first() {
-                            print_line_above(&mut viewport, Line::from(vec![
-                                Span::raw(pfx.clone()),
-                                Span::styled(format!("✓ {}", first), Style::default().fg(Color::Green)),
-                            ]))?;
-                            let indent = format!("{}  ", pfx);
-                            for line in rest {
-                                let style = if line.starts_with("- ") {
-                                    Style::default().fg(Color::Red)
-                                } else if line.starts_with("+ ") {
-                                    Style::default().fg(Color::Green)
-                                } else if line.starts_with("@@") {
-                                    Style::default().fg(Color::Cyan)
-                                } else {
-                                    Style::default().fg(Color::DarkGray)
-                                };
-                                print_line_above(&mut viewport, Line::from(vec![
-                                    Span::raw(indent.clone()),
-                                    Span::styled(line.to_string(), style),
-                                ]))?;
-                            }
-                        } else {
+                        if prefix.is_none() {
+                            end_stream(&mut viewport, &mut mid_stream)?;
+                            let pfx = prefix.map(|p| format!("{} ", p)).unwrap_or_default();
                             print_line_above(&mut viewport, Line::from(vec![
                                 Span::raw(pfx),
-                                Span::styled("✓", Style::default().fg(Color::Green)),
+                                Span::styled(format!("◆ {}({})", name, args), Style::default().fg(Color::Blue)),
                             ]))?;
                         }
+                    }
+                    DisplayEvent::ToolResult { text, display_as, prefix } => {
+                        if prefix.is_none() {
+                            end_stream(&mut viewport, &mut mid_stream)?;
+                            let pfx = prefix.map(|p| format!("{} ", p)).unwrap_or_default();
+                            let display_text = display_as.as_deref().unwrap_or(&text);
+                            let lines: Vec<&str> = display_text.lines().collect();
+                            if let Some((first, rest)) = lines.split_first() {
+                                print_line_above(&mut viewport, Line::from(vec![
+                                    Span::raw(pfx.clone()),
+                                    Span::styled(format!("✓ {}", first), Style::default().fg(Color::Green)),
+                                ]))?;
+                                let indent = format!("{}  ", pfx);
+                                for line in rest {
+                                    let style = if line.starts_with("- ") {
+                                        Style::default().fg(Color::Red)
+                                    } else if line.starts_with("+ ") {
+                                        Style::default().fg(Color::Green)
+                                    } else if line.starts_with("@@") {
+                                        Style::default().fg(Color::Cyan)
+                                    } else {
+                                        Style::default().fg(Color::DarkGray)
+                                    };
+                                    print_line_above(&mut viewport, Line::from(vec![
+                                        Span::raw(indent.clone()),
+                                        Span::styled(line.to_string(), style),
+                                    ]))?;
+                                }
+                            } else {
+                                print_line_above(&mut viewport, Line::from(vec![
+                                    Span::raw(pfx),
+                                    Span::styled("✓", Style::default().fg(Color::Green)),
+                                ]))?;
+                            }
 
-                        thinking = true;
-                        thinking_start = Instant::now();
+                            thinking = true;
+                            thinking_start = Instant::now();
+                        }
                     }
                     DisplayEvent::Info(text) => {
                         end_stream(&mut viewport, &mut mid_stream)?;

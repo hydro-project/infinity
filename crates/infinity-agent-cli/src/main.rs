@@ -198,7 +198,10 @@ async fn main() -> Result<(), BoxError> {
                 },
                 Message::Assistant { content, .. } => match content.first() {
                     AssistantContent::Text(text) => {
-                        let _ = display_tx.send(DisplayEvent::TextChunk(text.text));
+                        let _ = display_tx.send(DisplayEvent::TextChunk {
+                            prefix: None,
+                            chunk: text.text,
+                        });
                     }
                     AssistantContent::ToolCall(call) => {
                         let _ = display_tx.send(DisplayEvent::ToolCall {
@@ -286,7 +289,7 @@ async fn main() -> Result<(), BoxError> {
     result.map(|_| ())
 }
 
-// ── Agent loop ──────────────────────────────────────────────────────────────
+// ── Agent loop — dispatcher + per-thread workers ────────────────────────────
 
 #[expect(clippy::too_many_arguments, reason = "internal")]
 async fn agent_loop<Mdl>(
@@ -317,6 +320,54 @@ async fn agent_loop<Mdl>(
     ];
     tool_impls.extend(rap_tools);
 
+    // Shared across all per-thread workers (Tool is Send + Sync).
+    let tool_impls: std::sync::Arc<Vec<Box<dyn Tool<InMemoryMessageSender>>>> =
+        std::sync::Arc::new(tool_impls);
+    let model = std::sync::Arc::new(model);
+
+    // One sender per thread-id; lazily created on first message.
+    let mut thread_txs: std::collections::HashMap<
+        String,
+        mpsc::UnboundedSender<(InputMessage, String)>,
+    > = std::collections::HashMap::new();
+
+    while let Some((input_msg, message_id)) = rx.recv().await {
+        let group_id = input_msg.group_id.clone();
+
+        // Get or create the per-thread channel + worker task.
+        let thread_tx = thread_txs.entry(group_id.clone()).or_insert_with(|| {
+            let (tx, rx) = mpsc::unbounded_channel();
+            tokio::spawn(thread_worker(
+                rx,
+                display_tx.clone(),
+                model.clone(),
+                conversation_store.clone(),
+                state_store.clone(),
+                sender.clone(),
+                callback_url.clone(),
+                tool_impls.clone(),
+            ));
+            tx
+        });
+
+        thread_tx.send((input_msg, message_id)).unwrap();
+    }
+}
+
+/// Per-thread worker: processes messages for a single thread ID sequentially,
+/// but different threads run concurrently with each other.
+async fn thread_worker<Mdl>(
+    mut rx: mpsc::UnboundedReceiver<(InputMessage, String)>,
+    display_tx: mpsc::UnboundedSender<DisplayEvent<Mdl::StreamingResponse>>,
+    model: std::sync::Arc<Mdl>,
+    conversation_store: InMemoryConversationStore,
+    state_store: InMemoryStateStore,
+    sender: InMemoryMessageSender,
+    callback_url: String,
+    tool_impls: std::sync::Arc<Vec<Box<dyn Tool<InMemoryMessageSender>>>>,
+) where
+    Mdl: CompletionModel + Send + Sync + 'static,
+{
     while let Some((input_msg, message_id)) = rx.recv().await {
         let active_group_id = input_msg.group_id.clone();
 
@@ -412,7 +463,7 @@ async fn agent_loop<Mdl>(
 
         let final_action = {
             let mut stream = std::pin::pin!(event_processor::run_completion(
-                &model,
+                model.as_ref(),
                 &mut current_history,
                 &tool_names,
                 &tool_defs,
@@ -433,7 +484,10 @@ async fn agent_loop<Mdl>(
                             });
                             started = true;
                         }
-                        let _ = display_tx.send(DisplayEvent::TextChunk(chunk));
+                        let _ = display_tx.send(DisplayEvent::TextChunk {
+                            prefix: thread_prefix.clone(),
+                            chunk,
+                        });
                     }
                     Ok(event_processor::CompletionEvent::ThinkingStart) => {
                         let _ = display_tx.send(DisplayEvent::ThinkingStart);
@@ -466,7 +520,6 @@ async fn agent_loop<Mdl>(
             ref tool_args,
             ..
         }) = final_action
-            && tool_name != "sleep_until_event_or_input"
         {
             let _ = display_tx.send(DisplayEvent::ToolCall {
                 name: tool_name.clone(),
