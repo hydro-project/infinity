@@ -22,22 +22,22 @@ When a matching event occurs — a webhook fires, a price threshold is crossed, 
 
 When a subscription event arrives, the runtime needs to show it to the LLM in a way that makes sense in the conversation. The challenge is that the original subscription tool call already has a result (the confirmation message). You can't just append a second result for the same tool call — the LLM would be confused.
 
-RAP solves this with synthetic tool calls. A synthetic tool call is a fabricated assistant message that the runtime injects into conversation history. It looks like the LLM called the subscription tool again, but it was actually created by the runtime to carry the event data.
+RAP solves this with synthetic tool calls. A synthetic tool call is a fabricated assistant message that the runtime injects into conversation history. Instead of mimicking the original tool call, the runtime uses a dedicated `receive_event` tool name so the LLM can clearly distinguish events from real invocations.
 
 When a subscription event arrives, the runtime:
 
 1. Looks up the original subscription tool call in history (using the `tool_call_id` from the event)
-2. Creates a synthetic assistant message that echoes the original tool call, annotated with `kind: "interrupt"` to signal that this is an event, not a new invocation
+2. Creates a synthetic assistant message with the tool name `receive_event`, including `original_tool_name`, `original_tool_call_id`, and `original_args` in the arguments so the LLM knows which subscription produced the event
 3. Appends the event content as the tool result for this synthetic call
 
 The LLM sees what looks like a natural tool call / result pair in its history:
 
 ```
-[tool_call] subscribe_github_events({ owner: "acme", repo: "api", kind: "interrupt:call_abc123 (subscription remains active)" })
+[tool_call] receive_event({ original_tool_name: "subscribe_github_events", original_tool_call_id: "call_abc123", original_args: { owner: "acme", repo: "api" } })
 [tool_result] {"event_type": "pull_request", "action": "opened", "number": 42, ...}
 ```
 
-The `kind` annotation tells the LLM that this is an event from an existing subscription, not a new subscription request. The LLM can then reason about the event and decide what to do.
+The `receive_event` name and `original_tool_call_id` tell the LLM that this is an event from an existing subscription, not a new tool invocation. The `original_args` provide context about which subscription produced the event. The LLM can then reason about the event and decide what to do.
 
 ## Inline vs. threaded processing
 

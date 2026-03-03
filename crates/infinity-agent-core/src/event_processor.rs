@@ -447,19 +447,18 @@ where
         if synthetic_kind.is_thread_report() {
             let new_tool_call_id = uuid::Uuid::new_v4().to_string();
             if let UserContent::ToolResult(mut tool_result) = user_content {
-                let mut synthetic_args = original_call.function.arguments.clone();
-                synthetic_args.as_object_mut().unwrap().insert(
-                    "kind".to_string(),
-                    serde_json::json!(format!("thread_report:{}", original_tool_call_id)),
-                );
                 let synthetic_tool_call = Message::Assistant {
                     id: None,
                     content: OneOrMany::one(AssistantContent::ToolCall(rig::message::ToolCall {
                         id: new_tool_call_id.clone(),
                         call_id: None,
                         function: rig::message::ToolFunction {
-                            name: original_call.function.name.clone(),
-                            arguments: synthetic_args,
+                            name: "receive_event__injected".to_string(),
+                            arguments: serde_json::json!({
+                                "original_tool_name": original_call.function.name,
+                                "original_tool_call_id": original_tool_call_id,
+                                "original_args": original_call.function.arguments,
+                            }),
                         },
                         additional_params: None,
                         signature: None,
@@ -499,23 +498,18 @@ where
             let event_call_id = uuid::Uuid::new_v4().to_string();
             let spawn_call_id = uuid::Uuid::new_v4().to_string();
 
-            let mut synthetic_args = original_call.function.arguments.clone();
-            synthetic_args.as_object_mut().unwrap().insert(
-                "kind".to_string(),
-                serde_json::json!(format!(
-                    "interrupt:{} (subscription remains active)",
-                    original_tool_call_id
-                )),
-            );
-
             let event_tool_call = Message::Assistant {
                 id: None,
                 content: OneOrMany::one(AssistantContent::ToolCall(rig::message::ToolCall {
                     id: event_call_id.clone(),
                     call_id: None,
                     function: rig::message::ToolFunction {
-                        name: original_call.function.name.clone(),
-                        arguments: synthetic_args,
+                        name: "receive_event__injected".to_string(),
+                        arguments: serde_json::json!({
+                            "original_tool_name": original_call.function.name,
+                            "original_tool_call_id": original_tool_call_id,
+                            "original_args": original_call.function.arguments,
+                        }),
                     },
                     additional_params: None,
                     signature: None,
@@ -1275,7 +1269,6 @@ mod tests {
             hm.history,
             {
                 "[3].content[0].id" => "[uuid]",
-                "[3].content[0].function.arguments.kind" => "[redacted-kind]",
                 "[4].content[0].id" => "[uuid]",
                 "[5].content[0].id" => "[uuid]",
                 "[6].content[0].id" => "[uuid]",
@@ -1320,7 +1313,6 @@ mod tests {
             hm.history,
             {
                 "[3].content[0].id" => "[uuid]",
-                "[3].content[0].function.arguments.kind" => "[redacted-kind]",
                 "[4].content[0].id" => "[uuid]",
                 "[5].content[0].id" => "[uuid]",
                 "[6].content[0].id" => "[uuid]",
