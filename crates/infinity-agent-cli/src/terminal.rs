@@ -149,7 +149,7 @@ pub async fn run(
                     DisplayEvent::ResponseDone(prefix, r) => {
                         if prefix.is_none() {
                             let usage = r.usage.unwrap();
-                            total_tokens_used += usage.total_tokens as usize;
+                            total_tokens_used = usage.total_tokens as usize;
                         }
                         end_stream(&mut viewport, &mut mid_stream)?;
                         thinking = false;
