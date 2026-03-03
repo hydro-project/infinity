@@ -18,7 +18,7 @@ mod text_input;
 
 use infinity_agent_core::event_processor::{self, CompletionAction};
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
-use infinity_agent_core::tools::config::ToolsConfig;
+use infinity_agent_core::tools::config::{ToolSetConfig, ToolsConfig};
 use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
 use infinity_agent_core::tools::thread::{CloseThreadTool, ReportToParentTool, SpawnThreadTool};
 use infinity_agent_core::tools::{Tool, ToolContext};
@@ -91,9 +91,12 @@ async fn main() -> Result<(), BoxError> {
     let rap_config_path = ".infinity/rap.json";
     if !std::path::Path::new(rap_config_path).exists() {
         std::fs::create_dir_all(".infinity").ok();
-        let default_config = ToolsConfig {
-            tool_sets: Vec::new(),
-        };
+        let rap_bins = discover_rap_binaries();
+        let tool_sets: Vec<ToolSetConfig> = rap_bins
+            .into_iter()
+            .map(|bin| ToolSetConfig::ToolsetCommand { command: bin })
+            .collect();
+        let default_config = ToolsConfig { tool_sets };
         let json = serde_json::to_string_pretty(&default_config)
             .expect("failed to serialize default rap config");
         std::fs::write(rap_config_path, json).expect("failed to write .infinity/rap.json");
@@ -102,11 +105,38 @@ async fn main() -> Result<(), BoxError> {
         ));
     }
 
-    // Load RAP tool servers from config file
+    // Load RAP tool servers from config file.
+    // Servers can be specified as static URLs or as commands to launch.
+    // Command-based servers are spawned with RAP_EMBEDDED=1 and must emit
+    // a JSON line `{"port": <u16>}` on stdout when ready.
+    let mut spawned_children: Vec<std::process::Child> = Vec::new();
+
     let rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>> =
         match ToolsConfig::from_file(rap_config_path).ok() {
             Some(config) => {
-                let urls = config.toolset_server_urls();
+                let mut urls = config.toolset_server_urls();
+
+                // Spawn command-based servers and collect their URLs.
+                for cmd in config.toolset_commands() {
+                    let _ = agent_display_tx
+                        .send(DisplayEvent::Info(format!("Launching RAP server: {cmd}")));
+                    match spawn_rap_server(&cmd) {
+                        Ok((child, port)) => {
+                            let url = format!("http://127.0.0.1:{port}");
+                            let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                                "RAP server ready on port {port}"
+                            )));
+                            urls.push(url);
+                            spawned_children.push(child);
+                        }
+                        Err(e) => {
+                            let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                                "Warning: failed to launch RAP server '{cmd}': {e}"
+                            )));
+                        }
+                    }
+                }
+
                 if !urls.is_empty() {
                     match rap_tools::load_rap_tools(&urls).await {
                         Ok(tools) => {
@@ -216,6 +246,22 @@ async fn main() -> Result<(), BoxError> {
     )
     .await;
     agent_handle.abort();
+
+    // Send SIGINT to any command-based RAP servers we spawned so they
+    // run their graceful-shutdown path (e.g. draining background tasks).
+    for mut child in spawned_children {
+        #[cfg(unix)]
+        {
+            use nix::sys::signal::{self, Signal};
+            use nix::unistd::Pid;
+            let _ = signal::kill(Pid::from_raw(child.id() as i32), Signal::SIGINT);
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = child.kill();
+        }
+        let _ = child.wait();
+    }
 
     // Persist store and session on shutdown.
     let final_thread_id = active_thread_id.lock().unwrap().clone();
@@ -449,4 +495,82 @@ async fn agent_loop<Mdl>(
             }
         }
     }
+}
+
+// ── Command-based RAP server spawning ───────────────────────────────────────
+
+use infinity_agent_core::tools::config::CommandServerReady;
+
+/// Spawn a RAP server from a shell command with `RAP_EMBEDDED=1`.
+///
+/// The child process must emit a single JSON line on stdout containing
+/// `{"port": <u16>}` once it is ready to accept connections.
+/// Returns the child handle (caller is responsible for killing it) and the port.
+fn spawn_rap_server(command: &str) -> Result<(std::process::Child, u16), BoxError> {
+    use std::io::BufRead;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("sh")
+        .args(["-c", command])
+        .env("RAP_EMBEDDED", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("failed to spawn '{command}': {e}"))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("failed to capture stdout from RAP server")?;
+
+    let mut reader = std::io::BufReader::new(stdout);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .map_err(|e| format!("failed to read startup line from RAP server: {e}"))?;
+
+    if line.is_empty() {
+        // Process exited before printing anything.
+        let _ = child.kill();
+        return Err("RAP server exited before emitting port JSON".into());
+    }
+
+    let ready: CommandServerReady = serde_json::from_str(line.trim())
+        .map_err(|e| format!("invalid startup JSON from RAP server: {e} (got: {line})"))?;
+
+    Ok((child, ready.port))
+}
+
+/// Scan `$PATH` for executables whose name starts with `rap-` and return
+/// their names (not full paths — they're on PATH so the bare name suffices).
+fn discover_rap_binaries() -> Vec<String> {
+    let path_var = match std::env::var("PATH") {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut seen = std::collections::HashSet::new();
+    let mut bins = Vec::new();
+
+    for dir in std::env::split_paths(&path_var) {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("rap-") && seen.insert(name.to_string()) {
+                // Quick sanity check: must be a file (or symlink to one) and executable.
+                if let Ok(meta) = entry.metadata() {
+                    if meta.is_file() {
+                        bins.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    bins.sort();
+    bins
 }

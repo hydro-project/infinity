@@ -6,14 +6,16 @@ use serde::{Deserialize, Serialize};
 pub enum ToolSetConfig {
     /// RAP toolset server — tools are loaded via `.well-known/rap-toolset`.
     ToolsetServer { server_url: String },
+    /// RAP toolset server launched via a CLI command.
+    /// The command is spawned with `RAP_EMBEDDED=1` and must emit a JSON
+    /// object on stdout containing `{ "port": <u16> }` once it is ready.
+    ToolsetCommand { command: String },
 }
 
-impl ToolSetConfig {
-    pub fn server_url(&self) -> &str {
-        match self {
-            ToolSetConfig::ToolsetServer { server_url } => server_url,
-        }
-    }
+/// JSON object emitted on stdout by a command-based RAP server at startup.
+#[derive(Debug, Deserialize)]
+pub struct CommandServerReady {
+    pub port: u16,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -38,11 +40,25 @@ impl ToolsConfig {
         Ok(config)
     }
 
-    /// Extract all toolset server URLs from the config.
+    /// Extract server URLs from entries that already have a URL.
     pub fn toolset_server_urls(&self) -> Vec<String> {
         self.tool_sets
             .iter()
-            .map(|ts| ts.server_url().to_string())
+            .filter_map(|ts| match ts {
+                ToolSetConfig::ToolsetServer { server_url } => Some(server_url.clone()),
+                ToolSetConfig::ToolsetCommand { .. } => None,
+            })
+            .collect()
+    }
+
+    /// Extract commands from entries that specify a command to launch.
+    pub fn toolset_commands(&self) -> Vec<String> {
+        self.tool_sets
+            .iter()
+            .filter_map(|ts| match ts {
+                ToolSetConfig::ToolsetCommand { command } => Some(command.clone()),
+                ToolSetConfig::ToolsetServer { .. } => None,
+            })
             .collect()
     }
 }
