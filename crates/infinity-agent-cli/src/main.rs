@@ -44,55 +44,79 @@ async fn main() -> Result<(), BoxError> {
     let (input_tx, input_rx) = mpsc::unbounded_channel::<(InputMessage, String)>();
     let sender = InMemoryMessageSender::new(input_tx.clone());
 
-    // Start the RAP callback server so tools can POST results back
-    let callback_url = rap_callback::start_callback_server(input_tx.clone())
-        .await
-        .expect("Failed to start RAP callback server");
-
-    // Load RAP tool servers from config file
-    let rap_config_path =
-        std::env::var("RAP_CONFIG").unwrap_or_else(|_| "rap-servers.json".to_string());
-    let rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>> =
-        if let Ok(config) = ToolsConfig::from_file(&rap_config_path) {
-            let urls = config.toolset_server_urls();
-            if !urls.is_empty() {
-                match rap_tools::load_rap_tools(&urls).await {
-                    Ok(tools) => {
-                        eprintln!(
-                            "Loaded {} RAP tool(s) from {}",
-                            tools.len(),
-                            rap_config_path
-                        );
-                        tools
-                    }
-                    Err(e) => {
-                        eprintln!("Warning: failed to load RAP tools: {}", e);
-                        Vec::new()
-                    }
-                }
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
-
     let client = Client::from_env();
     let model = client.completion_model("global.anthropic.claude-opus-4-6-v1");
 
     let thread_id = uuid::Uuid::new_v4().to_string();
     let (display_tx, display_rx) = mpsc::unbounded_channel::<DisplayEvent<_>>();
 
-    let agent_handle = tokio::spawn(agent_loop(
-        input_rx,
-        display_tx,
-        model,
-        conversation_store,
-        state_store,
-        sender,
-        callback_url,
-        rap_tools,
-    ));
+    // Spawn a task that boots the agent (callback server, RAP config, tool loading)
+    // then enters the agent loop. Info messages go to the terminal via display_tx.
+    let agent_display_tx = display_tx.clone();
+    let agent_input_tx = input_tx.clone();
+    let agent_handle = tokio::spawn(async move {
+        // Start the RAP callback server so tools can POST results back
+        let callback_url = rap_callback::start_callback_server(agent_input_tx)
+            .await
+            .expect("Failed to start RAP callback server");
+
+        // Ensure .infinity/rap.json exists, creating it with defaults if needed
+        let rap_config_path = ".infinity/rap.json";
+        if !std::path::Path::new(rap_config_path).exists() {
+            std::fs::create_dir_all(".infinity").ok();
+            let default_config = ToolsConfig {
+                tool_sets: Vec::new(),
+            };
+            let json = serde_json::to_string_pretty(&default_config)
+                .expect("failed to serialize default rap config");
+            std::fs::write(rap_config_path, json).expect("failed to write .infinity/rap.json");
+            let _ = agent_display_tx.send(DisplayEvent::Info(
+                "Initialized .infinity/rap.json".to_string(),
+            ));
+        }
+
+        // Load RAP tool servers from config file
+        let rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>> =
+            match ToolsConfig::from_file(rap_config_path).ok() {
+                Some(config) => {
+                    let urls = config.toolset_server_urls();
+                    if !urls.is_empty() {
+                        match rap_tools::load_rap_tools(&urls).await {
+                            Ok(tools) => {
+                                let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                                    "Loaded {} RAP tool(s) from {}",
+                                    tools.len(),
+                                    rap_config_path
+                                )));
+                                tools
+                            }
+                            Err(e) => {
+                                let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                                    "Warning: failed to load RAP tools: {}",
+                                    e
+                                )));
+                                Vec::new()
+                            }
+                        }
+                    } else {
+                        Vec::new()
+                    }
+                }
+                None => Vec::new(),
+            };
+
+        agent_loop(
+            input_rx,
+            agent_display_tx,
+            model,
+            conversation_store,
+            state_store,
+            sender,
+            callback_url,
+            rap_tools,
+        )
+        .await;
+    });
 
     let result = terminal::run(
         input_tx,
