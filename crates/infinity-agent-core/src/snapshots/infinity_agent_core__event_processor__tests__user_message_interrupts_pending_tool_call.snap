@@ -24,7 +24,9 @@ expression: hm.history
           "arguments": {
             "x": 1
           }
-        }
+        },
+        "signature": null,
+        "additional_params": null
       }
     ]
   },

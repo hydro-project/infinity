@@ -40,7 +40,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
 
     async fn execute(
         &self,
-        _args: serde_json::Value,
+        args: serde_json::Value,
         id: String,
         call_id: Option<String>,
         context: &ToolContext<M>,
@@ -74,14 +74,16 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             display_as: None,
         };
 
+        let instructions = args.get("instructions").unwrap().as_str().unwrap();
+
         let child_result = InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                 id: id.clone(),
                 call_id,
                 content: OneOrMany::one(ToolResultContent::Text(Text {
                     text: format!(
-                        "You are now INSIDE the thread that you requested to create. Follow the instructions in the tool call parameters for **THIS TOOL CALL**. Be careful not to get confused by the context before this call, which is from the parent thread. Your thread ID is {}",
-                        new_thread_id
+                        "You are now INSIDE the thread that you requested to create. Your thread ID is {}. Your next task is to exactly follow these instructions: {}",
+                        new_thread_id, instructions
                     ),
                 })),
             })),

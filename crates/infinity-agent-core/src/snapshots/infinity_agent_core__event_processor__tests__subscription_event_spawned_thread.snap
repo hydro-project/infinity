@@ -24,7 +24,9 @@ expression: hm.history
           "arguments": {
             "topic": "events"
           }
-        }
+        },
+        "signature": null,
+        "additional_params": null
       }
     ]
   },
@@ -51,12 +53,17 @@ expression: hm.history
         "id": "[uuid]",
         "call_id": null,
         "function": {
-          "name": "subscribe_tool",
+          "name": "receive_event__injected",
           "arguments": {
-            "kind": "[redacted-kind]",
-            "topic": "events"
+            "original_args": {
+              "topic": "events"
+            },
+            "original_tool_call_id": "tc-sub",
+            "original_tool_name": "subscribe_tool"
           }
-        }
+        },
+        "signature": null,
+        "additional_params": null
       }
     ]
   },
@@ -87,7 +94,9 @@ expression: hm.history
           "arguments": {
             "instructions": "Process the single subscription event above, report to the parent if appropriate, then close the thread after processing this event. Only your report will be visible to the parent."
           }
-        }
+        },
+        "signature": null,
+        "additional_params": null
       }
     ]
   },
