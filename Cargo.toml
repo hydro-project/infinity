@@ -39,6 +39,7 @@ aws-smithy-runtime-api = { version = "1", default-features = false }
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "postgres", "json", "chrono", "uuid"] }
 
 # Sandbox crates
+similar = "2"
 thiserror = "2"
 tempfile = "3"
 axum = "0.8"

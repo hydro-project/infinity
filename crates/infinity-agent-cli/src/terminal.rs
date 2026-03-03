@@ -75,6 +75,7 @@ pub async fn run(
 
     let mut input = TextInput::new();
     let mut mid_stream = false;
+    let mut stream_start = true;
     let mut thinking = false;
     let mut thinking_start = Instant::now();
     let mut total_tokens_used = 0;
@@ -112,6 +113,7 @@ pub async fn run(
                     DisplayEvent::StartOutput { prefix } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
                         mid_stream = true;
+                        stream_start = true;
                         print_above(&mut viewport, |w| {
                             write!(w, "\r\n")?;
                             if let Some(p) = prefix {
@@ -121,6 +123,12 @@ pub async fn run(
                         })?;
                     }
                     DisplayEvent::TextChunk(chunk) => {
+                        let chunk = if stream_start {
+                            stream_start = false;
+                            chunk.trim_start_matches('\n').to_string()
+                        } else {
+                            chunk
+                        };
                         let sanitized = chunk.replace('\n', "\r\n");
                         print_above(&mut viewport, |w| write!(w, "{}", sanitized))?;
                     }
@@ -152,9 +160,18 @@ pub async fn run(
                             ]))?;
                             let indent = format!("{}  ", pfx);
                             for line in rest {
+                                let style = if line.starts_with("- ") {
+                                    Style::default().fg(Color::Red)
+                                } else if line.starts_with("+ ") {
+                                    Style::default().fg(Color::Green)
+                                } else if line.starts_with("@@") {
+                                    Style::default().fg(Color::Cyan)
+                                } else {
+                                    Style::default().fg(Color::DarkGray)
+                                };
                                 print_line_above(&mut viewport, Line::from(vec![
                                     Span::raw(indent.clone()),
-                                    Span::styled(line.to_string(), Style::default().fg(Color::Green)),
+                                    Span::styled(line.to_string(), style),
                                 ]))?;
                             }
                         } else {
