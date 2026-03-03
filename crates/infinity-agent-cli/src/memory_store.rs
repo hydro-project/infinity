@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use infinity_agent_core::message::InputMessage;
 use infinity_agent_core::traits::{ConversationStore, InputSender, StateStore};
 use rig::message::Message;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -27,7 +28,7 @@ pub struct InMemoryConversationStore {
     threads: Arc<Mutex<HashMap<String, ThreadInfo>>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ThreadInfo {
     parent_thread_id: Option<String>,
     root_thread_id: String,
@@ -44,6 +45,35 @@ impl InMemoryConversationStore {
             threads: Arc::new(Mutex::new(HashMap::new())),
         }
     }
+
+    /// Serialize the store to a JSON file.
+    pub fn save_to_file(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let messages = self.messages.lock().unwrap();
+        let threads = self.threads.lock().unwrap();
+        let snapshot = StoreSnapshot {
+            messages: messages.clone(),
+            threads: threads.clone(),
+        };
+        let json = serde_json::to_string_pretty(&snapshot)?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Load the store from a JSON file, replacing current contents.
+    pub fn load_from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let json = std::fs::read_to_string(path)?;
+        let snapshot: StoreSnapshot = serde_json::from_str(&json)?;
+        Ok(Self {
+            messages: Arc::new(Mutex::new(snapshot.messages)),
+            threads: Arc::new(Mutex::new(snapshot.threads)),
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoreSnapshot {
+    messages: HashMap<String, Vec<(Message, String)>>,
+    threads: HashMap<String, ThreadInfo>,
 }
 
 #[async_trait]
