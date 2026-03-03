@@ -112,25 +112,34 @@ pub async fn run(
                     DisplayEvent::ThinkingEnd => {}
                     DisplayEvent::StartOutput { prefix } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
-                        mid_stream = true;
                         stream_start = true;
-                        print_above(&mut viewport, |w| {
-                            write!(w, "\r\n")?;
-                            if let Some(p) = prefix {
-                                write!(w, "{} ", p)?;
-                            }
-                            Ok(())
-                        })?;
+                        if let Some(p) = prefix {
+                            mid_stream = true;
+                            print_above(&mut viewport, |w| {
+                                write!(w, "\r\n")?;
+                                write!(w, "{} ", p)
+                            })?;
+                        }
                     }
                     DisplayEvent::TextChunk(chunk) => {
                         let chunk = if stream_start {
                             stream_start = false;
-                            chunk.trim_start_matches('\n').to_string()
+                            chunk.trim_start().to_string()
                         } else {
                             chunk
                         };
-                        let sanitized = chunk.replace('\n', "\r\n");
-                        print_above(&mut viewport, |w| write!(w, "{}", sanitized))?;
+
+                        if !chunk.is_empty() {
+                            let first_chunk = !mid_stream;
+                            mid_stream = true;
+                            let sanitized = chunk.replace('\n', "\r\n");
+                            print_above(&mut viewport, |w| {
+                                if first_chunk {
+                                    write!(w, "\r\n")?;
+                                }
+                                write!(w, "{}", sanitized)
+                            })?;
+                        }
                     }
                     DisplayEvent::ResponseDone(prefix, r) => {
                         if prefix.is_none() {
