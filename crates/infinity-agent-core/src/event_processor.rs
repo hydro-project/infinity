@@ -707,7 +707,19 @@ where
                         tracing::info!("[Tool Call: {} with arguments {}]", &call.function.name, &call.function.arguments);
 
                         // Unknown tool — inject error and retry the whole completion
-                        if !tool_names.contains(call.function.name.as_str()) {
+                        if call.function.name == "receive_event__injected" {
+                            let tool_result = Message::User {
+                                content: OneOrMany::one(UserContent::ToolResult(rig::message::ToolResult {
+                                    id: call.id.clone(),
+                                    call_id: call.call_id.clone(),
+                                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                                        text: format!("Error: you cannot directly invoke {}, invocations will automatically be injected when events arrive.", call.function.name),
+                                    })),
+                                })),
+                            };
+                            history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
+                            continue 'outer;
+                        } else if !tool_names.contains(call.function.name.as_str()) {
                             tracing::warn!("Unknown tool '{}' called, injecting error and retrying", call.function.name);
                             let tool_result = Message::User {
                                 content: OneOrMany::one(UserContent::ToolResult(rig::message::ToolResult {
