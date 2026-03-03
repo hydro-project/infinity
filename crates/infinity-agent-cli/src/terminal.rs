@@ -63,14 +63,19 @@ pub async fn run(
     mut display_rx: mpsc::UnboundedReceiver<DisplayEvent<BedrockStreamingResponse>>,
     thread_id: String,
     model_name: String,
-) -> Result<(), BoxError> {
+    new_session_tx: mpsc::UnboundedSender<String>,
+) -> Result<usize, BoxError> {
     cterm::enable_raw_mode()?;
 
     let mut viewport = InlineViewport::new(VIEWPORT_HEIGHT)?;
+    let mut thread_id = thread_id;
 
     print_above(&mut viewport, |w| {
         write!(w, "\r\nInfinity Agent CLI — thread {}\r\n", thread_id)?;
-        write!(w, "Type your messages below. Ctrl+C to exit.\r\n")
+        write!(
+            w,
+            "Type your messages below. Ctrl+C to exit. Ctrl+N for new session.\r\n"
+        )
     })?;
 
     let mut input = TextInput::new();
@@ -245,7 +250,18 @@ pub async fn run(
                                 match (key.code, key.modifiers) {
                                     (KeyCode::Char('c') | KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
                                         cleanup()?;
-                                        return Ok(());
+                                        return Ok(total_tokens_used);
+                                    }
+                                    (KeyCode::Char('n'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                        let new_id = uuid::Uuid::new_v4().to_string();
+                                        let _ = new_session_tx.send(new_id.clone());
+                                        thread_id = new_id.clone();
+                                        print_line_above(&mut viewport, Line::from(vec![
+                                            Span::styled(
+                                                format!("✦ New session created — thread {}", new_id),
+                                                Style::default().fg(Color::Yellow),
+                                            ),
+                                        ]))?;
                                     }
                                     (KeyCode::Enter, _) => {
                                         if !input.is_empty() {
