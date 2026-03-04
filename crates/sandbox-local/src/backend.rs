@@ -76,7 +76,9 @@ impl SandboxBackend for LocalBackend {
                 cache.get(&state.group_id).cloned()
             };
 
-            if let Some(dir) = maybe_dir && dir.exists() {
+            if let Some(dir) = maybe_dir
+                && dir.exists()
+            {
                 tracing::info!(group_id = %state.group_id, "reusing cached sandbox");
                 run_jj(&dir, &["workspace", "update-stale"]).await?;
                 return Ok(dir);
@@ -156,6 +158,7 @@ impl SandboxBackend for LocalBackend {
                 .args(["-p", &profile, "bash", "-c", command])
                 .env("TMPDIR", abs_tmp.as_os_str())
                 .current_dir(sandbox_dir)
+                .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .output()
