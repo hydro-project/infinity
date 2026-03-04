@@ -328,6 +328,7 @@ pub async fn run(
                                                 Style::default().fg(Color::Yellow),
                                             ),
                                         ]))?;
+                                        total_tokens_used = 0;
                                     }
                                     (KeyCode::Enter, _) => {
                                         if !input.is_empty() {

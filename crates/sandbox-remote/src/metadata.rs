@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use aws_sdk_dynamodb::types::AttributeValue;
 use aws_sdk_dynamodb::Client;
+use aws_sdk_dynamodb::types::AttributeValue;
 
 use sandbox_core::error::SandboxError;
 use sandbox_core::metadata::MetadataStore;

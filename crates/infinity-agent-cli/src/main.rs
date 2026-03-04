@@ -186,10 +186,11 @@ async fn main() -> Result<(), BoxError> {
                         let _ = display_tx.send(DisplayEvent::StartOutput { prefix: None });
                     }
                     UserContent::ToolResult(res) => {
+                        let display_as = conversation_store.get_display_as(&thread_id, &res.id);
                         if let ToolResultContent::Text(text) = res.content.first() {
                             let _ = display_tx.send(DisplayEvent::ToolResult {
                                 text: text.text,
-                                display_as: None,
+                                display_as,
                                 prefix: None,
                             });
                         }
@@ -455,6 +456,15 @@ async fn thread_worker<Mdl>(
                         input_msg.content
                     {
                         let _ = display_tx.send(DisplayEvent::UserInput(text.text.clone()));
+                    }
+
+                    // Persist display_as so it survives across restarts.
+                    if let Some(ref da) = input_msg.display_as {
+                        if let InputMessageContent::User(UserContent::ToolResult(ref res)) =
+                            input_msg.content
+                        {
+                            conversation_store.save_display_as(&active_group_id, &res.id, da);
+                        }
                     }
 
                     any_ready = true;

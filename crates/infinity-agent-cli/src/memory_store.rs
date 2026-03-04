@@ -26,6 +26,9 @@ pub struct InMemoryConversationStore {
     messages: Arc<Mutex<HashMap<String, Vec<(Message, String)>>>>,
     /// thread_id -> ThreadInfo
     threads: Arc<Mutex<HashMap<String, ThreadInfo>>>,
+    /// thread_id -> tool_result_id -> display_as text.
+    /// Persisted separately because rig's `Message` type does not carry display_as.
+    display_as_map: Arc<Mutex<HashMap<String, HashMap<String, String>>>>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -43,6 +46,7 @@ impl InMemoryConversationStore {
         Self {
             messages: Arc::new(Mutex::new(HashMap::new())),
             threads: Arc::new(Mutex::new(HashMap::new())),
+            display_as_map: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -50,9 +54,11 @@ impl InMemoryConversationStore {
     pub fn save_to_file(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let messages = self.messages.lock().unwrap();
         let threads = self.threads.lock().unwrap();
+        let display_as_map = self.display_as_map.lock().unwrap();
         let snapshot = StoreSnapshot {
             messages: messages.clone(),
             threads: threads.clone(),
+            display_as_map: display_as_map.clone(),
         };
         let json = serde_json::to_string_pretty(&snapshot)?;
         std::fs::write(path, json)?;
@@ -66,7 +72,23 @@ impl InMemoryConversationStore {
         Ok(Self {
             messages: Arc::new(Mutex::new(snapshot.messages)),
             threads: Arc::new(Mutex::new(snapshot.threads)),
+            display_as_map: Arc::new(Mutex::new(snapshot.display_as_map)),
         })
+    }
+
+    /// Record the display_as text for a tool result so it survives persistence.
+    pub fn save_display_as(&self, thread_id: &str, tool_result_id: &str, display_as: &str) {
+        let mut map = self.display_as_map.lock().unwrap();
+        map.entry(thread_id.to_string())
+            .or_default()
+            .insert(tool_result_id.to_string(), display_as.to_string());
+    }
+
+    /// Look up a previously stored display_as for a tool result.
+    pub fn get_display_as(&self, thread_id: &str, tool_result_id: &str) -> Option<String> {
+        let map = self.display_as_map.lock().unwrap();
+        map.get(thread_id)
+            .and_then(|inner| inner.get(tool_result_id).cloned())
     }
 }
 
@@ -74,6 +96,10 @@ impl InMemoryConversationStore {
 struct StoreSnapshot {
     messages: HashMap<String, Vec<(Message, String)>>,
     threads: HashMap<String, ThreadInfo>,
+    /// thread_id -> tool_result_id -> display_as text.
+    /// Uses `serde(default)` so older store files without this field still load.
+    #[serde(default)]
+    display_as_map: HashMap<String, HashMap<String, String>>,
 }
 
 #[async_trait]
