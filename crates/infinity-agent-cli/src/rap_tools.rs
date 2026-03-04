@@ -135,3 +135,43 @@ pub async fn load_rap_tools<M: InputSender + 'static>(
     }
     Ok(tools)
 }
+
+// ── Thread close notifier for RAP tool servers ──
+
+use infinity_agent_core::traits::ThreadCloseNotifier;
+
+/// Notifies RAP tool servers when a thread is closed by POSTing to
+/// each server's `/close_thread` endpoint. Failures are logged but
+/// do not propagate — this is a best-effort notification protocol.
+pub struct RapThreadCloseNotifier {
+    /// Base URLs of all known RAP tool servers (e.g. "http://127.0.0.1:9100").
+    server_urls: Vec<String>,
+    client: SimpleHttpClient,
+}
+
+impl RapThreadCloseNotifier {
+    pub fn new(server_urls: Vec<String>) -> Self {
+        Self {
+            server_urls,
+            client: SimpleHttpClient::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl ThreadCloseNotifier for RapThreadCloseNotifier {
+    async fn notify_thread_closed(&self, thread_id: &str) {
+        let payload = serde_json::json!({ "thread_id": thread_id }).to_string();
+        for url in &self.server_urls {
+            let endpoint = format!("{}/close_thread", url.trim_end_matches('/'));
+            match self.client.post(&endpoint, &payload).await {
+                Ok(status) => {
+                    tracing::info!("Notified {} of thread close (status: {})", endpoint, status);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to notify {} of thread close: {}", endpoint, e);
+                }
+            }
+        }
+    }
+}

@@ -29,6 +29,17 @@ The runtime MUST send invocations as HTTP POST requests and MUST include `Conten
 
 The tool MUST return HTTP 200 immediately upon receiving a valid invocation. The tool MUST NOT block the HTTP response while processing the invocation — the acknowledgement confirms only that the message was received and will be processed asynchronously. If the `toolset_version` in the invocation is stale, the tool SHOULD return HTTP 409 Conflict instead. For all other error conditions, the tool SHOULD still acknowledge with HTTP 200 and deliver the error asynchronously via a [tool result](/spec/basic/tool-result).
 
+### Thread Closure Notification
+
+In addition to tool invocations, runtimes send a best-effort [thread closure](/spec/basic/thread-closure) notification when a conversation thread is closed:
+
+```
+POST https://tool.example.com/close_thread
+Content-Type: application/json
+```
+
+This is a fire-and-forget lifecycle signal — the runtime MUST NOT retry on failure, and the tool server MUST always respond with HTTP 200 regardless of whether it acted on the notification. Tool servers MAY use this to clean up thread-specific resources. See [Thread Closure](/spec/basic/thread-closure) for the full specification.
+
 ## Tool → Runtime
 
 Tools send messages to the runtime by POSTing to the `callback_url` provided in the original invocation. Three message types are supported:

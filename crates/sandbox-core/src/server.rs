@@ -108,6 +108,7 @@ where
     let router = Router::new()
         .route("/.well-known/rap-toolset", get(toolset_handler::<B, M, C>))
         .route("/invoke", post(invoke_handler::<B, M, C>))
+        .route("/close_thread", post(close_thread_handler::<B, M, C>))
         .with_state(state);
 
     (router, tracker)
@@ -180,6 +181,48 @@ async fn invoke_handler<
             .await
         {
             tracing::error!("failed to send tool result to callback: {e}");
+        }
+    });
+
+    state.pending_tasks.lock().await.push(handle);
+
+    StatusCode::OK
+}
+
+/// Request payload for the `/close_thread` RAP protocol endpoint.
+#[derive(Debug, Deserialize)]
+struct CloseThreadRequest {
+    thread_id: String,
+}
+
+/// Best-effort notification endpoint for thread closure.
+///
+/// When the leader closes a thread it POSTs `{"thread_id": "..."}` to every
+/// tool server. The server uses this to clean up thread-specific resources
+/// (e.g. cached sandboxes). The response is always 200 OK — the leader does
+/// not retry on failure, and tool servers are free to ignore this entirely.
+async fn close_thread_handler<
+    B: SandboxBackend + 'static,
+    M: MetadataStore + 'static,
+    C: CallbackClient + 'static,
+>(
+    State(state): State<Arc<AppState<B, M, C>>>,
+    Json(request): Json<CloseThreadRequest>,
+) -> StatusCode {
+    let thread_id = request.thread_id;
+    tracing::info!(thread_id = %thread_id, "received close_thread notification");
+
+    let state_clone = state.clone();
+    let handle = tokio::spawn(async move {
+        if let Err(e) = state_clone
+            .backend
+            .cleanup_sandbox_permanently(&thread_id)
+            .await
+        {
+            tracing::warn!(
+                thread_id = %thread_id,
+                "failed to permanently clean up sandbox: {e}"
+            );
         }
     });
 
