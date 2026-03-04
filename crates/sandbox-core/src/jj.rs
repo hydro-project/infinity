@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use crate::error::SandboxError;
@@ -27,6 +27,8 @@ pub async fn jj_git_clone(
     bookmark_name: &str,
     first_clone: bool,
 ) -> Result<(), SandboxError> {
+    run_jj(&PathBuf::from(remote), &["workspace", "update-stale"]).await?;
+
     let output = tokio::process::Command::new("jj")
         .args(["workspace", "add", dest.to_str().unwrap()])
         .current_dir(remote)
