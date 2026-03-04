@@ -22,6 +22,7 @@ use ratatui::{
 };
 use rig::message::UserContent;
 use rig_bedrock::streaming::BedrockStreamingResponse;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::io::{self, Write};
 use std::time::Instant;
@@ -87,6 +88,8 @@ pub async fn run(
     let mut thinking = false;
     let mut thinking_start = Instant::now();
     let mut total_tokens_used = 0;
+    let mut thread_buffers: BTreeMap<String, String> = BTreeMap::new();
+    let mut thread_tool_call_active: HashSet<String> = HashSet::new();
 
     draw_input_bar(
         &mut viewport,
@@ -95,6 +98,7 @@ pub async fn run(
         &thinking_start,
         &model_name,
         total_tokens_used,
+        &thread_buffers,
     )?;
 
     loop {
@@ -122,14 +126,9 @@ pub async fn run(
                         if prefix.is_none() {
                             end_stream(&mut viewport, &mut mid_stream)?;
                             stream_start = true;
+                        } else if let Some(p) = prefix {
+                            thread_buffers.entry(p).or_default();
                         }
-                        // if let Some(p) = prefix {
-                        //     mid_stream = true;
-                        //     print_above(&mut viewport, |w| {
-                        //         write!(w, "\r\n")?;
-                        //         write!(w, "{} ", p)
-                        //     })?;
-                        // }
                     }
                     DisplayEvent::TextChunk {
                         prefix,
@@ -154,6 +153,8 @@ pub async fn run(
                                     write!(w, "{}", sanitized)
                                 })?;
                             }
+                        } else if let Some(p) = prefix {
+                            thread_buffers.entry(p).or_default().push_str(&chunk);
                         }
                     }
                     DisplayEvent::ResponseDone(prefix, r) => {
@@ -162,52 +163,69 @@ pub async fn run(
                             total_tokens_used = usage.total_tokens as usize;
                             end_stream(&mut viewport, &mut mid_stream)?;
                             thinking = false;
+                        } else if let Some(p) = prefix {
+                            if !thread_tool_call_active.contains(&p) {
+                                thread_buffers.remove(&p);
+                            }
                         }
                     }
                     DisplayEvent::ToolCall { name, args, prefix } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
-                        let pfx = prefix.map(|p| format!("{} ", p)).unwrap_or_default();
-                        print_line_above(&mut viewport, Line::from(vec![
-                            Span::raw(pfx),
-                            Span::styled(format!("◆ {}({})", name, args), Style::default().fg(Color::Blue)),
-                        ]))?;
-                    }
-                    DisplayEvent::ToolResult { text, display_as, prefix } => {
-                        end_stream(&mut viewport, &mut mid_stream)?;
-                        let pfx = prefix.as_ref().map(|p| format!("{} ", p)).unwrap_or_default();
-                        let display_text = display_as.as_deref().unwrap_or(&text);
-                        let lines: Vec<&str> = display_text.lines().collect();
-                        if let Some((first, rest)) = lines.split_first() {
-                            print_line_above(&mut viewport, Line::from(vec![
-                                Span::raw(pfx.clone()),
-                                Span::styled(format!("✓ {}", first), Style::default().fg(Color::Green)),
-                            ]))?;
-                            let indent = format!("{}  ", pfx);
-                            for line in rest {
-                                let style = if line.starts_with("- ") {
-                                    Style::default().fg(Color::Red)
-                                } else if line.starts_with("+ ") {
-                                    Style::default().fg(Color::Green)
-                                } else if line.starts_with("@@") {
-                                    Style::default().fg(Color::Cyan)
-                                } else {
-                                    Style::default().fg(Color::DarkGray)
-                                };
-                                print_line_above(&mut viewport, Line::from(vec![
-                                    Span::raw(indent.clone()),
-                                    Span::styled(line.to_string(), style),
-                                ]))?;
-                            }
-                        } else {
-                            print_line_above(&mut viewport, Line::from(vec![
-                                Span::raw(pfx),
-                                Span::styled("✓", Style::default().fg(Color::Green)),
-                            ]))?;
-                        }
 
                         if prefix.is_none() {
+                            let pfx = prefix.map(|p| format!("{} ", p)).unwrap_or_default();
+                            print_line_above(&mut viewport, Line::from(vec![
+                                Span::raw(pfx),
+                                Span::styled(format!("◆ {}({})", name, args), Style::default().fg(Color::Blue)),
+                            ]))?;
+                        } else if let Some(p) = prefix {
+                            thread_buffers.entry(p.clone()).or_default().push_str(&format!("\n◆ {}({})", name, args));
+
+                            if name != "close_thread" { // never gets a response
+                                thread_tool_call_active.insert(p);
+                            } else {
+                                thread_buffers.remove(&p);
+                            }
+                        }
+                    }
+                    DisplayEvent::ToolResult { text, display_as, prefix } => {
+                        if prefix.is_none() {
+                            end_stream(&mut viewport, &mut mid_stream)?;
+                            let pfx = prefix.as_ref().map(|p| format!("{} ", p)).unwrap_or_default();
+                            let display_text = display_as.as_deref().unwrap_or(&text);
+                            let lines: Vec<&str> = display_text.lines().collect();
+                            if let Some((first, rest)) = lines.split_first() {
+                                print_line_above(&mut viewport, Line::from(vec![
+                                    Span::raw(pfx.clone()),
+                                    Span::styled(format!("✓ {}", first), Style::default().fg(Color::Green)),
+                                ]))?;
+                                let indent = format!("{}  ", pfx);
+                                for line in rest {
+                                    let style = if line.starts_with("- ") {
+                                        Style::default().fg(Color::Red)
+                                    } else if line.starts_with("+ ") {
+                                        Style::default().fg(Color::Green)
+                                    } else if line.starts_with("@@") {
+                                        Style::default().fg(Color::Cyan)
+                                    } else {
+                                        Style::default().fg(Color::DarkGray)
+                                    };
+                                    print_line_above(&mut viewport, Line::from(vec![
+                                        Span::raw(indent.clone()),
+                                        Span::styled(line.to_string(), style),
+                                    ]))?;
+                                }
+                            } else {
+                                print_line_above(&mut viewport, Line::from(vec![
+                                    Span::raw(pfx),
+                                    Span::styled("✓", Style::default().fg(Color::Green)),
+                                ]))?;
+                            }
+
                             thinking = true;
                             thinking_start = Instant::now();
+                        } else if let Some(p) = prefix {
+                            thread_tool_call_active.remove(&p);
                         }
                     }
                     DisplayEvent::Info(text) => {
@@ -233,7 +251,7 @@ pub async fn run(
                         ]))?;
                     }
                 }
-                draw_input_bar(&mut viewport, &input, thinking, &thinking_start, &model_name, total_tokens_used)?;
+                draw_input_bar(&mut viewport, &input, thinking, &thinking_start, &model_name, total_tokens_used, &thread_buffers)?;
             }
 
             _ = poll_crossterm_event() => {
@@ -302,7 +320,7 @@ pub async fn run(
                 }
 
                 if got_resize || any_change || thinking {
-                    draw_input_bar(&mut viewport, &input, thinking, &thinking_start, &model_name, total_tokens_used)?;
+                    draw_input_bar(&mut viewport, &input, thinking, &thinking_start, &model_name, total_tokens_used, &thread_buffers)?;
                 }
             }
 
@@ -367,12 +385,13 @@ fn draw_input_bar(
     thinking_start: &Instant,
     model_name: &str,
     total_tokens_used: usize,
+    thread_buffers: &BTreeMap<String, String>,
 ) -> Result<(), BoxError> {
     const MAX_CONTEXT: usize = 200_000;
-
     let current_width = viewport.area().width;
     let input_height = input.preferred_height(current_width);
-    let mut desired_lines = 1 + input_height + 1; // border + input + status row
+    let thread_rows = thread_buffers.len() as u16;
+    let mut desired_lines = thread_rows + 1 + input_height + 1; // threads + border + input + status row
 
     // Add one row for the thinking animation bar
     if thinking {
@@ -387,46 +406,87 @@ fn draw_input_bar(
     let status_right = format!("{:.0}% context used", pct);
     let status_left = model_name.to_string();
 
+    // Snapshot thread lines for the closure.
+    // Word-wrap each buffer at the available width and show only the last wrapped row.
+    let thread_lines: Vec<Line<'_>> = thread_buffers
+        .iter()
+        .map(|(id, buf)| {
+            let prefix_len = id.chars().count() + 1;
+            let avail = (current_width as usize).saturating_sub(prefix_len).max(1);
+            let flat = buf.replace('\n', " ");
+            let chars: Vec<char> = flat.chars().collect();
+            let last_row_start = (chars.len() / avail) * avail;
+            let last_row_start = if last_row_start == chars.len() && !chars.is_empty() {
+                last_row_start.saturating_sub(avail)
+            } else {
+                last_row_start
+            };
+            let tail: String = chars[last_row_start..].iter().collect();
+            Line::from(vec![
+                Span::styled(
+                    format!("{} ", id),
+                    Style::default().fg(Color::Rgb(130, 90, 200)),
+                ),
+                Span::styled(tail, Style::default().fg(Color::DarkGray)),
+            ])
+        })
+        .collect();
+
     viewport.draw(desired_lines, |frame| {
         let area = frame.area();
 
-        if thinking {
-            let [thinking_area, sep_area, input_area, status_area] = Layout::vertical([
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Min(1),
-                Constraint::Length(1),
-            ])
-            .areas(area);
-
-            render_thinking_bar(frame, thinking_area, thinking_start);
-            frame.render_widget(Block::default().borders(Borders::TOP), sep_area);
-
-            let mut cursor_pos = None;
-            frame.render_widget(TextInputWidget::new(input, &mut cursor_pos), input_area);
-            if let Some(pos) = cursor_pos {
-                frame.set_cursor_position(pos);
-            }
-
-            render_status_row(frame, status_area, &status_left, &status_right);
-        } else {
-            let [sep_area, input_area, status_area] = Layout::vertical([
-                Constraint::Length(1),
-                Constraint::Min(1),
-                Constraint::Length(1),
-            ])
-            .areas(area);
-
-            frame.render_widget(Block::default().borders(Borders::TOP), sep_area);
-
-            let mut cursor_pos = None;
-            frame.render_widget(TextInputWidget::new(input, &mut cursor_pos), input_area);
-            if let Some(pos) = cursor_pos {
-                frame.set_cursor_position(pos);
-            }
-
-            render_status_row(frame, status_area, &status_left, &status_right);
+        // Build constraints dynamically
+        let mut constraints: Vec<Constraint> = Vec::new();
+        if thread_rows > 0 {
+            constraints.push(Constraint::Length(thread_rows));
         }
+        if thinking {
+            constraints.push(Constraint::Length(1));
+        }
+        constraints.push(Constraint::Length(1)); // border
+        constraints.push(Constraint::Min(1)); // input
+        constraints.push(Constraint::Length(1)); // status
+
+        let areas = Layout::vertical(constraints).split(area);
+        let mut idx = 0;
+
+        // Thread rows
+        if thread_rows > 0 {
+            let threads_area = areas[idx];
+            idx += 1;
+            for (i, line) in thread_lines.iter().enumerate() {
+                if (i as u16) < threads_area.height {
+                    let row = ratatui::layout::Rect {
+                        x: threads_area.x,
+                        y: threads_area.y + i as u16,
+                        width: threads_area.width,
+                        height: 1,
+                    };
+                    frame.render_widget(line.clone(), row);
+                }
+            }
+        }
+
+        // Thinking bar
+        if thinking {
+            render_thinking_bar(frame, areas[idx], thinking_start);
+            idx += 1;
+        }
+
+        // Border
+        frame.render_widget(Block::default().borders(Borders::TOP), areas[idx]);
+        idx += 1;
+
+        // Input
+        let mut cursor_pos = None;
+        frame.render_widget(TextInputWidget::new(input, &mut cursor_pos), areas[idx]);
+        if let Some(pos) = cursor_pos {
+            frame.set_cursor_position(pos);
+        }
+        idx += 1;
+
+        // Status
+        render_status_row(frame, areas[idx], &status_left, &status_right);
     })?;
     Ok(())
 }
