@@ -1,14 +1,14 @@
 use rig::message::UserContent;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(untagged)]
 pub enum InputMessageContent {
     OAuth(OAuthRequired),
     User(UserContent),
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct OAuthRequired {
     #[serde(rename = "type")]
     pub content_type: String,
@@ -58,7 +58,7 @@ impl SyntheticKind {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct InputMessage {
     pub content: InputMessageContent,
     pub group_id: String,

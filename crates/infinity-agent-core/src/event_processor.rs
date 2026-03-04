@@ -620,7 +620,7 @@ where
             let stream_result = model
                 .stream(CompletionRequest {
                     model: None,
-                    preamble: None,
+                    preamble: Some(include_str!("default_prompt.md").to_string()),
                     chat_history: history.get_history(),
                     documents: vec![],
                     tools: tools.to_vec(),
