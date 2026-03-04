@@ -473,11 +473,11 @@ fn draw_input_bar(
 
         // Build constraints dynamically
         let mut constraints: Vec<Constraint> = Vec::new();
-        if thread_rows > 0 {
-            constraints.push(Constraint::Length(thread_rows));
-        }
         if thinking {
             constraints.push(Constraint::Length(1));
+        }
+        if thread_rows > 0 {
+            constraints.push(Constraint::Length(thread_rows));
         }
         constraints.push(Constraint::Length(1)); // border
         constraints.push(Constraint::Min(1)); // input
@@ -485,6 +485,12 @@ fn draw_input_bar(
 
         let areas = Layout::vertical(constraints).split(area);
         let mut idx = 0;
+
+        // Thinking bar
+        if thinking {
+            render_thinking_bar(frame, areas[idx], thinking_start);
+            idx += 1;
+        }
 
         // Thread rows
         if thread_rows > 0 {
@@ -501,12 +507,6 @@ fn draw_input_bar(
                     frame.render_widget(line.clone(), row);
                 }
             }
-        }
-
-        // Thinking bar
-        if thinking {
-            render_thinking_bar(frame, areas[idx], thinking_start);
-            idx += 1;
         }
 
         // Border
