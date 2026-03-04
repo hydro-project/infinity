@@ -43,3 +43,6 @@ similar = "2"
 thiserror = "2"
 tempfile = "3"
 axum = "0.8"
+
+[patch.crates-io]
+rig-bedrock = { path = "crates/rig-bedrock-patched" }
