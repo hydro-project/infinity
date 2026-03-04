@@ -3,7 +3,7 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider};
 use aws_sigv4::http_request::{
-    sign, SignableBody, SignableRequest, SignatureLocation, SigningSettings,
+    SignableBody, SignableRequest, SignatureLocation, SigningSettings, sign,
 };
 use aws_sigv4::sign::v4::SigningParams;
 use aws_smithy_runtime_api::client::identity::Identity;
