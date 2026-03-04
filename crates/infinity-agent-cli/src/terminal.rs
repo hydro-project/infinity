@@ -179,7 +179,7 @@ pub async fn run(
                                 Span::styled(format!("◆ {}({})", name, args), Style::default().fg(Color::Blue)),
                             ]))?;
                         } else if let Some(p) = prefix {
-                            thread_buffers.entry(p.clone()).or_default().push_str(&format!("\n◆ {}({})", name, args));
+                            *thread_buffers.entry(p.clone()).or_default() = format!("\n◆ {}({})", name, args);
 
                             if name != "close_thread" { // never gets a response
                                 thread_tool_call_active.insert(p);
