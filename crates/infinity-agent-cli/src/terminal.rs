@@ -249,6 +249,9 @@ pub async fn run(
                             Span::raw(pfx),
                             Span::styled(format!("⚡{}: {}", name, text), Style::default().fg(Color::Indexed(208))),
                         ]))?;
+
+                        thinking = true;
+                        thinking_start = Instant::now();
                     }
                 }
                 draw_input_bar(&mut viewport, &input, thinking, &thinking_start, &model_name, total_tokens_used, &thread_buffers)?;
