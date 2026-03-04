@@ -368,8 +368,14 @@ async fn thread_worker<Mdl>(
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
-    while let Some((input_msg, message_id)) = rx.recv().await {
-        let active_group_id = input_msg.group_id.clone();
+    while let Some(first) = rx.recv().await {
+        // Drain all immediately-available events before running the LLM.
+        let mut batch = vec![first];
+        while let Ok(item) = rx.try_recv() {
+            batch.push(item);
+        }
+
+        let active_group_id = batch[0].0.group_id.clone();
 
         let mut current_history = match event_processor::HistoryManager::new_with_history(
             conversation_store.clone(),
@@ -385,66 +391,80 @@ async fn thread_worker<Mdl>(
             }
         };
 
-        // Echo to the terminal — subscription events vs user input.
-        if let Some(synth) = input_msg.synthetic.as_ref() {
-            if let InputMessageContent::User(UserContent::ToolResult(res)) = &input_msg.content
-                && let ToolResultContent::Text(text) = res.content.first()
-            {
-                let orig_call = current_history.get_history().into_iter().find(|h| {
-                    if let Message::Assistant { content, .. } = h
-                        && let AssistantContent::ToolCall(c) = content.first()
-                    {
-                        c.id == synth.tool_call_id()
-                    } else {
-                        false
-                    }
-                });
+        let mut any_ready = false;
+        let mut last_message_id = String::new();
 
-                if let Some(h) = orig_call
-                    && let Message::Assistant { content, .. } = h
-                    && let AssistantContent::ToolCall(c) = content.first()
-                {
-                    let _ = display_tx.send(DisplayEvent::SubscriptionEvent {
-                        name: format!("{}({})", c.function.name, c.function.arguments),
-                        text: text.text,
-                        prefix: current_history.get_thread_nesting_prefix(),
-                    });
+        for (input_msg, message_id) in batch {
+            let prepare_result = event_processor::prepare_input(
+                input_msg.clone(),
+                message_id.clone(),
+                &mut current_history,
+                &conversation_store,
+            )
+            .await;
+
+            match prepare_result {
+                Ok(event_processor::PrepareResult::Handled) => {}
+                Ok(event_processor::PrepareResult::OAuthRequired { auth_url }) => {
+                    let _ = display_tx.send(DisplayEvent::Info(format!(
+                        "OAuth required — open this URL:\n  {}",
+                        auth_url
+                    )));
+                }
+                Err(e) => {
+                    let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
+                }
+                Ok(event_processor::PrepareResult::Ready) => {
+                    // Echo to the terminal — subscription events vs user input.
+                    if let Some(synth) = input_msg.synthetic.as_ref() {
+                        if let InputMessageContent::User(UserContent::ToolResult(res)) =
+                            &input_msg.content
+                            && let ToolResultContent::Text(text) = res.content.first()
+                        {
+                            let orig_call = current_history.get_history().into_iter().find(|h| {
+                                if let Message::Assistant { content, .. } = h
+                                    && let AssistantContent::ToolCall(c) = content.first()
+                                {
+                                    c.id == synth.tool_call_id()
+                                } else {
+                                    false
+                                }
+                            });
+
+                            if let Some(h) = orig_call
+                                && let Message::Assistant { content, .. } = h
+                                && let AssistantContent::ToolCall(c) = content.first()
+                            {
+                                let _ = display_tx.send(DisplayEvent::SubscriptionEvent {
+                                    name: format!("{}({})", c.function.name, c.function.arguments),
+                                    text: text.text,
+                                    prefix: current_history.get_thread_nesting_prefix(),
+                                });
+                            }
+                        }
+                    } else if let InputMessageContent::User(UserContent::ToolResult(res)) =
+                        &input_msg.content
+                        && let ToolResultContent::Text(text) = res.content.first()
+                    {
+                        let _ = display_tx.send(DisplayEvent::ToolResult {
+                            text: text.text,
+                            display_as: input_msg.display_as.clone(),
+                            prefix: current_history.get_thread_nesting_prefix(),
+                        });
+                    } else if let InputMessageContent::User(UserContent::Text(ref text)) =
+                        input_msg.content
+                    {
+                        let _ = display_tx.send(DisplayEvent::UserInput(text.text.clone()));
+                    }
+
+                    any_ready = true;
+                    last_message_id = message_id;
                 }
             }
-        } else if let InputMessageContent::User(UserContent::ToolResult(res)) = &input_msg.content
-            && let ToolResultContent::Text(text) = res.content.first()
-        {
-            let _ = display_tx.send(DisplayEvent::ToolResult {
-                text: text.text,
-                display_as: input_msg.display_as.clone(),
-                prefix: current_history.get_thread_nesting_prefix(),
-            });
-        } else if let InputMessageContent::User(UserContent::Text(ref text)) = input_msg.content {
-            let _ = display_tx.send(DisplayEvent::UserInput(text.text.clone()));
         }
 
-        let prepare_result = event_processor::prepare_input(
-            input_msg,
-            message_id.clone(),
-            &mut current_history,
-            &conversation_store,
-        )
-        .await;
-
-        match prepare_result {
-            Ok(event_processor::PrepareResult::Handled) => continue,
-            Ok(event_processor::PrepareResult::OAuthRequired { auth_url }) => {
-                let _ = display_tx.send(DisplayEvent::Info(format!(
-                    "OAuth required — open this URL:\n  {}",
-                    auth_url
-                )));
-                continue;
-            }
-            Err(e) => {
-                let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
-                continue;
-            }
-            Ok(event_processor::PrepareResult::Ready) => {}
+        if !any_ready {
+            continue;
         }
 
         let tool_names: std::collections::HashSet<String> =
@@ -484,7 +504,7 @@ async fn thread_worker<Mdl>(
                 &tool_registry,
                 &tool_context,
                 &active_thread_id,
-                &message_id,
+                &last_message_id,
             ));
             let mut action = None;
             let mut started = false;
