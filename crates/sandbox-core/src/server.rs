@@ -15,7 +15,8 @@ use crate::jj::run_jj;
 use crate::metadata::MetadataStore;
 use crate::sandbox::SandboxBackend;
 use crate::types::{
-    CloneRepoArgs, EditFileArgs, ExecuteCommandArgs, GrepArgs, ReadFileArgs, RepoState,
+    CloneRepoArgs, DescribeEditsArgs, EditFileArgs, ExecuteCommandArgs, GrepArgs, ReadFileArgs,
+    RepoState,
 };
 
 #[derive(Debug, Deserialize)]
@@ -151,6 +152,7 @@ async fn invoke_handler<
             "read_file" => handle_read_file(&state_clone, &invocation).await,
             "edit_file" => handle_edit_file(&state_clone, &invocation).await,
             "grep" => handle_grep(&state_clone, &invocation).await,
+            "describe_edits" => handle_describe_edits(&state_clone, &invocation).await,
             _ => Err(SandboxError::Other(format!(
                 "unknown operation: {}",
                 invocation.operation
@@ -507,6 +509,22 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     .await
 }
 
+async fn handle_describe_edits<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
+    state: &AppState<B, M, C>,
+    invocation: &RapInvocation,
+) -> Result<(String, Option<String>), SandboxError> {
+    let args: DescribeEditsArgs = serde_json::from_value(invocation.arguments.clone())
+        .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
+
+    with_sandbox(
+        state,
+        &invocation.group_id,
+        &args.message,
+        |_sandbox_dir| async move { Ok(("Edits described.".to_string(), None)) },
+    )
+    .await
+}
+
 /// Build a pretty-printed unified diff for display in the CLI.
 fn build_edit_diff(path: &str, old_str: &str, new_str: &str) -> String {
     use similar::{ChangeTag, TextDiff};
@@ -635,6 +653,20 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                         }
                     },
                     "required": ["query"]
+                }),
+            },
+            ToolDef {
+                name: "describe_edits".to_string(),
+                description: "Call this after finishing a coding task or subtask to describe the edits you made. Provide a concise summary of what was changed and why.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "message": {
+                            "type": "string",
+                            "description": "A description of the edits that were made"
+                        }
+                    },
+                    "required": ["message"]
                 }),
             },
         ],

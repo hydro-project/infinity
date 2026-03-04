@@ -47,6 +47,13 @@ pub struct EditFileArgs {
     pub new_str: String,
 }
 
+/// Input for the describe_edits tool.
+#[derive(Debug, Deserialize)]
+pub struct DescribeEditsArgs {
+    /// A description of the edits that were made.
+    pub message: String,
+}
+
 /// Input for the grep tool.
 #[derive(Debug, Deserialize)]
 pub struct GrepArgs {
