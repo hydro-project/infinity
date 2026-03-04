@@ -285,6 +285,39 @@ pub async fn run(
                                         cleanup()?;
                                         return Ok(total_tokens_used);
                                     }
+                                    (KeyCode::Char('h'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                        const W: usize = 47;
+                                        let bar: String = "─".repeat(W);
+                                        let rows = [
+                                            "",
+                                            "  Navigation",
+                                            "    Ctrl+C / Ctrl+D    Exit",
+                                            "    Ctrl+N             New session",
+                                            "    Ctrl+H             Show this help",
+                                            "    Enter              Send message",
+                                            "",
+                                            "  Editing",
+                                            "    Alt+Enter          Insert newline",
+                                            "    Ctrl+A             Move to line start",
+                                            "    Ctrl+E             Move to line end",
+                                            "    Alt+Left / Alt+B   Move word left",
+                                            "    Alt+Right / Alt+F  Move word right",
+                                            "    Alt+Backspace      Delete word left",
+                                            "    Ctrl+C             Clear input (non-empty)",
+                                            "",
+                                        ];
+                                        let mut help: Vec<String> = Vec::new();
+                                        help.push(format!("╭{bar}╮"));
+                                        for row in rows {
+                                            help.push(format!("│{:<W$}│", row));
+                                        }
+                                        help.push(format!("╰{bar}╯"));
+                                        for line in &help {
+                                            print_line_above(&mut viewport, Line::from(vec![
+                                                Span::styled(line.clone(), Style::default().fg(Color::Cyan)),
+                                            ]))?;
+                                        }
+                                    }
                                     (KeyCode::Char('n'), m) if m.contains(KeyModifiers::CONTROL) => {
                                         let new_id = uuid::Uuid::new_v4().to_string();
                                         let _ = new_session_tx.send(new_id.clone());
@@ -407,7 +440,7 @@ fn draw_input_bar(
         0.0
     };
     let status_right = format!("{:.0}% context used", pct);
-    let status_left = model_name.to_string();
+    let status_left = format!("{} (ctrl-h for help)", model_name);
 
     // Snapshot thread lines for the closure.
     // Word-wrap each buffer at the available width and show only the last wrapped row.
