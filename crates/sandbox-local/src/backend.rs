@@ -71,10 +71,15 @@ impl SandboxBackend for LocalBackend {
     async fn create_sandbox(&self, state: &RepoState) -> Result<PathBuf, SandboxError> {
         // Fast path: return cached dir if we already have one.
         {
-            let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(dir) = cache.get(&state.group_id) {
+            let maybe_dir = {
+                let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+                cache.get(&state.group_id).cloned()
+            };
+
+            if let Some(dir) = maybe_dir {
                 tracing::info!(group_id = %state.group_id, "reusing cached sandbox");
-                return Ok(dir.clone());
+                run_jj(&dir, &["workspace", "update-stale"]).await?;
+                return Ok(dir);
             }
         }
 
