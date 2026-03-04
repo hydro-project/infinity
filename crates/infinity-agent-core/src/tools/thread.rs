@@ -91,7 +91,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
                 call_id: call_id.map(|c| c.to_string()),
                 content: OneOrMany::one(ToolResultContent::Text(Text {
                     text: format!(
-                        "You are now INSIDE the thread that you requested to create. Your thread ID is {}. Your next task is to exactly follow these instructions: {}",
+                        "You are now INSIDE the thread that you requested to create. Your thread ID is {}. Your next task is to exactly follow these instructions: {}\n. Start by repeating to yourself the instructions, ignoring thinking from the parent context. Make sure to not be confused by the parent context. If the parent was planning to spawn more threads, you should not.",
                         new_thread_id, instructions
                     ),
                 })),
