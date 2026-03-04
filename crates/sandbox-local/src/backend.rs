@@ -76,7 +76,7 @@ impl SandboxBackend for LocalBackend {
                 cache.get(&state.group_id).cloned()
             };
 
-            if let Some(dir) = maybe_dir {
+            if let Some(dir) = maybe_dir && dir.exists() {
                 tracing::info!(group_id = %state.group_id, "reusing cached sandbox");
                 run_jj(&dir, &["workspace", "update-stale"]).await?;
                 return Ok(dir);

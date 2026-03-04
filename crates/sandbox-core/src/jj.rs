@@ -6,6 +6,8 @@ use crate::error::SandboxError;
 /// Run a jj command in the given directory and return stdout.
 pub async fn run_jj(dir: &Path, args: &[&str]) -> Result<(), SandboxError> {
     let status = tokio::process::Command::new("jj")
+        .args(["--config", "user.name=RAP Sandbox"])
+        .args(["--config", "user.email=sandbox@rap"])
         .args(args)
         .current_dir(dir)
         .status()
@@ -30,7 +32,9 @@ pub async fn jj_git_clone(
     run_jj(&PathBuf::from(remote), &["workspace", "update-stale"]).await?;
 
     let output = tokio::process::Command::new("jj")
-        .args(["workspace", "add", dest.to_str().unwrap()])
+        .args(["--config", "user.name=RAP Sandbox"])
+        .args(["--config", "user.email=sandbox@rap"])
+        .args(["workspace", "add", "-r", "@", dest.to_str().unwrap()])
         .current_dir(remote)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -45,8 +49,6 @@ pub async fn jj_git_clone(
         )));
     }
 
-    jj_configure_author(dest).await?;
-
     if first_clone {
         tracing::info!("This is the first clone of the repo");
         tracing::info!("Pushing initial bookmark, path {:?}", dest);
@@ -56,20 +58,6 @@ pub async fn jj_git_clone(
 
     run_jj(dest, &["edit", bookmark_name]).await?;
 
-    Ok(())
-}
-/// Configure the jj repo with a default author so all commits have valid metadata.
-async fn jj_configure_author(dir: &Path) -> Result<(), SandboxError> {
-    run_jj(
-        dir,
-        &["config", "set", "--repo", "user.name", "RAP Sandbox"],
-    )
-    .await?;
-    run_jj(
-        dir,
-        &["config", "set", "--repo", "user.email", "sandbox@rap"],
-    )
-    .await?;
     Ok(())
 }
 /// Push the current working copy to the remote.
