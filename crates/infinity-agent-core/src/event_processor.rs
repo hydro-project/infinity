@@ -68,6 +68,8 @@ pub enum CompletionEvent<R> {
     ThinkingStart,
     /// The model has stopped thinking (reasoning).
     ThinkingEnd,
+    /// A synchronous tool result.
+    SyncToolResult(ToolResult),
 }
 
 // ── HistoryManager (unchanged from before) ──
@@ -593,11 +595,13 @@ where
 //     terminal Action). Handles stream errors and unknown tools internally.
 // ═══════════════════════════════════════════════════════════════════════
 
-pub fn run_completion<'a, Mdl, C, S>(
+pub fn run_completion<'a, Mdl, C, S, M>(
     model: &'a Mdl,
     history: &'a mut HistoryManager<C, S>,
     tool_names: &'a HashSet<String>,
     tools: &'a [ToolDefinition],
+    tool_registry: &'a HashMap<String, &'a dyn Tool<M>>,
+    tool_context: &'a ToolContext<M>,
     group_id: &'a str,
     message_id: &'a str,
 ) -> impl futures_util::Stream<Item = Result<CompletionEvent<Mdl::StreamingResponse>, BoxError>> + 'a
@@ -605,6 +609,7 @@ where
     Mdl: CompletionModel,
     C: ConversationStore,
     S: StateStore,
+    M: InputSender + 'static,
 {
     async_stream::try_stream! {
         let mut completion_counter: usize = 0;
@@ -735,12 +740,37 @@ where
                         }
 
                         yield CompletionEvent::Action(CompletionAction::ExecuteToolCall {
-                            tool_name: call.function.name,
-                            tool_args: call.function.arguments,
-                            tool_call_id: call.id,
-                            call_id: call.call_id,
+                            tool_name: call.function.name.clone(),
+                            tool_args: call.function.arguments.clone(),
+                            tool_call_id: call.id.clone(),
+                            call_id: call.call_id.clone(),
                         });
-                        // return;
+
+                        // Check for synchronous execution — if the tool provides
+                        // synchronous results, inject into history immediately and
+                        // continue the completion loop instead of returning. This
+                        // prevents race conditions where a concurrent event makes
+                        // the tool call appear cancelled.
+                        if let Some(tool) = tool_registry.get(call.function.name.as_str()) && tool.supports_sync() {
+                            history.sync().await?; // we must sync the history so that thread spawning uses the correct state
+
+                            if let Some(res) = tool.execute_synchronous(
+                                &call.function.arguments,
+                                &call.id,
+                                call.call_id.as_deref(),
+                                tool_context,
+                            ).await {
+                                yield CompletionEvent::SyncToolResult(res.clone());
+
+                                let sync_id = format!("{}-sync-result-{}", call.id, completion_counter);
+                                completion_counter += 1;
+                                history.handle_content(
+                                    Message::User { content: OneOrMany::one(UserContent::ToolResult(res)) },
+                                    sync_id,
+                                ).await?;
+                                continue 'outer;
+                            }
+                        }
                     }
                     StreamedAssistantContent::ToolCallDelta { .. } => {}
                     StreamedAssistantContent::Reasoning(reasoning) => {

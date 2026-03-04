@@ -165,49 +165,47 @@ pub async fn run(
                         }
                     }
                     DisplayEvent::ToolCall { name, args, prefix } => {
-                        if prefix.is_none() {
-                            end_stream(&mut viewport, &mut mid_stream)?;
-                            let pfx = prefix.map(|p| format!("{} ", p)).unwrap_or_default();
-                            print_line_above(&mut viewport, Line::from(vec![
-                                Span::raw(pfx),
-                                Span::styled(format!("◆ {}({})", name, args), Style::default().fg(Color::Blue)),
-                            ]))?;
-                        }
+                        end_stream(&mut viewport, &mut mid_stream)?;
+                        let pfx = prefix.map(|p| format!("{} ", p)).unwrap_or_default();
+                        print_line_above(&mut viewport, Line::from(vec![
+                            Span::raw(pfx),
+                            Span::styled(format!("◆ {}({})", name, args), Style::default().fg(Color::Blue)),
+                        ]))?;
                     }
                     DisplayEvent::ToolResult { text, display_as, prefix } => {
-                        if prefix.is_none() {
-                            end_stream(&mut viewport, &mut mid_stream)?;
-                            let pfx = prefix.map(|p| format!("{} ", p)).unwrap_or_default();
-                            let display_text = display_as.as_deref().unwrap_or(&text);
-                            let lines: Vec<&str> = display_text.lines().collect();
-                            if let Some((first, rest)) = lines.split_first() {
+                        end_stream(&mut viewport, &mut mid_stream)?;
+                        let pfx = prefix.as_ref().map(|p| format!("{} ", p)).unwrap_or_default();
+                        let display_text = display_as.as_deref().unwrap_or(&text);
+                        let lines: Vec<&str> = display_text.lines().collect();
+                        if let Some((first, rest)) = lines.split_first() {
+                            print_line_above(&mut viewport, Line::from(vec![
+                                Span::raw(pfx.clone()),
+                                Span::styled(format!("✓ {}", first), Style::default().fg(Color::Green)),
+                            ]))?;
+                            let indent = format!("{}  ", pfx);
+                            for line in rest {
+                                let style = if line.starts_with("- ") {
+                                    Style::default().fg(Color::Red)
+                                } else if line.starts_with("+ ") {
+                                    Style::default().fg(Color::Green)
+                                } else if line.starts_with("@@") {
+                                    Style::default().fg(Color::Cyan)
+                                } else {
+                                    Style::default().fg(Color::DarkGray)
+                                };
                                 print_line_above(&mut viewport, Line::from(vec![
-                                    Span::raw(pfx.clone()),
-                                    Span::styled(format!("✓ {}", first), Style::default().fg(Color::Green)),
-                                ]))?;
-                                let indent = format!("{}  ", pfx);
-                                for line in rest {
-                                    let style = if line.starts_with("- ") {
-                                        Style::default().fg(Color::Red)
-                                    } else if line.starts_with("+ ") {
-                                        Style::default().fg(Color::Green)
-                                    } else if line.starts_with("@@") {
-                                        Style::default().fg(Color::Cyan)
-                                    } else {
-                                        Style::default().fg(Color::DarkGray)
-                                    };
-                                    print_line_above(&mut viewport, Line::from(vec![
-                                        Span::raw(indent.clone()),
-                                        Span::styled(line.to_string(), style),
-                                    ]))?;
-                                }
-                            } else {
-                                print_line_above(&mut viewport, Line::from(vec![
-                                    Span::raw(pfx),
-                                    Span::styled("✓", Style::default().fg(Color::Green)),
+                                    Span::raw(indent.clone()),
+                                    Span::styled(line.to_string(), style),
                                 ]))?;
                             }
+                        } else {
+                            print_line_above(&mut viewport, Line::from(vec![
+                                Span::raw(pfx),
+                                Span::styled("✓", Style::default().fg(Color::Green)),
+                            ]))?;
+                        }
 
+                        if prefix.is_none() {
                             thinking = true;
                             thinking_start = Instant::now();
                         }

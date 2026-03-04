@@ -6,6 +6,7 @@ pub mod toolset_loader;
 
 use crate::traits::InputSender;
 use async_trait::async_trait;
+use rig::message::ToolResult;
 
 /// Context passed to tool implementations — generic over platform backends.
 pub struct ToolContext<M: InputSender> {
@@ -28,6 +29,26 @@ pub trait Tool<M: InputSender>: Send + Sync {
         call_id: Option<String>,
         context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    fn supports_sync(&self) -> bool {
+        false
+    }
+
+    /// Execute the tool synchronously, returning results that should be
+    /// injected into the conversation history immediately. When this returns
+    /// `Some`, `execute` will not be called — the returned messages are
+    /// processed inline and the completion loop continues. This avoids race
+    /// conditions where a concurrent event can make the tool call appear
+    /// cancelled even though it already launched.
+    async fn execute_synchronous(
+        &self,
+        _args: &serde_json::Value,
+        _id: &str,
+        _call_id: Option<&str>,
+        _context: &ToolContext<M>,
+    ) -> Option<ToolResult> {
+        None
+    }
 }
 
 /// Trait for grouped tool sets.
