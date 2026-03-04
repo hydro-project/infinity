@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use rig::{
     OneOrMany,
@@ -8,7 +10,7 @@ use tracing;
 
 use super::{Tool, ToolContext};
 use crate::message::{InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind};
-use crate::traits::{ConversationStore, InputSender};
+use crate::traits::{ConversationStore, InputSender, ThreadCloseNotifier};
 
 /// Tool that spawns a new child thread and returns its ID.
 pub struct SpawnThreadTool<C: ConversationStore> {
@@ -227,6 +229,9 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Repor
 /// Tool that closes a thread, returning control to the parent.
 pub struct CloseThreadTool<C: ConversationStore> {
     pub conversation_store: C,
+    /// Optional notifier that informs RAP tool servers about the thread closure.
+    /// Best-effort: failures are logged but do not prevent the thread from closing.
+    pub thread_close_notifier: Option<Arc<dyn ThreadCloseNotifier>>,
 }
 
 #[async_trait]
@@ -356,6 +361,12 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Close
                     .send_to_input_queue(report_message, &report_group_id, &id)
                     .await?;
             }
+        }
+
+        // Best-effort: notify RAP tool servers that this thread has been closed
+        // so they can clean up thread-specific resources (e.g. sandboxes).
+        if let Some(ref notifier) = self.thread_close_notifier {
+            notifier.notify_thread_closed(thread_id).await;
         }
 
         Ok(())
