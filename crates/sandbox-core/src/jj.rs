@@ -48,7 +48,8 @@ pub async fn jj_git_clone(
     if first_clone {
         tracing::info!("This is the first clone of the repo");
         tracing::info!("Pushing initial bookmark, path {:?}", dest);
-        run_jj(dest, &["bookmark", "set", bookmark_name]).await?;
+        let _ = run_jj(dest, &["bookmark", "set", bookmark_name]).await;
+        // on error, bookmark might already be there, attempt to inherit it
     }
 
     run_jj(dest, &["edit", bookmark_name]).await?;
