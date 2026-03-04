@@ -123,3 +123,10 @@ pub trait ToolsetCache: Send + Sync {
 
     async fn put_cache(&self, cache_key: &str, json: &str) -> Result<(), Self::Error>;
 }
+
+/// Best-effort notifier that informs RAP tool servers when a thread is closed.
+/// Tool servers can use this to clean up thread-specific resources (e.g. sandboxes).
+#[async_trait]
+pub trait ThreadCloseNotifier: Send + Sync {
+    async fn notify_thread_closed(&self, thread_id: &str);
+}

@@ -19,7 +19,9 @@ When a tool provider starts, it MUST expose two HTTP endpoints:
 1. A **discovery endpoint** at `/.well-known/rap-toolset` that returns the tool's [toolset definition](/spec/basic/toolsets)
 2. An **invocation endpoint** at the URL specified in the toolset's `endpoint` field
 
-The tool provider MUST be ready to serve both endpoints before accepting traffic. The discovery endpoint is how runtimes learn what operations the tool supports — if it is unavailable or returns an invalid toolset, no runtime will be able to invoke the tool.
+The tool provider SHOULD also expose a **thread closure endpoint** at `/close_thread` to receive best-effort cleanup notifications from the runtime. See [Thread Closure](/spec/basic/thread-closure) for details.
+
+The tool provider MUST be ready to serve both required endpoints before accepting traffic. The discovery endpoint is how runtimes learn what operations the tool supports — if it is unavailable or returns an invalid toolset, no runtime will be able to invoke the tool.
 
 ```mermaid
 sequenceDiagram
@@ -110,6 +112,12 @@ The protocol does not define a shutdown handshake for tool providers. When a too
 - Active invocations that have been acknowledged but not yet completed MAY be lost. Tool providers SHOULD persist in-flight work to allow recovery on restart.
 - Active subscriptions SHOULD continue to function if the tool provider restarts. Tools that store subscription state durably can resume event delivery after restart.
 - The discovery endpoint becomes unavailable. Runtimes that have already cached the toolset definition will continue to send invocations to the invocation endpoint, which will fail with connection errors. The runtime SHOULD record these failures as tool results with error descriptions.
+
+### Thread Closure Notification
+
+When a runtime closes a conversation thread, it sends a best-effort notification to every tool server so they can clean up thread-specific resources (e.g., cached sandboxes, temporary workspaces). The runtime POSTs a `{"thread_id": "..."}` payload to each tool server's `/close_thread` endpoint, where `thread_id` corresponds to the `group_id` of the closed thread.
+
+This notification is strictly best-effort — the runtime MUST NOT retry on failure, and tool servers MAY ignore it entirely. Tool servers that do handle the notification MUST always respond with HTTP 200. See [Thread Closure](/spec/basic/thread-closure) for the full specification.
 
 ## Concurrency
 

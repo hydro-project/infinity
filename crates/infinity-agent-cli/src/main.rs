@@ -110,6 +110,7 @@ async fn main() -> Result<(), BoxError> {
     // Command-based servers are spawned with RAP_EMBEDDED=1 and must emit
     // a JSON line `{"port": <u16>}` on stdout when ready.
     let mut spawned_children: Vec<std::process::Child> = Vec::new();
+    let mut tool_server_urls: Vec<String> = Vec::new();
 
     let rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>> =
         match ToolsConfig::from_file(rap_config_path).ok() {
@@ -136,6 +137,8 @@ async fn main() -> Result<(), BoxError> {
                         }
                     }
                 }
+
+                tool_server_urls = urls.clone();
 
                 if !urls.is_empty() {
                     match rap_tools::load_rap_tools(&urls).await {
@@ -172,6 +175,7 @@ async fn main() -> Result<(), BoxError> {
             sender,
             callback_url,
             rap_tools,
+            tool_server_urls,
         )
         .await;
     });
@@ -302,9 +306,20 @@ async fn agent_loop<Mdl>(
     sender: InMemoryMessageSender,
     callback_url: String,
     rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>>,
+    tool_server_urls: Vec<String>,
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
+    let thread_close_notifier: Option<
+        std::sync::Arc<dyn infinity_agent_core::traits::ThreadCloseNotifier>,
+    > = if tool_server_urls.is_empty() {
+        None
+    } else {
+        Some(std::sync::Arc::new(rap_tools::RapThreadCloseNotifier::new(
+            tool_server_urls,
+        )))
+    };
+
     let mut tool_impls: Vec<Box<dyn Tool<InMemoryMessageSender>>> = vec![
         Box::new(SleepUntilEventOrInputTool),
         Box::new(SleepTool),
@@ -317,6 +332,7 @@ async fn agent_loop<Mdl>(
         }),
         Box::new(CloseThreadTool {
             conversation_store: conversation_store.clone(),
+            thread_close_notifier,
         }),
     ];
     tool_impls.extend(rap_tools);

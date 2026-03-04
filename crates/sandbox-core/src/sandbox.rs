@@ -37,4 +37,14 @@ pub trait SandboxBackend: Send + Sync {
 
     /// Clean up the sandbox temp dir.
     async fn cleanup_sandbox(&self, sandbox_dir: &Path) -> Result<(), SandboxError>;
+
+    /// Permanently clean up a sandbox associated with the given group_id.
+    ///
+    /// Called when a thread is closed — the sandbox is no longer needed.
+    /// On the local backend this runs `jj workspace forget` and deletes the
+    /// cached directory. On the remote backend this is a no-op since sandboxes
+    /// are ephemeral temp dirs cleaned up after each invocation.
+    async fn cleanup_sandbox_permanently(&self, _group_id: &str) -> Result<(), SandboxError> {
+        Ok(())
+    }
 }
