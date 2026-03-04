@@ -212,6 +212,24 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
 
         let active_thread_id = current_history.thread_id.clone();
 
+        let user_id = current_history
+            .get_metadata()
+            .and_then(|m| m.get("user_id").and_then(|v| v.as_str()).map(String::from));
+
+        let tool_context = ToolContext {
+            message_sender: sender_clone.clone(),
+            group_id: active_thread_id.clone(),
+            input_queue_arn: input_queue_arn_clone.clone(),
+            callback_url: callback_url_clone.clone(),
+            user_id,
+        };
+
+        let tool_registry: std::collections::HashMap<String, &dyn Tool<SqsMessageSender>> =
+            tool_impls
+                .iter()
+                .map(|t| (t.name().to_string(), t.as_ref()))
+                .collect();
+
         // (b) Consume the completion stream, collecting text and the final action
         use futures_util::StreamExt;
 
@@ -221,6 +239,8 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 &mut current_history,
                 &tool_names,
                 &tool_defs,
+                &tool_registry,
+                &tool_context,
                 &active_thread_id,
                 &message_id,
             ));
@@ -237,7 +257,8 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                         action = Some(a);
                     }
                     event_processor::CompletionEvent::ThinkingStart
-                    | event_processor::CompletionEvent::ThinkingEnd => {}
+                    | event_processor::CompletionEvent::ThinkingEnd
+                    | event_processor::CompletionEvent::SyncToolResult(_) => {}
                 }
             }
             (text, action)
@@ -281,24 +302,6 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         }
 
         if let Some(action) = final_action {
-            let user_id = current_history
-                .get_metadata()
-                .and_then(|m| m.get("user_id").and_then(|v| v.as_str()).map(String::from));
-
-            let tool_context = ToolContext {
-                message_sender: sender_clone.clone(),
-                group_id: active_thread_id,
-                input_queue_arn: input_queue_arn_clone,
-                callback_url: callback_url_clone,
-                user_id,
-            };
-
-            let tool_registry: std::collections::HashMap<String, &dyn Tool<SqsMessageSender>> =
-                tool_impls
-                    .iter()
-                    .map(|t| (t.name().to_string(), t.as_ref()))
-                    .collect();
-
             event_processor::execute_action(action, &tool_registry, &tool_context)
                 .await
                 .map_err(|e| Error::from(format!("{}", e)))?;

@@ -461,12 +461,28 @@ async fn thread_worker<Mdl>(
         let active_thread_id = current_history.thread_id.clone();
         let thread_prefix = current_history.get_thread_nesting_prefix();
 
+        let tool_context = ToolContext {
+            message_sender: sender.clone(),
+            group_id: active_thread_id.clone(),
+            input_queue_arn: String::new(),
+            callback_url: callback_url.clone(),
+            user_id: None,
+        };
+        let tool_registry: std::collections::HashMap<String, &dyn Tool<InMemoryMessageSender>> =
+            tool_impls
+                .iter()
+                .map(|t| (t.name().to_string(), t.as_ref()))
+                .collect();
+
         let final_action = {
+            let prefix = current_history.get_thread_nesting_prefix();
             let mut stream = std::pin::pin!(event_processor::run_completion(
                 model.as_ref(),
                 &mut current_history,
                 &tool_names,
                 &tool_defs,
+                &tool_registry,
+                &tool_context,
                 &active_thread_id,
                 &message_id,
             ));
@@ -495,10 +511,32 @@ async fn thread_worker<Mdl>(
                     Ok(event_processor::CompletionEvent::ThinkingEnd) => {
                         let _ = display_tx.send(DisplayEvent::ThinkingEnd);
                     }
+                    Ok(event_processor::CompletionEvent::SyncToolResult(res)) => {
+                        if let ToolResultContent::Text(text) = res.content.first() {
+                            let _ = display_tx.send(DisplayEvent::ToolResult {
+                                text: text.text,
+                                display_as: None,
+                                prefix: prefix.clone(),
+                            });
+                        }
+                    }
                     Ok(event_processor::CompletionEvent::Action(CompletionAction::Done(r))) => {
                         resp = Some(r);
                     }
                     Ok(event_processor::CompletionEvent::Action(a)) => {
+                        if let event_processor::CompletionAction::ExecuteToolCall {
+                            ref tool_name,
+                            ref tool_args,
+                            ..
+                        } = a
+                        {
+                            let _ = display_tx.send(DisplayEvent::ToolCall {
+                                name: tool_name.clone(),
+                                args: tool_args.clone(),
+                                prefix: thread_prefix.clone(),
+                            });
+                        }
+
                         action = Some(a);
                     }
                     Err(e) => {
@@ -515,32 +553,7 @@ async fn thread_worker<Mdl>(
 
         current_history.sync().await.ok();
 
-        if let Some(event_processor::CompletionAction::ExecuteToolCall {
-            ref tool_name,
-            ref tool_args,
-            ..
-        }) = final_action
-        {
-            let _ = display_tx.send(DisplayEvent::ToolCall {
-                name: tool_name.clone(),
-                args: tool_args.clone(),
-                prefix: thread_prefix.clone(),
-            });
-        }
-
         if let Some(action) = final_action {
-            let tool_context = ToolContext {
-                message_sender: sender.clone(),
-                group_id: active_thread_id.clone(),
-                input_queue_arn: String::new(),
-                callback_url: callback_url.clone(),
-                user_id: None,
-            };
-            let tool_registry: std::collections::HashMap<String, &dyn Tool<InMemoryMessageSender>> =
-                tool_impls
-                    .iter()
-                    .map(|t| (t.name().to_string(), t.as_ref()))
-                    .collect();
             if let Err(e) =
                 event_processor::execute_action(action, &tool_registry, &tool_context).await
             {
