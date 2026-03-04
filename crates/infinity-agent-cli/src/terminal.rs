@@ -298,6 +298,8 @@ pub async fn run(
                                             "",
                                             "  Editing",
                                             "    Alt+Enter          Insert newline",
+                                            "    Up                 Move cursor up a line",
+                                            "    Down               Move cursor down a line",
                                             "    Ctrl+A             Move to line start",
                                             "    Ctrl+E             Move to line end",
                                             "    Alt+Left / Alt+B   Move word left",

@@ -5,6 +5,7 @@ use ratatui::{
     style::Color,
     widgets::Widget,
 };
+use std::cell::Cell;
 
 const PAD_X: u16 = 1;
 const PAD_Y: u16 = 1;
@@ -16,6 +17,10 @@ pub struct TextInput {
     buf: String,
     /// Byte-offset cursor position within `buf`.
     cursor: usize,
+    /// Last-known inner wrapping width (set during `preferred_height` / `render`).
+    /// Used by `move_up` / `move_down` so they can navigate visual lines without
+    /// needing an explicit width parameter.
+    wrap_width: Cell<u16>,
 }
 
 /// Snapshot returned by `render_state` so the caller can place the terminal cursor.
@@ -29,6 +34,7 @@ impl TextInput {
         Self {
             buf: String::new(),
             cursor: 0,
+            wrap_width: Cell::new(0),
         }
     }
 
@@ -81,6 +87,117 @@ impl TextInput {
 
     pub fn move_end(&mut self) {
         self.cursor = self.buf.len();
+    }
+
+    /// Move the cursor up one visual (wrapped) line.
+    /// If the cursor is already on the first line, it moves to the beginning.
+    pub fn move_up(&mut self) {
+        let wrap_w = self.wrap_width.get() as usize;
+        if wrap_w == 0 {
+            return;
+        }
+
+        let (row, col) = self.cursor_visual_pos(wrap_w);
+        if row == 0 {
+            self.cursor = 0;
+        } else {
+            self.set_cursor_to_visual_pos(row - 1, col, wrap_w);
+        }
+    }
+
+    /// Move the cursor down one visual (wrapped) line.
+    /// If the cursor is already on the last line, it moves to the end.
+    pub fn move_down(&mut self) {
+        let wrap_w = self.wrap_width.get() as usize;
+        if wrap_w == 0 {
+            return;
+        }
+
+        let (row, col) = self.cursor_visual_pos(wrap_w);
+        let total_rows = self.visual_line_count(wrap_w);
+
+        if row >= total_rows - 1 {
+            self.cursor = self.buf.len();
+        } else {
+            self.set_cursor_to_visual_pos(row + 1, col, wrap_w);
+        }
+    }
+
+    /// Returns `(visual_row, char_column)` for the current cursor position
+    /// given a wrapping width.
+    fn cursor_visual_pos(&self, wrap_w: usize) -> (usize, usize) {
+        let lines = wrap_lines(&self.buf, wrap_w);
+        let buf_start = self.buf.as_ptr() as usize;
+
+        for (row_idx, line) in lines.iter().enumerate() {
+            let line_byte_start = line.as_ptr() as usize - buf_start;
+            let line_byte_end = line_byte_start + line.len();
+
+            if self.cursor >= line_byte_start && self.cursor <= line_byte_end {
+                let offset = self.cursor.saturating_sub(line_byte_start);
+                let col = line[..offset.min(line.len())].chars().count();
+
+                // If the cursor is at the end of a line that fills the full
+                // width, it logically sits at col 0 of the next row (matching
+                // the same logic used in `render`).
+                let line_full = line.chars().count() >= wrap_w;
+                if offset == line.len() && line_full {
+                    continue;
+                }
+
+                return (row_idx, col);
+            }
+        }
+
+        // Fallback: cursor is past all content.
+        if let Some(last) = lines.last() {
+            let last_full = last.chars().count() >= wrap_w;
+            if last_full && self.cursor == self.buf.len() {
+                return (lines.len(), 0);
+            }
+            return (lines.len().saturating_sub(1), last.chars().count());
+        }
+
+        (0, 0)
+    }
+
+    /// Total number of visual rows (at least 1) for the current buffer at the
+    /// given wrapping width, including the potential extra row when the last
+    /// line is exactly full and the cursor sits at the buffer end.
+    fn visual_line_count(&self, wrap_w: usize) -> usize {
+        let lines = wrap_lines(&self.buf, wrap_w);
+        let extra = lines
+            .last()
+            .map(|l| l.chars().count() >= wrap_w && self.cursor == self.buf.len())
+            .unwrap_or(false);
+        lines.len() + extra as usize
+    }
+
+    /// Move the cursor to the given visual `(row, col)`, clamping the column
+    /// to the actual length of the target line.
+    fn set_cursor_to_visual_pos(&mut self, target_row: usize, target_col: usize, wrap_w: usize) {
+        let new_cursor = {
+            let lines = wrap_lines(&self.buf, wrap_w);
+            let buf_start = self.buf.as_ptr() as usize;
+
+            if target_row >= lines.len() {
+                self.buf.len()
+            } else {
+                let line = lines[target_row];
+                let line_byte_start = line.as_ptr() as usize - buf_start;
+                let char_count = line.chars().count();
+                let clamped_col = target_col.min(char_count);
+
+                let byte_offset = line
+                    .char_indices()
+                    .nth(clamped_col)
+                    .map(|(i, _)| i)
+                    .unwrap_or(line.len());
+
+                line_byte_start + byte_offset
+            }
+        };
+        self.cursor = new_cursor;
     }
 
     /// Move cursor one word to the left (Option+Left / Ctrl+Left).
@@ -219,6 +336,14 @@ impl TextInput {
                 self.move_right();
                 true
             }
+            KeyCode::Up => {
+                self.move_up();
+                true
+            }
+            KeyCode::Down => {
+                self.move_down();
+                true
+            }
             KeyCode::Home => {
                 self.move_home();
                 true
@@ -252,6 +377,7 @@ impl TextInput {
     /// Includes top/bottom padding rows.
     pub fn preferred_height(&self, outer_width: u16) -> u16 {
         let inner_w = outer_width.saturating_sub(PAD_X * 2);
+        self.wrap_width.set(inner_w);
         if inner_w == 0 {
             return PAD_Y * 2 + 1;
         }
@@ -286,6 +412,8 @@ impl TextInput {
             area.width.saturating_sub(PAD_X * 2),
             area.height.saturating_sub(PAD_Y * 2),
         );
+
+        self.wrap_width.set(inner.width);
 
         if inner.width == 0 || inner.height == 0 {
             return RenderResult {
