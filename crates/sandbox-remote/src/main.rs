@@ -3,10 +3,10 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use lambda_extension::{Extension, NextEvent};
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tokio::sync::Mutex;
+use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
-use sandbox_core::server::{build_router, TaskTracker};
+use sandbox_core::server::{TaskTracker, build_router};
 use sandbox_remote::backend::EfsBackend;
 use sandbox_remote::metadata::DynamoMetadataStore;
 use sandbox_remote::sigv4_client::SigV4CallbackClient;
