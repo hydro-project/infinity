@@ -82,6 +82,19 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         .unwrap_or_default();
 
     let http_client = RapHttpClient::new(&config);
+
+    let thread_close_notifier: Option<
+        std::sync::Arc<dyn infinity_agent_core::traits::ThreadCloseNotifier>,
+    > = if toolset_server_urls.is_empty() {
+        None
+    } else {
+        Some(std::sync::Arc::new(
+            crate::tools::rap_http::RapThreadCloseNotifier::new(
+                toolset_server_urls.clone(),
+                http_client.clone(),
+            ),
+        ))
+    };
     let toolset_cache = DynamoDbToolsetCache::new(dynamodb_client.clone(), table_name.clone());
     let toolset_loader = ToolsetLoader::new(http_client.clone(), toolset_cache);
 
@@ -154,6 +167,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         }));
         tool_impls.push(Box::new(CloseThreadTool {
             conversation_store: conversation_store.clone(),
+            thread_close_notifier: thread_close_notifier.clone(),
         }));
 
         let sender_clone = sender.clone();

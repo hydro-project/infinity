@@ -54,6 +54,7 @@ The protocol defines two roles that communicate through the HTTP message contrac
 - **Callback URL**: An HTTP endpoint where tools POST results, events, and authorization requests. The runtime generates this URL and includes it in every tool invocation so that tools can return results asynchronously without knowing the runtime's internal architecture.
 - **Group ID**: A conversation thread identifier that tools MUST include in all callback messages. The runtime uses this to route incoming messages to the correct conversation context.
 - **User ID**: An optional end-user identity that tools MAY use for authorization decisions, personalization, or audit logging.
+- **Thread closure notifications**: A best-effort signal sent to tool servers when a conversation thread is closed, allowing them to clean up thread-specific resources. See [Thread Closure](/spec/basic/thread-closure).
 
 **Tools** are independent HTTP services that receive invocations, process them on their own schedule, and return results through the callback mechanism. Tools provide the following capabilities to runtimes:
 
@@ -114,6 +115,7 @@ Explore the detailed specification for each protocol component:
   - [Tool Invocation](/spec/basic/tool-invocation) — Invoking tools from the runtime
   - [Tool Result](/spec/basic/tool-result) — Returning results from tools
   - [Toolsets](/spec/basic/toolsets) — Declaring and discovering tool definitions
+  - [Thread Closure](/spec/basic/thread-closure) — Best-effort thread cleanup notifications
 
 - **Server Features**
   - [Subscription Events](/spec/server/subscription-events) — Event-driven subscriptions

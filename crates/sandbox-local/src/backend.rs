@@ -197,4 +197,35 @@ impl SandboxBackend for LocalBackend {
     async fn cleanup_sandbox(&self, _sandbox_dir: &Path) -> Result<(), SandboxError> {
         Ok(())
     }
+
+    /// Permanently clean up the cached sandbox for the given group_id.
+    ///
+    /// Runs `jj workspace forget` and deletes the sandbox directory, then
+    /// removes it from the cache so it won't be reused.
+    async fn cleanup_sandbox_permanently(&self, group_id: &str) -> Result<(), SandboxError> {
+        let dir = {
+            let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            cache.remove(group_id)
+        };
+
+        if let Some(dir) = dir {
+            tracing::info!(
+                group_id = %group_id,
+                dir = %dir.display(),
+                "permanently cleaning up sandbox"
+            );
+            // Best-effort: forget the jj workspace then remove the directory.
+            let _ = run_jj(&dir, &["workspace", "forget"]).await;
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir).map_err(SandboxError::Io)?;
+            }
+        } else {
+            tracing::info!(
+                group_id = %group_id,
+                "no cached sandbox to clean up"
+            );
+        }
+
+        Ok(())
+    }
 }

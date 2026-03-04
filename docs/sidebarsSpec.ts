@@ -12,6 +12,7 @@ const sidebars: SidebarsConfig = {
         'basic/toolsets',
         'basic/tool-invocation',
         'basic/tool-result',
+        'basic/thread-closure',
       ],
     },
     {
