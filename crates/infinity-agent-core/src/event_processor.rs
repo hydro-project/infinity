@@ -614,7 +614,6 @@ where
     async_stream::try_stream! {
         let mut completion_counter: usize = 0;
         let mut is_thinking = false;
-        let mut disable_caching = true; // not supported on 4.6 right now
 
         'outer: loop {
             let stream_result = model
@@ -627,22 +626,11 @@ where
                     temperature: None,
                     max_tokens: None,
                     tool_choice: None,
-                    additional_params: if disable_caching {
-                        Some(serde_json::json!({
-                            "thinking": {
-                                "type": "adaptive"
-                            }
-                        }))
-                    } else {
-                        Some(serde_json::json!({
-                            "thinking": {
-                                "type": "adaptive"
-                            },
-                            "cache_control": {
-                                "type": "ephemeral"
-                            }
-                        }))
-                    },
+                    additional_params: Some(serde_json::json!({
+                        "thinking": {
+                            "type": "adaptive"
+                        }
+                    })),
                     output_schema: None,
                 })
                 .await;
@@ -650,13 +638,6 @@ where
             let mut llm_stream = match stream_result {
                 Ok(s) => s,
                 Err(e) => {
-                    let err_str = format!("{}", e);
-
-                    if err_str.contains("your request did not allow prompt caching") {
-                        disable_caching = true;
-                        continue 'outer;
-                    }
-
                     Err(Into::<BoxError>::into(e))?;
                     unreachable!()
                 }
