@@ -40,16 +40,31 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
 
     async fn execute(
         &self,
-        args: serde_json::Value,
-        id: String,
-        call_id: Option<String>,
-        context: &ToolContext<M>,
+        _args: serde_json::Value,
+        _id: String,
+        _call_id: Option<String>,
+        _context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Ok(())
+    }
+
+    fn supports_sync(&self) -> bool {
+        true
+    }
+
+    async fn execute_synchronous(
+        &self,
+        args: &serde_json::Value,
+        id: &str,
+        call_id: Option<&str>,
+        context: &ToolContext<M>,
+    ) -> Option<ToolResult> {
         let new_thread_id = self
             .conversation_store
             .spawn_thread(&context.group_id, &id, false)
             .await
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+            .unwrap();
 
         tracing::info!(
             "Spawned new thread {} from parent {}",
@@ -57,29 +72,23 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             context.group_id
         );
 
-        let parent_result = InputMessage {
-            content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                id: id.clone(),
-                call_id: call_id.clone(),
-                content: OneOrMany::one(ToolResultContent::Text(Text {
-                    text: format!(
-                        "Child thread is successfully spawned and has ID: {}. You will be notified automatically when the child has anything to report. Make sure that you **do not** do the task assigned to the child thread.",
-                        new_thread_id
-                    ),
-                })),
+        let parent_result = ToolResult {
+            id: id.to_string(),
+            call_id: call_id.map(|c| c.to_string()),
+            content: OneOrMany::one(ToolResultContent::Text(Text {
+                text: format!(
+                    "Child thread is successfully spawned and has ID: {}. You will be notified automatically when the child has anything to report. Make sure that you **do not** do the task assigned to the child thread.",
+                    new_thread_id
+                ),
             })),
-            group_id: context.group_id.clone(),
-            metadata: None,
-            synthetic: None,
-            display_as: None,
         };
 
         let instructions = args.get("instructions").unwrap().as_str().unwrap();
 
         let child_result = InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                id: id.clone(),
-                call_id,
+                id: id.to_string(),
+                call_id: call_id.map(|c| c.to_string()),
                 content: OneOrMany::one(ToolResultContent::Text(Text {
                     text: format!(
                         "You are now INSIDE the thread that you requested to create. Your thread ID is {}. Your next task is to exactly follow these instructions: {}",
@@ -93,18 +102,14 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             display_as: None,
         };
 
-        context
-            .message_sender
-            .send_to_input_queue(parent_result, &context.group_id, &id)
-            .await?;
-
         let child_group_id = child_result.group_id.clone();
         context
             .message_sender
             .send_to_input_queue(child_result, &child_group_id, &id)
-            .await?;
+            .await
+            .unwrap();
 
-        Ok(())
+        Some(parent_result)
     }
 }
 
