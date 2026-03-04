@@ -13,3 +13,4 @@ axum = { workspace = true }
 reqwest = { workspace = true }
 tracing = { workspace = true }
 similar = { workspace = true }
+which = { workspace = true }

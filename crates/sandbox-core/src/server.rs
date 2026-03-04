@@ -464,6 +464,15 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     let query_for_display = args.query.clone();
     let backend = &state.backend;
 
+    // Verify that ripgrep is installed before creating a sandbox.
+    if which::which("rg").is_err() {
+        return Err(SandboxError::Other(
+            "ripgrep (rg) is not installed or not found in PATH. \
+             Please install it: https://github.com/BurntSushi/ripgrep#installation"
+                .to_string(),
+        ));
+    }
+
     with_sandbox(
         state,
         &invocation.group_id,
