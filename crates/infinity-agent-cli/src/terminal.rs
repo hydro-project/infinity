@@ -1,6 +1,9 @@
 use crate::{
+    component::{Component, KeyResult},
     inline_viewport::InlineViewport,
     modifier_diff::ModifierDiff,
+    session_picker::{SessionPicker, SessionPickerResult, SessionPickerWidget},
+    session_store::SessionEntry,
     text_input::{TextInput, TextInputWidget},
 };
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
@@ -27,6 +30,14 @@ use std::fmt;
 use std::io::{self, Write};
 use std::time::Instant;
 use tokio::sync::mpsc;
+
+/// The current UI mode determines which component is active.
+enum UiMode {
+    /// Normal input mode.
+    Normal,
+    /// Session picker overlay is visible.
+    SessionPicker,
+}
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -72,11 +83,14 @@ pub async fn run(
     thread_id: String,
     model_name: String,
     new_session_tx: mpsc::UnboundedSender<String>,
+    sessions: Vec<SessionEntry>,
+    load_session_tx: mpsc::UnboundedSender<String>,
 ) -> Result<usize, BoxError> {
     cterm::enable_raw_mode()?;
 
     let mut viewport = InlineViewport::new(VIEWPORT_HEIGHT)?;
     let mut thread_id = thread_id;
+    let has_sessions = !sessions.is_empty();
 
     print_above(&mut viewport, |w| {
         write!(w, "\r\nInfinity Agent CLI — thread {}\r\n", thread_id)?;
@@ -85,8 +99,22 @@ pub async fn run(
             "Type your messages below. Ctrl+C to exit. Ctrl+N for new session.\r\n"
         )
     })?;
+    if has_sessions {
+        print_line_above(
+            &mut viewport,
+            Line::from(Span::styled(
+                "Existing sessions found, Ctrl+L to load.",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+        )?;
+    }
 
     let mut input = TextInput::new();
+    let mut ui_mode = UiMode::Normal;
+    let mut session_picker: Option<SessionPicker> = None;
+    let available_sessions = sessions;
     let mut mid_stream = false;
     let mut stream_start = true;
     let mut thinking = false;
@@ -96,9 +124,11 @@ pub async fn run(
     let mut thread_tool_call_active: HashSet<String> = HashSet::new();
     let mut thinking_text_buffer = String::new();
 
-    draw_input_bar(
+    draw_viewport(
         &mut viewport,
         &input,
+        &session_picker,
+        &ui_mode,
         thinking,
         &thinking_start,
         &model_name,
@@ -273,7 +303,7 @@ pub async fn run(
                         thinking_start = Instant::now();
                     }
                 }
-                draw_input_bar(&mut viewport, &input, thinking, &thinking_start, &model_name, total_tokens_used, &thread_buffers, &thinking_text_buffer)?;
+                draw_viewport(&mut viewport, &input, &session_picker, &ui_mode, thinking, &thinking_start, &model_name, total_tokens_used, &thread_buffers, &thinking_text_buffer)?;
             }
 
             _ = poll_crossterm_event() => {
@@ -296,76 +326,114 @@ pub async fn run(
                             got_resize = true;
                         }
                         Event::Key(key) => {
-                            // Let the input area handle the keystroke first.
-                            if !input.handle_keystroke(key) {
-                                // Input didn't consume it — handle at the terminal level.
-                                match (key.code, key.modifiers) {
-                                    (KeyCode::Char('c') | KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
-                                        cleanup()?;
-                                        return Ok(total_tokens_used);
-                                    }
-                                    (KeyCode::Char('h'), m) if m.contains(KeyModifiers::CONTROL) => {
-                                        const W: usize = 47;
-                                        let bar: String = "─".repeat(W);
-                                        let rows = [
-                                            "",
-                                            "  Navigation",
-                                            "    Ctrl+C / Ctrl+D    Exit",
-                                            "    Ctrl+N             New session",
-                                            "    Ctrl+H             Show this help",
-                                            "    Enter              Send message",
-                                            "",
-                                            "  Editing",
-                                            "    Alt+Enter          Insert newline",
-                                            "    Up                 Move cursor up a line",
-                                            "    Down               Move cursor down a line",
-                                            "    Ctrl+A             Move to line start",
-                                            "    Ctrl+E             Move to line end",
-                                            "    Alt+Left / Alt+B   Move word left",
-                                            "    Alt+Right / Alt+F  Move word right",
-                                            "    Alt+Backspace      Delete word left",
-                                            "    Ctrl+C             Clear input (non-empty)",
-                                            "",
-                                        ];
-                                        let mut help: Vec<String> = Vec::new();
-                                        help.push(format!("╭{bar}╮"));
-                                        for row in rows {
-                                            help.push(format!("│{:<W$}│", row));
-                                        }
-                                        help.push(format!("╰{bar}╯"));
-                                        for line in &help {
-                                            print_line_above(&mut viewport, Line::from(vec![
-                                                Span::styled(line.clone(), Style::default().fg(Color::Cyan)),
-                                            ]))?;
+                            // Route keystrokes based on the current UI mode.
+                            match ui_mode {
+                                UiMode::SessionPicker => {
+                                    if let Some(ref mut picker) = session_picker {
+                                        picker.handle_keystroke(key);
+                                        // Check if the picker produced a result.
+                                        if let Some(result) = picker.take_result() {
+                                            match result {
+                                                SessionPickerResult::Selected(entry) => {
+                                                    let selected_thread = entry.thread_id.clone();
+                                                    let selected_tokens = entry.total_tokens_used;
+                                                    thread_id = selected_thread.clone();
+                                                    total_tokens_used = selected_tokens;
+                                                    let _ = load_session_tx.send(selected_thread.clone());
+                                                    print_line_above(&mut viewport, Line::from(vec![
+                                                        Span::styled(
+                                                            format!("✦ Loaded session — thread {}", selected_thread),
+                                                            Style::default().fg(Color::Yellow),
+                                                        ),
+                                                    ]))?;
+                                                }
+                                                SessionPickerResult::Cancelled => {}
+                                            }
+                                            session_picker = None;
+                                            ui_mode = UiMode::Normal;
                                         }
                                     }
-                                    (KeyCode::Char('n'), m) if m.contains(KeyModifiers::CONTROL) => {
-                                        let new_id = uuid::Uuid::new_v4().to_string();
-                                        let _ = new_session_tx.send(new_id.clone());
-                                        thread_id = new_id.clone();
-                                        print_line_above(&mut viewport, Line::from(vec![
-                                            Span::styled(
-                                                format!("✦ New session created — thread {}", new_id),
-                                                Style::default().fg(Color::Yellow),
-                                            ),
-                                        ]))?;
-                                        total_tokens_used = 0;
-                                    }
-                                    (KeyCode::Enter, _) => {
-                                        if !input.is_empty() {
-                                            let text = input.take_text();
-                                            let trimmed = text.trim().to_string();
-                                            let msg = InputMessage {
-                                                content: InputMessageContent::User(UserContent::text(&trimmed)),
-                                                group_id: thread_id.clone(),
-                                                metadata: None,
-                                                synthetic: None,
-                                                display_as: None,
-                                            };
-                                            let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
+                                }
+                                UiMode::Normal => {
+                                    // Let the input area handle the keystroke first.
+                                    if matches!(input.handle_keystroke(key), KeyResult::NotCaptured) {
+                                        // Input didn't consume it — handle at the terminal level.
+                                        match (key.code, key.modifiers) {
+                                            (KeyCode::Char('c') | KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                                cleanup()?;
+                                                return Ok(total_tokens_used);
+                                            }
+                                            (KeyCode::Char('h'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                                const W: usize = 47;
+                                                let bar: String = "─".repeat(W);
+                                                let rows = [
+                                                    "",
+                                                    "  Navigation",
+                                                    "    Ctrl+C / Ctrl+D    Exit",
+                                                    "    Ctrl+N             New session",
+                                                    "    Ctrl+L             Load session",
+                                                    "    Ctrl+H             Show this help",
+                                                    "    Enter              Send message",
+                                                    "",
+                                                    "  Editing",
+                                                    "    Alt+Enter          Insert newline",
+                                                    "    Up                 Move cursor up a line",
+                                                    "    Down               Move cursor down a line",
+                                                    "    Ctrl+A             Move to line start",
+                                                    "    Ctrl+E             Move to line end",
+                                                    "    Alt+Left / Alt+B   Move word left",
+                                                    "    Alt+Right / Alt+F  Move word right",
+                                                    "    Alt+Backspace      Delete word left",
+                                                    "    Ctrl+C             Clear input (non-empty)",
+                                                    "",
+                                                ];
+                                                let mut help: Vec<String> = Vec::new();
+                                                help.push(format!("╭{bar}╮"));
+                                                for row in rows {
+                                                    help.push(format!("│{:<W$}│", row));
+                                                }
+                                                help.push(format!("╰{bar}╯"));
+                                                for line in &help {
+                                                    print_line_above(&mut viewport, Line::from(vec![
+                                                        Span::styled(line.clone(), Style::default().fg(Color::Cyan)),
+                                                    ]))?;
+                                                }
+                                            }
+                                            (KeyCode::Char('l'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                                if !available_sessions.is_empty() {
+                                                    session_picker = Some(SessionPicker::new(available_sessions.clone()));
+                                                    ui_mode = UiMode::SessionPicker;
+                                                }
+                                            }
+                                            (KeyCode::Char('n'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                                let new_id = uuid::Uuid::new_v4().to_string();
+                                                let _ = new_session_tx.send(new_id.clone());
+                                                thread_id = new_id.clone();
+                                                print_line_above(&mut viewport, Line::from(vec![
+                                                    Span::styled(
+                                                        format!("✦ New session created — thread {}", new_id),
+                                                        Style::default().fg(Color::Yellow),
+                                                    ),
+                                                ]))?;
+                                                total_tokens_used = 0;
+                                            }
+                                            (KeyCode::Enter, _) => {
+                                                if !input.is_empty() {
+                                                    let text = input.take_text();
+                                                    let trimmed = text.trim().to_string();
+                                                    let msg = InputMessage {
+                                                        content: InputMessageContent::User(UserContent::text(&trimmed)),
+                                                        group_id: thread_id.clone(),
+                                                        metadata: None,
+                                                        synthetic: None,
+                                                        display_as: None,
+                                                    };
+                                                    let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
+                                                }
+                                            }
+                                            _ => {}
                                         }
                                     }
-                                    _ => {}
                                 }
                             }
                         }
@@ -378,7 +446,7 @@ pub async fn run(
                 }
 
                 if got_resize || any_change || thinking {
-                    draw_input_bar(&mut viewport, &input, thinking, &thinking_start, &model_name, total_tokens_used, &thread_buffers, &thinking_text_buffer)?;
+                    draw_viewport(&mut viewport, &input, &session_picker, &ui_mode, thinking, &thinking_start, &model_name, total_tokens_used, &thread_buffers, &thinking_text_buffer)?;
                 }
             }
 
@@ -436,9 +504,11 @@ fn end_stream(viewport: &mut InlineViewport, mid_stream: &mut bool) -> Result<()
 
 // ── Viewport drawing ────────────────────────────────────────────────────────
 
-fn draw_input_bar(
+fn draw_viewport(
     viewport: &mut InlineViewport,
     input: &TextInput,
+    session_picker: &Option<SessionPicker>,
+    ui_mode: &UiMode,
     thinking: bool,
     thinking_start: &Instant,
     model_name: &str,
@@ -448,25 +518,21 @@ fn draw_input_bar(
 ) -> Result<(), BoxError> {
     const MAX_CONTEXT: usize = 200_000;
     let current_width = viewport.area().width;
-    let input_height = input.preferred_height(current_width);
     let thread_rows = thread_buffers.len() as u16;
-    let mut desired_lines = thread_rows + 1 + input_height + 1; // threads + border + input + status row
 
-    // Add one row for the thinking animation bar
-    if thinking {
-        desired_lines += 1;
-    }
-
+    // Determine status bar text based on mode.
     let pct = if MAX_CONTEXT > 0 {
         ((total_tokens_used as f64 / MAX_CONTEXT as f64) * 100.0).min(100.0)
     } else {
         0.0
     };
     let status_right = format!("{:.0}% context used", pct);
-    let status_left = format!("{} (ctrl-h for help)", model_name);
+    let status_left = match ui_mode {
+        UiMode::SessionPicker => "↑↓ navigate  enter select  esc cancel".to_string(),
+        UiMode::Normal => format!("{} (ctrl-h for help)", model_name),
+    };
 
     // Snapshot thread lines for the closure.
-    // Word-wrap each buffer at the available width and show only the last wrapped row.
     let thread_lines: Vec<Line<'_>> = thread_buffers
         .iter()
         .map(|(id, buf)| {
@@ -483,6 +549,23 @@ fn draw_input_bar(
         })
         .collect();
 
+    // Compute desired height based on mode.
+    let (content_height, is_picker) = match ui_mode {
+        UiMode::SessionPicker => {
+            let picker_height = session_picker
+                .as_ref()
+                .map(|p| p.preferred_height())
+                .unwrap_or(1);
+            (picker_height, true)
+        }
+        UiMode::Normal => (input.preferred_height(current_width), false),
+    };
+
+    let mut desired_lines = thread_rows + 1 + content_height + 1; // threads + border + content + status
+    if thinking {
+        desired_lines += 1;
+    }
+
     viewport.draw(desired_lines, |frame| {
         let area = frame.area();
 
@@ -495,7 +578,7 @@ fn draw_input_bar(
             constraints.push(Constraint::Length(thread_rows));
         }
         constraints.push(Constraint::Length(1)); // border
-        constraints.push(Constraint::Min(1)); // input
+        constraints.push(Constraint::Min(1)); // content (input or picker)
         constraints.push(Constraint::Length(1)); // status
 
         let areas = Layout::vertical(constraints).split(area);
@@ -528,11 +611,18 @@ fn draw_input_bar(
         frame.render_widget(Block::default().borders(Borders::TOP), areas[idx]);
         idx += 1;
 
-        // Input
-        let mut cursor_pos = None;
-        frame.render_widget(TextInputWidget::new(input, &mut cursor_pos), areas[idx]);
-        if let Some(pos) = cursor_pos {
-            frame.set_cursor_position(pos);
+        // Content area — either session picker or input
+        if is_picker {
+            if let Some(picker) = session_picker {
+                frame.render_widget(SessionPickerWidget::new(picker), areas[idx]);
+            }
+            // No cursor in picker mode
+        } else {
+            let mut cursor_pos = None;
+            frame.render_widget(TextInputWidget::new(input, &mut cursor_pos), areas[idx]);
+            if let Some(pos) = cursor_pos {
+                frame.set_cursor_position(pos);
+            }
         }
         idx += 1;
 
