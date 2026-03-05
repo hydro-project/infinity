@@ -59,14 +59,4 @@ impl SessionStore {
         self.sessions
             .sort_by(|a, b| b.last_updated.cmp(&a.last_updated));
     }
-
-    /// Find a session by thread_id.
-    pub fn find(&self, thread_id: &str) -> Option<&SessionEntry> {
-        self.sessions.iter().find(|e| e.thread_id == thread_id)
-    }
-
-    /// Returns true if there are any saved sessions.
-    pub fn has_sessions(&self) -> bool {
-        !self.sessions.is_empty()
-    }
 }
