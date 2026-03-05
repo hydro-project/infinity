@@ -418,7 +418,13 @@ async fn handle_execute_command_streaming<
     invocation: &RapInvocation,
 ) {
     if let Err(e) = handle_execute_command_streaming_inner(state, invocation).await {
-        send_tool_result(&state.callback_client, invocation, &format!("Error: {e}"), None).await;
+        send_tool_result(
+            &state.callback_client,
+            invocation,
+            &format!("Error: {e}"),
+            None,
+        )
+        .await;
     }
 }
 
@@ -554,8 +560,7 @@ async fn handle_execute_command_streaming_inner<
         // Process finished within 5 seconds — return a normal tool_result
         let text = format_exec_output(&stdout_buf, &stderr_buf, code);
         let _ =
-            push_and_update_metadata(state, &sandbox_dir, &invocation.group_id, &repo_state)
-                .await;
+            push_and_update_metadata(state, &sandbox_dir, &invocation.group_id, &repo_state).await;
         send_tool_result(&state.callback_client, invocation, &text, None).await;
         if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
             tracing::warn!("failed to cleanup sandbox: {e}");
