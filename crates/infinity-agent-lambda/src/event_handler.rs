@@ -257,6 +257,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 &tool_context,
                 &active_thread_id,
                 &message_id,
+                None,
             ));
 
             let mut text = String::new();
