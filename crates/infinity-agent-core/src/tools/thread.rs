@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use rig::{
     OneOrMany,
@@ -10,7 +8,8 @@ use tracing;
 
 use super::{Tool, ToolContext};
 use crate::message::{InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind};
-use crate::traits::{ConversationStore, InputSender, ThreadCloseNotifier};
+use crate::rap_notifier::RapNotifier;
+use crate::traits::{ConversationStore, HttpClient, InputSender};
 
 /// Tool that spawns a new child thread and returns its ID.
 pub struct SpawnThreadTool<C: ConversationStore> {
@@ -102,6 +101,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             metadata: None,
             synthetic: None,
             display_as: None,
+            subscription: false,
         };
 
         let child_group_id = child_result.group_id.clone();
@@ -195,6 +195,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Repor
                 tool_call_id: spawn_tool_call_id,
             })),
             display_as: None,
+            subscription: false,
         };
 
         let report_group_id = report_message.group_id.clone();
@@ -215,6 +216,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Repor
             metadata: None,
             synthetic: None,
             display_as: None,
+            subscription: false,
         };
 
         context
@@ -227,15 +229,17 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Repor
 }
 
 /// Tool that closes a thread, returning control to the parent.
-pub struct CloseThreadTool<C: ConversationStore> {
+pub struct CloseThreadTool<C: ConversationStore, H: HttpClient> {
     pub conversation_store: C,
     /// Optional notifier that informs RAP tool servers about the thread closure.
     /// Best-effort: failures are logged but do not prevent the thread from closing.
-    pub thread_close_notifier: Option<Arc<dyn ThreadCloseNotifier>>,
+    pub rap_notifier: Option<RapNotifier<H>>,
 }
 
 #[async_trait]
-impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for CloseThreadTool<C> {
+impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + 'static> Tool<M>
+    for CloseThreadTool<C, H>
+{
     fn name(&self) -> &str {
         "close_thread"
     }
@@ -286,6 +290,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Close
                 metadata: None,
                 synthetic: None,
                 display_as: None,
+                subscription: false,
             };
 
             context
@@ -353,6 +358,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Close
                         tool_call_id: spawn_tool_call_id,
                     })),
                     display_as: None,
+                    subscription: false,
                 };
 
                 let report_group_id = report_message.group_id.clone();
@@ -365,7 +371,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Close
 
         // Best-effort: notify RAP tool servers that this thread has been closed
         // so they can clean up thread-specific resources (e.g. sandboxes).
-        if let Some(ref notifier) = self.thread_close_notifier {
+        if let Some(ref notifier) = self.rap_notifier {
             notifier.notify_thread_closed(thread_id).await;
         }
 

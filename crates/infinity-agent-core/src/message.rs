@@ -87,4 +87,9 @@ pub struct InputMessage {
     /// full text.
     #[serde(default)]
     pub display_as: Option<String>,
+    /// When true, indicates this tool result started a subscription — the
+    /// runtime should track the tool call ID as an active subscription so
+    /// the agent can later cancel it via `cancel_subscription`.
+    #[serde(default)]
+    pub subscription: bool,
 }
