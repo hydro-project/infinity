@@ -289,7 +289,7 @@ impl InlineViewport {
             queue!(stdout, ratatui::crossterm::style::Print(cell.symbol()))?;
 
             // Advance column tracking by the symbol's display width.
-            cur_col += cell.symbol().len() as u16;
+            cur_col += unicode_width::UnicodeWidthStr::width(cell.symbol()) as u16;
         }
 
         if let Some(pos) = cursor_position {

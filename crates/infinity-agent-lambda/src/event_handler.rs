@@ -272,6 +272,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                     }
                     event_processor::CompletionEvent::ThinkingStart
                     | event_processor::CompletionEvent::ThinkingEnd
+                    | event_processor::CompletionEvent::ThinkingChunk(_)
                     | event_processor::CompletionEvent::SyncToolResult(_) => {}
                 }
             }
