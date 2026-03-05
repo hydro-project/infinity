@@ -47,6 +47,15 @@ pub struct EditFileArgs {
     pub new_str: String,
 }
 
+/// Input for the create_file tool.
+#[derive(Debug, Deserialize)]
+pub struct CreateFileArgs {
+    /// Path for the new file, relative to the repository root.
+    pub path: String,
+    /// The content to write to the new file.
+    pub content: String,
+}
+
 /// Input for the describe_edits tool.
 #[derive(Debug, Deserialize)]
 pub struct DescribeEditsArgs {
