@@ -1,3 +1,4 @@
+use crate::component::{Component, KeyResult};
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
@@ -252,9 +253,9 @@ impl TextInput {
         self.insert_char('\n');
     }
 
-    /// Handle a key event. Returns `true` if the event was consumed by the
-    /// input area, `false` if it should fall through to other handlers.
-    pub fn handle_keystroke(&mut self, key: KeyEvent) -> bool {
+    /// Handle a key event. Returns `KeyResult::Captured` if the event was consumed by the
+    /// input area, `KeyResult::NotCaptured` if it should fall through to other handlers.
+    pub fn handle_keystroke(&mut self, key: KeyEvent) -> KeyResult {
         let mods = key.modifiers;
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         let alt = mods.contains(KeyModifiers::ALT);
@@ -265,29 +266,29 @@ impl TextInput {
             // sequences \x1bb / \x1bf) rather than Alt+Arrow.
             KeyCode::Left if alt => {
                 self.move_word_left();
-                true
+                KeyResult::Captured
             }
             KeyCode::Right if alt => {
                 self.move_word_right();
-                true
+                KeyResult::Captured
             }
             KeyCode::Char('b') if alt => {
                 self.move_word_left();
-                true
+                KeyResult::Captured
             }
             KeyCode::Char('f') if alt => {
                 self.move_word_right();
-                true
+                KeyResult::Captured
             }
 
             // ── Emacs-style line nav ────────────────────────────────
             KeyCode::Char('a') if ctrl => {
                 self.move_home();
-                true
+                KeyResult::Captured
             }
             KeyCode::Char('e') if ctrl => {
                 self.move_end();
-                true
+                KeyResult::Captured
             }
 
             // ── Ctrl+C clears input; falls through if already empty ─
@@ -295,69 +296,69 @@ impl TextInput {
                 if !self.is_empty() {
                     self.buf.clear();
                     self.cursor = 0;
-                    true
+                    KeyResult::Captured
                 } else {
-                    false
+                    KeyResult::NotCaptured
                 }
             }
 
             // ── Let Ctrl+<key> combos we don't handle fall through ──
-            KeyCode::Char(_) if ctrl => false,
+            KeyCode::Char(_) if ctrl => KeyResult::NotCaptured,
 
             // ── Delete word left (Option+Backspace / Alt+Backspace) ──
             KeyCode::Backspace if alt => {
                 self.delete_word_left();
-                true
+                KeyResult::Captured
             }
 
             // ── Alt+Enter → newline ──────────────────────────────────
             KeyCode::Enter if alt => {
                 self.insert_newline();
-                true
+                KeyResult::Captured
             }
 
             // ── Plain Enter → not ours, let terminal submit ─────────
-            KeyCode::Enter => false,
+            KeyCode::Enter => KeyResult::NotCaptured,
 
             // ── Basic editing ───────────────────────────────────────
             KeyCode::Backspace => {
                 self.backspace();
-                true
+                KeyResult::Captured
             }
             KeyCode::Delete => {
                 self.delete();
-                true
+                KeyResult::Captured
             }
             KeyCode::Left => {
                 self.move_left();
-                true
+                KeyResult::Captured
             }
             KeyCode::Right => {
                 self.move_right();
-                true
+                KeyResult::Captured
             }
             KeyCode::Up => {
                 self.move_up();
-                true
+                KeyResult::Captured
             }
             KeyCode::Down => {
                 self.move_down();
-                true
+                KeyResult::Captured
             }
             KeyCode::Home => {
                 self.move_home();
-                true
+                KeyResult::Captured
             }
             KeyCode::End => {
                 self.move_end();
-                true
+                KeyResult::Captured
             }
             KeyCode::Char(ch) => {
                 self.insert_char(ch);
-                true
+                KeyResult::Captured
             }
 
-            _ => false,
+            _ => KeyResult::NotCaptured,
         }
     }
 
@@ -548,6 +549,12 @@ fn wrap_lines<'a>(text: &'a str, max_width: usize) -> Vec<&'a str> {
     }
 
     lines
+}
+
+impl Component for TextInput {
+    fn handle_keystroke(&mut self, key: KeyEvent) -> KeyResult {
+        TextInput::handle_keystroke(self, key)
+    }
 }
 
 /// Widget adapter so `TextInput` can be used with `frame.render_widget`.
