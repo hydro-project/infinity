@@ -16,8 +16,8 @@ use crate::jj::run_jj;
 use crate::metadata::MetadataStore;
 use crate::sandbox::SandboxBackend;
 use crate::types::{
-    CloneRepoArgs, DescribeEditsArgs, EditFileArgs, ExecuteCommandArgs, GrepArgs, ReadFileArgs,
-    RepoState,
+    CloneRepoArgs, CreateFileArgs, DescribeEditsArgs, EditFileArgs, ExecuteCommandArgs, GrepArgs,
+    ReadFileArgs, RepoState,
 };
 
 #[derive(Debug, Deserialize)]
@@ -174,6 +174,7 @@ async fn invoke_handler<
                 .map(|t| (t, None)),
             "read_file" => handle_read_file(&state_clone, &invocation).await,
             "edit_file" => handle_edit_file(&state_clone, &invocation).await,
+            "create_file" => handle_create_file(&state_clone, &invocation).await,
             "grep" => handle_grep(&state_clone, &invocation).await,
             "describe_edits" => handle_describe_edits(&state_clone, &invocation).await,
             _ => Err(SandboxError::Other(format!(
@@ -772,6 +773,50 @@ async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
     .await
 }
 
+async fn handle_create_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
+    state: &AppState<B, M, C>,
+    invocation: &RapInvocation,
+) -> Result<(String, Option<String>), SandboxError> {
+    let args: CreateFileArgs = serde_json::from_value(invocation.arguments.clone())
+        .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
+
+    let description = format!("create_file: {}", args.path);
+
+    with_sandbox(
+        state,
+        &invocation.group_id,
+        &description,
+        |sandbox_dir| async move {
+            let file_path = sandbox_dir.join(&args.path);
+
+            // Fail if the file already exists
+            if file_path.exists() {
+                return Err(SandboxError::Other(format!(
+                    "file already exists: {}. Use edit_file to modify existing files.",
+                    args.path
+                )));
+            }
+
+            // Create parent directories if needed
+            if let Some(parent) = file_path.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|e| SandboxError::Io(e))?;
+            }
+
+            tokio::fs::write(&file_path, &args.content)
+                .await
+                .map_err(|e| SandboxError::Io(e))?;
+
+            let line_count = args.content.lines().count();
+            let display = format!("Created {} ({} lines)", args.path, line_count);
+
+            Ok((format!("Created file {}", args.path), Some(display)))
+        },
+    )
+    .await
+}
+
 async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
@@ -998,6 +1043,24 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                         }
                     },
                     "required": ["path", "old_str", "new_str"]
+                }),
+            },
+            ToolDef {
+                name: "create_file".to_string(),
+                description: "Create a new file with the given content. Fails if the file already exists. Parent directories are created automatically if needed.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path for the new file, relative to the repository root"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "The content to write to the new file"
+                        }
+                    },
+                    "required": ["path", "content"]
                 }),
             },
             ToolDef {
