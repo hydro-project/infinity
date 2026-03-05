@@ -12,6 +12,14 @@ pub struct ExecResult {
     pub exit_code: i32,
 }
 
+/// A spawned command with its child process handle and any resources
+/// that must stay alive until the process exits.
+pub struct SpawnedCommand {
+    pub child: tokio::process::Child,
+    /// Temp resources (e.g. sandbox tmpdir) that must outlive the child process.
+    pub _keepalive: Option<Box<dyn std::any::Any + Send>>,
+}
+
 /// Trait for the sandbox backend.
 /// Handles creating sandboxes (temp dirs with jj clones) and
 /// managing the git remote (local path vs s3).
@@ -31,6 +39,14 @@ pub trait SandboxBackend: Send + Sync {
         sandbox_dir: &Path,
         command: &str,
     ) -> Result<ExecResult, SandboxError>;
+
+    /// Spawn a command inside the sandbox directory, returning the child process.
+    /// stdout and stderr MUST be piped so the caller can stream output.
+    async fn spawn_command(
+        &self,
+        sandbox_dir: &Path,
+        command: &str,
+    ) -> Result<SpawnedCommand, SandboxError>;
 
     /// Push the updated working copy from the sandbox back to the remote.
     async fn push_sandbox(&self, sandbox_dir: &Path, group_id: &str) -> Result<(), SandboxError>;

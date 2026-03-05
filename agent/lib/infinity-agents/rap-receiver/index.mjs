@@ -78,7 +78,9 @@ export const handler = async (event) => {
             content: [{ type: 'text', text: body.text || '' }],
           },
           group_id: body.group_id,
-          synthetic: body.tool_call_id,
+          synthetic: body.associative
+            ? { type: "subscription_event", tool_call_id: body.tool_call_id, associative: true }
+            : body.tool_call_id,
         };
         dedupBase = body.tool_call_id;
         break;

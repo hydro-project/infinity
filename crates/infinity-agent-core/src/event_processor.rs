@@ -448,7 +448,7 @@ where
             return Ok(PrepareResult::Handled);
         };
 
-        if synthetic_kind.is_thread_report() {
+        if synthetic_kind.is_thread_report() || synthetic_kind.is_associative() {
             let new_tool_call_id = uuid::Uuid::new_v4().to_string();
             if let UserContent::ToolResult(mut tool_result) = user_content {
                 let synthetic_tool_call = Message::Assistant {
@@ -1281,6 +1281,7 @@ mod tests {
             Some(SyntheticKind::Tagged(
                 TaggedSyntheticKind::SubscriptionEvent {
                     tool_call_id: "tc-sub".to_string(),
+                    associative: false,
                 },
             )),
         );
@@ -1325,6 +1326,7 @@ mod tests {
             Some(SyntheticKind::Tagged(
                 TaggedSyntheticKind::SubscriptionEvent {
                     tool_call_id: "tc-sub".to_string(),
+                    associative: false,
                 },
             )),
         );
@@ -1359,6 +1361,7 @@ mod tests {
             Some(SyntheticKind::Tagged(
                 TaggedSyntheticKind::SubscriptionEvent {
                     tool_call_id: "nonexistent-tc".to_string(),
+                    associative: false,
                 },
             )),
         );
@@ -1390,5 +1393,98 @@ mod tests {
             .unwrap();
 
         insta::assert_json_snapshot!(hm.get_metadata());
+    }
+
+    #[tokio::test]
+    async fn associative_subscription_event_inlined() {
+        let store = StubConversationStore::new();
+        // Tool call already completed with a result before the associative event arrives
+        let initial = vec![
+            Message::User {
+                content: OneOrMany::one(UserContent::text("run command")),
+            },
+            tool_call_msg(
+                "tc-cmd",
+                "execute_command",
+                serde_json::json!({"command": "make build"}),
+            ),
+            Message::User {
+                content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+                    id: "tc-cmd".to_string(),
+                    call_id: None,
+                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                        text: "Command is still running. Output will be streamed via subscription events.".to_string(),
+                    })),
+                })),
+            },
+        ];
+        let mut hm = make_history(&store, initial).await;
+        hm.processed_tool_calls.insert("tc-cmd".to_string());
+
+        let input = tool_result_input(
+            "thread-1",
+            "tc-cmd",
+            "build output chunk\n[exit code: 0]",
+            Some(SyntheticKind::Tagged(
+                TaggedSyntheticKind::SubscriptionEvent {
+                    tool_call_id: "tc-cmd".to_string(),
+                    associative: true,
+                },
+            )),
+        );
+
+        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store)
+            .await
+            .unwrap();
+
+        assert_eq!(result, PrepareResult::Ready);
+        // Should NOT spawn a subthread — stays in the same thread
+        assert_eq!(hm.thread_id, "thread-1");
+        // Should have: original user, tool call, original result, synthetic tool call, event result
+        insta::assert_json_snapshot!(
+            hm.history,
+            { "[3].content[0].id" => "[uuid]", "[4].content[0].id" => "[uuid]" }
+        );
+    }
+
+    #[tokio::test]
+    async fn associative_subscription_event_tool_interruption() {
+        let store = StubConversationStore::new();
+        // Tool call is still pending (no result yet) when the associative event arrives
+        let initial = vec![
+            Message::User {
+                content: OneOrMany::one(UserContent::text("run command")),
+            },
+            tool_call_msg(
+                "tc-cmd",
+                "execute_command",
+                serde_json::json!({"command": "make build"}),
+            ),
+        ];
+        let mut hm = make_history(&store, initial).await;
+
+        let input = tool_result_input(
+            "thread-1",
+            "tc-cmd",
+            "build output chunk\n[exit code: 0]",
+            Some(SyntheticKind::Tagged(
+                TaggedSyntheticKind::SubscriptionEvent {
+                    tool_call_id: "tc-cmd".to_string(),
+                    associative: true,
+                },
+            )),
+        );
+
+        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store)
+            .await
+            .unwrap();
+
+        assert_eq!(result, PrepareResult::Ready);
+        // Should NOT spawn a subthread — stays in the same thread
+        assert_eq!(hm.thread_id, "thread-1");
+        insta::assert_json_snapshot!(
+            hm.history,
+            { "[3].content[0].id" => "[uuid]", "[4].content[0].id" => "[uuid]" }
+        );
     }
 }

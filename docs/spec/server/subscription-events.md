@@ -52,6 +52,21 @@ Content-Type: application/json
 }
 ```
 
+An associative subscription event is injected inline into the subscribing thread rather than spawning a child thread:
+
+```http
+POST https://agent.example.com/callback
+Content-Type: application/json
+
+{
+  "type": "subscription_event",
+  "group_id": "thread_xyz",
+  "tool_call_id": "call_abc123",
+  "text": "build output line 1\nbuild output line 2\n[exit code: 0]",
+  "associative": true
+}
+```
+
 ### Fields
 
 | Field | Type | Required | Description |
@@ -60,6 +75,7 @@ Content-Type: application/json
 | `group_id` | `string` | Yes | Conversation thread identifier. MUST match the `group_id` from the original subscription invocation. |
 | `tool_call_id` | `string` | Yes | The tool call `id` from the original invocation that created the subscription. |
 | `text` | `string` | Yes | Event payload. SHOULD be JSON-encoded for structured event data. |
+| `associative` | `boolean` | No | When `true`, the runtime SHOULD inject the event inline into the subscribing thread's history rather than spawning a child thread. Defaults to `false`. See [Processing Strategies](#processing-strategies). |
 
 :::note
 Subscription events use `tool_call_id` (referencing the original subscription call), while [tool results](/spec/basic/tool-result) use `id`. This distinction tells the runtime that the message is a new event from an ongoing subscription, not the final result of a one-off call.
@@ -94,13 +110,13 @@ The `kind` annotation tells the LLM that this is an event from an existing subsc
 
 ### Processing Strategies
 
-Runtimes MAY use either of two strategies for processing subscription events:
+Runtimes MAY use either of two strategies for processing subscription events. The `associative` field on the event controls which strategy the runtime SHOULD use.
 
-**Inline processing.** The synthetic call is appended directly to the subscribing thread's history. The LLM sees the event in its main conversation. This is simpler but means every event accumulates in the same context window.
+**Inline (associative) processing.** When `associative` is `true`, the synthetic call is appended directly to the subscribing thread's history. The LLM sees the event in its main conversation context. This is appropriate for events that are incremental updates to an ongoing operation — for example, streaming command output or build progress — where each event is closely tied to the originating tool call and the agent needs to see the updates in-place.
 
-**Threaded processing.** The runtime spawns a new child thread to process each event. The child gets a clean context: it inherits the parent's history up to the spawn point, plus the event data. This keeps the parent's context focused and gives each event a fresh, minimal context window.
+**Threaded processing.** When `associative` is `false` or absent, the runtime spawns a new child thread to process each event. The child gets a clean context: it inherits the parent's history up to the spawn point, plus the event data. This keeps the parent's context focused and gives each event a fresh, minimal context window. This is appropriate for independent events like webhooks, alerts, or price changes that each require their own reasoning and response.
 
-Runtimes SHOULD use threaded processing for production deployments, as subscriptions can generate many events over time.
+Runtimes SHOULD default to threaded processing when `associative` is not set, as subscriptions can generate many events over time and threaded processing prevents unbounded context growth.
 
 ## Tool Requirements
 

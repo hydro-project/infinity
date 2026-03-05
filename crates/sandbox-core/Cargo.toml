@@ -8,7 +8,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "process"] }
+tokio = { workspace = true, features = ["macros", "process", "io-util", "time", "sync", "fs"] }
 axum = { workspace = true }
 reqwest = { workspace = true }
 tracing = { workspace = true }
