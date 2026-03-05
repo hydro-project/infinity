@@ -93,6 +93,10 @@ pub struct HistoryManager<C: ConversationStore, S: StateStore> {
     metadata: Option<serde_json::Value>,
     pending_items: Vec<PendingItem>,
     pending_complete_tool_calls: HashSet<String>,
+    /// Tool call IDs that were interrupted by a new user message during
+    /// `handle_content`. Callers can drain this via `take_interrupted_tool_calls`
+    /// to send best-effort cancellation notifications to RAP tool servers.
+    interrupted_tool_calls: Vec<String>,
 }
 
 impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
@@ -140,6 +144,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             metadata,
             pending_items: Vec::new(),
             pending_complete_tool_calls: HashSet::new(),
+            interrupted_tool_calls: Vec::new(),
         })
     }
 
@@ -187,6 +192,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             && !self.processed_tool_calls.contains(tool_call.id.as_str())
         {
             tracing::info!("Tool call {} interrupted by new user message", tool_call.id);
+            self.interrupted_tool_calls.push(tool_call.id.clone());
             let synthetic_result = Message::User {
                 content: OneOrMany::one(UserContent::ToolResult(rig::message::ToolResult {
                     id: tool_call.id.clone(),
@@ -352,6 +358,24 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         &self.state_store
     }
 
+    /// Drain and return tool call IDs that were interrupted by new user messages.
+    /// Callers use this to send best-effort cancellation notifications to RAP
+    /// tool servers so they can abort in-flight operations.
+    pub fn take_interrupted_tool_calls(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.interrupted_tool_calls)
+    }
+
+    /// Record a subscription in the current thread's metadata. The
+    /// `tool_call_id` is the ID of the tool call whose result had
+    /// `subscription: true`. Ownership is implicit — a subscription is
+    /// stored in the thread that created it.
+    pub async fn track_subscription(&mut self, tool_call_id: &str) -> Result<(), BoxError> {
+        self.state_store
+            .add_active_subscription(&self.thread_id, tool_call_id)
+            .await
+            .map_err(|e| Box::new(e) as BoxError)
+    }
+
     /// Mutate this HistoryManager in place to become a child thread.
     /// Keeps the current history and metadata (the child inherits the parent context),
     /// updates the thread_id and ancestor chain, and clears pending/processed state
@@ -364,6 +388,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         self.processed_tool_calls.clear();
         self.pending_items.clear();
         self.pending_complete_tool_calls.clear();
+        self.interrupted_tool_calls.clear();
     }
 }
 
@@ -408,6 +433,8 @@ where
             auth_url: oauth.auth_url.clone(),
         });
     }
+
+    let is_subscription = input_msg.subscription;
 
     let user_content = match input_msg.content {
         InputMessageContent::User(content) => content,
@@ -575,6 +602,17 @@ where
         user_content
     };
 
+    // Capture tool call ID before `content` is moved, so we can track
+    // subscriptions after the message is added to history.
+    let subscription_tool_call_id = if is_subscription {
+        match &content {
+            UserContent::ToolResult(result) => Some(result.id.clone()),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     let is_new = current_history
         .handle_content(
             Message::User {
@@ -587,6 +625,16 @@ where
     if !is_new {
         tracing::info!("Message was duplicate or ignored, skipping agent processing");
         return Ok(PrepareResult::Handled);
+    }
+
+    // Track subscription if this tool result started one
+    if let Some(ref tool_call_id) = subscription_tool_call_id {
+        tracing::info!(
+            "Tracking subscription {} in thread {}",
+            tool_call_id,
+            current_history.thread_id
+        );
+        current_history.track_subscription(tool_call_id).await?;
     }
 
     Ok(PrepareResult::Ready)
@@ -965,6 +1013,26 @@ mod tests {
         ) -> Result<(), TestError> {
             Ok(())
         }
+        async fn get_active_subscriptions(
+            &self,
+            _thread_id: &str,
+        ) -> Result<Vec<String>, TestError> {
+            Ok(vec![])
+        }
+        async fn add_active_subscription(
+            &self,
+            _thread_id: &str,
+            _tool_call_id: &str,
+        ) -> Result<(), TestError> {
+            Ok(())
+        }
+        async fn remove_active_subscription(
+            &self,
+            _thread_id: &str,
+            _tool_call_id: &str,
+        ) -> Result<(), TestError> {
+            Ok(())
+        }
     }
 
     // ── Helpers ──
@@ -988,6 +1056,7 @@ mod tests {
             metadata: None,
             synthetic: None,
             display_as: None,
+            subscription: false,
         }
     }
 
@@ -1025,6 +1094,7 @@ mod tests {
             metadata: None,
             synthetic,
             display_as: None,
+            subscription: false,
         }
     }
 
@@ -1084,6 +1154,7 @@ mod tests {
             metadata: None,
             synthetic: None,
             display_as: None,
+            subscription: false,
         };
 
         let result = prepare_input(input, "msg-1".to_string(), &mut hm, &store)
@@ -1392,6 +1463,7 @@ mod tests {
             metadata: Some(serde_json::json!({"user_id": "u-123"})),
             synthetic: None,
             display_as: None,
+            subscription: false,
         };
 
         let _ = prepare_input(input, "msg-1".to_string(), &mut hm, &store)

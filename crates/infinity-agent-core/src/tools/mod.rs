@@ -1,3 +1,4 @@
+pub mod cancel_subscription;
 pub mod config;
 pub mod rap_tool;
 pub mod sleep;

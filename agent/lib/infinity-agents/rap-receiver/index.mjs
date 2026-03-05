@@ -46,6 +46,7 @@ export const handler = async (event) => {
             content: [{ type: 'text', text: body.text || '' }],
           },
           group_id: body.group_id,
+          ...(body.subscription && { subscription: true }),
         };
         dedupBase = body.id;
         break;

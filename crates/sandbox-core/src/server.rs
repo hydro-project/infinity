@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -41,6 +42,8 @@ struct RapToolResult {
     text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     display_as: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subscription: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -77,11 +80,31 @@ struct ToolDef {
 
 type PendingTasks = Arc<Mutex<Vec<JoinHandle<()>>>>;
 
+/// In-flight cancellable commands, keyed by tool_call_id.
+///
+/// The sender is created in `invoke_handler` (synchronously, before the task
+/// is spawned) and the receiver is passed into the command handler.  The
+/// `cancel_tool_call_handler` removes the sender and sends `()` to signal
+/// cancellation; the handler receives it and sends SIGTERM to the process.
+type InFlightMap = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>>;
+
+/// Send SIGTERM to a process by PID.
+#[cfg(unix)]
+fn kill_process(pid: Option<u32>) {
+    if let Some(pid) = pid {
+        use nix::sys::signal::{self, Signal};
+        use nix::unistd::Pid;
+        let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+        tracing::info!(pid, "sent SIGTERM to process");
+    }
+}
+
 struct AppState<B: SandboxBackend, M: MetadataStore, C: CallbackClient> {
     backend: B,
     metadata: M,
     callback_client: C,
     pending_tasks: PendingTasks,
+    in_flight: InFlightMap,
 }
 
 /// Shared handle to pending background tasks.
@@ -112,12 +135,14 @@ where
     C: CallbackClient + 'static,
 {
     let pending_tasks: PendingTasks = Arc::new(Mutex::new(Vec::new()));
+    let in_flight: InFlightMap = Arc::new(Mutex::new(HashMap::new()));
 
     let state = Arc::new(AppState {
         backend,
         metadata,
         callback_client,
         pending_tasks: pending_tasks.clone(),
+        in_flight,
     });
 
     let tracker = TaskTracker { pending_tasks };
@@ -126,6 +151,10 @@ where
         .route("/.well-known/rap-toolset", get(toolset_handler::<B, M, C>))
         .route("/invoke", post(invoke_handler::<B, M, C>))
         .route("/close_thread", post(close_thread_handler::<B, M, C>))
+        .route(
+            "/cancel_tool_call",
+            post(cancel_tool_call_handler::<B, M, C>),
+        )
         .with_state(state);
 
     (router, tracker)
@@ -160,14 +189,27 @@ async fn invoke_handler<
     State(state): State<Arc<AppState<B, M, C>>>,
     Json(invocation): Json<RapInvocation>,
 ) -> StatusCode {
+    // For execute_command, register the cancellation channel synchronously
+    // (before spawning the task) so that cancel_tool_call always finds an
+    // entry — even if the cancel arrives before the command starts.
+    if invocation.operation == "execute_command" {
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+        state
+            .in_flight
+            .lock()
+            .await
+            .insert(invocation.id.clone(), cancel_tx);
+
+        let state_clone = state.clone();
+        let handle = tokio::spawn(async move {
+            handle_execute_command_streaming(&state_clone, &invocation, cancel_rx).await;
+        });
+        state.pending_tasks.lock().await.push(handle);
+        return StatusCode::OK;
+    }
+
     let state_clone = state.clone();
     let handle = tokio::spawn(async move {
-        // execute_command uses its own streaming handler that manages callbacks directly
-        if invocation.operation == "execute_command" {
-            handle_execute_command_streaming(&state_clone, &invocation).await;
-            return;
-        }
-
         let result_text = match invocation.operation.as_str() {
             "clone_repo" => handle_clone_repo(&state_clone, &invocation)
                 .await
@@ -195,6 +237,7 @@ async fn invoke_handler<
             call_id: invocation.call_id.clone(),
             text,
             display_as,
+            subscription: None,
         };
 
         let body = serde_json::to_string(&tool_result).unwrap();
@@ -250,6 +293,55 @@ async fn close_thread_handler<
     });
 
     state.pending_tasks.lock().await.push(handle);
+
+    StatusCode::OK
+}
+
+/// Request payload for the `/cancel_tool_call` RAP protocol endpoint.
+#[derive(Debug, Deserialize)]
+struct CancelToolCallRequest {
+    tool_call_id: String,
+    #[allow(dead_code)]
+    thread_id: String,
+}
+
+/// Best-effort notification endpoint for tool call cancellation.
+///
+/// When the runtime interrupts a tool call (e.g. because of a new user
+/// message), it POSTs `{"thread_id":"…","tool_call_id":"…"}` to every
+/// tool server. The server uses this to abort in-flight operations — for
+/// example, killing a long-running `execute_command` process. The
+/// response is always 200 OK regardless of whether anything was actually
+/// cancelled.
+async fn cancel_tool_call_handler<
+    B: SandboxBackend + 'static,
+    M: MetadataStore + 'static,
+    C: CallbackClient + 'static,
+>(
+    State(state): State<Arc<AppState<B, M, C>>>,
+    Json(request): Json<CancelToolCallRequest>,
+) -> StatusCode {
+    tracing::info!(
+        tool_call_id = %request.tool_call_id,
+        thread_id = %request.thread_id,
+        "received cancel_tool_call notification"
+    );
+
+    let sender = state.in_flight.lock().await.remove(&request.tool_call_id);
+
+    if let Some(sender) = sender {
+        // Signal the command handler to SIGTERM the process and clean up.
+        let _ = sender.send(());
+        tracing::info!(
+            tool_call_id = %request.tool_call_id,
+            "sent cancel signal to command handler"
+        );
+    } else {
+        tracing::info!(
+            tool_call_id = %request.tool_call_id,
+            "no in-flight command found for tool call (may have already completed)"
+        );
+    }
 
     StatusCode::OK
 }
@@ -349,12 +441,30 @@ fn format_exec_output(stdout: &str, stderr: &str, exit_code: i32) -> String {
     result
 }
 
+/// Format output collected before a cancellation.
+fn format_cancel_output(stdout: &str, stderr: &str) -> String {
+    let mut text = String::from("Command cancelled.");
+    if !stdout.is_empty() || !stderr.is_empty() {
+        text.push_str("\nOutput before cancellation:\n");
+        text.push_str(stdout);
+        if !stderr.is_empty() {
+            if !stdout.is_empty() {
+                text.push('\n');
+            }
+            text.push_str("[stderr]\n");
+            text.push_str(stderr);
+        }
+    }
+    text
+}
+
 /// Send a `tool_result` callback.
 async fn send_tool_result<C: CallbackClient>(
     client: &C,
     invocation: &RapInvocation,
     text: &str,
     display_as: Option<String>,
+    subscription: bool,
 ) {
     let result = RapToolResult {
         r#type: "tool_result".to_string(),
@@ -363,6 +473,7 @@ async fn send_tool_result<C: CallbackClient>(
         call_id: invocation.call_id.clone(),
         text: text.to_string(),
         display_as,
+        subscription: if subscription { Some(true) } else { None },
     };
     let body = serde_json::to_string(&result).unwrap();
     if let Err(e) = client.post_json(&invocation.callback_url, &body).await {
@@ -417,19 +528,26 @@ async fn handle_execute_command_streaming<
 >(
     state: &Arc<AppState<B, M, C>>,
     invocation: &RapInvocation,
+    cancel_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
-    if let Err(e) = handle_execute_command_streaming_inner(state, invocation).await {
+    if let Err(e) = handle_execute_command_streaming_inner(state, invocation, cancel_rx).await {
         send_tool_result(
             &state.callback_client,
             invocation,
             &format!("Error: {e}"),
             None,
+            false,
         )
         .await;
     }
 }
 
 /// Inner implementation: creates sandbox, spawns process, streams output.
+///
+/// Cancellation is handled via `cancel_rx`: when the oneshot fires the handler
+/// sends SIGTERM to the child process and returns a cancellation result.
+/// Because the oneshot sender is registered in `invoke_handler` *before* the
+/// task is spawned, there is no window where a cancel can be lost.
 async fn handle_execute_command_streaming_inner<
     B: SandboxBackend + 'static,
     M: MetadataStore,
@@ -437,11 +555,12 @@ async fn handle_execute_command_streaming_inner<
 >(
     state: &Arc<AppState<B, M, C>>,
     invocation: &RapInvocation,
+    mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<(), SandboxError> {
     let args: ExecuteCommandArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
-    // Set up sandbox (same as with_sandbox)
+    // Set up sandbox
     let repo_state = state
         .metadata
         .get(&invocation.group_id)
@@ -449,6 +568,24 @@ async fn handle_execute_command_streaming_inner<
         .ok_or_else(|| SandboxError::RepoNotFound(invocation.group_id.clone()))?;
     let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;
     run_jj(&sandbox_dir, &["describe", "-m", &args.command]).await?;
+
+    // Check for early cancellation before spawning the process.
+    if cancel_rx.try_recv().is_ok() {
+        let _ =
+            push_and_update_metadata(state, &sandbox_dir, &invocation.group_id, &repo_state).await;
+        if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
+            tracing::warn!("failed to cleanup sandbox: {e}");
+        }
+        send_tool_result(
+            &state.callback_client,
+            invocation,
+            "Command cancelled.",
+            None,
+            false,
+        )
+        .await;
+        return Ok(());
+    }
 
     // Spawn the process
     let mut spawned = match state
@@ -458,7 +595,7 @@ async fn handle_execute_command_streaming_inner<
     {
         Ok(s) => s,
         Err(e) => {
-            // Still push sandbox (matching with_sandbox behavior) then propagate error
+            state.in_flight.lock().await.remove(&invocation.id);
             let _ =
                 push_and_update_metadata(state, &sandbox_dir, &invocation.group_id, &repo_state)
                     .await;
@@ -468,6 +605,8 @@ async fn handle_execute_command_streaming_inner<
             return Err(e);
         }
     };
+
+    let child_pid = spawned.child.id();
 
     let stdout = spawned
         .child
@@ -519,17 +658,12 @@ async fn handle_execute_command_streaming_inner<
 
     // Spawn exit waiter — waits for process exit AND for readers to finish,
     // so by the time we receive Exit all stdout/stderr data is already in the channel.
-    // Note: `tx` (the original sender) is moved here; clones live in the reader tasks.
     tokio::spawn(async move {
         let status = spawned.child.wait().await;
         let code = status.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
-        // Wait for readers to finish so all output is in the channel before Exit
         let _ = out_handle.await;
         let _ = err_handle.await;
         let _ = tx.send(OutputEvent::Exit(code));
-        // `tx` drops here, closing the channel after Exit is sent.
-        // `spawned._keepalive` (e.g. macOS sandbox tmpdir) also drops here,
-        // after the process has exited.
     });
 
     // ── Phase 1: Wait up to 5 seconds for process completion ──
@@ -548,21 +682,34 @@ async fn handle_execute_command_streaming_inner<
                         exit_code = Some(code);
                         break;
                     }
-                    None => break, // channel closed unexpectedly
+                    None => break,
                 }
             }
             _ = tokio::time::sleep_until(deadline) => {
-                break; // 5-second timeout
+                break;
+            }
+            _ = &mut cancel_rx => {
+                tracing::info!(tool_call_id = %invocation.id, "command cancelled during phase 1");
+                #[cfg(unix)]
+                kill_process(child_pid);
+                let text = format_cancel_output(&stdout_buf, &stderr_buf);
+                let _ = push_and_update_metadata(state, &sandbox_dir, &invocation.group_id, &repo_state).await;
+                send_tool_result(&state.callback_client, invocation, &text, None, false).await;
+                if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
+                    tracing::warn!("failed to cleanup sandbox: {e}");
+                }
+                return Ok(());
             }
         }
     }
 
     if let Some(code) = exit_code {
-        // Process finished within 5 seconds — return a normal tool_result
+        // Process finished within 5 seconds — return a normal tool_result.
+        state.in_flight.lock().await.remove(&invocation.id);
         let text = format_exec_output(&stdout_buf, &stderr_buf, code);
         let _ =
             push_and_update_metadata(state, &sandbox_dir, &invocation.group_id, &repo_state).await;
-        send_tool_result(&state.callback_client, invocation, &text, None).await;
+        send_tool_result(&state.callback_client, invocation, &text, None, false).await;
         if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
             tracing::warn!("failed to cleanup sandbox: {e}");
         }
@@ -570,8 +717,10 @@ async fn handle_execute_command_streaming_inner<
     }
 
     // ── Phase 2: Process still running — send initial result, start streaming ──
-    let mut initial_text =
-        String::from("Command is still running. Output will be streamed via subscription events.");
+    let mut initial_text = format!(
+        "Command is still running. Output will be streamed via subscription events. Subscription ID: {}",
+        invocation.id
+    );
     if !stdout_buf.is_empty() || !stderr_buf.is_empty() {
         initial_text.push_str("\nOutput so far:\n");
         initial_text.push_str(&stdout_buf);
@@ -583,15 +732,19 @@ async fn handle_execute_command_streaming_inner<
             initial_text.push_str(&stderr_buf);
         }
     }
-    send_tool_result(&state.callback_client, invocation, &initial_text, None).await;
+    send_tool_result(
+        &state.callback_client,
+        invocation,
+        &initial_text,
+        None,
+        true,
+    )
+    .await;
 
     // ── Fixed-interval subscription event loop ──
-    // Accumulate output; flush every 5 seconds unconditionally (if non-empty).
-    // Emit immediately when the process exits.
     let mut accumulated = String::new();
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-    // The first tick fires immediately — consume it so we start waiting a full 5s.
-    interval.tick().await;
+    interval.tick().await; // consume first immediate tick
 
     loop {
         tokio::select! {
@@ -601,14 +754,14 @@ async fn handle_execute_command_streaming_inner<
                         accumulated.push_str(&s);
                     }
                     Some(OutputEvent::Exit(code)) => {
-                        // Append exit code as final output
+                        state.in_flight.lock().await.remove(&invocation.id);
+
                         if accumulated.is_empty() {
                             accumulated.push_str(&format!("[exit code: {code}]"));
                         } else {
                             accumulated.push_str(&format!("\n[exit code: {code}]"));
                         }
 
-                        // Push sandbox before sending final event
                         let _ = push_and_update_metadata(
                             state,
                             &sandbox_dir,
@@ -616,8 +769,6 @@ async fn handle_execute_command_streaming_inner<
                             &repo_state,
                         )
                         .await;
-
-                        // Send final subscription event
                         send_subscription_event(
                             &state.callback_client,
                             invocation,
@@ -625,14 +776,14 @@ async fn handle_execute_command_streaming_inner<
                             true,
                         )
                         .await;
-
                         if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
                             tracing::warn!("failed to cleanup sandbox: {e}");
                         }
                         return Ok(());
                     }
                     None => {
-                        // Channel closed unexpectedly (shouldn't happen, but handle gracefully)
+                        state.in_flight.lock().await.remove(&invocation.id);
+
                         let _ = push_and_update_metadata(
                             state,
                             &sandbox_dir,
@@ -657,7 +808,6 @@ async fn handle_execute_command_streaming_inner<
                 }
             }
             _ = interval.tick() => {
-                // Fixed 5-second interval — flush accumulated output if any
                 if !accumulated.is_empty() {
                     send_subscription_event(
                         &state.callback_client,
@@ -668,6 +818,36 @@ async fn handle_execute_command_streaming_inner<
                     .await;
                     accumulated.clear();
                 }
+            }
+            _ = &mut cancel_rx => {
+                tracing::info!(tool_call_id = %invocation.id, "command cancelled during streaming");
+                #[cfg(unix)]
+                kill_process(child_pid);
+
+                if !accumulated.is_empty() {
+                    accumulated.push_str("\n[cancelled]");
+                } else {
+                    accumulated.push_str("[cancelled]");
+                }
+
+                let _ = push_and_update_metadata(
+                    state,
+                    &sandbox_dir,
+                    &invocation.group_id,
+                    &repo_state,
+                )
+                .await;
+                send_subscription_event(
+                    &state.callback_client,
+                    invocation,
+                    &accumulated,
+                    true,
+                )
+                .await;
+                if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
+                    tracing::warn!("failed to cleanup sandbox: {e}");
+                }
+                return Ok(());
             }
         }
     }

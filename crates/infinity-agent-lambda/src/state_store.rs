@@ -142,4 +142,60 @@ impl StateStore for DynamoDbStateStore {
             .map_err(|e| DynamoError(format!("Failed to set metadata: {}", e)))?;
         Ok(())
     }
+
+    async fn get_active_subscriptions(&self, thread_id: &str) -> Result<Vec<String>, DynamoError> {
+        let result = self
+            .client
+            .get_item()
+            .table_name(&self.table_name)
+            .key("session", AttributeValue::S(thread_id.to_string()))
+            .send()
+            .await
+            .map_err(|e| DynamoError(format!("Failed to get active subscriptions: {}", e)))?;
+
+        Ok(result
+            .item
+            .and_then(|item| {
+                if let Some(AttributeValue::Ss(ids)) = item.get("active_subscriptions") {
+                    Some(ids.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default())
+    }
+
+    async fn add_active_subscription(
+        &self,
+        thread_id: &str,
+        tool_call_id: &str,
+    ) -> Result<(), DynamoError> {
+        self.client
+            .update_item()
+            .table_name(&self.table_name)
+            .key("session", AttributeValue::S(thread_id.to_string()))
+            .update_expression("ADD active_subscriptions :id")
+            .expression_attribute_values(":id", AttributeValue::Ss(vec![tool_call_id.to_string()]))
+            .send()
+            .await
+            .map_err(|e| DynamoError(format!("Failed to add active subscription: {}", e)))?;
+        Ok(())
+    }
+
+    async fn remove_active_subscription(
+        &self,
+        thread_id: &str,
+        tool_call_id: &str,
+    ) -> Result<(), DynamoError> {
+        self.client
+            .update_item()
+            .table_name(&self.table_name)
+            .key("session", AttributeValue::S(thread_id.to_string()))
+            .update_expression("DELETE active_subscriptions :id")
+            .expression_attribute_values(":id", AttributeValue::Ss(vec![tool_call_id.to_string()]))
+            .send()
+            .await
+            .map_err(|e| DynamoError(format!("Failed to remove active subscription: {}", e)))?;
+        Ok(())
+    }
 }
