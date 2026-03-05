@@ -226,9 +226,7 @@ impl SandboxBackend for LocalBackend {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
-                .map_err(|e| {
-                    SandboxError::CommandError(format!("failed to spawn command: {e}"))
-                })?;
+                .map_err(|e| SandboxError::CommandError(format!("failed to spawn command: {e}")))?;
 
             Ok(SpawnedCommand {
                 child,
@@ -242,9 +240,7 @@ impl SandboxBackend for LocalBackend {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
-                .map_err(|e| {
-                    SandboxError::CommandError(format!("failed to spawn command: {e}"))
-                })?;
+                .map_err(|e| SandboxError::CommandError(format!("failed to spawn command: {e}")))?;
 
             Ok(SpawnedCommand {
                 child,

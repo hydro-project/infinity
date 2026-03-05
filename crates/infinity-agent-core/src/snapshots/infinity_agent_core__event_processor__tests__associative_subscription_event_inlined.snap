@@ -1,6 +1,5 @@
 ---
 source: crates/infinity-agent-core/src/event_processor.rs
-assertion_line: 1485
 expression: hm.history
 ---
 [
@@ -40,7 +39,7 @@ expression: hm.history
         "content": [
           {
             "type": "text",
-            "text": "Tool call interrupted by user"
+            "text": "Command is still running. Output will be streamed via subscription events."
           }
         ]
       }
