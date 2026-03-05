@@ -5,6 +5,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing;
@@ -40,6 +41,22 @@ struct RapToolResult {
     text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     display_as: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RapSubscriptionEvent {
+    r#type: String,
+    group_id: String,
+    tool_call_id: String,
+    text: String,
+    associative: bool,
+}
+
+/// Events produced by the stdout/stderr readers and process exit waiter.
+enum OutputEvent {
+    Stdout(String),
+    Stderr(String),
+    Exit(i32),
 }
 
 #[derive(Serialize)]
@@ -145,11 +162,16 @@ async fn invoke_handler<
 ) -> StatusCode {
     let state_clone = state.clone();
     let handle = tokio::spawn(async move {
+        // execute_command uses its own streaming handler that manages callbacks directly
+        if invocation.operation == "execute_command" {
+            handle_execute_command_streaming(&state_clone, &invocation).await;
+            return;
+        }
+
         let result_text = match invocation.operation.as_str() {
             "clone_repo" => handle_clone_repo(&state_clone, &invocation)
                 .await
                 .map(|t| (t, None)),
-            "execute_command" => handle_execute_command(&state_clone, &invocation).await,
             "read_file" => handle_read_file(&state_clone, &invocation).await,
             "edit_file" => handle_edit_file(&state_clone, &invocation).await,
             "grep" => handle_grep(&state_clone, &invocation).await,
@@ -303,47 +325,346 @@ where
     result
 }
 
-async fn handle_execute_command<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
-    state: &AppState<B, M, C>,
+// ── Streaming execute_command handler ──
+
+/// Format command output in the same style as the original non-streaming handler.
+fn format_exec_output(stdout: &str, stderr: &str, exit_code: i32) -> String {
+    let mut result = String::new();
+    if !stdout.is_empty() {
+        result.push_str(stdout);
+    }
+    if !stderr.is_empty() {
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        result.push_str("[stderr]\n");
+        result.push_str(stderr);
+    }
+    if result.is_empty() {
+        result = format!("Command completed with exit code {exit_code}");
+    } else {
+        result.push_str(&format!("\n[exit code: {exit_code}]"));
+    }
+    result
+}
+
+/// Send a `tool_result` callback.
+async fn send_tool_result<C: CallbackClient>(
+    client: &C,
     invocation: &RapInvocation,
-) -> Result<(String, Option<String>), SandboxError> {
+    text: &str,
+    display_as: Option<String>,
+) {
+    let result = RapToolResult {
+        r#type: "tool_result".to_string(),
+        group_id: invocation.group_id.clone(),
+        id: invocation.id.clone(),
+        call_id: invocation.call_id.clone(),
+        text: text.to_string(),
+        display_as,
+    };
+    let body = serde_json::to_string(&result).unwrap();
+    if let Err(e) = client.post_json(&invocation.callback_url, &body).await {
+        tracing::error!("failed to send tool result: {e}");
+    }
+}
+
+/// Send a `subscription_event` callback.
+async fn send_subscription_event<C: CallbackClient>(
+    client: &C,
+    invocation: &RapInvocation,
+    text: &str,
+    associative: bool,
+) {
+    let event = RapSubscriptionEvent {
+        r#type: "subscription_event".to_string(),
+        group_id: invocation.group_id.clone(),
+        tool_call_id: invocation.id.clone(),
+        text: text.to_string(),
+        associative,
+    };
+    let body = serde_json::to_string(&event).unwrap();
+    if let Err(e) = client.post_json(&invocation.callback_url, &body).await {
+        tracing::error!("failed to send subscription event: {e}");
+    }
+}
+
+/// Push sandbox changes and update metadata (extracted from `with_sandbox`).
+async fn push_and_update_metadata<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
+    state: &AppState<B, M, C>,
+    sandbox_dir: &std::path::Path,
+    group_id: &str,
+    repo_state: &RepoState,
+) -> Result<(), SandboxError> {
+    state.backend.push_sandbox(sandbox_dir, group_id).await?;
+    let bookmark = format!("sandbox-{}", group_id);
+    let updated = RepoState {
+        group_id: group_id.to_string(),
+        remote_uri: repo_state.remote_uri.clone(),
+        bookmark: Some(bookmark.clone()),
+    };
+    state.metadata.put(&updated).await?;
+    tracing::info!(group_id = %group_id, bookmark = %bookmark, "sandbox operation complete");
+    Ok(())
+}
+
+/// Top-level streaming handler for execute_command. Manages its own callbacks.
+async fn handle_execute_command_streaming<
+    B: SandboxBackend + 'static,
+    M: MetadataStore,
+    C: CallbackClient,
+>(
+    state: &Arc<AppState<B, M, C>>,
+    invocation: &RapInvocation,
+) {
+    if let Err(e) = handle_execute_command_streaming_inner(state, invocation).await {
+        send_tool_result(&state.callback_client, invocation, &format!("Error: {e}"), None).await;
+    }
+}
+
+/// Inner implementation: creates sandbox, spawns process, streams output.
+async fn handle_execute_command_streaming_inner<
+    B: SandboxBackend + 'static,
+    M: MetadataStore,
+    C: CallbackClient,
+>(
+    state: &Arc<AppState<B, M, C>>,
+    invocation: &RapInvocation,
+) -> Result<(), SandboxError> {
     let args: ExecuteCommandArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
-    let command = args.command.clone();
-    let backend = &state.backend;
+    // Set up sandbox (same as with_sandbox)
+    let repo_state = state
+        .metadata
+        .get(&invocation.group_id)
+        .await?
+        .ok_or_else(|| SandboxError::RepoNotFound(invocation.group_id.clone()))?;
+    let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;
+    run_jj(&sandbox_dir, &["describe", "-m", &args.command]).await?;
 
-    with_sandbox(
-        state,
-        &invocation.group_id,
-        &args.command,
-        |sandbox_dir| async move {
-            let exec_result = backend.execute_command(&sandbox_dir, &command).await?;
-
-            let stdout = exec_result.stdout;
-            let stderr = exec_result.stderr;
-            let exit_code = exec_result.exit_code;
-
-            let mut result = String::new();
-            if !stdout.is_empty() {
-                result.push_str(&stdout);
+    // Spawn the process
+    let mut spawned = match state
+        .backend
+        .spawn_command(&sandbox_dir, &args.command)
+        .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            // Still push sandbox (matching with_sandbox behavior) then propagate error
+            let _ =
+                push_and_update_metadata(state, &sandbox_dir, &invocation.group_id, &repo_state)
+                    .await;
+            if let Err(ce) = state.backend.cleanup_sandbox(&sandbox_dir).await {
+                tracing::warn!("failed to cleanup sandbox: {ce}");
             }
-            if !stderr.is_empty() {
-                if !result.is_empty() {
-                    result.push('\n');
+            return Err(e);
+        }
+    };
+
+    let stdout = spawned
+        .child
+        .stdout
+        .take()
+        .ok_or_else(|| SandboxError::Other("failed to capture stdout".to_string()))?;
+    let stderr = spawned
+        .child
+        .stderr
+        .take()
+        .ok_or_else(|| SandboxError::Other("failed to capture stderr".to_string()))?;
+
+    // Channel for output events from reader tasks
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutputEvent>();
+
+    // Spawn stdout reader
+    let tx_out = tx.clone();
+    let out_handle = tokio::spawn(async move {
+        let mut stdout = stdout;
+        let mut buf = vec![0u8; 8192];
+        loop {
+            match stdout.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let _ = tx_out.send(OutputEvent::Stdout(
+                        String::from_utf8_lossy(&buf[..n]).to_string(),
+                    ));
                 }
-                result.push_str("[stderr]\n");
-                result.push_str(&stderr);
             }
-            if result.is_empty() {
-                result = format!("Command completed with exit code {exit_code}");
-            } else {
-                result.push_str(&format!("\n[exit code: {exit_code}]"));
+        }
+    });
+
+    // Spawn stderr reader
+    let tx_err = tx.clone();
+    let err_handle = tokio::spawn(async move {
+        let mut stderr = stderr;
+        let mut buf = vec![0u8; 8192];
+        loop {
+            match stderr.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let _ = tx_err.send(OutputEvent::Stderr(
+                        String::from_utf8_lossy(&buf[..n]).to_string(),
+                    ));
+                }
             }
-            Ok((result, None))
-        },
-    )
-    .await
+        }
+    });
+
+    // Spawn exit waiter — waits for process exit AND for readers to finish,
+    // so by the time we receive Exit all stdout/stderr data is already in the channel.
+    // Note: `tx` (the original sender) is moved here; clones live in the reader tasks.
+    tokio::spawn(async move {
+        let status = spawned.child.wait().await;
+        let code = status.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+        // Wait for readers to finish so all output is in the channel before Exit
+        let _ = out_handle.await;
+        let _ = err_handle.await;
+        let _ = tx.send(OutputEvent::Exit(code));
+        // `tx` drops here, closing the channel after Exit is sent.
+        // `spawned._keepalive` (e.g. macOS sandbox tmpdir) also drops here,
+        // after the process has exited.
+    });
+
+    // ── Phase 1: Wait up to 5 seconds for process completion ──
+    let mut stdout_buf = String::new();
+    let mut stderr_buf = String::new();
+    let mut exit_code: Option<i32> = None;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+
+    loop {
+        tokio::select! {
+            event = rx.recv() => {
+                match event {
+                    Some(OutputEvent::Stdout(s)) => stdout_buf.push_str(&s),
+                    Some(OutputEvent::Stderr(s)) => stderr_buf.push_str(&s),
+                    Some(OutputEvent::Exit(code)) => {
+                        exit_code = Some(code);
+                        break;
+                    }
+                    None => break, // channel closed unexpectedly
+                }
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                break; // 5-second timeout
+            }
+        }
+    }
+
+    if let Some(code) = exit_code {
+        // Process finished within 5 seconds — return a normal tool_result
+        let text = format_exec_output(&stdout_buf, &stderr_buf, code);
+        let _ =
+            push_and_update_metadata(state, &sandbox_dir, &invocation.group_id, &repo_state)
+                .await;
+        send_tool_result(&state.callback_client, invocation, &text, None).await;
+        if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
+            tracing::warn!("failed to cleanup sandbox: {e}");
+        }
+        return Ok(());
+    }
+
+    // ── Phase 2: Process still running — send initial result, start streaming ──
+    let mut initial_text =
+        String::from("Command is still running. Output will be streamed via subscription events.");
+    if !stdout_buf.is_empty() || !stderr_buf.is_empty() {
+        initial_text.push_str("\nOutput so far:\n");
+        initial_text.push_str(&stdout_buf);
+        if !stderr_buf.is_empty() {
+            if !stdout_buf.is_empty() {
+                initial_text.push('\n');
+            }
+            initial_text.push_str("[stderr]\n");
+            initial_text.push_str(&stderr_buf);
+        }
+    }
+    send_tool_result(&state.callback_client, invocation, &initial_text, None).await;
+
+    // ── Fixed-interval subscription event loop ──
+    // Accumulate output; flush every 5 seconds unconditionally (if non-empty).
+    // Emit immediately when the process exits.
+    let mut accumulated = String::new();
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+    // The first tick fires immediately — consume it so we start waiting a full 5s.
+    interval.tick().await;
+
+    loop {
+        tokio::select! {
+            event = rx.recv() => {
+                match event {
+                    Some(OutputEvent::Stdout(s) | OutputEvent::Stderr(s)) => {
+                        accumulated.push_str(&s);
+                    }
+                    Some(OutputEvent::Exit(code)) => {
+                        // Append exit code as final output
+                        if accumulated.is_empty() {
+                            accumulated.push_str(&format!("[exit code: {code}]"));
+                        } else {
+                            accumulated.push_str(&format!("\n[exit code: {code}]"));
+                        }
+
+                        // Push sandbox before sending final event
+                        let _ = push_and_update_metadata(
+                            state,
+                            &sandbox_dir,
+                            &invocation.group_id,
+                            &repo_state,
+                        )
+                        .await;
+
+                        // Send final subscription event
+                        send_subscription_event(
+                            &state.callback_client,
+                            invocation,
+                            &accumulated,
+                            true,
+                        )
+                        .await;
+
+                        if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
+                            tracing::warn!("failed to cleanup sandbox: {e}");
+                        }
+                        return Ok(());
+                    }
+                    None => {
+                        // Channel closed unexpectedly (shouldn't happen, but handle gracefully)
+                        let _ = push_and_update_metadata(
+                            state,
+                            &sandbox_dir,
+                            &invocation.group_id,
+                            &repo_state,
+                        )
+                        .await;
+                        if !accumulated.is_empty() {
+                            send_subscription_event(
+                                &state.callback_client,
+                                invocation,
+                                &accumulated,
+                                true,
+                            )
+                            .await;
+                        }
+                        if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
+                            tracing::warn!("failed to cleanup sandbox: {e}");
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+            _ = interval.tick() => {
+                // Fixed 5-second interval — flush accumulated output if any
+                if !accumulated.is_empty() {
+                    send_subscription_event(
+                        &state.callback_client,
+                        invocation,
+                        &accumulated,
+                        true,
+                    )
+                    .await;
+                    accumulated.clear();
+                }
+            }
+        }
+    }
 }
 
 async fn handle_read_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
