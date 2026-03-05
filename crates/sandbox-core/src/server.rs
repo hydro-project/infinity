@@ -1028,13 +1028,13 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
             },
             ToolDef {
                 name: "describe_edits".to_string(),
-                description: "Call this after finishing a coding task or subtask to describe the edits you made. Provide a concise summary of what was changed and why.".to_string(),
+                description: "Call this after finishing a coding task or subtask to describe the edits you made. Use a git-style commit message: a short one-line summary, followed by a blank line, then detailed explanations of what was changed and why.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "message": {
                             "type": "string",
-                            "description": "A description of the edits that were made"
+                            "description": "A git-style description of the edits: a short one-line summary, followed by a blank line, then detailed explanations"
                         }
                     },
                     "required": ["message"]
