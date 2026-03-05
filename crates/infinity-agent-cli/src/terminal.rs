@@ -60,6 +60,10 @@ pub enum DisplayEvent<R> {
     },
     ThinkingStart,
     ThinkingEnd,
+    ThinkingChunk {
+        prefix: Option<String>,
+        chunk: String,
+    },
 }
 
 pub async fn run(
@@ -90,6 +94,7 @@ pub async fn run(
     let mut total_tokens_used = 0;
     let mut thread_buffers: BTreeMap<String, String> = BTreeMap::new();
     let mut thread_tool_call_active: HashSet<String> = HashSet::new();
+    let mut thinking_text_buffer = String::new();
 
     draw_input_bar(
         &mut viewport,
@@ -99,6 +104,7 @@ pub async fn run(
         &model_name,
         total_tokens_used,
         &thread_buffers,
+        &thinking_text_buffer,
     )?;
 
     loop {
@@ -120,8 +126,16 @@ pub async fn run(
                     DisplayEvent::ThinkingStart => {
                         thinking = true;
                         thinking_start = Instant::now();
+                        thinking_text_buffer.clear();
                     }
-                    DisplayEvent::ThinkingEnd => {}
+                    DisplayEvent::ThinkingEnd => {
+                        thinking_text_buffer.clear();
+                    }
+                    DisplayEvent::ThinkingChunk { prefix, chunk } => {
+                        if prefix.is_none() {
+                            thinking_text_buffer.push_str(&chunk);
+                        }
+                    }
                     DisplayEvent::StartOutput { prefix } => {
                         if prefix.is_none() {
                             end_stream(&mut viewport, &mut mid_stream)?;
@@ -254,7 +268,7 @@ pub async fn run(
                         thinking_start = Instant::now();
                     }
                 }
-                draw_input_bar(&mut viewport, &input, thinking, &thinking_start, &model_name, total_tokens_used, &thread_buffers)?;
+                draw_input_bar(&mut viewport, &input, thinking, &thinking_start, &model_name, total_tokens_used, &thread_buffers, &thinking_text_buffer)?;
             }
 
             _ = poll_crossterm_event() => {
@@ -359,7 +373,7 @@ pub async fn run(
                 }
 
                 if got_resize || any_change || thinking {
-                    draw_input_bar(&mut viewport, &input, thinking, &thinking_start, &model_name, total_tokens_used, &thread_buffers)?;
+                    draw_input_bar(&mut viewport, &input, thinking, &thinking_start, &model_name, total_tokens_used, &thread_buffers, &thinking_text_buffer)?;
                 }
             }
 
@@ -425,6 +439,7 @@ fn draw_input_bar(
     model_name: &str,
     total_tokens_used: usize,
     thread_buffers: &BTreeMap<String, String>,
+    thinking_text: &str,
 ) -> Result<(), BoxError> {
     const MAX_CONTEXT: usize = 200_000;
     let current_width = viewport.area().width;
@@ -451,16 +466,8 @@ fn draw_input_bar(
         .iter()
         .map(|(id, buf)| {
             let prefix_len = id.chars().count() + 1;
-            let avail = (current_width as usize).saturating_sub(prefix_len).max(1);
-            let flat = buf.replace('\n', " ");
-            let chars: Vec<char> = flat.chars().collect();
-            let last_row_start = (chars.len() / avail) * avail;
-            let last_row_start = if last_row_start == chars.len() && !chars.is_empty() {
-                last_row_start.saturating_sub(avail)
-            } else {
-                last_row_start
-            };
-            let tail: String = chars[last_row_start..].iter().collect();
+            let avail = (current_width as usize).saturating_sub(prefix_len);
+            let tail = wrap_tail(buf, avail);
             Line::from(vec![
                 Span::styled(
                     format!("{} ", id),
@@ -491,7 +498,7 @@ fn draw_input_bar(
 
         // Thinking bar
         if thinking {
-            render_thinking_bar(frame, areas[idx], thinking_start);
+            render_thinking_bar(frame, areas[idx], thinking_start, thinking_text);
             idx += 1;
         }
 
@@ -533,10 +540,13 @@ fn draw_input_bar(
 /// Render an 8-column pulsing purple gradient bar fixed at the left edge.
 /// Each column uses a different block character to simulate wave height,
 /// with a sine wave rippling across the columns over time.
+/// Thinking text from the root thread is shown to the right of the spinner
+/// in gray, using the same character-level wrapping as thread buffers.
 fn render_thinking_bar(
     frame: &mut crate::inline_viewport::ViewportFrame,
     area: ratatui::layout::Rect,
     thinking_start: &Instant,
+    thinking_text: &str,
 ) {
     use ratatui::buffer::Buffer;
     use ratatui::widgets::Widget;
@@ -562,24 +572,33 @@ fn render_thinking_bar(
 
     let elapsed_s = thinking_start.elapsed().as_secs_f64();
 
-    struct ThinkingWidget {
+    // Split the area: fixed spinner on the left, flexible text on the right.
+    let spinner_width = (GRADIENT.len() as u16).min(area.width);
+    let areas = Layout::horizontal([
+        Constraint::Length(spinner_width),
+        Constraint::Length(1), // gap
+        Constraint::Min(0),    // text
+    ])
+    .split(area);
+    let spinner_area = areas[0];
+    let text_area = areas[2];
+
+    // Render the spinner gradient (single-cell block chars written directly)
+    struct SpinnerWidget {
         elapsed_s: f64,
     }
 
-    impl Widget for ThinkingWidget {
+    impl Widget for SpinnerWidget {
         fn render(self, area: ratatui::layout::Rect, buf: &mut Buffer) {
             let cols = (area.width as usize).min(GRADIENT.len());
             let y = area.y;
             for col in 0..cols {
-                // Sine wave: each column is phase-shifted so it ripples across
                 let phase = self.elapsed_s * std::f64::consts::TAU / 1.2 - (col as f64) * 0.7;
-                let wave = (phase.sin() * 0.5 + 0.5) as f32; // 0.0 → 1.0
+                let wave = (phase.sin() * 0.5 + 0.5) as f32;
 
-                // Pick block character based on wave height
                 let block_idx = (wave * (BLOCKS.len() - 1) as f32).round() as usize;
                 let ch = BLOCKS[block_idx.min(BLOCKS.len() - 1)];
 
-                // Brightness also follows the wave
                 let (r, g, b) = GRADIENT[col];
                 let dim = 0.3_f32;
                 let t = dim + (1.0 - dim) * wave;
@@ -593,7 +612,46 @@ fn render_thinking_bar(
         }
     }
 
-    frame.render_widget(ThinkingWidget { elapsed_s }, area);
+    frame.render_widget(SpinnerWidget { elapsed_s }, spinner_area);
+
+    // Render thinking text in the text area using Line/Span
+    if text_area.width > 0 && !thinking_text.is_empty() {
+        let tail = wrap_tail(thinking_text, text_area.width as usize);
+        let line = Line::from(Span::styled(tail, Style::default().fg(Color::DarkGray)));
+        frame.render_widget(line, text_area);
+    }
+}
+
+/// Given a text buffer and an available column width, flatten newlines and
+/// return the trailing tail that fits. Snaps to the nearest word boundary so
+/// the display never starts mid-word. Shared by thread buffer lines and the
+/// thinking text display.
+fn wrap_tail(text: &str, avail: usize) -> String {
+    let avail = avail.max(1);
+    let flat = text.replace('\n', " ");
+    let chars: Vec<char> = flat.chars().collect();
+    if chars.len() <= avail {
+        return flat;
+    }
+
+    // Start of the last `avail` characters.
+    let cut = chars.len() - avail;
+
+    // Scan forward from the cut to the next space so we don't start mid-word.
+    let mut start = cut;
+    while start < chars.len() && chars[start] != ' ' {
+        start += 1;
+    }
+    // Skip past the space(s).
+    while start < chars.len() && chars[start] == ' ' {
+        start += 1;
+    }
+
+    // If we couldn't find a boundary (one giant word), hard-cut.
+    if start >= chars.len() {
+        return chars[cut..].iter().collect();
+    }
+    chars[start..].iter().collect()
 }
 
 fn render_status_row(

@@ -557,6 +557,12 @@ async fn thread_worker<Mdl>(
                     Ok(event_processor::CompletionEvent::ThinkingEnd) => {
                         let _ = display_tx.send(DisplayEvent::ThinkingEnd);
                     }
+                    Ok(event_processor::CompletionEvent::ThinkingChunk(chunk)) => {
+                        let _ = display_tx.send(DisplayEvent::ThinkingChunk {
+                            prefix: thread_prefix.clone(),
+                            chunk,
+                        });
+                    }
                     Ok(event_processor::CompletionEvent::SyncToolResult(res)) => {
                         if let ToolResultContent::Text(text) = res.content.first() {
                             let _ = display_tx.send(DisplayEvent::ToolResult {

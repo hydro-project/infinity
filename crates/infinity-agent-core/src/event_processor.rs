@@ -68,6 +68,8 @@ pub enum CompletionEvent<R> {
     ThinkingStart,
     /// The model has stopped thinking (reasoning).
     ThinkingEnd,
+    /// A chunk of thinking/reasoning text from the model.
+    ThinkingChunk(String),
     /// A synchronous tool result.
     SyncToolResult(ToolResult),
 }
@@ -761,11 +763,12 @@ where
                         }
                         tracing::info!("[Reasoning: {:?}]", reasoning.first_text());
                     }
-                    StreamedAssistantContent::ReasoningDelta { .. } => {
+                    StreamedAssistantContent::ReasoningDelta { reasoning, .. } => {
                         if !is_thinking {
                             is_thinking = true;
                             yield CompletionEvent::ThinkingStart;
                         }
+                        yield CompletionEvent::ThinkingChunk(reasoning);
                     }
                     StreamedAssistantContent::Final(r) => {
                         if is_thinking {
