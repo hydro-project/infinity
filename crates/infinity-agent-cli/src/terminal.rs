@@ -247,28 +247,17 @@ pub async fn run(
                                 })?;
                                 mid_stream = false;
                             } else {
-                                // Multi line: end stream first, then print
+                                // Multi line: end stream, print marker, then all lines from next line
                                 end_stream(&mut viewport, &mut mid_stream)?;
-                                if let Some((first, rest)) = lines.split_first() {
-                                    print_line_above(&mut viewport, Line::from(vec![
-                                        Span::styled(format!("✓ {}", first), Style::default().fg(Color::Green)),
-                                    ]))?;
-                                    for line in rest {
-                                        let style = if line.starts_with("- ") {
-                                            Style::default().fg(Color::Red)
-                                        } else if line.starts_with("+ ") {
-                                            Style::default().fg(Color::Green)
-                                        } else if line.starts_with("@@") {
-                                            Style::default().fg(Color::Cyan)
-                                        } else {
-                                            Style::default().fg(Color::DarkGray)
-                                        };
-                                        print_line_above(&mut viewport, Line::from(vec![
-                                            Span::raw("  ".to_string()),
-                                            Span::styled(line.to_string(), style),
-                                        ]))?;
-                                    }
-                                }
+                                print_line_above(&mut viewport, Line::from(vec![
+                                    Span::styled("✓", Style::default().fg(Color::Green)),
+                                ]))?;
+                                print_continuation_lines(
+                                    &mut viewport,
+                                    &lines,
+                                    2,
+                                    Style::default().fg(Color::DarkGray),
+                                )?;
                             }
 
                             thinking = true;
@@ -294,10 +283,27 @@ pub async fn run(
                     DisplayEvent::SubscriptionEvent { name, text, prefix } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
                         let pfx = prefix.map(|p| format!("[{}] ", p)).unwrap_or_default();
-                        print_line_above(&mut viewport, Line::from(vec![
-                            Span::raw(pfx),
-                            Span::styled(format!("⚡{}: {}", name, text), Style::default().fg(Color::Indexed(208))),
-                        ]))?;
+                        let lines: Vec<&str> = text.lines().collect();
+                        if lines.len() <= 1 {
+                            // Single line: print inline
+                            let first = lines.first().copied().unwrap_or("");
+                            print_line_above(&mut viewport, Line::from(vec![
+                                Span::raw(pfx),
+                                Span::styled(format!("⚡{}: {}", name, first), Style::default().fg(Color::Indexed(208))),
+                            ]))?;
+                        } else {
+                            // Multi line: print header, then all lines from next line
+                            print_line_above(&mut viewport, Line::from(vec![
+                                Span::raw(pfx),
+                                Span::styled(format!("⚡{}:", name), Style::default().fg(Color::Indexed(208))),
+                            ]))?;
+                            print_continuation_lines(
+                                &mut viewport,
+                                &lines,
+                                2,
+                                Style::default().fg(Color::Indexed(208)),
+                            )?;
+                        }
 
                         thinking = true;
                         thinking_start = Instant::now();
@@ -492,6 +498,34 @@ fn print_line_above(viewport: &mut InlineViewport, line: Line<'_>) -> Result<(),
         write!(w, "\r\n")?;
         write_spans(w, line.iter())
     })
+}
+
+/// Print continuation lines with consistent indentation and diff-aware coloring.
+fn print_continuation_lines(
+    viewport: &mut InlineViewport,
+    lines: &[&str],
+    indent: usize,
+    base_style: Style,
+) -> Result<(), BoxError> {
+    for line in lines {
+        let style = if line.starts_with("- ") {
+            Style::default().fg(Color::Red)
+        } else if line.starts_with("+ ") {
+            Style::default().fg(Color::Green)
+        } else if line.starts_with("@@") {
+            Style::default().fg(Color::Cyan)
+        } else {
+            base_style
+        };
+        print_line_above(
+            viewport,
+            Line::from(vec![
+                Span::raw(" ".repeat(indent)),
+                Span::styled(line.to_string(), style),
+            ]),
+        )?;
+    }
+    Ok(())
 }
 
 fn end_stream(viewport: &mut InlineViewport, mid_stream: &mut bool) -> Result<(), BoxError> {
