@@ -32,7 +32,11 @@ pub enum SyntheticKind {
 #[serde(tag = "type")]
 pub enum TaggedSyntheticKind {
     #[serde(rename = "subscription_event")]
-    SubscriptionEvent { tool_call_id: String },
+    SubscriptionEvent {
+        tool_call_id: String,
+        #[serde(default)]
+        associative: bool,
+    },
     #[serde(rename = "thread_report")]
     ThreadReport { tool_call_id: String },
 }
@@ -40,9 +44,9 @@ pub enum TaggedSyntheticKind {
 impl SyntheticKind {
     pub fn tool_call_id(&self) -> &str {
         match self {
-            SyntheticKind::Tagged(TaggedSyntheticKind::SubscriptionEvent { tool_call_id }) => {
-                tool_call_id
-            }
+            SyntheticKind::Tagged(TaggedSyntheticKind::SubscriptionEvent {
+                tool_call_id, ..
+            }) => tool_call_id,
             SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport { tool_call_id }) => {
                 tool_call_id
             }
@@ -54,6 +58,18 @@ impl SyntheticKind {
         matches!(
             self,
             SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport { .. })
+        )
+    }
+
+    /// Associative subscription events are injected inline into the subscribing
+    /// thread's history (like thread reports) rather than spawning a child thread.
+    pub fn is_associative(&self) -> bool {
+        matches!(
+            self,
+            SyntheticKind::Tagged(TaggedSyntheticKind::SubscriptionEvent {
+                associative: true,
+                ..
+            })
         )
     }
 }

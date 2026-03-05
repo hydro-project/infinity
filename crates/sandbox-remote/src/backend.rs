@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 use sandbox_core::error::SandboxError;
 use sandbox_core::jj::{self, run_jj};
-use sandbox_core::sandbox::{ExecResult, SandboxBackend};
+use sandbox_core::sandbox::{ExecResult, SandboxBackend, SpawnedCommand};
 use sandbox_core::types::RepoState;
 
 /// EFS-backed sandbox backend for remote (Lambda) mode.
@@ -149,6 +149,27 @@ impl SandboxBackend for EfsBackend {
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             exit_code: output.status.code().unwrap_or(-1),
+        })
+    }
+
+    /// Spawn a command in the sandbox, returning the child process handle.
+    async fn spawn_command(
+        &self,
+        sandbox_dir: &Path,
+        command: &str,
+    ) -> Result<SpawnedCommand, SandboxError> {
+        let child = tokio::process::Command::new("bash")
+            .args(["-c", command])
+            .current_dir(sandbox_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| SandboxError::CommandError(format!("failed to spawn command: {e}")))?;
+
+        Ok(SpawnedCommand {
+            child,
+            _keepalive: None,
         })
     }
 
