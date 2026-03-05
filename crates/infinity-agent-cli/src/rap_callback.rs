@@ -37,6 +37,8 @@ struct RapCallback {
     auth_url: Option<String>,
     #[serde(default)]
     display_as: Option<String>,
+    #[serde(default)]
+    associative: Option<bool>,
 }
 
 struct CallbackState {
@@ -134,6 +136,7 @@ async fn handle(req: Request<Incoming>, state: Arc<CallbackState>) -> Response<F
         }
         "subscription_event" => {
             let tool_call_id = cb.tool_call_id.unwrap_or_default();
+            let associative = cb.associative.unwrap_or(false);
             InputMessage {
                 content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                     id: tool_call_id.clone(),
@@ -145,7 +148,10 @@ async fn handle(req: Request<Incoming>, state: Arc<CallbackState>) -> Response<F
                 group_id: cb.group_id,
                 metadata: None,
                 synthetic: Some(SyntheticKind::Tagged(
-                    TaggedSyntheticKind::SubscriptionEvent { tool_call_id },
+                    TaggedSyntheticKind::SubscriptionEvent {
+                        tool_call_id,
+                        associative,
+                    },
                 )),
                 display_as: None,
             }
