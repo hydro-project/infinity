@@ -355,14 +355,13 @@ async fn agent_loop<Mdl>(
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
-    let thread_close_notifier: Option<
-        std::sync::Arc<dyn infinity_agent_core::traits::ThreadCloseNotifier>,
-    > = if tool_server_urls.is_empty() {
+    let rap_notifier = if tool_server_urls.is_empty() {
         None
     } else {
-        Some(std::sync::Arc::new(rap_tools::RapThreadCloseNotifier::new(
+        Some(infinity_agent_core::rap_notifier::RapNotifier::new(
             tool_server_urls,
-        )))
+            rap_tools::SimpleHttpClient::new(),
+        ))
     };
 
     let mut tool_impls: Vec<Box<dyn Tool<InMemoryMessageSender>>> = vec![
@@ -377,8 +376,14 @@ async fn agent_loop<Mdl>(
         }),
         Box::new(CloseThreadTool {
             conversation_store: conversation_store.clone(),
-            thread_close_notifier,
+            rap_notifier: rap_notifier.clone(),
         }),
+        Box::new(
+            infinity_agent_core::tools::cancel_subscription::CancelSubscriptionTool {
+                state_store: state_store.clone(),
+                rap_notifier: rap_notifier.clone(),
+            },
+        ),
     ];
     tool_impls.extend(rap_tools);
 
@@ -410,6 +415,7 @@ async fn agent_loop<Mdl>(
                 callback_url.clone(),
                 tool_impls.clone(),
                 extra_system_prompt.as_ref().clone(),
+                rap_notifier.clone(),
             ));
             tx
         });
@@ -430,6 +436,9 @@ async fn thread_worker<Mdl>(
     callback_url: String,
     tool_impls: std::sync::Arc<Vec<Box<dyn Tool<InMemoryMessageSender>>>>,
     extra_system_prompt: Option<String>,
+    rap_notifier: Option<
+        infinity_agent_core::rap_notifier::RapNotifier<rap_tools::SimpleHttpClient>,
+    >,
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
@@ -533,6 +542,19 @@ async fn thread_worker<Mdl>(
 
                     any_ready = true;
                     last_message_id = message_id;
+                }
+            }
+        }
+
+        // Best-effort: notify RAP tool servers about interrupted tool calls
+        // so they can abort in-flight operations (e.g. kill running processes).
+        let interrupted = current_history.take_interrupted_tool_calls();
+        if !interrupted.is_empty() {
+            if let Some(ref notifier) = rap_notifier {
+                for call_id in &interrupted {
+                    notifier
+                        .notify_tool_cancelled(&active_group_id, call_id)
+                        .await;
                 }
             }
         }

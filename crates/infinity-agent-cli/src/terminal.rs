@@ -433,6 +433,7 @@ pub async fn run(
                                                         metadata: None,
                                                         synthetic: None,
                                                         display_as: None,
+                                                        subscription: false,
                                                     };
                                                     let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
                                                 }

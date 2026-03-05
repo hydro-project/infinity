@@ -35,6 +35,7 @@ Content-Type: application/json
 | `call_id` | `string \| null` | No | Secondary call identifier. If the original invocation included a `call_id`, it MUST be echoed here. |
 | `text` | `string` | Yes | Result content. MAY be plain text or JSON-encoded structured data. |
 | `display_as` | `string` | No | Short display text for human-facing UIs. When present, runtimes SHOULD show this instead of the full `text` when rendering tool results. The LLM still receives the full `text`. |
+| `subscription` | `boolean` | No | When `true`, indicates that this tool call has started a [subscription](/spec/server/subscription-events). The runtime SHOULD record the tool call ID as an active subscription in the current thread's metadata so the agent can later cancel it. Defaults to `false`. |
 
 ## Response
 

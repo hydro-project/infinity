@@ -55,6 +55,7 @@ The protocol defines two roles that communicate through the HTTP message contrac
 - **Group ID**: A conversation thread identifier that tools MUST include in all callback messages. The runtime uses this to route incoming messages to the correct conversation context.
 - **User ID**: An optional end-user identity that tools MAY use for authorization decisions, personalization, or audit logging.
 - **Thread closure notifications**: A best-effort signal sent to tool servers when a conversation thread is closed, allowing them to clean up thread-specific resources. See [Thread Closure](/spec/basic/thread-closure).
+- **Tool cancellation notifications**: A best-effort signal sent to tool servers when a tool call is interrupted, allowing them to abort in-flight operations. See [Tool Cancellation](/spec/basic/tool-cancellation).
 
 **Tools** are independent HTTP services that receive invocations, process them on their own schedule, and return results through the callback mechanism. Tools provide the following capabilities to runtimes:
 
@@ -116,6 +117,7 @@ Explore the detailed specification for each protocol component:
   - [Tool Result](/spec/basic/tool-result) — Returning results from tools
   - [Toolsets](/spec/basic/toolsets) — Declaring and discovering tool definitions
   - [Thread Closure](/spec/basic/thread-closure) — Best-effort thread cleanup notifications
+  - [Tool Cancellation](/spec/basic/tool-cancellation) — Best-effort tool call cancellation notifications
 
 - **Server Features**
   - [Subscription Events](/spec/server/subscription-events) — Event-driven subscriptions

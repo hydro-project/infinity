@@ -39,6 +39,8 @@ struct RapCallback {
     display_as: Option<String>,
     #[serde(default)]
     associative: Option<bool>,
+    #[serde(default)]
+    subscription: Option<bool>,
 }
 
 struct CallbackState {
@@ -120,6 +122,7 @@ async fn handle(req: Request<Incoming>, state: Arc<CallbackState>) -> Response<F
     let input_msg = match cb.msg_type.as_str() {
         "tool_result" => {
             let display_as = cb.display_as;
+            let subscription = cb.subscription.unwrap_or(false);
             InputMessage {
                 content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                     id: cb.id.unwrap_or_default(),
@@ -132,6 +135,7 @@ async fn handle(req: Request<Incoming>, state: Arc<CallbackState>) -> Response<F
                 metadata: None,
                 synthetic: None,
                 display_as,
+                subscription,
             }
         }
         "subscription_event" => {
@@ -154,6 +158,7 @@ async fn handle(req: Request<Incoming>, state: Arc<CallbackState>) -> Response<F
                     },
                 )),
                 display_as: None,
+                subscription: false,
             }
         }
         "oauth" => InputMessage {
@@ -167,6 +172,7 @@ async fn handle(req: Request<Incoming>, state: Arc<CallbackState>) -> Response<F
             metadata: None,
             synthetic: None,
             display_as: None,
+            subscription: false,
         },
         other => {
             return ok_response(StatusCode::BAD_REQUEST, &format!("Unknown type: {}", other));

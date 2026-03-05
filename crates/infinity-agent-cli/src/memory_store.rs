@@ -263,6 +263,8 @@ pub struct InMemoryStateStore {
     #[expect(clippy::type_complexity, reason = "shared state")]
     processed_ids: Arc<Mutex<HashMap<String, (HashSet<String>, HashSet<String>)>>>,
     metadata: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    /// Per-thread active subscriptions: thread_id → set of tool_call_ids.
+    subscriptions: Arc<Mutex<HashMap<String, HashSet<String>>>>,
 }
 
 impl InMemoryStateStore {
@@ -270,6 +272,7 @@ impl InMemoryStateStore {
         Self {
             processed_ids: Arc::new(Mutex::new(HashMap::new())),
             metadata: Arc::new(Mutex::new(HashMap::new())),
+            subscriptions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -330,6 +333,39 @@ impl StateStore for InMemoryStateStore {
     ) -> Result<(), MemoryError> {
         let mut store = self.metadata.lock().unwrap();
         store.insert(root_thread_id.to_string(), metadata);
+        Ok(())
+    }
+
+    async fn get_active_subscriptions(&self, thread_id: &str) -> Result<Vec<String>, MemoryError> {
+        let store = self.subscriptions.lock().unwrap();
+        Ok(store
+            .get(thread_id)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default())
+    }
+
+    async fn add_active_subscription(
+        &self,
+        thread_id: &str,
+        tool_call_id: &str,
+    ) -> Result<(), MemoryError> {
+        let mut store = self.subscriptions.lock().unwrap();
+        store
+            .entry(thread_id.to_string())
+            .or_default()
+            .insert(tool_call_id.to_string());
+        Ok(())
+    }
+
+    async fn remove_active_subscription(
+        &self,
+        thread_id: &str,
+        tool_call_id: &str,
+    ) -> Result<(), MemoryError> {
+        let mut store = self.subscriptions.lock().unwrap();
+        if let Some(subs) = store.get_mut(thread_id) {
+            subs.remove(tool_call_id);
+        }
         Ok(())
     }
 }
