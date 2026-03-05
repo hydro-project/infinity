@@ -55,6 +55,11 @@ impl SandboxBackend for LocalBackend {
     /// and return the path as the remote URI.
     async fn init_repo(&self, repo: &str, _group_id: &str) -> Result<String, SandboxError> {
         let path = PathBuf::from(repo);
+        if !path.is_absolute() {
+            return Err(SandboxError::Other(format!(
+                "repo path must be absolute, got: {repo}"
+            )));
+        }
         if !path.exists() {
             return Err(SandboxError::Other(format!(
                 "local repo path does not exist: {repo}"

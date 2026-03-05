@@ -606,6 +606,7 @@ pub fn run_completion<'a, Mdl, C, S, M>(
     tool_context: &'a ToolContext<M>,
     group_id: &'a str,
     message_id: &'a str,
+    extra_system_prompt: Option<&'a str>,
 ) -> impl futures_util::Stream<Item = Result<CompletionEvent<Mdl::StreamingResponse>, BoxError>> + 'a
 where
     Mdl: CompletionModel,
@@ -617,11 +618,16 @@ where
         let mut completion_counter: usize = 0;
         let mut is_thinking = false;
 
+        let preamble = match extra_system_prompt {
+            Some(extra) => format!("{}\n\n{}", include_str!("default_prompt.md"), extra),
+            None => include_str!("default_prompt.md").to_string(),
+        };
+
         'outer: loop {
             let stream_result = model
                 .stream(CompletionRequest {
                     model: None,
-                    preamble: Some(include_str!("default_prompt.md").to_string()),
+                    preamble: Some(preamble.clone()),
                     chat_history: history.get_history(),
                     documents: vec![],
                     tools: tools.to_vec(),

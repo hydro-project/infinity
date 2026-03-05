@@ -176,6 +176,11 @@ async fn main() -> Result<(), BoxError> {
             None => Vec::new(),
         };
 
+    // Build extra system prompt with the CWD so the agent knows where it is.
+    let extra_system_prompt = std::env::current_dir()
+        .ok()
+        .map(|cwd| format!("The user's current working directory is: {}", cwd.display()));
+
     let agent_handle = tokio::spawn(async move {
         agent_loop(
             input_rx,
@@ -187,6 +192,7 @@ async fn main() -> Result<(), BoxError> {
             callback_url,
             rap_tools,
             tool_server_urls,
+            extra_system_prompt,
         )
         .await;
     });
@@ -345,6 +351,7 @@ async fn agent_loop<Mdl>(
     callback_url: String,
     rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>>,
     tool_server_urls: Vec<String>,
+    extra_system_prompt: Option<String>,
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
@@ -379,6 +386,7 @@ async fn agent_loop<Mdl>(
     let tool_impls: std::sync::Arc<Vec<Box<dyn Tool<InMemoryMessageSender>>>> =
         std::sync::Arc::new(tool_impls);
     let model = std::sync::Arc::new(model);
+    let extra_system_prompt = std::sync::Arc::new(extra_system_prompt);
 
     // One sender per thread-id; lazily created on first message.
     let mut thread_txs: std::collections::HashMap<
@@ -401,6 +409,7 @@ async fn agent_loop<Mdl>(
                 sender.clone(),
                 callback_url.clone(),
                 tool_impls.clone(),
+                extra_system_prompt.as_ref().clone(),
             ));
             tx
         });
@@ -420,6 +429,7 @@ async fn thread_worker<Mdl>(
     sender: InMemoryMessageSender,
     callback_url: String,
     tool_impls: std::sync::Arc<Vec<Box<dyn Tool<InMemoryMessageSender>>>>,
+    extra_system_prompt: Option<String>,
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
@@ -569,6 +579,7 @@ async fn thread_worker<Mdl>(
                 &tool_context,
                 &active_thread_id,
                 &last_message_id,
+                extra_system_prompt.as_deref(),
             ));
             let mut action = None;
             let mut started = false;
