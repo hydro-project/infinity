@@ -89,6 +89,23 @@ pub trait StateStore: Send + Sync + Clone {
         root_thread_id: &str,
         metadata: serde_json::Value,
     ) -> Result<(), Self::Error>;
+
+    /// Return the list of active subscription tool_call_ids for a specific thread.
+    async fn get_active_subscriptions(&self, thread_id: &str) -> Result<Vec<String>, Self::Error>;
+
+    /// Record a new active subscription (tool_call_id) for a specific thread.
+    async fn add_active_subscription(
+        &self,
+        thread_id: &str,
+        tool_call_id: &str,
+    ) -> Result<(), Self::Error>;
+
+    /// Remove an active subscription (tool_call_id) from a specific thread.
+    async fn remove_active_subscription(
+        &self,
+        thread_id: &str,
+        tool_call_id: &str,
+    ) -> Result<(), Self::Error>;
 }
 
 /// Abstraction over input message delivery (SQS in Lambda, channel/direct in CLI).
@@ -122,11 +139,4 @@ pub trait ToolsetCache: Send + Sync {
     async fn get_cached(&self, cache_key: &str) -> Result<Option<String>, Self::Error>;
 
     async fn put_cache(&self, cache_key: &str, json: &str) -> Result<(), Self::Error>;
-}
-
-/// Best-effort notifier that informs RAP tool servers when a thread is closed.
-/// Tool servers can use this to clean up thread-specific resources (e.g. sandboxes).
-#[async_trait]
-pub trait ThreadCloseNotifier: Send + Sync {
-    async fn notify_thread_closed(&self, thread_id: &str);
 }

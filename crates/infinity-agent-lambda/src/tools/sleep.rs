@@ -91,6 +91,7 @@ impl Tool<SqsMessageSender> for SleepTool {
             metadata: None,
             synthetic: None,
             display_as: None,
+            subscription: false,
         };
 
         const MAX_SQS_DELAY_SECONDS: i64 = 900;
@@ -220,6 +221,7 @@ impl Tool<SqsMessageSender> for SleepUntilTool {
             metadata: None,
             synthetic: None,
             display_as: None,
+            subscription: false,
         };
 
         if target_utc <= now {

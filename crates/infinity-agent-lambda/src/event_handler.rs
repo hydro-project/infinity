@@ -83,18 +83,15 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
 
     let http_client = RapHttpClient::new(&config);
 
-    let thread_close_notifier: Option<
-        std::sync::Arc<dyn infinity_agent_core::traits::ThreadCloseNotifier>,
-    > = if toolset_server_urls.is_empty() {
+    let rap_notifier = if toolset_server_urls.is_empty() {
         None
     } else {
-        Some(std::sync::Arc::new(
-            crate::tools::rap_http::RapThreadCloseNotifier::new(
-                toolset_server_urls.clone(),
-                http_client.clone(),
-            ),
+        Some(infinity_agent_core::rap_notifier::RapNotifier::new(
+            toolset_server_urls.clone(),
+            http_client.clone(),
         ))
     };
+
     let toolset_cache = DynamoDbToolsetCache::new(dynamodb_client.clone(), table_name.clone());
     let toolset_loader = ToolsetLoader::new(http_client.clone(), toolset_cache);
 
@@ -167,8 +164,14 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         }));
         tool_impls.push(Box::new(CloseThreadTool {
             conversation_store: conversation_store.clone(),
-            thread_close_notifier: thread_close_notifier.clone(),
+            rap_notifier: rap_notifier.clone(),
         }));
+        tool_impls.push(Box::new(
+            infinity_agent_core::tools::cancel_subscription::CancelSubscriptionTool {
+                state_store: state_store.clone(),
+                rap_notifier: rap_notifier.clone(),
+            },
+        ));
 
         let sender_clone = sender.clone();
         let input_queue_arn_clone = input_queue_arn.clone();
@@ -210,6 +213,19 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 continue;
             }
             event_processor::PrepareResult::Ready => {}
+        }
+
+        // Best-effort: notify RAP tool servers about interrupted tool calls
+        // so they can abort in-flight operations (e.g. kill running processes).
+        let interrupted = current_history.take_interrupted_tool_calls();
+        if !interrupted.is_empty() {
+            if let Some(ref notifier) = rap_notifier {
+                for call_id in &interrupted {
+                    notifier
+                        .notify_tool_cancelled(&current_history.thread_id, call_id)
+                        .await;
+                }
+            }
         }
 
         // (b) Build tool definitions and run completion

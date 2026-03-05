@@ -126,21 +126,37 @@ To enable cancellation, tools SHOULD include a subscription identifier in the in
 
 ## Cancellation
 
-Cancellation is tool-specific. The tool SHOULD expose a separate operation (e.g., `cancel_subscription`) that accepts the subscription identifier and removes it from storage. Once cancelled, no more events MUST be sent.
+### Subscription tracking
 
-```json
-{
-  "operation": "cancel_subscription",
-  "arguments": {
-    "subscription_id": "sub_def456"
-  },
-  "id": "call_cancel_789",
-  "callback_url": "https://agent.example.com/callback",
-  "group_id": "thread_xyz"
-}
+When a [tool result](/spec/basic/tool-result) includes `"subscription": true`, the runtime MUST record the tool call ID as an active subscription in the **current thread's** metadata. Each thread maintains its own list of active subscriptions — ownership is implicit: a subscription belongs to the thread that recorded it. This per-thread tracking allows the runtime to provide a built-in cancellation mechanism without requiring cross-thread metadata lookups.
+
+### Built-in `cancel_subscription` tool
+
+The runtime MUST provide a built-in `cancel_subscription` tool that accepts a single `tool_call_id` parameter — the ID of the original tool call that started the subscription. When invoked, the runtime:
+
+1. **Verifies the subscription exists.** The runtime checks whether the `tool_call_id` is in the current thread's active subscriptions. If not found, the tool MUST return an error. Because subscriptions are tracked per-thread, a thread can only cancel subscriptions it created.
+2. **Sends a cancellation notification.** The runtime sends a [`/cancel_tool_call`](/spec/basic/tool-cancellation) notification to all configured tool servers with the subscription's `tool_call_id` and `thread_id`. This is the same best-effort protocol used for [tool call cancellation](/spec/basic/tool-cancellation). Tool servers SHOULD stop sending further `subscription_event` messages for the cancelled subscription.
+3. **Removes from tracking.** The subscription is removed from the thread's active subscriptions.
+
+The `cancel_subscription` tool executes synchronously — the result is returned immediately within the same completion turn rather than through the asynchronous callback mechanism. This ensures the cancellation cannot be interrupted by a concurrent user message.
+
+```mermaid
+sequenceDiagram
+    participant A as Agent (LLM)
+    participant R as Runtime
+    participant T as Tool Server
+
+    A->>R: cancel_subscription(tool_call_id: "call_abc123")
+    R->>R: Check thread's active subscriptions
+    R->>T: POST /cancel_tool_call {"tool_call_id": "call_abc123", "thread_id": "thread_xyz"}
+    T-->>R: HTTP 200 OK
+    R->>R: Remove from thread subscriptions
+    R->>A: "Subscription 'call_abc123' cancelled successfully."
 ```
 
-The runtime MUST NOT automatically cancel subscriptions when a thread closes. Agents SHOULD cancel subscriptions explicitly before shutting down.
+### Automatic cancellation
+
+The runtime MAY NOT automatically cancel subscriptions when a thread closes. Agents SHOULD cancel subscriptions explicitly before shutting down.
 
 :::warning
 If a subscription is not cancelled and the subscribing thread is closed, events will still arrive at the callback URL but the runtime may not have a valid thread to process them in. Implementations SHOULD handle orphaned subscription events gracefully (e.g., by logging and discarding them).
