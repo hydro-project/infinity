@@ -187,11 +187,10 @@ pub async fn run(
                         end_stream(&mut viewport, &mut mid_stream)?;
 
                         if prefix.is_none() {
-                            let pfx = prefix.map(|p| format!("{} ", p)).unwrap_or_default();
                             print_line_above(&mut viewport, Line::from(vec![
-                                Span::raw(pfx),
                                 Span::styled(format!("◆ {}({})", name, args), Style::default().fg(Color::Blue)),
                             ]))?;
+                            mid_stream = true;
                         } else if let Some(p) = prefix {
                             *thread_buffers.entry(p.clone()).or_default() = format!("\n◆ {}({})", name, args);
 
@@ -204,36 +203,42 @@ pub async fn run(
                     }
                     DisplayEvent::ToolResult { text, display_as, prefix } => {
                         if prefix.is_none() {
-                            end_stream(&mut viewport, &mut mid_stream)?;
-                            let pfx = prefix.as_ref().map(|p| format!("{} ", p)).unwrap_or_default();
                             let display_text = display_as.as_deref().unwrap_or(&text);
                             let lines: Vec<&str> = display_text.lines().collect();
-                            if let Some((first, rest)) = lines.split_first() {
-                                print_line_above(&mut viewport, Line::from(vec![
-                                    Span::raw(pfx.clone()),
-                                    Span::styled(format!("✓ {}", first), Style::default().fg(Color::Green)),
-                                ]))?;
-                                let indent = format!("{}  ", pfx);
-                                for line in rest {
-                                    let style = if line.starts_with("- ") {
-                                        Style::default().fg(Color::Red)
-                                    } else if line.starts_with("+ ") {
-                                        Style::default().fg(Color::Green)
-                                    } else if line.starts_with("@@") {
-                                        Style::default().fg(Color::Cyan)
-                                    } else {
-                                        Style::default().fg(Color::DarkGray)
-                                    };
-                                    print_line_above(&mut viewport, Line::from(vec![
-                                        Span::raw(indent.clone()),
-                                        Span::styled(line.to_string(), style),
-                                    ]))?;
-                                }
+
+                            if lines.len() <= 1 {
+                                // Single line: print directly after tool call on same line
+                                let first = lines.first().copied().unwrap_or("");
+                                let result_line = Line::from(vec![
+                                    Span::styled(format!(" ✓ {}", first), Style::default().fg(Color::Green)),
+                                ]);
+                                print_above(&mut viewport, |w| {
+                                    write_spans(w, result_line.iter())
+                                })?;
+                                mid_stream = false;
                             } else {
-                                print_line_above(&mut viewport, Line::from(vec![
-                                    Span::raw(pfx),
-                                    Span::styled("✓", Style::default().fg(Color::Green)),
-                                ]))?;
+                                // Multi line: end stream first, then print
+                                end_stream(&mut viewport, &mut mid_stream)?;
+                                if let Some((first, rest)) = lines.split_first() {
+                                    print_line_above(&mut viewport, Line::from(vec![
+                                        Span::styled(format!("✓ {}", first), Style::default().fg(Color::Green)),
+                                    ]))?;
+                                    for line in rest {
+                                        let style = if line.starts_with("- ") {
+                                            Style::default().fg(Color::Red)
+                                        } else if line.starts_with("+ ") {
+                                            Style::default().fg(Color::Green)
+                                        } else if line.starts_with("@@") {
+                                            Style::default().fg(Color::Cyan)
+                                        } else {
+                                            Style::default().fg(Color::DarkGray)
+                                        };
+                                        print_line_above(&mut viewport, Line::from(vec![
+                                            Span::raw("  ".to_string()),
+                                            Span::styled(line.to_string(), style),
+                                        ]))?;
+                                    }
+                                }
                             }
 
                             thinking = true;

@@ -383,14 +383,7 @@ async fn handle_read_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
                 .collect();
 
             let read_count = end - start + 1;
-            let display = if start == 1 && end == total_lines {
-                format!("Read {} ({} lines)", args.path, total_lines)
-            } else {
-                format!(
-                    "Read {} lines of {} (lines {}-{})",
-                    read_count, args.path, start, end
-                )
-            };
+            let display = format!("Read {} lines;", read_count);
 
             let text = format!(
                 "<file name=\"{}\" lines=\"{total_lines}\">\n{}\n</file>",
