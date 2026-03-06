@@ -318,10 +318,14 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
 
     pub fn remove_trailing_reasoning(&mut self) {
         while let Some(Message::Assistant { content, .. }) = self.history.last() {
-            if matches!(content.first(), AssistantContent::Reasoning(_)) {
-                self.history.pop();
-            } else {
-                break;
+            match content.first() {
+                AssistantContent::Reasoning(_) => {
+                    self.history.pop();
+                }
+                AssistantContent::Text(text) if text.text.trim().is_empty() => {
+                    self.history.pop();
+                }
+                _ => break,
             }
         }
     }
@@ -656,6 +660,7 @@ pub fn run_completion<'a, Mdl, C, S, M>(
     message_id: &'a str,
     extra_system_prompt: Option<&'a str>,
     additional_request_params: Option<&'a serde_json::Value>,
+    cancel_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> impl futures_util::Stream<Item = Result<CompletionEvent<Mdl::StreamingResponse>, BoxError>> + 'a
 where
     Mdl: CompletionModel,
@@ -664,6 +669,7 @@ where
     M: InputSender + 'static,
 {
     async_stream::try_stream! {
+        let mut cancel_rx = cancel_rx;
         let mut completion_counter: usize = 0;
         let mut is_thinking = false;
 
@@ -711,7 +717,25 @@ where
             };
 
             loop {
-                let res = match llm_stream.next().await {
+                // Race between LLM output and cancellation signal.
+                // We avoid `yield` inside `select!` (async_stream limitation)
+                // by capturing the result into locals first.
+                let cancelled;
+                let llm_next = tokio::select! {
+                    res = llm_stream.next() => { cancelled = false; res },
+                    _ = &mut cancel_rx => { cancelled = true; None },
+                };
+
+                if cancelled {
+                    tracing::info!("Completion cancelled");
+                    history.remove_trailing_reasoning();
+                    if is_thinking {
+                        yield CompletionEvent::ThinkingEnd;
+                    }
+                    return;
+                }
+
+                let res = match llm_next {
                     Some(r) => r,
                     None => {
                         tracing::warn!("Stream ended unexpectedly, removing trailing reasoning and retrying...");
@@ -723,14 +747,15 @@ where
                 let chunk = match res {
                     Ok(c) => c,
                     Err(e) => {
+                        history.remove_trailing_reasoning();
                         let err_str = format!("{}", e);
                         if err_str.contains("unexpected end of stream") {
                             tracing::warn!("Stream error (unexpected end), retrying...");
-                            history.remove_trailing_reasoning();
                             continue 'outer;
+                        } else {
+                            Err(Into::<BoxError>::into(e))?;
+                            unreachable!()
                         }
-                        Err(Into::<BoxError>::into(e))?;
-                        unreachable!()
                     }
                 };
 
