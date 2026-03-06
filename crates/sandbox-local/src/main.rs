@@ -2,7 +2,7 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use sandbox_local::backend::LocalBackend;
-use sandbox_local::metadata::InMemoryMetadataStore;
+use sandbox_local::metadata::FileMetadataStore;
 use sandbox_local::server::run_server;
 
 #[derive(Parser)]
@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
 
     let backend = LocalBackend::new(args.enable_sandbox);
-    let metadata = InMemoryMetadataStore::new();
+    let metadata = FileMetadataStore::new();
 
     run_server(backend, metadata, args.port).await
 }

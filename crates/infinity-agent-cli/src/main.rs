@@ -735,6 +735,7 @@ fn spawn_rap_server(command: &str) -> Result<(std::process::Child, u16), BoxErro
     let mut child = Command::new("sh")
         .args(["-c", command])
         .env("RAP_EMBEDDED", "1")
+        .current_dir(".infinity")
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
