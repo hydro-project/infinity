@@ -93,6 +93,14 @@ pub async fn run(
 ) -> Result<usize, BoxError> {
     cterm::enable_raw_mode()?;
 
+    // Enable bracketed paste so multi-line pastes arrive as a single
+    // Event::Paste rather than a stream of individual key events (which
+    // would submit on the first newline).
+    {
+        let mut stdout_init = io::stdout();
+        ratatui::crossterm::execute!(stdout_init, event::EnableBracketedPaste)?;
+    }
+
     let mut viewport = InlineViewport::new(VIEWPORT_HEIGHT)?;
     let has_sessions = !sessions.is_empty();
 
@@ -341,6 +349,11 @@ pub async fn run(
                     match event {
                         Event::Resize(_, _) => {
                             got_resize = true;
+                        }
+                        Event::Paste(text) => {
+                            if matches!(ui_mode, UiMode::Normal) {
+                                input.insert_str(&text);
+                            }
                         }
                         Event::Key(key) => {
                             // Route keystrokes based on the current UI mode.
@@ -880,6 +893,7 @@ fn render_status_row(
 
 fn cleanup() -> Result<(), BoxError> {
     let mut stdout = io::stdout();
+    queue!(stdout, event::DisableBracketedPaste)?;
     queue!(stdout, ResetScrollRegion)?;
     cterm::disable_raw_mode()?;
     let rows = cterm::size()?.1;
