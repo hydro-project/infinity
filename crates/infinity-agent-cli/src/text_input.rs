@@ -46,6 +46,13 @@ impl TextInput {
         self.cursor += ch.len_utf8();
     }
 
+    /// Insert an arbitrary string at the cursor (e.g. from a bracketed paste).
+    /// The cursor advances to the end of the inserted text.
+    pub fn insert_str(&mut self, s: &str) {
+        self.buf.insert_str(self.cursor, s);
+        self.cursor += s.len();
+    }
+
     pub fn backspace(&mut self) {
         if self.cursor > 0 {
             // Find the previous char boundary
