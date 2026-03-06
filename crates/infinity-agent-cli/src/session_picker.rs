@@ -105,7 +105,7 @@ impl SessionPicker {
             let (fg, bg, modifier) = if is_selected {
                 (Color::Black, Color::White, Modifier::BOLD)
             } else {
-                (Color::White, Color::Reset, Modifier::empty())
+                (Color::DarkGray, Color::Reset, Modifier::empty())
             };
 
             // Format: "  thread_id_short...  |  tokens  |  last updated  "
