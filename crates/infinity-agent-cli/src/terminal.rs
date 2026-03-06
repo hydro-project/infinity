@@ -205,7 +205,7 @@ pub async fn run(
                         if prefix.is_none() {
                             let usage = r.usage.unwrap();
                             total_tokens_used = usage.total_tokens as usize;
-                            end_stream(&mut viewport, &mut mid_stream)?;
+                            // end_stream(&mut viewport, &mut mid_stream)?;
                             thinking = false;
                         } else if let Some(p) = prefix {
                             if !thread_tool_call_active.contains(&p) {
@@ -247,17 +247,21 @@ pub async fn run(
                                 })?;
                                 mid_stream = false;
                             } else {
-                                // Multi line: end stream, print marker, then all lines from next line
-                                end_stream(&mut viewport, &mut mid_stream)?;
+                                // Multi line: end stream, print check + first line, then remaining lines
+                                // end_stream(&mut viewport, &mut mid_stream)?;
+                                mid_stream = false;
+                                let first = lines.first().copied().unwrap_or("");
                                 print_line_above(&mut viewport, Line::from(vec![
-                                    Span::styled("✓", Style::default().fg(Color::Green)),
+                                    Span::styled("✓ ", Style::default().fg(Color::Green)),
+                                    Span::styled(first.to_string(), Style::default().fg(Color::DarkGray)),
                                 ]))?;
                                 print_continuation_lines(
                                     &mut viewport,
-                                    &lines,
+                                    &lines[1..],
                                     2,
                                     Style::default().fg(Color::DarkGray),
                                 )?;
+                                print_line_above(&mut viewport, Line::from(vec![]))?;
                             }
 
                             thinking = true;
