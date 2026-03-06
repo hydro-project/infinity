@@ -56,17 +56,6 @@ struct ThreadSnapshot {
 }
 
 impl InMemoryConversationStore {
-    /// Create a non-persisting store (for tests or ephemeral use).
-    pub fn new() -> Self {
-        Self {
-            messages: Arc::new(Mutex::new(HashMap::new())),
-            threads: Arc::new(Mutex::new(HashMap::new())),
-            display_as_map: Arc::new(Mutex::new(HashMap::new())),
-            dir: None,
-            loaded: Arc::new(Mutex::new(HashSet::new())),
-        }
-    }
-
     /// Create a store that persists each thread to its own JSON file under `dir`.
     pub fn new_with_dir(dir: impl AsRef<Path>) -> Self {
         let dir = dir.as_ref().to_path_buf();
@@ -280,19 +269,36 @@ impl ConversationStore for InMemoryConversationStore {
                 .unwrap_or_else(|| parent_thread_id.to_string());
         }
         {
-            let mut threads = self.threads.lock().unwrap();
-            threads.insert(
-                new_id.clone(),
-                ThreadInfo {
-                    parent_thread_id: Some(parent_thread_id.to_string()),
-                    root_thread_id: root,
-                    spawn_message_order: Some(spawn_message_order),
-                    spawn_tool_call_id: Some(spawn_tool_call_id.to_string()),
-                    closed: false,
-                    is_subscription_event: is_for_subscription_event,
-                },
-            );
+            let mut loaded = self.loaded.lock().unwrap();
+
+            {
+                let mut messages = self.messages.lock().unwrap();
+                messages.insert(new_id.clone(), vec![]);
+            }
+
+            {
+                let mut threads = self.threads.lock().unwrap();
+                threads.insert(
+                    new_id.clone(),
+                    ThreadInfo {
+                        parent_thread_id: Some(parent_thread_id.to_string()),
+                        root_thread_id: root,
+                        spawn_message_order: Some(spawn_message_order),
+                        spawn_tool_call_id: Some(spawn_tool_call_id.to_string()),
+                        closed: false,
+                        is_subscription_event: is_for_subscription_event,
+                    },
+                );
+            }
+
+            {
+                let mut display_as_map = self.display_as_map.lock().unwrap();
+                display_as_map.insert(new_id.clone(), HashMap::new());
+            }
+
+            loaded.insert(new_id.clone());
         }
+
         self.save_thread(&new_id);
         Ok(new_id)
     }
