@@ -33,8 +33,13 @@ use terminal::DisplayEvent;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), BoxError> {
+    let local = tokio::task::LocalSet::new();
+    local.run_until(async_main()).await
+}
+
+async fn async_main() -> Result<(), BoxError> {
     let log_file = std::fs::File::create("/tmp/infinity-agent-cli.log").ok();
     if let Some(file) = log_file {
         tracing_subscriber::fmt()
@@ -194,7 +199,7 @@ async fn main() -> Result<(), BoxError> {
         .map(|cwd| format!("The user's current working directory is: {}", cwd.display()));
 
     let agent_additional_params = active_additional_params.clone();
-    let agent_handle = tokio::spawn(async move {
+    let agent_handle = tokio::task::spawn_local(async move {
         agent_loop(
             input_rx,
             agent_display_tx,
@@ -364,6 +369,106 @@ fn replay_history(
     ));
 }
 
+// ── Batch input processing helper ────────────────────────────────────────────
+
+/// Process a single input message: run prepare_input and echo to the terminal.
+/// Returns `Some(message_id)` if the item is ready for completion, `None` otherwise.
+async fn process_input_item<R>(
+    input_msg: InputMessage,
+    message_id: String,
+    current_history: &mut event_processor::HistoryManager<
+        InMemoryConversationStore,
+        InMemoryStateStore,
+    >,
+    conversation_store: &InMemoryConversationStore,
+    display_tx: &mpsc::UnboundedSender<DisplayEvent<R>>,
+    active_group_id: &str,
+) -> Option<String> {
+    let prepare_result = event_processor::prepare_input(
+        input_msg.clone(),
+        message_id.clone(),
+        current_history,
+        conversation_store,
+    )
+    .await;
+
+    match prepare_result {
+        Ok(event_processor::PrepareResult::Handled) => None,
+        Ok(event_processor::PrepareResult::OAuthRequired { auth_url }) => {
+            let _ = display_tx.send(DisplayEvent::Info(format!(
+                "OAuth required — open this URL:\n  {}",
+                auth_url
+            )));
+            None
+        }
+        Err(e) => {
+            let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
+            None
+        }
+        Ok(event_processor::PrepareResult::Ready) => {
+            // Echo to the terminal — subscription events vs user input.
+            if let Some(synth) = input_msg.synthetic.as_ref() {
+                if let InputMessageContent::User(UserContent::ToolResult(res)) = &input_msg.content
+                    && let ToolResultContent::Text(text) = res.content.first()
+                {
+                    let orig_call = current_history.get_history().into_iter().find(|h| {
+                        if let Message::Assistant { content, .. } = h
+                            && let AssistantContent::ToolCall(c) = content.first()
+                        {
+                            c.id == synth.tool_call_id()
+                        } else {
+                            false
+                        }
+                    });
+
+                    if let Some(h) = orig_call
+                        && let Message::Assistant { content, .. } = h
+                        && let AssistantContent::ToolCall(c) = content.first()
+                    {
+                        let _ = display_tx.send(DisplayEvent::SubscriptionEvent {
+                            name: format!("{}({})", c.function.name, c.function.arguments),
+                            text: text.text,
+                            prefix: current_history.get_thread_nesting_prefix(),
+                        });
+                    }
+                }
+            } else if let InputMessageContent::User(UserContent::ToolResult(res)) =
+                &input_msg.content
+                && let ToolResultContent::Text(text) = res.content.first()
+            {
+                let _ = display_tx.send(DisplayEvent::ToolResult {
+                    text: text.text,
+                    display_as: input_msg.display_as.clone(),
+                    prefix: current_history.get_thread_nesting_prefix(),
+                });
+            } else if let InputMessageContent::User(UserContent::Text(ref text)) = input_msg.content
+            {
+                let display_text = text.text.strip_prefix("<interrupt>").unwrap_or(&text.text);
+                let _ = display_tx.send(DisplayEvent::UserInput(display_text.to_string()));
+            }
+
+            // Persist display_as so it survives across restarts.
+            if let Some(ref da) = input_msg.display_as {
+                if let InputMessageContent::User(UserContent::ToolResult(ref res)) =
+                    input_msg.content
+                {
+                    conversation_store.save_display_as(active_group_id, &res.id, da);
+                }
+            }
+
+            Some(message_id)
+        }
+    }
+}
+
+fn is_user_text_input(msg: &InputMessage) -> bool {
+    msg.synthetic.is_none()
+        && matches!(
+            &msg.content,
+            InputMessageContent::User(UserContent::Text(_))
+        )
+}
+
 // ── Agent loop — dispatcher + per-thread workers ────────────────────────────
 
 #[expect(clippy::too_many_arguments, reason = "internal")]
@@ -432,7 +537,7 @@ async fn agent_loop<Mdl>(
         // Get or create the per-thread channel + worker task.
         let thread_tx = thread_txs.entry(group_id.clone()).or_insert_with(|| {
             let (tx, rx) = mpsc::unbounded_channel();
-            tokio::spawn(thread_worker(
+            tokio::task::spawn_local(thread_worker(
                 rx,
                 display_tx.clone(),
                 model.clone(),
@@ -480,110 +585,52 @@ async fn thread_worker<Mdl>(
 
         let active_group_id = batch[0].0.group_id.clone();
 
-        let mut current_history = match event_processor::HistoryManager::new_with_history(
-            conversation_store.clone(),
-            state_store.clone(),
-            active_group_id.clone(),
-        )
-        .await
-        {
-            Ok(h) => h,
-            Err(e) => {
-                let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
-                continue;
-            }
-        };
+        let current_history = std::cell::RefCell::new(
+            match event_processor::HistoryManager::new_with_history(
+                conversation_store.clone(),
+                state_store.clone(),
+                active_group_id.clone(),
+            )
+            .await
+            {
+                Ok(h) => h,
+                Err(e) => {
+                    let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
+                    continue;
+                }
+            },
+        );
 
         let mut any_ready = false;
         let mut last_message_id = String::new();
 
         for (input_msg, message_id) in batch {
-            let prepare_result = event_processor::prepare_input(
-                input_msg.clone(),
-                message_id.clone(),
-                &mut current_history,
+            if let Some(mid) = process_input_item(
+                input_msg,
+                message_id,
+                &mut *current_history.borrow_mut(),
                 &conversation_store,
+                &display_tx,
+                &active_group_id,
             )
-            .await;
-
-            match prepare_result {
-                Ok(event_processor::PrepareResult::Handled) => {}
-                Ok(event_processor::PrepareResult::OAuthRequired { auth_url }) => {
-                    let _ = display_tx.send(DisplayEvent::Info(format!(
-                        "OAuth required — open this URL:\n  {}",
-                        auth_url
-                    )));
-                }
-                Err(e) => {
-                    let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
-                }
-                Ok(event_processor::PrepareResult::Ready) => {
-                    // Echo to the terminal — subscription events vs user input.
-                    if let Some(synth) = input_msg.synthetic.as_ref() {
-                        if let InputMessageContent::User(UserContent::ToolResult(res)) =
-                            &input_msg.content
-                            && let ToolResultContent::Text(text) = res.content.first()
-                        {
-                            let orig_call = current_history.get_history().into_iter().find(|h| {
-                                if let Message::Assistant { content, .. } = h
-                                    && let AssistantContent::ToolCall(c) = content.first()
-                                {
-                                    c.id == synth.tool_call_id()
-                                } else {
-                                    false
-                                }
-                            });
-
-                            if let Some(h) = orig_call
-                                && let Message::Assistant { content, .. } = h
-                                && let AssistantContent::ToolCall(c) = content.first()
-                            {
-                                let _ = display_tx.send(DisplayEvent::SubscriptionEvent {
-                                    name: format!("{}({})", c.function.name, c.function.arguments),
-                                    text: text.text,
-                                    prefix: current_history.get_thread_nesting_prefix(),
-                                });
-                            }
-                        }
-                    } else if let InputMessageContent::User(UserContent::ToolResult(res)) =
-                        &input_msg.content
-                        && let ToolResultContent::Text(text) = res.content.first()
-                    {
-                        let _ = display_tx.send(DisplayEvent::ToolResult {
-                            text: text.text,
-                            display_as: input_msg.display_as.clone(),
-                            prefix: current_history.get_thread_nesting_prefix(),
-                        });
-                    } else if let InputMessageContent::User(UserContent::Text(ref text)) =
-                        input_msg.content
-                    {
-                        let _ = display_tx.send(DisplayEvent::UserInput(text.text.clone()));
-                    }
-
-                    // Persist display_as so it survives across restarts.
-                    if let Some(ref da) = input_msg.display_as {
-                        if let InputMessageContent::User(UserContent::ToolResult(ref res)) =
-                            input_msg.content
-                        {
-                            conversation_store.save_display_as(&active_group_id, &res.id, da);
-                        }
-                    }
-
-                    any_ready = true;
-                    last_message_id = message_id;
-                }
+            .await
+            {
+                any_ready = true;
+                last_message_id = mid;
             }
         }
 
         // Best-effort: notify RAP tool servers about interrupted tool calls
         // so they can abort in-flight operations (e.g. kill running processes).
-        let interrupted = current_history.take_interrupted_tool_calls();
-        if !interrupted.is_empty() {
-            if let Some(ref notifier) = rap_notifier {
-                for call_id in &interrupted {
-                    notifier
-                        .notify_tool_cancelled(&active_group_id, call_id)
-                        .await;
+        {
+            let interrupted = current_history.borrow_mut().take_interrupted_tool_calls();
+            if !interrupted.is_empty() {
+                if let Some(ref notifier) = rap_notifier {
+                    for call_id in &interrupted {
+                        notifier
+                            .notify_tool_cancelled(&active_group_id, call_id)
+                            .await;
+                    }
                 }
             }
         }
@@ -603,12 +650,9 @@ async fn thread_worker<Mdl>(
             })
             .collect();
 
-        let active_thread_id = current_history.thread_id.clone();
-        let thread_prefix = current_history.get_thread_nesting_prefix();
-
         let tool_context = ToolContext {
             message_sender: sender.clone(),
-            group_id: active_thread_id.clone(),
+            group_id: current_history.borrow().thread_id.clone(),
             input_queue_arn: String::new(),
             callback_url: callback_url.clone(),
             user_id: None,
@@ -619,102 +663,212 @@ async fn thread_worker<Mdl>(
                 .map(|t| (t.name().to_string(), t.as_ref()))
                 .collect();
 
-        let final_action = {
-            let prefix = current_history.get_thread_nesting_prefix();
-            // Snapshot the current additional request params (e.g. beta headers)
-            // so the model switch takes effect on the next completion.
-            let current_additional_params = additional_request_params.read().unwrap().clone();
-            let mut stream = std::pin::pin!(event_processor::run_completion(
-                model.as_ref(),
-                &mut current_history,
-                &tool_names,
-                &tool_defs,
-                &tool_registry,
-                &tool_context,
-                &active_thread_id,
-                &last_message_id,
-                extra_system_prompt.as_deref(),
-                current_additional_params.as_ref(),
-            ));
-            let mut action = None;
-            let mut started = false;
-            let mut any_text = false;
-            let mut resp = None;
-            while let Some(ev) = stream.next().await {
-                match ev {
-                    Ok(event_processor::CompletionEvent::TextChunk(chunk)) => {
-                        any_text = true;
-                        if !started {
-                            let _ = display_tx.send(DisplayEvent::StartOutput {
-                                prefix: thread_prefix.clone(),
-                            });
-                            started = true;
-                        }
-                        let _ = display_tx.send(DisplayEvent::TextChunk {
-                            prefix: thread_prefix.clone(),
-                            chunk,
-                        });
-                    }
-                    Ok(event_processor::CompletionEvent::ThinkingStart) => {
-                        let _ = display_tx.send(DisplayEvent::ThinkingStart);
-                    }
-                    Ok(event_processor::CompletionEvent::ThinkingEnd) => {
-                        let _ = display_tx.send(DisplayEvent::ThinkingEnd);
-                    }
-                    Ok(event_processor::CompletionEvent::ThinkingChunk(chunk)) => {
-                        let _ = display_tx.send(DisplayEvent::ThinkingChunk {
-                            prefix: thread_prefix.clone(),
-                            chunk,
-                        });
-                    }
-                    Ok(event_processor::CompletionEvent::SyncToolResult(res)) => {
-                        if let ToolResultContent::Text(text) = res.content.first() {
-                            let _ = display_tx.send(DisplayEvent::ToolResult {
-                                text: text.text,
-                                display_as: None,
-                                prefix: prefix.clone(),
-                            });
-                        }
-                    }
-                    Ok(event_processor::CompletionEvent::Action(CompletionAction::Done(r))) => {
-                        resp = Some(r);
-                    }
-                    Ok(event_processor::CompletionEvent::Action(a)) => {
-                        if let event_processor::CompletionAction::ExecuteToolCall {
-                            ref tool_name,
-                            ref tool_args,
-                            ..
-                        } = a
-                        {
-                            let _ = display_tx.send(DisplayEvent::ToolCall {
-                                name: tool_name.clone(),
-                                args: tool_args.clone(),
-                                prefix: thread_prefix.clone(),
-                            });
-                        }
+        // Completion loop with interruption support.
+        // The completion runs as a stored future; the main select! either
+        // lets it finish naturally or receives a new input batch.
+        'completion: loop {
+            let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+            let mut cancel_tx = Some(cancel_tx);
 
-                        action = Some(a);
+            let thread_prefix = current_history.borrow().get_thread_nesting_prefix();
+            let prefix = current_history.borrow().get_thread_nesting_prefix();
+            let active_thread_id = current_history.borrow().thread_id.clone();
+            let current_additional_params = additional_request_params.read().unwrap().clone();
+            let completion_message_id = last_message_id.clone();
+
+            // The completion future: borrows history via RefCell, consumes
+            // the stream, syncs, and executes the action — fully self-contained.
+            let completion_fut = async {
+                let mut hist = current_history.borrow_mut();
+
+                // Scope the stream so its &mut borrow of `hist` is released
+                // before we call sync / execute_action.
+                let action = {
+                    let mut stream = std::pin::pin!(event_processor::run_completion(
+                        model.as_ref(),
+                        &mut *hist,
+                        &tool_names,
+                        &tool_defs,
+                        &tool_registry,
+                        &tool_context,
+                        &active_thread_id,
+                        &completion_message_id,
+                        extra_system_prompt.as_deref(),
+                        current_additional_params.as_ref(),
+                        cancel_rx,
+                    ));
+
+                    let mut action = None;
+                    let mut started = false;
+                    let mut any_text = false;
+                    let mut resp = None;
+
+                    while let Some(ev) = stream.next().await {
+                        match ev {
+                            Ok(event_processor::CompletionEvent::TextChunk(chunk)) => {
+                                any_text = true;
+                                if !started {
+                                    let _ = display_tx.send(DisplayEvent::StartOutput {
+                                        prefix: thread_prefix.clone(),
+                                    });
+                                    started = true;
+                                }
+                                let _ = display_tx.send(DisplayEvent::TextChunk {
+                                    prefix: thread_prefix.clone(),
+                                    chunk,
+                                });
+                            }
+                            Ok(event_processor::CompletionEvent::ThinkingStart) => {
+                                let _ = display_tx.send(DisplayEvent::ThinkingStart);
+                            }
+                            Ok(event_processor::CompletionEvent::ThinkingEnd) => {
+                                let _ = display_tx.send(DisplayEvent::ThinkingEnd);
+                            }
+                            Ok(event_processor::CompletionEvent::ThinkingChunk(chunk)) => {
+                                let _ = display_tx.send(DisplayEvent::ThinkingChunk {
+                                    prefix: thread_prefix.clone(),
+                                    chunk,
+                                });
+                            }
+                            Ok(event_processor::CompletionEvent::SyncToolResult(res)) => {
+                                if let ToolResultContent::Text(text) = res.content.first() {
+                                    let _ = display_tx.send(DisplayEvent::ToolResult {
+                                        text: text.text,
+                                        display_as: None,
+                                        prefix: prefix.clone(),
+                                    });
+                                }
+                            }
+                            Ok(event_processor::CompletionEvent::Action(
+                                CompletionAction::Done(r),
+                            )) => {
+                                resp = Some(r);
+                            }
+                            Ok(event_processor::CompletionEvent::Action(a)) => {
+                                if let event_processor::CompletionAction::ExecuteToolCall {
+                                    ref tool_name,
+                                    ref tool_args,
+                                    ..
+                                } = a
+                                {
+                                    let _ = display_tx.send(DisplayEvent::ToolCall {
+                                        name: tool_name.clone(),
+                                        args: tool_args.clone(),
+                                        prefix: thread_prefix.clone(),
+                                    });
+                                }
+                                action = Some(a);
+                            }
+                            Err(e) => {
+                                let _ =
+                                    display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
+                                break;
+                            }
+                        }
                     }
-                    Err(e) => {
+
+                    if any_text {
+                        if let Some(r) = resp {
+                            let _ = display_tx
+                                .send(DisplayEvent::ResponseDone(thread_prefix.clone(), r));
+                        }
+                    }
+
+                    action
+                };
+                // Stream dropped — hist is usable again.
+
+                hist.sync().await.ok();
+
+                if let Some(action) = action {
+                    if let Err(e) =
+                        event_processor::execute_action(action, &tool_registry, &tool_context).await
+                    {
                         let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
-                        break;
                     }
                 }
-            }
-            if any_text && let Some(resp) = resp {
-                let _ = display_tx.send(DisplayEvent::ResponseDone(thread_prefix.clone(), resp));
-            }
-            action
-        };
+            };
+            tokio::pin!(completion_fut);
 
-        current_history.sync().await.ok();
+            // Select: either the completion finishes or a new batch arrives.
+            tokio::select! {
+                _ = &mut completion_fut => {
+                    break 'completion;
+                }
+                item = rx.recv() => {
+                    let batch = if let Some(item) = item {
+                        let mut b = vec![item];
+                        while let Ok(more) = rx.try_recv() {
+                            b.push(more);
+                        }
+                        b
+                    } else {
+                        break 'completion; // channel closed
+                    };
 
-        if let Some(action) = final_action {
-            if let Err(e) =
-                event_processor::execute_action(action, &tool_registry, &tool_context).await
-            {
-                let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
-            }
+                    if batch.iter().any(|(msg, _)| is_user_text_input(msg)) {
+                        if let Some(tx) = cancel_tx.take() {
+                            let _ = tx.send(());
+                        }
+                    }
+
+                    // Await completion (finishes quickly after cancel).
+                    // This drops the RefMut so we can borrow history again.
+                    completion_fut.await;
+
+                    // Partition: user text inputs first, then everything else.
+                    let (mut user_inputs, non_user_inputs): (Vec<_>, Vec<_>) =
+                        batch.into_iter().partition(|(msg, _)| is_user_text_input(msg));
+
+                    if let Some((msg, _)) = user_inputs.first_mut() {
+                        if let InputMessageContent::User(UserContent::Text(ref mut text)) =
+                            msg.content
+                        {
+                            text.text = format!("<interrupt>{}", text.text);
+                        }
+                    }
+
+                    any_ready = false;
+                    for (input_msg, message_id) in
+                        user_inputs.into_iter().chain(non_user_inputs)
+                    {
+                        if let Some(mid) = process_input_item(
+                            input_msg,
+                            message_id,
+                            &mut *current_history.borrow_mut(),
+                            &conversation_store,
+                            &display_tx,
+                            &active_group_id,
+                        )
+                        .await
+                        {
+                            any_ready = true;
+                            last_message_id = mid;
+                        }
+                    }
+
+                    {
+                        let interrupted =
+                            current_history.borrow_mut().take_interrupted_tool_calls();
+                        if !interrupted.is_empty() {
+                            if let Some(ref notifier) = rap_notifier {
+                                for call_id in &interrupted {
+                                    notifier
+                                        .notify_tool_cancelled(&active_group_id, call_id)
+                                        .await;
+                                }
+                            }
+                        }
+                    }
+
+                    if !any_ready {
+                        break 'completion;
+                    }
+
+                    continue 'completion;
+                }
+            };
+            break 'completion;
         }
     }
 }

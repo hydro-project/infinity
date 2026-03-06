@@ -264,6 +264,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         use futures_util::StreamExt;
 
         let (accumulated_text, final_action) = {
+            let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
             let mut completion_stream = std::pin::pin!(event_processor::run_completion(
                 &model,
                 &mut current_history,
@@ -275,6 +276,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 &message_id,
                 None,
                 None,
+                cancel_rx,
             ));
 
             let mut text = String::new();
