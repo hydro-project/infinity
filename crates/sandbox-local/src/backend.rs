@@ -131,13 +131,21 @@ impl SandboxBackend for LocalBackend {
 
     /// Execute a command in the sandbox.
     ///
+    /// `argv` is the raw argument vector: `argv[0]` is the program name and
+    /// `argv[1..]` are its arguments.  The caller is responsible for any
+    /// shell wrapping (e.g. `&["bash", "-c", cmd]` for user shell commands).
+    ///
     /// On macOS, uses `sandbox-exec` to restrict filesystem write access to
-    /// only the sandbox directory. On other platforms, falls back to plain bash.
+    /// only the sandbox directory. On other platforms, runs the command directly.
     async fn execute_command(
         &self,
         sandbox_dir: &Path,
-        command: &str,
+        argv: &[&str],
     ) -> Result<ExecResult, SandboxError> {
+        let (program, args) = argv
+            .split_first()
+            .ok_or_else(|| SandboxError::Other("argv must not be empty".to_string()))?;
+
         let output = if cfg!(target_os = "macos") && self.sandbox_enabled {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
@@ -160,7 +168,9 @@ impl SandboxBackend for LocalBackend {
                          (vnode-type CHARACTER-DEVICE)))"
             );
             let result = tokio::process::Command::new("sandbox-exec")
-                .args(["-p", &profile, "bash", "-c", command])
+                .args(["-p", &profile])
+                .arg(program)
+                .args(args)
                 .env("TMPDIR", abs_tmp.as_os_str())
                 .current_dir(sandbox_dir)
                 .stdin(Stdio::null())
@@ -174,8 +184,8 @@ impl SandboxBackend for LocalBackend {
             drop(tmp);
             result
         } else {
-            tokio::process::Command::new("bash")
-                .args(["-c", command])
+            tokio::process::Command::new(program)
+                .args(args)
                 .current_dir(sandbox_dir)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -193,15 +203,23 @@ impl SandboxBackend for LocalBackend {
 
     /// Spawn a command in the sandbox, returning the child process handle.
     ///
+    /// `argv` is the raw argument vector: `argv[0]` is the program name and
+    /// `argv[1..]` are its arguments.  The caller is responsible for any
+    /// shell wrapping (e.g. `&["bash", "-c", cmd]` for user shell commands).
+    ///
     /// On macOS, uses `sandbox-exec` to restrict filesystem write access to
-    /// only the sandbox directory. On other platforms, falls back to plain bash.
+    /// only the sandbox directory. On other platforms, runs the command directly.
     /// The temp directory for `TMPDIR` (macOS sandbox) is stored in the
     /// returned `SpawnedCommand` so it outlives the child process.
     async fn spawn_command(
         &self,
         sandbox_dir: &Path,
-        command: &str,
+        argv: &[&str],
     ) -> Result<SpawnedCommand, SandboxError> {
+        let (program, args) = argv
+            .split_first()
+            .ok_or_else(|| SandboxError::Other("argv must not be empty".to_string()))?;
+
         if cfg!(target_os = "macos") && self.sandbox_enabled {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
@@ -224,7 +242,9 @@ impl SandboxBackend for LocalBackend {
                          (vnode-type CHARACTER-DEVICE)))"
             );
             let child = tokio::process::Command::new("sandbox-exec")
-                .args(["-p", &profile, "bash", "-c", command])
+                .args(["-p", &profile])
+                .arg(program)
+                .args(args)
                 .env("TMPDIR", abs_tmp.as_os_str())
                 .current_dir(sandbox_dir)
                 .stdin(Stdio::null())
@@ -238,8 +258,8 @@ impl SandboxBackend for LocalBackend {
                 _keepalive: Some(Box::new(tmp)),
             })
         } else {
-            let child = tokio::process::Command::new("bash")
-                .args(["-c", command])
+            let child = tokio::process::Command::new(program)
+                .args(args)
                 .current_dir(sandbox_dir)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
