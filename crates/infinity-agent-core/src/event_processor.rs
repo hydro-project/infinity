@@ -655,6 +655,7 @@ pub fn run_completion<'a, Mdl, C, S, M>(
     group_id: &'a str,
     message_id: &'a str,
     extra_system_prompt: Option<&'a str>,
+    additional_request_params: Option<&'a serde_json::Value>,
 ) -> impl futures_util::Stream<Item = Result<CompletionEvent<Mdl::StreamingResponse>, BoxError>> + 'a
 where
     Mdl: CompletionModel,
@@ -682,11 +683,21 @@ where
                     temperature: None,
                     max_tokens: None,
                     tool_choice: None,
-                    additional_params: Some(serde_json::json!({
-                        "thinking": {
-                            "type": "adaptive"
+                    additional_params: {
+                        let mut base = serde_json::json!({
+                            "thinking": {
+                                "type": "adaptive"
+                            }
+                        });
+                        if let Some(extra) = additional_request_params {
+                            if let (Some(base_obj), Some(extra_obj)) = (base.as_object_mut(), extra.as_object()) {
+                                for (k, v) in extra_obj {
+                                    base_obj.insert(k.clone(), v.clone());
+                                }
+                            }
                         }
-                    })),
+                        Some(base)
+                    },
                     output_schema: None,
                 })
                 .await;
