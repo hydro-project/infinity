@@ -130,14 +130,15 @@ impl SandboxBackend for EfsBackend {
         Ok(sandbox_dir)
     }
 
-    /// Execute a command in the sandbox using bash.
+    /// Execute a command in the sandbox. `argv[0]` is the program and
+    /// `argv[1..]` are its arguments — no shell wrapping is applied.
     async fn execute_command(
         &self,
         sandbox_dir: &Path,
-        command: &str,
+        argv: &[&str],
     ) -> Result<ExecResult, SandboxError> {
-        let output = tokio::process::Command::new("bash")
-            .args(["-c", command])
+        let output = tokio::process::Command::new(argv[0])
+            .args(&argv[1..])
             .current_dir(sandbox_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -153,13 +154,15 @@ impl SandboxBackend for EfsBackend {
     }
 
     /// Spawn a command in the sandbox, returning the child process handle.
+    /// `argv[0]` is the program and `argv[1..]` are its arguments — no
+    /// shell wrapping is applied.
     async fn spawn_command(
         &self,
         sandbox_dir: &Path,
-        command: &str,
+        argv: &[&str],
     ) -> Result<SpawnedCommand, SandboxError> {
-        let child = tokio::process::Command::new("bash")
-            .args(["-c", command])
+        let child = tokio::process::Command::new(argv[0])
+            .args(&argv[1..])
             .current_dir(sandbox_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
