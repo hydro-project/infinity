@@ -420,6 +420,66 @@ where
 
 // ── Streaming execute_command handler ──
 
+/// Check if a command tries to `cd` into the original repo directory.
+///
+/// The agent sometimes emits commands like
+///   `cd /Users/foo/my-repo && cargo build`
+/// which escapes the sandbox and can hang on file locks. This function
+/// detects such patterns and returns a user-friendly error message.
+fn detect_cd_to_original_repo(command: &str, remote_uri: &str) -> Option<String> {
+    // Only relevant for local paths (remote URIs like s3:// won't match).
+    if !remote_uri.starts_with('/') {
+        return None;
+    }
+
+    let trimmed = command.trim();
+
+    // Must start with `cd `.
+    if !trimmed.starts_with("cd ") {
+        return None;
+    }
+
+    let after_cd = trimmed[3..].trim_start();
+
+    // Strip optional quotes around the path.
+    let (path_str, _rest) = if after_cd.starts_with('"') {
+        match after_cd[1..].find('"') {
+            Some(end) => (&after_cd[1..1 + end], &after_cd[2 + end..]),
+            None => return None,
+        }
+    } else if after_cd.starts_with('\'') {
+        match after_cd[1..].find('\'') {
+            Some(end) => (&after_cd[1..1 + end], &after_cd[2 + end..]),
+            None => return None,
+        }
+    } else {
+        // Unquoted: take until whitespace, `&&`, or `;`.
+        let end = after_cd
+            .find(|c: char| c.is_whitespace() || c == '&' || c == ';')
+            .unwrap_or(after_cd.len());
+        (&after_cd[..end], &after_cd[end..])
+    };
+
+    let path_normalized = path_str.trim_end_matches('/');
+    let uri_normalized = remote_uri.trim_end_matches('/');
+
+    // Exact match or the cd target is a subdirectory of the original repo.
+    if path_normalized == uri_normalized
+        || path_normalized.starts_with(&format!("{uri_normalized}/"))
+    {
+        Some(format!(
+            "Error: Do not `cd` to the absolute path `{path_str}`. \
+             Commands are already executed in a sandboxed copy of that repository. \
+             Run your commands directly in the current working directory \
+             (e.g., `cargo build` instead of `cd {remote_uri} && cargo build`). \
+             If you need to enter a subdirectory, use a relative path \
+             (e.g., `cd src && ...`)."
+        ))
+    } else {
+        None
+    }
+}
+
 /// Format command output in the same style as the original non-streaming handler.
 fn format_exec_output(stdout: &str, stderr: &str, exit_code: i32) -> String {
     let mut result = String::new();
@@ -566,6 +626,16 @@ async fn handle_execute_command_streaming_inner<
         .get(&invocation.group_id)
         .await?
         .ok_or_else(|| SandboxError::RepoNotFound(invocation.group_id.clone()))?;
+
+    // Reject commands that `cd` to the original repo directory — this escapes
+    // the sandbox and can hang on file locks (e.g. cargo build competing for
+    // the same target directory).
+    if let Some(error_msg) = detect_cd_to_original_repo(&args.command, &repo_state.remote_uri) {
+        state.in_flight.lock().await.remove(&invocation.id);
+        send_tool_result(&state.callback_client, invocation, &error_msg, None, false).await;
+        return Ok(());
+    }
+
     let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;
     run_jj(&sandbox_dir, &["describe", "-m", &args.command]).await?;
 
@@ -590,7 +660,7 @@ async fn handle_execute_command_streaming_inner<
     // Spawn the process
     let mut spawned = match state
         .backend
-        .spawn_command(&sandbox_dir, &args.command)
+        .spawn_command(&sandbox_dir, &["bash", "-c", &args.command])
         .await
     {
         Ok(s) => s,
@@ -1022,46 +1092,36 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
         &invocation.group_id,
         &description,
         |sandbox_dir| async move {
-            let mut cmd_parts = vec!["rg".to_string(), "--line-number".to_string()];
+            let exclude_glob: Option<String>;
+            let mut cmd_parts = vec!["rg", "--line-number"];
 
             // Context lines
-            cmd_parts.push("-C".to_string());
-            cmd_parts.push("2".to_string());
+            cmd_parts.push("-C");
+            cmd_parts.push("2");
 
             // Max count to avoid huge output
-            cmd_parts.push("--max-count".to_string());
-            cmd_parts.push("50".to_string());
+            cmd_parts.push("--max-count");
+            cmd_parts.push("50");
 
             if args.case_sensitive != Some(true) {
-                cmd_parts.push("--ignore-case".to_string());
+                cmd_parts.push("--ignore-case");
             }
 
             if let Some(ref pattern) = args.include_pattern {
-                cmd_parts.push("--glob".to_string());
-                cmd_parts.push(pattern.clone());
+                cmd_parts.push("--glob");
+                cmd_parts.push(pattern);
             }
 
             if let Some(ref pattern) = args.exclude_pattern {
-                cmd_parts.push("--glob".to_string());
-                cmd_parts.push(format!("!{pattern}"));
+                exclude_glob = Some(format!("!{pattern}"));
+                cmd_parts.push("--glob");
+                cmd_parts.push(exclude_glob.as_ref().unwrap());
             }
 
-            cmd_parts.push("--".to_string());
-            cmd_parts.push(args.query.clone());
+            cmd_parts.push("--");
+            cmd_parts.push(&args.query);
 
-            let command = cmd_parts
-                .iter()
-                .map(|p| {
-                    if p.contains(' ') || p.contains('\'') || p.contains('"') || p.contains('\\') {
-                        format!("'{}'", p.replace('\'', "'\\''"))
-                    } else {
-                        p.clone()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-
-            let exec_result = backend.execute_command(&sandbox_dir, &command).await?;
+            let exec_result = backend.execute_command(&sandbox_dir, &cmd_parts).await?;
 
             if exec_result.stdout.is_empty() && exec_result.exit_code == 1 {
                 let display = format!("Searched for '{}' — no matches", query_for_display);
@@ -1284,5 +1344,102 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                 }),
             },
         ],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_cd_to_exact_repo_path() {
+        let uri = "/Users/foo/my-repo";
+        assert!(detect_cd_to_original_repo("cd /Users/foo/my-repo && cargo build", uri).is_some());
+    }
+
+    #[test]
+    fn detects_cd_with_trailing_slash() {
+        let uri = "/Users/foo/my-repo";
+        assert!(detect_cd_to_original_repo("cd /Users/foo/my-repo/ && cargo build", uri).is_some());
+    }
+
+    #[test]
+    fn detects_cd_with_double_quotes() {
+        let uri = "/Users/foo/my-repo";
+        assert!(
+            detect_cd_to_original_repo("cd \"/Users/foo/my-repo\" && cargo build", uri).is_some()
+        );
+    }
+
+    #[test]
+    fn detects_cd_with_single_quotes() {
+        let uri = "/Users/foo/my-repo";
+        assert!(
+            detect_cd_to_original_repo("cd '/Users/foo/my-repo' && cargo build", uri).is_some()
+        );
+    }
+
+    #[test]
+    fn detects_cd_with_semicolon() {
+        let uri = "/Users/foo/my-repo";
+        assert!(detect_cd_to_original_repo("cd /Users/foo/my-repo; ls", uri).is_some());
+    }
+
+    #[test]
+    fn detects_cd_to_subdirectory() {
+        let uri = "/Users/foo/my-repo";
+        assert!(
+            detect_cd_to_original_repo("cd /Users/foo/my-repo/src && cargo build", uri).is_some()
+        );
+    }
+
+    #[test]
+    fn detects_cd_alone() {
+        let uri = "/Users/foo/my-repo";
+        assert!(detect_cd_to_original_repo("cd /Users/foo/my-repo", uri).is_some());
+    }
+
+    #[test]
+    fn allows_relative_cd() {
+        let uri = "/Users/foo/my-repo";
+        assert!(detect_cd_to_original_repo("cd src && cargo build", uri).is_none());
+    }
+
+    #[test]
+    fn allows_different_absolute_path() {
+        let uri = "/Users/foo/my-repo";
+        assert!(detect_cd_to_original_repo("cd /tmp && ls", uri).is_none());
+    }
+
+    #[test]
+    fn allows_non_cd_commands() {
+        let uri = "/Users/foo/my-repo";
+        assert!(detect_cd_to_original_repo("cargo build", uri).is_none());
+    }
+
+    #[test]
+    fn allows_non_cd_command_containing_path() {
+        let uri = "/Users/foo/my-repo";
+        assert!(detect_cd_to_original_repo("ls /Users/foo/my-repo", uri).is_none());
+    }
+
+    #[test]
+    fn ignores_s3_remote_uri() {
+        let uri = "s3://bucket/my-repo";
+        assert!(detect_cd_to_original_repo("cd s3://bucket/my-repo && ls", uri).is_none());
+    }
+
+    #[test]
+    fn does_not_match_prefix_of_different_repo() {
+        let uri = "/Users/foo/my-repo";
+        assert!(
+            detect_cd_to_original_repo("cd /Users/foo/my-repo-other && cargo build", uri).is_none()
+        );
+    }
+
+    #[test]
+    fn handles_uri_with_trailing_slash() {
+        let uri = "/Users/foo/my-repo/";
+        assert!(detect_cd_to_original_repo("cd /Users/foo/my-repo && cargo build", uri).is_some());
     }
 }
