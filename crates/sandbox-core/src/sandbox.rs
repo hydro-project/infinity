@@ -34,18 +34,26 @@ pub trait SandboxBackend: Send + Sync {
     async fn create_sandbox(&self, state: &RepoState) -> Result<PathBuf, SandboxError>;
 
     /// Execute a command inside the sandbox directory.
+    ///
+    /// `argv` is the raw argument vector: `argv[0]` is the program name and
+    /// `argv[1..]` are its arguments.  No shell wrapping is performed — the
+    /// caller is responsible for wrapping in `["bash", "-c", cmd]` when a
+    /// shell is needed (e.g. the user-facing `execute_command` tool).
     async fn execute_command(
         &self,
         sandbox_dir: &Path,
-        command: &str,
+        argv: &[&str],
     ) -> Result<ExecResult, SandboxError>;
 
     /// Spawn a command inside the sandbox directory, returning the child process.
     /// stdout and stderr MUST be piped so the caller can stream output.
+    ///
+    /// `argv` is the raw argument vector: `argv[0]` is the program name and
+    /// `argv[1..]` are its arguments.  No shell wrapping is performed.
     async fn spawn_command(
         &self,
         sandbox_dir: &Path,
-        command: &str,
+        argv: &[&str],
     ) -> Result<SpawnedCommand, SandboxError>;
 
     /// Push the updated working copy from the sandbox back to the remote.
