@@ -10,6 +10,7 @@ use tracing_subscriber::EnvFilter;
 mod component;
 mod inline_viewport;
 mod memory_store;
+mod model_picker;
 mod modifier_diff;
 mod rap_callback;
 mod rap_tools;
@@ -80,7 +81,19 @@ async fn main() -> Result<(), BoxError> {
     let sender = InMemoryMessageSender::new(input_tx.clone());
 
     let client = Client::from_env();
-    let model = client.completion_model("global.anthropic.claude-opus-4-6-v1");
+
+    // Set up model from the available models list, defaulting to the 1m context model.
+    let models = model_picker::available_models();
+    let default_model = &models[model_picker::DEFAULT_MODEL_INDEX];
+    let model = client.completion_model(default_model.bedrock_model_id);
+    let initial_model_name = default_model.display_name.to_string();
+    let initial_context_window = default_model.context_window;
+
+    // Shared additional request params — swapped atomically when the user switches models.
+    let active_additional_params: std::sync::Arc<std::sync::RwLock<Option<serde_json::Value>>> =
+        std::sync::Arc::new(std::sync::RwLock::new(
+            default_model.additional_request_params.clone(),
+        ));
 
     let (display_tx, display_rx) = mpsc::unbounded_channel::<DisplayEvent<_>>();
 
@@ -180,6 +193,7 @@ async fn main() -> Result<(), BoxError> {
         .ok()
         .map(|cwd| format!("The user's current working directory is: {}", cwd.display()));
 
+    let agent_additional_params = active_additional_params.clone();
     let agent_handle = tokio::spawn(async move {
         agent_loop(
             input_rx,
@@ -192,12 +206,14 @@ async fn main() -> Result<(), BoxError> {
             rap_tools,
             tool_server_urls,
             extra_system_prompt,
+            agent_additional_params,
         )
         .await;
     });
 
     let (new_session_tx, mut new_session_rx) = mpsc::unbounded_channel::<String>();
     let (load_session_tx, mut load_session_rx) = mpsc::unbounded_channel::<String>();
+    let (model_switch_tx, mut model_switch_rx) = mpsc::unbounded_channel::<usize>();
 
     // Track the active thread_id so we can save the latest on shutdown.
     let active_thread_id = std::sync::Arc::new(std::sync::Mutex::new(thread_id.clone()));
@@ -230,16 +246,30 @@ async fn main() -> Result<(), BoxError> {
         }
     });
 
+    // Listen for model-switch signals from the terminal (Ctrl+M → pick).
+    let switch_additional_params = active_additional_params.clone();
+    tokio::spawn(async move {
+        let models = model_picker::available_models();
+        while let Some(idx) = model_switch_rx.recv().await {
+            if let Some(entry) = models.get(idx) {
+                *switch_additional_params.write().unwrap() =
+                    entry.additional_request_params.clone();
+            }
+        }
+    });
+
     let sessions_list = session_store.sessions.clone();
 
     let result = terminal::run(
         input_tx,
         display_rx,
         thread_id,
-        "claude-opus-4-6".to_string(),
+        initial_model_name,
+        initial_context_window,
         new_session_tx,
         sessions_list,
         load_session_tx,
+        model_switch_tx,
     )
     .await;
     agent_handle.abort();
@@ -348,6 +378,7 @@ async fn agent_loop<Mdl>(
     rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>>,
     tool_server_urls: Vec<String>,
     extra_system_prompt: Option<String>,
+    additional_request_params: std::sync::Arc<std::sync::RwLock<Option<serde_json::Value>>>,
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
@@ -412,6 +443,7 @@ async fn agent_loop<Mdl>(
                 tool_impls.clone(),
                 extra_system_prompt.as_ref().clone(),
                 rap_notifier.clone(),
+                additional_request_params.clone(),
             ));
             tx
         });
@@ -435,6 +467,7 @@ async fn thread_worker<Mdl>(
     rap_notifier: Option<
         infinity_agent_core::rap_notifier::RapNotifier<rap_tools::SimpleHttpClient>,
     >,
+    additional_request_params: std::sync::Arc<std::sync::RwLock<Option<serde_json::Value>>>,
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
@@ -588,6 +621,9 @@ async fn thread_worker<Mdl>(
 
         let final_action = {
             let prefix = current_history.get_thread_nesting_prefix();
+            // Snapshot the current additional request params (e.g. beta headers)
+            // so the model switch takes effect on the next completion.
+            let current_additional_params = additional_request_params.read().unwrap().clone();
             let mut stream = std::pin::pin!(event_processor::run_completion(
                 model.as_ref(),
                 &mut current_history,
@@ -598,6 +634,7 @@ async fn thread_worker<Mdl>(
                 &active_thread_id,
                 &last_message_id,
                 extra_system_prompt.as_deref(),
+                current_additional_params.as_ref(),
             ));
             let mut action = None;
             let mut started = false;

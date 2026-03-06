@@ -1,6 +1,7 @@
 use crate::{
     component::{Component, KeyResult},
     inline_viewport::InlineViewport,
+    model_picker::{ModelPicker, ModelPickerResult, ModelPickerWidget},
     modifier_diff::ModifierDiff,
     session_picker::{SessionPicker, SessionPickerResult, SessionPickerWidget},
     session_store::SessionEntry,
@@ -37,6 +38,8 @@ enum UiMode {
     Normal,
     /// Session picker overlay is visible.
     SessionPicker,
+    /// Model picker overlay is visible.
+    ModelPicker,
 }
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -80,16 +83,17 @@ pub enum DisplayEvent<R> {
 pub async fn run(
     input_tx: mpsc::UnboundedSender<(InputMessage, String)>,
     mut display_rx: mpsc::UnboundedReceiver<DisplayEvent<BedrockStreamingResponse>>,
-    thread_id: String,
-    model_name: String,
+    mut thread_id: String,
+    mut model_name: String,
+    mut context_window: usize,
     new_session_tx: mpsc::UnboundedSender<String>,
     sessions: Vec<SessionEntry>,
     load_session_tx: mpsc::UnboundedSender<String>,
+    model_switch_tx: mpsc::UnboundedSender<usize>,
 ) -> Result<usize, BoxError> {
     cterm::enable_raw_mode()?;
 
     let mut viewport = InlineViewport::new(VIEWPORT_HEIGHT)?;
-    let mut thread_id = thread_id;
     let has_sessions = !sessions.is_empty();
 
     print_above(&mut viewport, |w| {
@@ -114,6 +118,7 @@ pub async fn run(
     let mut input = TextInput::new();
     let mut ui_mode = UiMode::Normal;
     let mut session_picker: Option<SessionPicker> = None;
+    let mut model_picker: Option<ModelPicker> = None;
     let available_sessions = sessions;
     let mut mid_stream = false;
     let mut stream_start = true;
@@ -128,11 +133,13 @@ pub async fn run(
         &mut viewport,
         &input,
         &session_picker,
+        &model_picker,
         &ui_mode,
         thinking,
         &thinking_start,
         &model_name,
         total_tokens_used,
+        context_window,
         &thread_buffers,
         &thinking_text_buffer,
     )?;
@@ -313,7 +320,7 @@ pub async fn run(
                         thinking_start = Instant::now();
                     }
                 }
-                draw_viewport(&mut viewport, &input, &session_picker, &ui_mode, thinking, &thinking_start, &model_name, total_tokens_used, &thread_buffers, &thinking_text_buffer)?;
+                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &ui_mode, thinking, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer)?;
             }
 
             _ = poll_crossterm_event() => {
@@ -364,6 +371,32 @@ pub async fn run(
                                         }
                                     }
                                 }
+                                UiMode::ModelPicker => {
+                                    if let Some(ref mut picker) = model_picker {
+                                        picker.handle_keystroke(key);
+                                        if let Some(result) = picker.take_result() {
+                                            match result {
+                                                ModelPickerResult::Selected(idx) => {
+                                                    let models = crate::model_picker::available_models();
+                                                    if let Some(entry) = models.get(idx) {
+                                                        model_name = entry.display_name.to_string();
+                                                        context_window = entry.context_window;
+                                                        let _ = model_switch_tx.send(idx);
+                                                        print_line_above(&mut viewport, Line::from(vec![
+                                                            Span::styled(
+                                                                format!("✦ Switched to model: {}", entry.display_name),
+                                                                Style::default().fg(Color::Yellow),
+                                                            ),
+                                                        ]))?;
+                                                    }
+                                                }
+                                                ModelPickerResult::Cancelled => {}
+                                            }
+                                            model_picker = None;
+                                            ui_mode = UiMode::Normal;
+                                        }
+                                    }
+                                }
                                 UiMode::Normal => {
                                     // Let the input area handle the keystroke first.
                                     if matches!(input.handle_keystroke(key), KeyResult::NotCaptured) {
@@ -382,6 +415,7 @@ pub async fn run(
                                                     "    Ctrl+C / Ctrl+D    Exit",
                                                     "    Ctrl+N             New session",
                                                     "    Ctrl+L             Load session",
+                                                    "    Ctrl+M             Switch model",
                                                     "    Ctrl+H             Show this help",
                                                     "    Enter              Send message",
                                                     "",
@@ -414,6 +448,10 @@ pub async fn run(
                                                     session_picker = Some(SessionPicker::new(available_sessions.clone()));
                                                     ui_mode = UiMode::SessionPicker;
                                                 }
+                                            }
+                                            (KeyCode::Char('m'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                                model_picker = Some(ModelPicker::new(crate::model_picker::available_models()));
+                                                ui_mode = UiMode::ModelPicker;
                                             }
                                             (KeyCode::Char('n'), m) if m.contains(KeyModifiers::CONTROL) => {
                                                 let new_id = uuid::Uuid::new_v4().to_string();
@@ -457,7 +495,7 @@ pub async fn run(
                 }
 
                 if got_resize || any_change || thinking {
-                    draw_viewport(&mut viewport, &input, &session_picker, &ui_mode, thinking, &thinking_start, &model_name, total_tokens_used, &thread_buffers, &thinking_text_buffer)?;
+                    draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &ui_mode, thinking, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer)?;
                 }
             }
 
@@ -547,27 +585,31 @@ fn draw_viewport(
     viewport: &mut InlineViewport,
     input: &TextInput,
     session_picker: &Option<SessionPicker>,
+    model_picker: &Option<ModelPicker>,
     ui_mode: &UiMode,
     thinking: bool,
     thinking_start: &Instant,
     model_name: &str,
     total_tokens_used: usize,
+    context_window: usize,
     thread_buffers: &BTreeMap<String, String>,
     thinking_text: &str,
 ) -> Result<(), BoxError> {
-    const MAX_CONTEXT: usize = 200_000;
+    let max_context = context_window;
     let current_width = viewport.area().width;
     let thread_rows = thread_buffers.len() as u16;
 
     // Determine status bar text based on mode.
-    let pct = if MAX_CONTEXT > 0 {
-        ((total_tokens_used as f64 / MAX_CONTEXT as f64) * 100.0).min(100.0)
+    let pct = if max_context > 0 {
+        ((total_tokens_used as f64 / max_context as f64) * 100.0).min(100.0)
     } else {
         0.0
     };
     let status_right = format!("{:.0}% context used", pct);
     let status_left = match ui_mode {
-        UiMode::SessionPicker => "↑↓ navigate  enter select  esc cancel".to_string(),
+        UiMode::SessionPicker | UiMode::ModelPicker => {
+            "↑↓ navigate  enter select  esc cancel".to_string()
+        }
         UiMode::Normal => format!("{} (ctrl-h for help)", model_name),
     };
 
@@ -592,6 +634,13 @@ fn draw_viewport(
     let (content_height, is_picker) = match ui_mode {
         UiMode::SessionPicker => {
             let picker_height = session_picker
+                .as_ref()
+                .map(|p| p.preferred_height())
+                .unwrap_or(1);
+            (picker_height, true)
+        }
+        UiMode::ModelPicker => {
+            let picker_height = model_picker
                 .as_ref()
                 .map(|p| p.preferred_height())
                 .unwrap_or(1);
@@ -650,10 +699,12 @@ fn draw_viewport(
         frame.render_widget(Block::default().borders(Borders::TOP), areas[idx]);
         idx += 1;
 
-        // Content area — either session picker or input
+        // Content area — either session picker, model picker, or input
         if is_picker {
             if let Some(picker) = session_picker {
                 frame.render_widget(SessionPickerWidget::new(picker), areas[idx]);
+            } else if let Some(picker) = model_picker {
+                frame.render_widget(ModelPickerWidget::new(picker), areas[idx]);
             }
             // No cursor in picker mode
         } else {
