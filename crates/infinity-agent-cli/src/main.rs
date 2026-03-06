@@ -45,12 +45,11 @@ async fn main() -> Result<(), BoxError> {
 
     std::fs::create_dir_all(".infinity").ok();
 
-    let store_path = ".infinity/store.json";
+    let threads_dir = ".infinity/threads";
     let sessions_path = ".infinity/sessions.json";
 
-    // Try to load persisted store, fall back to empty.
-    let conversation_store = InMemoryConversationStore::load_from_file(store_path)
-        .unwrap_or_else(|_| InMemoryConversationStore::new());
+    // Each thread's conversation history is stored as a separate file under threads_dir.
+    let conversation_store = InMemoryConversationStore::new_with_dir(threads_dir);
     let state_store = InMemoryStateStore::new();
 
     // Load the sessions list (all sessions with timestamps).
@@ -261,15 +260,12 @@ async fn main() -> Result<(), BoxError> {
         let _ = child.wait();
     }
 
-    // Persist store and session on shutdown.
+    // Persist session metadata on shutdown (conversation history is saved incrementally per-thread).
     let final_thread_id = active_thread_id.lock().unwrap().clone();
     let final_tokens = match &result {
         Ok(tokens) => *tokens,
         Err(_) => 0,
     };
-    if let Err(e) = conversation_store.save_to_file(store_path) {
-        eprintln!("Warning: failed to save conversation store: {}", e);
-    }
     // Update the sessions list with the current session's state.
     session_store.upsert(&final_thread_id, final_tokens);
     if let Err(e) = session_store.save(sessions_path) {
