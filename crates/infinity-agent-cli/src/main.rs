@@ -4,7 +4,7 @@ use rig::completion::CompletionModel;
 use rig::message::{AssistantContent, Message, ToolResultContent, UserContent};
 use rig_bedrock::client::Client;
 use rig_bedrock::streaming::{BedrockStreamingResponse, BedrockUsage};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tracing_subscriber::EnvFilter;
 
 mod component;
@@ -538,6 +538,7 @@ async fn agent_loop<Mdl>(
         let thread_tx = thread_txs.entry(group_id.clone()).or_insert_with(|| {
             let (tx, rx) = mpsc::unbounded_channel();
             tokio::task::spawn_local(thread_worker(
+                group_id,
                 rx,
                 display_tx.clone(),
                 model.clone(),
@@ -560,6 +561,7 @@ async fn agent_loop<Mdl>(
 /// Per-thread worker: processes messages for a single thread ID sequentially,
 /// but different threads run concurrently with each other.
 async fn thread_worker<Mdl>(
+    active_group_id: String,
     mut rx: mpsc::UnboundedReceiver<(InputMessage, String)>,
     display_tx: mpsc::UnboundedSender<DisplayEvent<Mdl::StreamingResponse>>,
     model: std::sync::Arc<Mdl>,
@@ -576,99 +578,161 @@ async fn thread_worker<Mdl>(
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
-    while let Some(first) = rx.recv().await {
-        // Drain all immediately-available events before running the LLM.
-        let mut batch = vec![first];
-        while let Ok(item) = rx.try_recv() {
-            batch.push(item);
-        }
-
-        let active_group_id = batch[0].0.group_id.clone();
-
-        let current_history = std::cell::RefCell::new(
-            match event_processor::HistoryManager::new_with_history(
-                conversation_store.clone(),
-                state_store.clone(),
-                active_group_id.clone(),
-            )
-            .await
-            {
-                Ok(h) => h,
-                Err(e) => {
-                    let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
-                    continue;
-                }
-            },
-        );
-
-        let mut any_ready = false;
-        let mut last_message_id = String::new();
-
-        for (input_msg, message_id) in batch {
-            if let Some(mid) = process_input_item(
-                input_msg,
-                message_id,
-                &mut *current_history.borrow_mut(),
-                &conversation_store,
-                &display_tx,
-                &active_group_id,
-            )
-            .await
-            {
-                any_ready = true;
-                last_message_id = mid;
-            }
-        }
-
-        // Best-effort: notify RAP tool servers about interrupted tool calls
-        // so they can abort in-flight operations (e.g. kill running processes).
+    let current_history = std::cell::RefCell::new(
+        match event_processor::HistoryManager::new_with_history(
+            conversation_store.clone(),
+            state_store.clone(),
+            active_group_id.clone(),
+        )
+        .await
         {
-            let interrupted = current_history.borrow_mut().take_interrupted_tool_calls();
-            if !interrupted.is_empty() {
-                if let Some(ref notifier) = rap_notifier {
-                    for call_id in &interrupted {
-                        notifier
-                            .notify_tool_cancelled(&active_group_id, call_id)
-                            .await;
+            Ok(h) => h,
+            Err(e) => {
+                let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
+                return;
+            }
+        },
+    );
+
+    let tool_names: std::collections::HashSet<String> =
+        tool_impls.iter().map(|t| t.name().to_string()).collect();
+    let tool_defs: Vec<rig::completion::ToolDefinition> = tool_impls
+        .iter()
+        .map(|t| rig::completion::ToolDefinition {
+            name: t.name().to_string(),
+            description: t.description().to_string(),
+            parameters: t.parameters(),
+        })
+        .collect();
+
+    let tool_context = ToolContext {
+        message_sender: sender.clone(),
+        group_id: current_history.borrow().thread_id.clone(),
+        input_queue_arn: String::new(),
+        callback_url: callback_url.clone(),
+        user_id: None,
+    };
+    let tool_registry: std::collections::HashMap<String, &dyn Tool<InMemoryMessageSender>> =
+        tool_impls
+            .iter()
+            .map(|t| (t.name().to_string(), t.as_ref()))
+            .collect();
+
+    let mut pending_non_interrupt_items = vec![];
+
+    {
+        let mut completion_fut = None;
+        let mut completion_cancel_tx: Option<oneshot::Sender<()>> = None;
+
+        loop {
+            let inputs_before_pending = if let Some(mut_fut) = completion_fut.as_mut() {
+                tokio::select! {
+                    _ = mut_fut => {
+                        // if the LLM completed first, simply loop back and collect a batch in the else branch
+                        let _ = completion_fut.take().unwrap();
+                        continue;
+                    },
+                    first = rx.recv() => {
+                        let Some(first) = first else {
+                            return;
+                        };
+                        // Drain all immediately-available events before running the LLM.
+                        let mut batch = vec![first];
+                        while let Ok(item) = rx.try_recv() {
+                            batch.push(item);
+                        }
+
+                        if batch.iter().any(|(msg, _)| is_user_text_input(msg))
+                        {
+                            let _ = completion_cancel_tx.take().unwrap().send(());
+                            let completion_fut_taken = completion_fut.take().unwrap();
+                            completion_fut_taken.await;
+
+                            let (mut user_inputs, non_user_inputs): (Vec<_>, Vec<_>) = batch
+                                .into_iter()
+                                .partition(|(msg, _)| is_user_text_input(msg));
+
+                            if let InputMessageContent::User(UserContent::Text(text)) = &mut user_inputs[0].0.content {
+                                text.text = format!("<interrupt>{}", text.text);
+                            } else {
+                                panic!("user_inputs should only have user text");
+                            }
+
+                            pending_non_interrupt_items.extend(non_user_inputs);
+                            user_inputs
+                        } else {
+                            pending_non_interrupt_items.extend(batch);
+                            // if nothing is an interrupt-causing event, simply loop back and continue waiting
+                            // for a real interrupt or the LLM to complete naturally
+                            continue;
+                        }
+                    }
+                }
+            } else {
+                let first = rx.recv().await;
+                let Some(first) = first else {
+                    return;
+                };
+
+                // Drain all immediately-available events before running the LLM.
+                let mut batch = vec![first];
+                while let Ok(item) = rx.try_recv() {
+                    batch.push(item);
+                }
+
+                batch
+            };
+
+            let mut any_ready = false;
+            let mut last_message_id = String::new();
+
+            for (input_msg, message_id) in inputs_before_pending
+                .into_iter()
+                .chain(pending_non_interrupt_items.drain(..))
+            {
+                if let Some(mid) = process_input_item(
+                    input_msg,
+                    message_id,
+                    &mut *current_history.borrow_mut(),
+                    &conversation_store,
+                    &display_tx,
+                    &active_group_id,
+                )
+                .await
+                {
+                    any_ready = true;
+                    last_message_id = mid;
+                }
+            }
+
+            // Best-effort: notify RAP tool servers about interrupted tool calls
+            // so they can abort in-flight operations (e.g. kill running processes).
+            {
+                let interrupted = current_history.borrow_mut().take_interrupted_tool_calls();
+                if !interrupted.is_empty() {
+                    if let Some(ref notifier) = rap_notifier {
+                        for call_id in &interrupted {
+                            let _ = display_tx.send(DisplayEvent::Info(format!(
+                                "Cancelling Tool Call {}",
+                                call_id
+                            )));
+                            notifier
+                                .notify_tool_cancelled(&active_group_id, call_id)
+                                .await;
+                        }
                     }
                 }
             }
-        }
 
-        if !any_ready {
-            continue;
-        }
+            if !any_ready {
+                continue;
+            }
 
-        let tool_names: std::collections::HashSet<String> =
-            tool_impls.iter().map(|t| t.name().to_string()).collect();
-        let tool_defs: Vec<rig::completion::ToolDefinition> = tool_impls
-            .iter()
-            .map(|t| rig::completion::ToolDefinition {
-                name: t.name().to_string(),
-                description: t.description().to_string(),
-                parameters: t.parameters(),
-            })
-            .collect();
-
-        let tool_context = ToolContext {
-            message_sender: sender.clone(),
-            group_id: current_history.borrow().thread_id.clone(),
-            input_queue_arn: String::new(),
-            callback_url: callback_url.clone(),
-            user_id: None,
-        };
-        let tool_registry: std::collections::HashMap<String, &dyn Tool<InMemoryMessageSender>> =
-            tool_impls
-                .iter()
-                .map(|t| (t.name().to_string(), t.as_ref()))
-                .collect();
-
-        // Completion loop with interruption support.
-        // The completion runs as a stored future; the main select! either
-        // lets it finish naturally or receives a new input batch.
-        'completion: loop {
+            // Completion loop with interruption support.
+            // The completion runs as a stored future; the main select! either
+            // lets it finish naturally or receives a new input batch.
             let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
-            let mut cancel_tx = Some(cancel_tx);
+            completion_cancel_tx = Some(cancel_tx);
 
             let thread_prefix = current_history.borrow().get_thread_nesting_prefix();
             let prefix = current_history.borrow().get_thread_nesting_prefix();
@@ -678,7 +742,15 @@ async fn thread_worker<Mdl>(
 
             // The completion future: borrows history via RefCell, consumes
             // the stream, syncs, and executes the action — fully self-contained.
-            let completion_fut = async {
+            let display_tx = &display_tx;
+            let extra_system_prompt = &extra_system_prompt;
+            let model = &model;
+            let current_history = &current_history;
+            let tool_names = &tool_names;
+            let tool_defs = &tool_defs;
+            let tool_registry = &tool_registry;
+            let tool_context = &tool_context;
+            completion_fut = Some(Box::pin(async move {
                 let mut hist = current_history.borrow_mut();
 
                 // Scope the stream so its &mut borrow of `hist` is released
@@ -787,88 +859,7 @@ async fn thread_worker<Mdl>(
                         let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
                     }
                 }
-            };
-            tokio::pin!(completion_fut);
-
-            // Select: either the completion finishes or a new batch arrives.
-            tokio::select! {
-                _ = &mut completion_fut => {
-                    break 'completion;
-                }
-                item = rx.recv() => {
-                    let batch = if let Some(item) = item {
-                        let mut b = vec![item];
-                        while let Ok(more) = rx.try_recv() {
-                            b.push(more);
-                        }
-                        b
-                    } else {
-                        break 'completion; // channel closed
-                    };
-
-                    if batch.iter().any(|(msg, _)| is_user_text_input(msg)) {
-                        if let Some(tx) = cancel_tx.take() {
-                            let _ = tx.send(());
-                        }
-                    }
-
-                    // Await completion (finishes quickly after cancel).
-                    // This drops the RefMut so we can borrow history again.
-                    completion_fut.await;
-
-                    // Partition: user text inputs first, then everything else.
-                    let (mut user_inputs, non_user_inputs): (Vec<_>, Vec<_>) =
-                        batch.into_iter().partition(|(msg, _)| is_user_text_input(msg));
-
-                    if let Some((msg, _)) = user_inputs.first_mut() {
-                        if let InputMessageContent::User(UserContent::Text(ref mut text)) =
-                            msg.content
-                        {
-                            text.text = format!("<interrupt>{}", text.text);
-                        }
-                    }
-
-                    any_ready = false;
-                    for (input_msg, message_id) in
-                        user_inputs.into_iter().chain(non_user_inputs)
-                    {
-                        if let Some(mid) = process_input_item(
-                            input_msg,
-                            message_id,
-                            &mut *current_history.borrow_mut(),
-                            &conversation_store,
-                            &display_tx,
-                            &active_group_id,
-                        )
-                        .await
-                        {
-                            any_ready = true;
-                            last_message_id = mid;
-                        }
-                    }
-
-                    {
-                        let interrupted =
-                            current_history.borrow_mut().take_interrupted_tool_calls();
-                        if !interrupted.is_empty() {
-                            if let Some(ref notifier) = rap_notifier {
-                                for call_id in &interrupted {
-                                    notifier
-                                        .notify_tool_cancelled(&active_group_id, call_id)
-                                        .await;
-                                }
-                            }
-                        }
-                    }
-
-                    if !any_ready {
-                        break 'completion;
-                    }
-
-                    continue 'completion;
-                }
-            };
-            break 'completion;
+            }));
         }
     }
 }
