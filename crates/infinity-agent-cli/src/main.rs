@@ -514,7 +514,7 @@ async fn thread_worker<Mdl>(
 
     let tool_context = ToolContext {
         message_sender: sender.clone(),
-        group_id: current_history.borrow().thread_id.clone(),
+        group_id: String::new(), // populated by process_batch
         input_queue_arn: String::new(),
         callback_url: callback_url.clone(),
         user_id: None,
@@ -622,7 +622,7 @@ async fn thread_worker<Mdl>(
                 &tool_names,
                 &tool_defs,
                 &tool_registry,
-                &tool_context,
+                tool_context.clone(),
                 &extra_system_prompt,
                 current_additional_params,
                 rap_notifier.as_ref(),

@@ -212,7 +212,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
 
     let tool_context = ToolContext {
         message_sender: sender.clone(),
-        group_id: current_history.borrow().thread_id.clone(),
+        group_id: String::new(), // populated in process_batch
         input_queue_arn: input_queue_arn.clone(),
         callback_url: callback_url.clone(),
         user_id,
@@ -237,7 +237,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             &tool_names,
             &tool_defs,
             &tool_registry,
-            &tool_context,
+            tool_context,
             &extra_system_prompt,
             None,
             rap_notifier.as_ref(),
@@ -253,7 +253,6 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
 
     // Drain display events and transform into output
     let mut accumulated_text = String::new();
-    let mut last_tool_call: Option<(String, serde_json::Value)> = None;
     let mut oauth_auth_url: Option<String> = None;
 
     while let Ok(event) = display_rx.try_recv() {
@@ -262,7 +261,12 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 accumulated_text.push_str(&chunk);
             }
             DisplayEvent::ToolCall { name, args, .. } => {
-                last_tool_call = Some((name, args));
+                if name != "sleep_until_event_or_input" {
+                    accumulated_text.push_str(&format!(
+                        "\n[Tool Call: {} with arguments {}]\n",
+                        name, args
+                    ));
+                }
             }
             DisplayEvent::OAuthRequired { auth_url } => {
                 oauth_auth_url = Some(auth_url);
@@ -286,16 +290,6 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             .send_to_output(&serde_json::to_string(&oauth_msg)?)
             .await
             .map_err(|e| Error::from(format!("{}", e)))?;
-    }
-
-    // Append last tool call info to accumulated text
-    if let Some((ref tool_name, ref tool_args)) = last_tool_call
-        && tool_name != "sleep_until_event_or_input"
-    {
-        accumulated_text.push_str(&format!(
-            "\n[Tool Call: {} with arguments {}]\n",
-            tool_name, tool_args
-        ));
     }
 
     // Send accumulated text to output queue
