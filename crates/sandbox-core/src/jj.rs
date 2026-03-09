@@ -29,7 +29,7 @@ pub async fn jj_git_clone(
     bookmark_name: &str,
     first_clone: bool,
 ) -> Result<(), SandboxError> {
-    run_jj(&PathBuf::from(remote), &["workspace", "update-stale"]).await?;
+    let _ = run_jj(&PathBuf::from(remote), &["workspace", "update-stale"]).await; // this might fail if it's not yet a jj workspace, just ignore for now
 
     let output = tokio::process::Command::new("jj")
         .args(["--config", "user.name=RAP Sandbox"])
