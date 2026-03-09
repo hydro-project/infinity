@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use rig::message::ToolResult;
 
 /// Context passed to tool implementations — generic over platform backends.
+#[derive(Clone)]
 pub struct ToolContext<M: InputSender> {
     pub message_sender: M,
     pub group_id: String,

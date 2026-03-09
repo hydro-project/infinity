@@ -160,7 +160,7 @@ pub async fn process_batch<'a, Mdl, C, S, M, H>(
     tool_names: &'a HashSet<String>,
     tool_defs: &'a [ToolDefinition],
     tool_registry: &'a HashMap<String, &'a dyn Tool<M>>,
-    tool_context: &'a ToolContext<M>,
+    mut tool_context: ToolContext<M>,
     extra_system_prompt: &'a Option<String>,
     additional_request_params: Option<serde_json::Value>,
     rap_notifier: Option<&'a RapNotifier<H>>,
@@ -214,6 +214,7 @@ where
     let prefix = current_history.borrow().get_thread_nesting_prefix();
     let active_thread_id = current_history.borrow().thread_id.clone();
     let completion_message_id = last_message_id;
+    tool_context.group_id = active_thread_id.clone(); // might have changed due to HistoryManager::fork_new
 
     let fut = Box::pin(async move {
         let mut hist = current_history.borrow_mut();
@@ -227,7 +228,7 @@ where
                 tool_names,
                 tool_defs,
                 tool_registry,
-                tool_context,
+                &tool_context,
                 &active_thread_id,
                 &completion_message_id,
                 extra_system_prompt.as_deref(),
@@ -315,7 +316,7 @@ where
 
         if let Some(action) = action {
             if let Err(e) =
-                event_processor::execute_action(action, tool_registry, tool_context).await
+                event_processor::execute_action(action, tool_registry, &tool_context).await
             {
                 let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
             }
