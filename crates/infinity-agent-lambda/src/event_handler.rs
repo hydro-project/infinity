@@ -6,6 +6,7 @@ use aws_sdk_sqs::Client as SqsClient;
 use lambda_runtime::{Error, LambdaEvent, tracing};
 use rig_bedrock::client::Client;
 
+use infinity_agent_core::batch_processor::{self, DisplayEvent};
 use infinity_agent_core::event_processor;
 use infinity_agent_core::message::InputMessage;
 use infinity_agent_core::tools::config::ToolsConfig;
@@ -110,237 +111,213 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         output_queue_url: output_queue_url.clone(),
     };
 
+    // Parse all records into a batch — FIFO guarantees they share the same group_id
+    let mut inputs: Vec<(InputMessage, String)> = Vec::new();
     for record in payload.records {
         let message_id = record.message_id.unwrap_or_default();
         let body = record.body.unwrap();
         let input_msg: InputMessage = serde_json::from_str(&body)?;
+        inputs.push((input_msg, message_id));
+    }
 
-        // Build tools for this record
-        let mut tool_impls: Vec<Box<dyn Tool<SqsMessageSender>>> = Vec::new();
+    if inputs.is_empty() {
+        return Ok(());
+    }
 
-        // Load RAP toolsets
-        if !toolset_server_urls.is_empty() {
-            // We need the root thread ID for session scoping — peek at conversation store
-            let session_id = input_msg.group_id.clone(); // simplified; real impl uses root thread
-            match toolset_loader
-                .load_toolsets(&toolset_server_urls, &session_id)
-                .await
-            {
-                Ok(loaded) => {
-                    for ts in loaded {
-                        let endpoint = ts.manifest.endpoint.clone();
-                        for def in ts.manifest.tools {
-                            tool_impls.push(Box::new(RapTool {
-                                name: def.name,
-                                description: def.description,
-                                parameters: def.input_schema,
-                                endpoint: endpoint.clone(),
-                                http_client: http_client.clone(),
-                            }));
-                        }
+    let group_id = inputs[0].0.group_id.clone();
+
+    // Build tools once for the shared group_id
+    let mut tool_impls: Vec<Box<dyn Tool<SqsMessageSender>>> = Vec::new();
+
+    // Load RAP toolsets
+    if !toolset_server_urls.is_empty() {
+        let session_id = group_id.clone();
+        match toolset_loader
+            .load_toolsets(&toolset_server_urls, &session_id)
+            .await
+        {
+            Ok(loaded) => {
+                for ts in loaded {
+                    let endpoint = ts.manifest.endpoint.clone();
+                    for def in ts.manifest.tools {
+                        tool_impls.push(Box::new(RapTool {
+                            name: def.name,
+                            description: def.description,
+                            parameters: def.input_schema,
+                            endpoint: endpoint.clone(),
+                            http_client: http_client.clone(),
+                        }));
                     }
                 }
-                Err(e) => tracing::warn!("Failed to load RAP toolsets: {}", e),
             }
+            Err(e) => tracing::warn!("Failed to load RAP toolsets: {}", e),
         }
+    }
 
-        // Add built-in tools
-        tool_impls.push(Box::new(SleepTool {
-            scheduler_client: scheduler_client.clone(),
-            scheduler_role_arn: scheduler_role_arn.clone(),
-            delay_queue_url: std::env::var("DELAY_QUEUE_URL").unwrap_or_default(),
-        }));
-        tool_impls.push(Box::new(SleepUntilEventOrInputTool));
-        tool_impls.push(Box::new(SleepUntilTool {
-            scheduler_client: scheduler_client.clone(),
-            scheduler_role_arn: scheduler_role_arn.clone(),
-            delay_queue_url: std::env::var("DELAY_QUEUE_URL").unwrap_or_default(),
-        }));
-        tool_impls.push(Box::new(SpawnThreadTool {
-            conversation_store: conversation_store.clone(),
-        }));
-        tool_impls.push(Box::new(ReportToParentTool {
-            conversation_store: conversation_store.clone(),
-        }));
-        tool_impls.push(Box::new(CloseThreadTool {
-            conversation_store: conversation_store.clone(),
+    // Add built-in tools
+    tool_impls.push(Box::new(SleepTool {
+        scheduler_client: scheduler_client.clone(),
+        scheduler_role_arn: scheduler_role_arn.clone(),
+        delay_queue_url: std::env::var("DELAY_QUEUE_URL").unwrap_or_default(),
+    }));
+    tool_impls.push(Box::new(SleepUntilEventOrInputTool));
+    tool_impls.push(Box::new(SleepUntilTool {
+        scheduler_client: scheduler_client.clone(),
+        scheduler_role_arn: scheduler_role_arn.clone(),
+        delay_queue_url: std::env::var("DELAY_QUEUE_URL").unwrap_or_default(),
+    }));
+    tool_impls.push(Box::new(SpawnThreadTool {
+        conversation_store: conversation_store.clone(),
+    }));
+    tool_impls.push(Box::new(ReportToParentTool {
+        conversation_store: conversation_store.clone(),
+    }));
+    tool_impls.push(Box::new(CloseThreadTool {
+        conversation_store: conversation_store.clone(),
+        rap_notifier: rap_notifier.clone(),
+    }));
+    tool_impls.push(Box::new(
+        infinity_agent_core::tools::cancel_subscription::CancelSubscriptionTool {
+            state_store: state_store.clone(),
             rap_notifier: rap_notifier.clone(),
-        }));
-        tool_impls.push(Box::new(
-            infinity_agent_core::tools::cancel_subscription::CancelSubscriptionTool {
-                state_store: state_store.clone(),
-                rap_notifier: rap_notifier.clone(),
-            },
-        ));
+        },
+    ));
 
-        let sender_clone = sender.clone();
-        let input_queue_arn_clone = input_queue_arn.clone();
-        let callback_url_clone = callback_url.clone();
-
-        // (a) Create history and prepare input
-        let mut current_history = event_processor::HistoryManager::new_with_history(
+    // Create history once for the batch
+    let current_history = std::cell::RefCell::new(
+        event_processor::HistoryManager::new_with_history(
             conversation_store.clone(),
             state_store.clone(),
-            input_msg.group_id.clone(),
+            group_id.clone(),
         )
         .await
-        .map_err(|e| Error::from(format!("{}", e)))?;
+        .map_err(|e| Error::from(format!("{}", e)))?,
+    );
 
-        let prepare_result = event_processor::prepare_input(
-            input_msg,
-            message_id.clone(),
-            &mut current_history,
+    let tool_names: std::collections::HashSet<String> =
+        tool_impls.iter().map(|t| t.name().to_string()).collect();
+    let tool_defs: Vec<rig::completion::ToolDefinition> = tool_impls
+        .iter()
+        .map(|t| rig::completion::ToolDefinition {
+            name: t.name().to_string(),
+            description: t.description().to_string(),
+            parameters: t.parameters(),
+        })
+        .collect();
+
+    let user_id = current_history
+        .borrow()
+        .get_metadata()
+        .and_then(|m| m.get("user_id").and_then(|v| v.as_str()).map(String::from));
+
+    let tool_context = ToolContext {
+        message_sender: sender.clone(),
+        group_id: current_history.borrow().thread_id.clone(),
+        input_queue_arn: input_queue_arn.clone(),
+        callback_url: callback_url.clone(),
+        user_id,
+    };
+
+    let tool_registry: std::collections::HashMap<String, &dyn Tool<SqsMessageSender>> = tool_impls
+        .iter()
+        .map(|t| (t.name().to_string(), t.as_ref()))
+        .collect();
+
+    let (display_tx, mut display_rx) = tokio::sync::mpsc::unbounded_channel();
+    let extra_system_prompt: Option<String> = None;
+
+    {
+        let batch_result = batch_processor::process_batch(
+            inputs.into_iter(),
+            &current_history,
             &conversation_store,
+            &display_tx,
+            &group_id,
+            &model,
+            &tool_names,
+            &tool_defs,
+            &tool_registry,
+            &tool_context,
+            &extra_system_prompt,
+            None,
+            rap_notifier.as_ref(),
         )
-        .await
-        .map_err(|e| Error::from(format!("{}", e)))?;
+        .await;
 
-        match prepare_result {
-            event_processor::PrepareResult::Handled => continue,
-            event_processor::PrepareResult::OAuthRequired { auth_url } => {
-                let metadata = current_history
-                    .get_metadata()
-                    .unwrap_or(serde_json::json!({}));
-                let oauth_msg = event_processor::OAuthOutputMessage {
-                    message_type: "oauth_required".to_string(),
-                    auth_url,
-                    metadata,
-                };
-                sender
-                    .send_to_output(&serde_json::to_string(&oauth_msg)?)
-                    .await
-                    .map_err(|e| Error::from(format!("{}", e)))?;
-                continue;
-            }
-            event_processor::PrepareResult::Ready => {}
+        if let Some((fut, _cancel_tx)) = batch_result {
+            fut.await;
         }
+    }
 
-        // Best-effort: notify RAP tool servers about interrupted tool calls
-        // so they can abort in-flight operations (e.g. kill running processes).
-        let interrupted = current_history.take_interrupted_tool_calls();
-        if !interrupted.is_empty() {
-            if let Some(ref notifier) = rap_notifier {
-                for call_id in &interrupted {
-                    notifier
-                        .notify_tool_cancelled(&current_history.thread_id, call_id)
-                        .await;
-                }
+    drop(display_tx);
+
+    // Drain display events and transform into output
+    let mut accumulated_text = String::new();
+    let mut last_tool_call: Option<(String, serde_json::Value)> = None;
+    let mut oauth_auth_url: Option<String> = None;
+
+    while let Ok(event) = display_rx.try_recv() {
+        match event {
+            DisplayEvent::TextChunk { chunk, .. } => {
+                accumulated_text.push_str(&chunk);
             }
+            DisplayEvent::ToolCall { name, args, .. } => {
+                last_tool_call = Some((name, args));
+            }
+            DisplayEvent::OAuthRequired { auth_url } => {
+                oauth_auth_url = Some(auth_url);
+            }
+            _ => {}
         }
+    }
 
-        // (b) Build tool definitions and run completion
-        let tool_names: std::collections::HashSet<String> =
-            tool_impls.iter().map(|t| t.name().to_string()).collect();
-        let tool_defs: Vec<rig::completion::ToolDefinition> = tool_impls
-            .iter()
-            .map(|t| rig::completion::ToolDefinition {
-                name: t.name().to_string(),
-                description: t.description().to_string(),
-                parameters: t.parameters(),
-            })
-            .collect();
-
-        let active_thread_id = current_history.thread_id.clone();
-
-        let user_id = current_history
+    // Send OAuth output if needed
+    if let Some(auth_url) = oauth_auth_url {
+        let metadata = current_history
+            .borrow()
             .get_metadata()
-            .and_then(|m| m.get("user_id").and_then(|v| v.as_str()).map(String::from));
-
-        let tool_context = ToolContext {
-            message_sender: sender_clone.clone(),
-            group_id: active_thread_id.clone(),
-            input_queue_arn: input_queue_arn_clone.clone(),
-            callback_url: callback_url_clone.clone(),
-            user_id,
+            .unwrap_or(serde_json::json!({}));
+        let oauth_msg = event_processor::OAuthOutputMessage {
+            message_type: "oauth_required".to_string(),
+            auth_url,
+            metadata,
         };
+        sender
+            .send_to_output(&serde_json::to_string(&oauth_msg)?)
+            .await
+            .map_err(|e| Error::from(format!("{}", e)))?;
+    }
 
-        let tool_registry: std::collections::HashMap<String, &dyn Tool<SqsMessageSender>> =
-            tool_impls
-                .iter()
-                .map(|t| (t.name().to_string(), t.as_ref()))
-                .collect();
+    // Append last tool call info to accumulated text
+    if let Some((ref tool_name, ref tool_args)) = last_tool_call
+        && tool_name != "sleep_until_event_or_input"
+    {
+        accumulated_text.push_str(&format!(
+            "\n[Tool Call: {} with arguments {}]\n",
+            tool_name, tool_args
+        ));
+    }
 
-        // (b) Consume the completion stream, collecting text and the final action
-        use futures_util::StreamExt;
-
-        let (accumulated_text, final_action) = {
-            let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
-            let mut completion_stream = std::pin::pin!(event_processor::run_completion(
-                &model,
-                &mut current_history,
-                &tool_names,
-                &tool_defs,
-                &tool_registry,
-                &tool_context,
-                &active_thread_id,
-                &message_id,
-                None,
-                None,
-                cancel_rx,
-            ));
-
-            let mut text = String::new();
-            let mut action = None;
-
-            while let Some(event) = completion_stream.next().await {
-                match event.map_err(|e| Error::from(format!("{}", e)))? {
-                    event_processor::CompletionEvent::TextChunk(chunk) => {
-                        text.push_str(&chunk);
-                    }
-                    event_processor::CompletionEvent::Action(a) => {
-                        action = Some(a);
-                    }
-                    event_processor::CompletionEvent::ThinkingStart
-                    | event_processor::CompletionEvent::ThinkingEnd
-                    | event_processor::CompletionEvent::ThinkingChunk(_)
-                    | event_processor::CompletionEvent::SyncToolResult(_) => {}
-                }
-            }
-            (text, action)
-        };
-
-        current_history.sync().await?;
-
-        // For root threads, append tool call info to the output so the user sees it
-        let mut accumulated_text = accumulated_text;
-        if let Some(event_processor::CompletionAction::ExecuteToolCall {
-            ref tool_name,
-            ref tool_args,
-            ..
-        }) = final_action
-            && tool_name != "sleep_until_event_or_input"
+    // Send accumulated text to output queue
+    if !accumulated_text.is_empty() {
+        let metadata = current_history
+            .borrow()
+            .get_metadata()
+            .unwrap_or(serde_json::json!({}));
+        let output_text = if let Some(prefix) = current_history.borrow().get_thread_nesting_prefix()
         {
-            accumulated_text.push_str(&format!(
-                "\n[Tool Call: {} with arguments {}]\n",
-                tool_name, tool_args
-            ));
-        }
-
-        // Send accumulated text to output queue
-        if !accumulated_text.is_empty() {
-            let metadata = current_history
-                .get_metadata()
-                .unwrap_or(serde_json::json!({}));
-            let output_text = if let Some(prefix) = current_history.get_thread_nesting_prefix() {
-                format!("{} {}", prefix, accumulated_text)
-            } else {
-                accumulated_text
-            };
-            let output_msg = event_processor::OutputMessage {
-                text: output_text,
-                metadata,
-            };
-            sender
-                .send_to_output(&serde_json::to_string(&output_msg)?)
-                .await
-                .map_err(|e| Error::from(format!("{}", e)))?;
-        }
-
-        if let Some(action) = final_action {
-            event_processor::execute_action(action, &tool_registry, &tool_context)
-                .await
-                .map_err(|e| Error::from(format!("{}", e)))?;
-        }
+            format!("{} {}", prefix, accumulated_text)
+        } else {
+            accumulated_text
+        };
+        let output_msg = event_processor::OutputMessage {
+            text: output_text,
+            metadata,
+        };
+        sender
+            .send_to_output(&serde_json::to_string(&output_msg)?)
+            .await
+            .map_err(|e| Error::from(format!("{}", e)))?;
     }
 
     Ok(())
