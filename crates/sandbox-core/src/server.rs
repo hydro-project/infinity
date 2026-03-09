@@ -88,14 +88,18 @@ type PendingTasks = Arc<Mutex<Vec<JoinHandle<()>>>>;
 /// cancellation; the handler receives it and sends SIGTERM to the process.
 type InFlightMap = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>>;
 
-/// Send SIGTERM to a process by PID.
+/// Send SIGTERM to a process group by PID.
+///
+/// The spawned command is expected to have set its PGID to its own PID
+/// (via the `exec` sub-entrypoint of the sandbox-local binary), so
+/// sending the signal to the negative PID targets the entire group.
 #[cfg(unix)]
 fn kill_process(pid: Option<u32>) {
     if let Some(pid) = pid {
         use nix::sys::signal::{self, Signal};
         use nix::unistd::Pid;
-        let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
-        tracing::info!(pid, "sent SIGTERM to process");
+        let _ = signal::kill(Pid::from_raw(-(pid as i32)), Signal::SIGTERM);
+        tracing::info!(pid, "sent SIGTERM to process group");
     }
 }
 
@@ -502,21 +506,21 @@ fn format_exec_output(stdout: &str, stderr: &str, exit_code: i32) -> String {
 }
 
 /// Format output collected before a cancellation.
-fn format_cancel_output(stdout: &str, stderr: &str) -> String {
-    let mut text = String::from("Command cancelled.");
-    if !stdout.is_empty() || !stderr.is_empty() {
-        text.push_str("\nOutput before cancellation:\n");
-        text.push_str(stdout);
-        if !stderr.is_empty() {
-            if !stdout.is_empty() {
-                text.push('\n');
-            }
-            text.push_str("[stderr]\n");
-            text.push_str(stderr);
-        }
-    }
-    text
-}
+// fn format_cancel_output(stdout: &str, stderr: &str) -> String {
+//     let mut text = String::from("Command cancelled.");
+//     if !stdout.is_empty() || !stderr.is_empty() {
+//         text.push_str("\nOutput before cancellation:\n");
+//         text.push_str(stdout);
+//         if !stderr.is_empty() {
+//             if !stdout.is_empty() {
+//                 text.push('\n');
+//             }
+//             text.push_str("[stderr]\n");
+//             text.push_str(stderr);
+//         }
+//     }
+//     text
+// }
 
 /// Send a `tool_result` callback.
 async fn send_tool_result<C: CallbackClient>(
@@ -744,6 +748,23 @@ async fn handle_execute_command_streaming_inner<
 
     loop {
         tokio::select! {
+            biased;
+            _ = &mut cancel_rx => {
+                tracing::info!(tool_call_id = %invocation.id, "command cancelled during phase 1");
+                #[cfg(unix)]
+                kill_process(child_pid);
+                // let text = format_cancel_output(&stdout_buf, &stderr_buf);
+                let _ = push_and_update_metadata(state, &sandbox_dir, &invocation.group_id, &repo_state).await;
+                // TODO: determine if sending this would be in-spec
+                // send_subscription_event(&state.callback_client, invocation, &text, true).await;
+                if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
+                    tracing::warn!("failed to cleanup sandbox: {e}");
+                }
+                return Ok(());
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                break;
+            }
             event = rx.recv() => {
                 match event {
                     Some(OutputEvent::Stdout(s)) => stdout_buf.push_str(&s),
@@ -754,21 +775,6 @@ async fn handle_execute_command_streaming_inner<
                     }
                     None => break,
                 }
-            }
-            _ = tokio::time::sleep_until(deadline) => {
-                break;
-            }
-            _ = &mut cancel_rx => {
-                tracing::info!(tool_call_id = %invocation.id, "command cancelled during phase 1");
-                #[cfg(unix)]
-                kill_process(child_pid);
-                let text = format_cancel_output(&stdout_buf, &stderr_buf);
-                let _ = push_and_update_metadata(state, &sandbox_dir, &invocation.group_id, &repo_state).await;
-                send_tool_result(&state.callback_client, invocation, &text, None, false).await;
-                if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
-                    tracing::warn!("failed to cleanup sandbox: {e}");
-                }
-                return Ok(());
             }
         }
     }
@@ -818,6 +824,49 @@ async fn handle_execute_command_streaming_inner<
 
     loop {
         tokio::select! {
+            biased;
+            _ = &mut cancel_rx => {
+                tracing::info!(tool_call_id = %invocation.id, "command cancelled during streaming");
+                #[cfg(unix)]
+                kill_process(child_pid);
+
+                if !accumulated.is_empty() {
+                    accumulated.push_str("\n[cancelled]");
+                } else {
+                    accumulated.push_str("[cancelled]");
+                }
+
+                let _ = push_and_update_metadata(
+                    state,
+                    &sandbox_dir,
+                    &invocation.group_id,
+                    &repo_state,
+                )
+                .await;
+                send_subscription_event(
+                    &state.callback_client,
+                    invocation,
+                    &accumulated,
+                    true,
+                )
+                .await;
+                if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
+                    tracing::warn!("failed to cleanup sandbox: {e}");
+                }
+                return Ok(());
+            }
+            _ = interval.tick() => {
+                if !accumulated.is_empty() {
+                    send_subscription_event(
+                        &state.callback_client,
+                        invocation,
+                        &accumulated,
+                        true,
+                    )
+                    .await;
+                    accumulated.clear();
+                }
+            }
             event = rx.recv() => {
                 match event {
                     Some(OutputEvent::Stdout(s) | OutputEvent::Stderr(s)) => {
@@ -876,48 +925,6 @@ async fn handle_execute_command_streaming_inner<
                         return Ok(());
                     }
                 }
-            }
-            _ = interval.tick() => {
-                if !accumulated.is_empty() {
-                    send_subscription_event(
-                        &state.callback_client,
-                        invocation,
-                        &accumulated,
-                        true,
-                    )
-                    .await;
-                    accumulated.clear();
-                }
-            }
-            _ = &mut cancel_rx => {
-                tracing::info!(tool_call_id = %invocation.id, "command cancelled during streaming");
-                #[cfg(unix)]
-                kill_process(child_pid);
-
-                if !accumulated.is_empty() {
-                    accumulated.push_str("\n[cancelled]");
-                } else {
-                    accumulated.push_str("[cancelled]");
-                }
-
-                let _ = push_and_update_metadata(
-                    state,
-                    &sandbox_dir,
-                    &invocation.group_id,
-                    &repo_state,
-                )
-                .await;
-                send_subscription_event(
-                    &state.callback_client,
-                    invocation,
-                    &accumulated,
-                    true,
-                )
-                .await;
-                if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
-                    tracing::warn!("failed to cleanup sandbox: {e}");
-                }
-                return Ok(());
             }
         }
     }
