@@ -712,10 +712,6 @@ async fn thread_worker<Mdl>(
                 if !interrupted.is_empty() {
                     if let Some(ref notifier) = rap_notifier {
                         for call_id in &interrupted {
-                            let _ = display_tx.send(DisplayEvent::Info(format!(
-                                "Cancelling Tool Call {}",
-                                call_id
-                            )));
                             notifier
                                 .notify_tool_cancelled(&active_group_id, call_id)
                                 .await;
