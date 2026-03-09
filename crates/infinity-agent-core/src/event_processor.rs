@@ -202,12 +202,10 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                     })),
                 })),
             };
-            self.history.push(synthetic_result.clone());
             self.append_pending(synthetic_result, format!("{}-interrupted", tool_call.id));
             self.mark_tool_call_complete(tool_call.id.clone());
         }
 
-        self.history.push(message.clone());
         self.append_pending(message, message_id.clone());
         self.processed_message_ids.insert(message_id);
         Ok(true)
@@ -242,11 +240,11 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 return;
             }
         };
-        self.history.push(message.clone());
         self.append_pending(message, completion_id);
     }
 
     fn append_pending(&mut self, message: Message, message_id: String) {
+        self.history.push(message.clone());
         if let Message::User { content } = &message
             && let UserContent::ToolResult(result) = content.first()
         {
@@ -321,9 +319,11 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             match content.first() {
                 AssistantContent::Reasoning(_) => {
                     self.history.pop();
+                    self.pending_items.pop();
                 }
                 AssistantContent::Text(text) if text.text.trim().is_empty() => {
                     self.history.pop();
+                    self.pending_items.pop();
                 }
                 _ => break,
             }
