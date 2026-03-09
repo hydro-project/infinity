@@ -7,6 +7,7 @@ use crate::{
     session_store::SessionEntry,
     text_input::{TextInput, TextInputWidget},
 };
+use infinity_agent_core::batch_processor::DisplayEvent;
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
 use ratatui::{
     crossterm::{
@@ -45,40 +46,6 @@ enum UiMode {
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 const VIEWPORT_HEIGHT: u16 = 2;
-
-pub enum DisplayEvent<R> {
-    StartOutput {
-        prefix: Option<String>,
-    },
-    TextChunk {
-        prefix: Option<String>,
-        chunk: String,
-    },
-    ToolCall {
-        name: String,
-        args: serde_json::Value,
-        prefix: Option<String>,
-    },
-    ToolResult {
-        text: String,
-        display_as: Option<String>,
-        prefix: Option<String>,
-    },
-    Info(String),
-    ResponseDone(Option<String>, R),
-    UserInput(String),
-    SubscriptionEvent {
-        name: String,
-        text: String,
-        prefix: Option<String>,
-    },
-    ThinkingStart,
-    ThinkingEnd,
-    ThinkingChunk {
-        prefix: Option<String>,
-        chunk: String,
-    },
-}
 
 pub async fn run(
     input_tx: mpsc::UnboundedSender<(InputMessage, String)>,
@@ -326,6 +293,15 @@ pub async fn run(
 
                         thinking = true;
                         thinking_start = Instant::now();
+                    }
+                    DisplayEvent::OAuthRequired { auth_url } => {
+                        end_stream(&mut viewport, &mut mid_stream)?;
+                        print_line_above(&mut viewport, Line::from(vec![
+                            Span::styled(
+                                format!("OAuth required — open this URL:\n  {}", auth_url),
+                                Style::default().fg(Color::Yellow),
+                            ),
+                        ]))?;
                     }
                 }
                 draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &ui_mode, thinking, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer)?;
