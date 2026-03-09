@@ -669,13 +669,17 @@ async fn thread_worker<Mdl>(
                     }
                 }
             } else {
-                let first = rx.recv().await;
-                let Some(first) = first else {
-                    return;
-                };
+                let mut batch = vec![];
 
-                // Drain all immediately-available events before running the LLM.
-                let mut batch = vec![first];
+                if pending_non_interrupt_items.is_empty() {
+                    // only block if there are no pending items
+                    let first = rx.recv().await;
+                    let Some(first) = first else {
+                        return;
+                    };
+                    batch.push(first);
+                }
+
                 while let Ok(item) = rx.try_recv() {
                     batch.push(item);
                 }

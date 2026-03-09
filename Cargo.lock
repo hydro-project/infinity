@@ -3239,6 +3239,7 @@ dependencies = [
  "async-trait",
  "axum",
  "clap",
+ "nix",
  "sandbox-core",
  "serde",
  "serde_json",
