@@ -25,8 +25,8 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders},
 };
+use rig::completion::GetTokenUsage;
 use rig::message::UserContent;
-use rig_bedrock::streaming::BedrockStreamingResponse;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::io::{self, Write};
@@ -47,9 +47,9 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 const VIEWPORT_HEIGHT: u16 = 2;
 
-pub async fn run(
+pub async fn run<R>(
     input_tx: mpsc::UnboundedSender<(InputMessage, String)>,
-    mut display_rx: mpsc::UnboundedReceiver<DisplayEvent<BedrockStreamingResponse>>,
+    mut display_rx: mpsc::UnboundedReceiver<DisplayEvent<R>>,
     mut thread_id: String,
     mut model_name: String,
     mut context_window: usize,
@@ -57,7 +57,11 @@ pub async fn run(
     sessions: Vec<SessionEntry>,
     load_session_tx: mpsc::UnboundedSender<String>,
     model_switch_tx: mpsc::UnboundedSender<usize>,
-) -> Result<usize, BoxError> {
+    available_models: Vec<crate::model_picker::ModelEntry>,
+) -> Result<usize, BoxError>
+where
+    R: GetTokenUsage,
+{
     cterm::enable_raw_mode()?;
 
     // Enable bracketed paste so multi-line pastes arrive as a single
@@ -185,8 +189,7 @@ pub async fn run(
                     }
                     DisplayEvent::ResponseDone(prefix, r) => {
                         if prefix.is_none() {
-                            let usage = r.usage.unwrap();
-                            total_tokens_used = usage.total_tokens as usize;
+                            total_tokens_used = r.token_usage().map_or(0, |u| u.total_tokens as usize);
                             // end_stream(&mut viewport, &mut mid_stream)?;
                             thinking = false;
                         } else if let Some(p) = prefix {
@@ -366,8 +369,7 @@ pub async fn run(
                                         if let Some(result) = picker.take_result() {
                                             match result {
                                                 ModelPickerResult::Selected(idx) => {
-                                                    let models = crate::model_picker::available_models();
-                                                    if let Some(entry) = models.get(idx) {
+                                                    if let Some(entry) = available_models.get(idx) {
                                                         model_name = entry.display_name.to_string();
                                                         context_window = entry.context_window;
                                                         let _ = model_switch_tx.send(idx);
@@ -439,7 +441,7 @@ pub async fn run(
                                                 }
                                             }
                                             (KeyCode::Char('m'), m) if m.contains(KeyModifiers::CONTROL) => {
-                                                model_picker = Some(ModelPicker::new(crate::model_picker::available_models()));
+                                                model_picker = Some(ModelPicker::new(available_models.clone()));
                                                 ui_mode = UiMode::ModelPicker;
                                             }
                                             (KeyCode::Char('n'), m) if m.contains(KeyModifiers::CONTROL) => {
