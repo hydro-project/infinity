@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use futures_util::StreamExt;
 use rig::{
@@ -72,6 +75,8 @@ pub enum CompletionEvent<R> {
     ThinkingChunk(String),
     /// A synchronous tool result.
     SyncToolResult(ToolResult),
+    /// Some piece of information to log to the user.
+    Info(String),
 }
 
 // ── HistoryManager (unchanged from before) ──
@@ -673,6 +678,7 @@ where
         let mut cancel_rx = cancel_rx;
         let mut completion_counter: usize = 0;
         let mut is_thinking = false;
+        let mut retry_count = 0;
 
         let preamble = match extra_system_prompt {
             Some(extra) => format!("{}\n\n{}", include_str!("default_prompt.md"), extra),
@@ -712,8 +718,18 @@ where
             let mut llm_stream = match stream_result {
                 Ok(s) => s,
                 Err(e) => {
-                    Err(Into::<BoxError>::into(e))?;
-                    unreachable!()
+                    history.remove_trailing_reasoning();
+                    let err_str = format!("{}", e);
+                    if (err_str.contains("unexpected end of stream") || err_str.contains("unexpected error when processing the request")) && retry_count < 10 {
+                        yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_string());
+                        tracing::warn!("Stream error (unexpected end), retrying...");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        retry_count += 1;
+                        continue 'outer;
+                    } else {
+                        Err(Into::<BoxError>::into(e))?;
+                        unreachable!()
+                    }
                 }
             };
 
@@ -723,9 +739,21 @@ where
                 // by capturing the result into locals first.
                 let cancelled;
                 let llm_next = tokio::select! {
-                    res = llm_stream.next() => { cancelled = false; res },
-                    _ = &mut cancel_rx => { cancelled = true; None },
-                };
+                    res = llm_stream.next() => { cancelled = false; Ok(res) },
+                    _ = &mut cancel_rx => { cancelled = true; Ok(None) },
+                    _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                        cancelled = false;
+                        if retry_count < 10 {
+                            yield CompletionEvent::Info("Stream error (timeout), retrying...".to_string());
+                            tracing::warn!("Stream ended unexpectedly, removing trailing reasoning and retrying...");
+                            history.remove_trailing_reasoning();
+                            retry_count += 1;
+                            continue 'outer;
+                        } else {
+                            Err(Into::<BoxError>::into("Stream timed out"))
+                        }
+                    },
+                }?;
 
                 if cancelled {
                     tracing::info!("Completion cancelled");
@@ -739,6 +767,7 @@ where
                 let res = match llm_next {
                     Some(r) => r,
                     None => {
+                        yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_string());
                         tracing::warn!("Stream ended unexpectedly, removing trailing reasoning and retrying...");
                         history.remove_trailing_reasoning();
                         continue 'outer;
@@ -746,12 +775,18 @@ where
                 };
 
                 let chunk = match res {
-                    Ok(c) => c,
+                    Ok(c) => {
+                        retry_count = 0;
+                        c
+                    },
                     Err(e) => {
                         history.remove_trailing_reasoning();
                         let err_str = format!("{}", e);
-                        if err_str.contains("unexpected end of stream") {
+                        if (err_str.contains("unexpected end of stream") || err_str.contains("unexpected error when processing the request")) && retry_count < 10 {
+                            yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_string());
                             tracing::warn!("Stream error (unexpected end), retrying...");
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            retry_count += 1;
                             continue 'outer;
                         } else {
                             Err(Into::<BoxError>::into(e))?;
