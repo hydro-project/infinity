@@ -122,7 +122,7 @@ Runtimes SHOULD default to threaded processing when `associative` is not set, as
 
 Tools that support subscriptions MUST store the `callback_url`, `group_id`, and `id` from the original invocation durably, since events may arrive long after the initial tool call. The tool MUST return an initial `tool_result` confirming the subscription was created, and MUST send `subscription_event` messages for each matching event that occurs thereafter.
 
-To enable cancellation, tools SHOULD include a subscription identifier in the initial `tool_result` (e.g., `"Subscribed to pull_request events. Subscription ID: sub_abc"`). Tools that support subscriptions SHOULD be annotated with `"subscription": true` in the [toolset definition](/spec/basic/toolsets) so that runtimes and LLMs can distinguish subscription tools from one-off operations.
+To enable cancellation, tools SHOULD include a subscription identifier in the initial `tool_result` (e.g., `"Subscribed to pull_request events. Subscription ID: sub_abc"`). The tool result MUST include `"subscription": true` so that the runtime can [track the subscription](/spec/basic/tool-result).
 
 ## Cancellation
 

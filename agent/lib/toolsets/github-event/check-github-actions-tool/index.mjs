@@ -61,7 +61,6 @@ const TOOLSET_MANIFEST = {
         },
         required: ["owner", "repo"],
       },
-      annotations: { subscription: true },
     },
   ],
 };

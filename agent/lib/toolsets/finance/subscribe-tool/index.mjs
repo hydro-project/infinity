@@ -22,7 +22,6 @@ const TOOLSET_MANIFEST = {
         },
         required: ['symbol', 'threshold'],
       },
-      annotations: { subscription: true },
     },
     {
       name: 'notify_news',
@@ -34,7 +33,6 @@ const TOOLSET_MANIFEST = {
         },
         required: ['query'],
       },
-      annotations: { subscription: true },
     },
     {
       name: 'cancel_finance_subscription',
@@ -174,16 +172,19 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
     const { arguments: args, id, call_id, callback_url, group_id, operation } = body;
 
     let result;
+    let isSubscription = false;
     if (operation === 'cancel_finance_subscription') {
       result = await handleCancel(args);
     } else if (operation === 'notify_price_change') {
       result = await handlePriceSubscription(args, id, call_id, callback_url, group_id);
+      isSubscription = true;
     } else if (operation === 'notify_news') {
       result = await handleNewsSubscription(args, id, call_id, callback_url, group_id);
+      isSubscription = true;
     } else {
       result = `Unknown tool: ${operation}`;
     }
-    await sendToolResult(callback_url, group_id, id, call_id, result);
+    await sendToolResult(callback_url, group_id, id, call_id, result, isSubscription || undefined);
   } catch (err) {
     console.error('Error:', err);
     try {
