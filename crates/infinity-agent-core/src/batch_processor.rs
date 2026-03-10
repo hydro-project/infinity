@@ -245,6 +245,9 @@ where
 
             while let Some(ev) = stream.next().await {
                 match ev {
+                    Ok(event_processor::CompletionEvent::Info(info)) => {
+                        let _ = display_tx.send(DisplayEvent::Info(info));
+                    }
                     Ok(event_processor::CompletionEvent::TextChunk(chunk)) => {
                         any_text = true;
                         if !started {

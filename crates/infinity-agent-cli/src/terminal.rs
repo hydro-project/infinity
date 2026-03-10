@@ -150,6 +150,8 @@ where
                     DisplayEvent::ThinkingChunk { prefix, chunk } => {
                         if prefix.is_none() {
                             thinking_text_buffer.push_str(&chunk);
+                        } else if let Some(p) = prefix {
+                            thread_buffers.entry(p).or_default().push_str(&chunk);
                         }
                     }
                     DisplayEvent::StartOutput { prefix } => {
