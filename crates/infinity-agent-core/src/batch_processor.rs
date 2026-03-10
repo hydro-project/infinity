@@ -163,6 +163,7 @@ pub async fn process_batch<'a, Mdl, C, S, M, H>(
     mut tool_context: ToolContext<M>,
     extra_system_prompt: &'a Option<String>,
     additional_request_params: Option<serde_json::Value>,
+    model_id_override: Option<String>,
     rap_notifier: Option<&'a RapNotifier<H>>,
 ) -> Option<(Pin<Box<dyn Future<Output = ()> + 'a>>, oneshot::Sender<()>)>
 where
@@ -233,6 +234,7 @@ where
                 &completion_message_id,
                 extra_system_prompt.as_deref(),
                 additional_request_params.as_ref(),
+                model_id_override.as_deref(),
                 cancel_rx,
             ));
 
