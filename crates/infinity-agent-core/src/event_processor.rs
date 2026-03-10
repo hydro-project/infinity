@@ -8,7 +8,7 @@ use rig::{
     OneOrMany,
     completion::{CompletionModel, CompletionRequest, ToolDefinition},
     message::{AssistantContent, Message, ToolResult, ToolResultContent, UserContent},
-    streaming::StreamedAssistantContent,
+    streaming::{StreamedAssistantContent, ToolCallDeltaContent},
 };
 use serde::Serialize;
 use tracing;
@@ -881,7 +881,16 @@ where
                             }
                         }
                     }
-                    StreamedAssistantContent::ToolCallDelta { .. } => {}
+                    StreamedAssistantContent::ToolCallDelta { content, .. } => {
+                        match content {
+                            ToolCallDeltaContent::Name(n) => {
+                                yield CompletionEvent::ThinkingChunk(format!("Invoking tool: {}", n));
+                            }
+                            ToolCallDeltaContent::Delta(d) => {
+                                yield CompletionEvent::ThinkingChunk(d)
+                            }
+                        }
+                    }
                     StreamedAssistantContent::Reasoning(reasoning) => {
                         if is_thinking {
                             is_thinking = false;
