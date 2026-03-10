@@ -78,11 +78,10 @@ For tools that accept no parameters, the schema SHOULD explicitly indicate that 
 
 ### Annotations
 
-Tools MAY include an `annotations` object that provides metadata about their behavior. Annotations are informational — they help runtimes and LLMs make better decisions about when and how to invoke a tool, but they do not change the protocol mechanics. For example, a runtime might use the `destructive` annotation to prompt for user confirmation, or use `subscription` to adjust how it handles the tool's result lifecycle.
+Tools MAY include an `annotations` object that provides metadata about their behavior. Annotations are informational — they help runtimes and LLMs make better decisions about when and how to invoke a tool, but they do not change the protocol mechanics. For example, a runtime might use the `destructive` annotation to prompt for user confirmation.
 
 | Annotation | Type | Description |
 |---|---|---|
-| `subscription` | `boolean` | If `true`, indicates this tool creates an ongoing [subscription](/spec/server/subscription-events) rather than returning a single result. |
 | `requiresAuth` | `string` | Identifier for the authentication provider this tool requires. Indicates the tool may initiate an [OAuth flow](/spec/server/oauth). |
 | `readOnly` | `boolean` | If `true`, indicates this tool performs only read operations and does not modify external state. |
 | `destructive` | `boolean` | If `true`, indicates this tool performs destructive operations (e.g., deleting resources). Runtimes SHOULD prompt for user confirmation. |

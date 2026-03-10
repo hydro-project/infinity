@@ -183,7 +183,8 @@ async function handleSubscribe(args, id, callId, callbackUrl, groupId) {
   });
 
   await sendToolResult(callbackUrl, groupId, id, callId,
-    `Subscribed with filter: ${args.filter}. Subscription ID: ${id}`
+    `Subscribed with filter: ${args.filter}. Subscription ID: ${id}`,
+    true // subscription: true tells the runtime to track this as an active subscription
   );
 }
 
@@ -198,7 +199,7 @@ async function handleEvent(subscription, eventData) {
 }
 ```
 
-Mark subscription tools with the `subscription: true` annotation in your toolset definition so runtimes know to expect ongoing events. You should also expose a cancellation operation (e.g., `cancel_subscription`) that removes the stored subscription and stops event delivery.
+Include `subscription: true` in the [tool result](/spec/basic/tool-result) to signal to the runtime that this tool call has started a subscription. The runtime records the tool call ID as an active subscription so the agent can later cancel it via the built-in [`cancel_subscription` protocol](/spec/server/subscription-events#cancellation).
 
 The runtime spawns a child thread for each subscription event, giving each event a clean context window. The subscription remains active until explicitly cancelled.
 
