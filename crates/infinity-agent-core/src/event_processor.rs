@@ -660,6 +660,7 @@ pub fn run_completion<'a, Mdl, C, S, M>(
     message_id: &'a str,
     extra_system_prompt: Option<&'a str>,
     additional_request_params: Option<&'a serde_json::Value>,
+    model_id_override: Option<&'a str>,
     cancel_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> impl futures_util::Stream<Item = Result<CompletionEvent<Mdl::StreamingResponse>, BoxError>> + 'a
 where
@@ -681,7 +682,7 @@ where
         'outer: loop {
             let stream_result = model
                 .stream(CompletionRequest {
-                    model: None,
+                    model: model_id_override.map(|s| s.to_string()),
                     preamble: Some(preamble.clone()),
                     chat_history: history.get_history(),
                     documents: vec![],

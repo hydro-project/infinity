@@ -1,8 +1,7 @@
 use rig::client::{CompletionClient, ProviderClient};
-use rig::completion::CompletionModel;
+use rig::completion::{CompletionModel, GetTokenUsage};
 use rig::message::{AssistantContent, Message, ToolResultContent, UserContent};
-use rig_bedrock::client::Client;
-use rig_bedrock::streaming::{BedrockStreamingResponse, BedrockUsage};
+use rig_bedrock::client::Client as BedrockClient;
 use tokio::sync::{mpsc, oneshot};
 use tracing_subscriber::EnvFilter;
 
@@ -28,6 +27,7 @@ use infinity_agent_core::tools::thread::{CloseThreadTool, ReportToParentTool, Sp
 use infinity_agent_core::tools::{Tool, ToolContext};
 use infinity_agent_core::traits::ConversationStore;
 use memory_store::{InMemoryConversationStore, InMemoryMessageSender, InMemoryStateStore};
+use model_picker::{ModelEntry, ModelProvider};
 use sleep_tools::{SleepTool, SleepUntilTool};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -48,16 +48,43 @@ async fn async_main() -> Result<(), BoxError> {
             .init();
     }
 
+    run_with_bedrock().await
+}
+
+async fn run_with_bedrock() -> Result<(), BoxError> {
+    let provider = model_picker::BedrockProvider;
+    let models = provider.available_models();
+    let default_idx = provider.default_model_index();
+    let default_model = &models[default_idx];
+
+    let client = BedrockClient::from_env();
+    let model = client.completion_model(&default_model.model_id);
+
+    run_agent(model, models, default_idx, None).await
+}
+
+async fn run_agent<Mdl>(
+    model: Mdl,
+    models: Vec<ModelEntry>,
+    default_model_index: usize,
+    startup_info: Option<String>,
+) -> Result<(), BoxError>
+where
+    Mdl: CompletionModel + 'static,
+    Mdl::StreamingResponse: Default,
+{
     std::fs::create_dir_all(".infinity").ok();
+
+    let default_model = &models[default_model_index];
+    let initial_model_name = default_model.display_name.clone();
+    let initial_context_window = default_model.context_window;
 
     let threads_dir = ".infinity/threads";
     let sessions_path = ".infinity/sessions.json";
 
-    // Each thread's conversation history is stored as a separate file under threads_dir.
     let conversation_store = InMemoryConversationStore::new_with_dir(threads_dir);
     let state_store = InMemoryStateStore::new();
 
-    // Load the sessions list (all sessions with timestamps).
     let mut session_store = session_store::SessionStore::load(sessions_path);
 
     // Migrate legacy session.json if it exists and sessions.json is empty.
@@ -78,30 +105,25 @@ async fn async_main() -> Result<(), BoxError> {
         }
     }
 
-    // Always start with a fresh session; user can Ctrl+L to load an old one.
     let thread_id = uuid::Uuid::new_v4().to_string();
 
     let (input_tx, input_rx) = mpsc::unbounded_channel::<(InputMessage, String)>();
     let sender = InMemoryMessageSender::new(input_tx.clone());
 
-    let client = Client::from_env();
-
-    // Set up model from the available models list, defaulting to the 1m context model.
-    let models = model_picker::available_models();
-    let default_model = &models[model_picker::DEFAULT_MODEL_INDEX];
-    let model = client.completion_model(default_model.bedrock_model_id);
-    let initial_model_name = default_model.display_name.to_string();
-    let initial_context_window = default_model.context_window;
-
-    // Shared additional request params — swapped atomically when the user switches models.
+    // Shared model config — swapped atomically when the user switches models.
     let active_additional_params: std::sync::Arc<std::sync::RwLock<Option<serde_json::Value>>> =
         std::sync::Arc::new(std::sync::RwLock::new(
             default_model.additional_request_params.clone(),
         ));
+    let active_model_id: std::sync::Arc<std::sync::RwLock<Option<String>>> =
+        std::sync::Arc::new(std::sync::RwLock::new(None));
 
     let (display_tx, display_rx) = mpsc::unbounded_channel::<DisplayEvent<_>>();
 
-    // Clone the store so the agent loop owns one copy and we keep one for saving.
+    if let Some(info) = startup_info {
+        let _ = display_tx.send(DisplayEvent::Info(info));
+    }
+
     let agent_store = conversation_store.clone();
 
     // Spawn a task that boots the agent (callback server, RAP config, tool loading)
@@ -198,6 +220,7 @@ async fn async_main() -> Result<(), BoxError> {
         .map(|cwd| format!("The user's current working directory is: {}", cwd.display()));
 
     let agent_additional_params = active_additional_params.clone();
+    let agent_model_id = active_model_id.clone();
     let agent_handle = tokio::task::spawn_local(async move {
         agent_loop(
             input_rx,
@@ -211,6 +234,7 @@ async fn async_main() -> Result<(), BoxError> {
             tool_server_urls,
             extra_system_prompt,
             agent_additional_params,
+            agent_model_id,
         )
         .await;
     });
@@ -252,12 +276,14 @@ async fn async_main() -> Result<(), BoxError> {
 
     // Listen for model-switch signals from the terminal (Ctrl+M → pick).
     let switch_additional_params = active_additional_params.clone();
+    let switch_model_id = active_model_id.clone();
+    let switch_models = models.clone();
     tokio::spawn(async move {
-        let models = model_picker::available_models();
         while let Some(idx) = model_switch_rx.recv().await {
-            if let Some(entry) = models.get(idx) {
+            if let Some(entry) = switch_models.get(idx) {
                 *switch_additional_params.write().unwrap() =
                     entry.additional_request_params.clone();
+                *switch_model_id.write().unwrap() = Some(entry.model_id.clone());
             }
         }
     });
@@ -274,6 +300,7 @@ async fn async_main() -> Result<(), BoxError> {
         sessions_list,
         load_session_tx,
         model_switch_tx,
+        models,
     )
     .await;
     agent_handle.abort();
@@ -311,13 +338,15 @@ async fn async_main() -> Result<(), BoxError> {
 
 // ── History replay helper ───────────────────────────────────────────────────
 
-fn replay_history(
-    display_tx: &mpsc::UnboundedSender<DisplayEvent<BedrockStreamingResponse>>,
+fn replay_history<R: GetTokenUsage>(
+    display_tx: &mpsc::UnboundedSender<DisplayEvent<R>>,
     conversation_store: &InMemoryConversationStore,
     thread_id: &str,
     history: &[Message],
-    initial_tokens: usize,
-) {
+    _initial_tokens: usize,
+) where
+    R: Default,
+{
     for message in history {
         match message {
             Message::User { content } => match content.first() {
@@ -356,16 +385,7 @@ fn replay_history(
         }
     }
 
-    let _ = display_tx.send(DisplayEvent::ResponseDone(
-        None,
-        BedrockStreamingResponse {
-            usage: Some(BedrockUsage {
-                input_tokens: 0,
-                output_tokens: 0,
-                total_tokens: initial_tokens as i32,
-            }),
-        },
-    ));
+    let _ = display_tx.send(DisplayEvent::ResponseDone(None, R::default()));
 }
 
 fn is_user_text_input(msg: &InputMessage) -> bool {
@@ -391,6 +411,7 @@ async fn agent_loop<Mdl>(
     tool_server_urls: Vec<String>,
     extra_system_prompt: Option<String>,
     additional_request_params: std::sync::Arc<std::sync::RwLock<Option<serde_json::Value>>>,
+    active_model_id: std::sync::Arc<std::sync::RwLock<Option<String>>>,
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
@@ -457,6 +478,7 @@ async fn agent_loop<Mdl>(
                 extra_system_prompt.as_ref().clone(),
                 rap_notifier.clone(),
                 additional_request_params.clone(),
+                active_model_id.clone(),
             ));
             tx
         });
@@ -482,6 +504,7 @@ async fn thread_worker<Mdl>(
         infinity_agent_core::rap_notifier::RapNotifier<rap_tools::SimpleHttpClient>,
     >,
     additional_request_params: std::sync::Arc<std::sync::RwLock<Option<serde_json::Value>>>,
+    active_model_id: std::sync::Arc<std::sync::RwLock<Option<String>>>,
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
@@ -611,6 +634,7 @@ async fn thread_worker<Mdl>(
             }
 
             let current_additional_params = additional_request_params.read().unwrap().clone();
+            let current_model_id = active_model_id.read().unwrap().clone();
 
             let result = infinity_agent_core::batch_processor::process_batch(
                 all_inputs.into_iter(),
@@ -625,6 +649,7 @@ async fn thread_worker<Mdl>(
                 tool_context.clone(),
                 &extra_system_prompt,
                 current_additional_params,
+                current_model_id,
                 rap_notifier.as_ref(),
             )
             .await;
