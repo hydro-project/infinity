@@ -11,7 +11,7 @@ use rig::{
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 pub struct BedrockStreamingResponse {
     pub usage: Option<BedrockUsage>,
 }
@@ -53,6 +53,10 @@ impl CompletionModel {
         &self,
         completion_request: rig::completion::CompletionRequest,
     ) -> Result<StreamingCompletionResponse<BedrockStreamingResponse>, CompletionError> {
+        let model_id = completion_request
+            .model
+            .clone()
+            .unwrap_or_else(|| self.model.clone());
         let request = AwsCompletionRequest(completion_request);
 
         let mut converse_builder = self
@@ -60,7 +64,7 @@ impl CompletionModel {
             .get_inner()
             .await
             .converse_stream()
-            .model_id(self.model.as_str());
+            .model_id(&model_id);
 
         let tool_config = request.tools_config()?;
         let mut prompt_with_history = request.messages()?;

@@ -185,6 +185,10 @@ impl completion::CompletionModel for CompletionModel {
         &self,
         completion_request: completion::CompletionRequest,
     ) -> Result<completion::CompletionResponse<AwsConverseOutput>, CompletionError> {
+        let model_id = completion_request
+            .model
+            .clone()
+            .unwrap_or_else(|| self.model.clone());
         let request = AwsCompletionRequest(completion_request);
 
         let mut converse_builder = self
@@ -192,7 +196,7 @@ impl completion::CompletionModel for CompletionModel {
             .get_inner()
             .await
             .converse()
-            .model_id(self.model.as_str());
+            .model_id(&model_id);
 
         let tool_config = request.tools_config()?;
         let messages = request.messages()?;

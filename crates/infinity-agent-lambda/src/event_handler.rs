@@ -240,6 +240,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             tool_context,
             &extra_system_prompt,
             None,
+            None,
             rap_notifier.as_ref(),
         )
         .await;
