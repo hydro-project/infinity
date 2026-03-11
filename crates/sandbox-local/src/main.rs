@@ -15,6 +15,11 @@ struct Args {
     /// Enable macOS sandbox-exec filesystem write restrictions
     #[arg(long)]
     enable_sandbox: bool,
+
+    /// Base directory for temporary sandbox directories. When not specified,
+    /// the system default (e.g. /tmp) is used.
+    #[arg(long)]
+    tempdir: Option<std::path::PathBuf>,
 }
 
 /// Internal entrypoint used when the binary is re-invoked inside a sandbox to
@@ -71,7 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .enable_all()
         .build()?
         .block_on(async {
-            let backend = LocalBackend::new(args.enable_sandbox);
+            let backend = LocalBackend::new(args.enable_sandbox, args.tempdir);
             let metadata = FileMetadataStore::new();
             run_server(backend, metadata, args.port).await
         })
