@@ -22,13 +22,27 @@ pub struct LocalBackend {
     cache: Mutex<HashMap<String, PathBuf>>,
     /// Whether to use macOS sandbox-exec for command execution.
     sandbox_enabled: bool,
+    /// Optional base directory in which to create temp directories.
+    /// When `None`, the default `tempfile` behaviour is used (typically
+    /// the OS temp directory).
+    tempdir_base: Option<PathBuf>,
 }
 
 impl LocalBackend {
-    pub fn new(sandbox_enabled: bool) -> Self {
+    pub fn new(sandbox_enabled: bool, tempdir_base: Option<PathBuf>) -> Self {
         Self {
             cache: Mutex::new(HashMap::new()),
             sandbox_enabled,
+            tempdir_base,
+        }
+    }
+
+    /// Create a new temporary directory, respecting the configured
+    /// `tempdir_base` when one was provided.
+    fn make_tempdir(&self) -> std::io::Result<tempfile::TempDir> {
+        match &self.tempdir_base {
+            Some(base) => tempfile::tempdir_in(base),
+            None => tempfile::tempdir(),
         }
     }
 }
@@ -90,7 +104,7 @@ impl SandboxBackend for LocalBackend {
             }
         }
 
-        let tmp = tempfile::tempdir().map_err(SandboxError::Io)?;
+        let tmp = self.make_tempdir().map_err(SandboxError::Io)?;
         let sandbox_dir = tmp.keep();
 
         let bookmark = format!("sandbox-{}", &state.group_id);
@@ -150,7 +164,7 @@ impl SandboxBackend for LocalBackend {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
-            let tmp = tempfile::tempdir().map_err(SandboxError::Io)?;
+            let tmp = self.make_tempdir().map_err(SandboxError::Io)?;
             let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
             let tmp_str = abs_tmp.to_string_lossy();
 
@@ -232,7 +246,7 @@ impl SandboxBackend for LocalBackend {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
-            let tmp = tempfile::tempdir().map_err(SandboxError::Io)?;
+            let tmp = self.make_tempdir().map_err(SandboxError::Io)?;
             let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
             let tmp_str = abs_tmp.to_string_lossy();
 
