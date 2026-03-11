@@ -202,6 +202,7 @@ where
                     }
                     DisplayEvent::ToolCall { name, args, prefix } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
+                        thinking_text_buffer.clear();
 
                         if prefix.is_none() {
                             print_line_above(&mut viewport, Line::from(vec![
