@@ -735,9 +735,15 @@ where
                     history.remove_trailing_reasoning();
                     let err_str = format!("{}", e);
                     if (err_str.contains("unexpected end of stream") || err_str.contains("unexpected error when processing the request") || err_str.contains("please wait before trying again")) && retry_count < 10 {
-                        yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_string());
                         tracing::warn!("Stream error (unexpected end), retrying...");
-                        tokio::time::sleep(Duration::from_secs(5)).await;
+
+                        if err_str.contains("please wait before trying again") {
+                            yield CompletionEvent::Info("Stream error (rate limit), retrying after 30 seconds...".to_string());
+                            tokio::time::sleep(Duration::from_secs(30)).await;
+                        } else {
+                            yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_string());
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                        }
                         retry_count += 1;
                         continue 'outer;
                     } else {
