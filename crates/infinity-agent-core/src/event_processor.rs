@@ -712,8 +712,22 @@ where
                         Some(base)
                     },
                     output_schema: None,
-                })
-                .await;
+                });
+
+            let stream_result = tokio::select! {
+                r = stream_result => {
+                    Ok(r)
+                }
+                _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                    if retry_count < 10 {
+                        yield CompletionEvent::Info("Stream error (timeout initiating request), retrying...".to_string());
+                        retry_count += 1;
+                        continue 'outer;
+                    } else {
+                        Err(Into::<BoxError>::into("Timed out initiating request"))
+                    }
+                }
+            }?;
 
             let mut llm_stream = match stream_result {
                 Ok(s) => s,
@@ -767,10 +781,17 @@ where
                 let res = match llm_next {
                     Some(r) => r,
                     None => {
-                        yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_string());
-                        tracing::warn!("Stream ended unexpectedly, removing trailing reasoning and retrying...");
                         history.remove_trailing_reasoning();
-                        continue 'outer;
+                        if retry_count < 10 {
+                            yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_string());
+                            tracing::warn!("Stream ended unexpectedly, removing trailing reasoning and retrying...");
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            retry_count += 1;
+                            continue 'outer;
+                        } else {
+                            Err(Into::<BoxError>::into("Stream timed out"))?;
+                            unreachable!()
+                        }
                     }
                 };
 
@@ -907,6 +928,7 @@ where
                     }
                     StreamedAssistantContent::Final(r) => {
                         if is_thinking {
+                            is_thinking = false;
                             yield CompletionEvent::ThinkingEnd;
                         }
                         tracing::info!("Received final message");
