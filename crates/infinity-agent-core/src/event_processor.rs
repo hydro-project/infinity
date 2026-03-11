@@ -928,7 +928,6 @@ where
                     }
                     StreamedAssistantContent::Final(r) => {
                         if is_thinking {
-                            is_thinking = false;
                             yield CompletionEvent::ThinkingEnd;
                         }
                         tracing::info!("Received final message");
