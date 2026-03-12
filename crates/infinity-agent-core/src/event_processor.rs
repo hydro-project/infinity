@@ -734,6 +734,7 @@ where
                 Err(e) => {
                     history.remove_trailing_reasoning();
                     let err_str = format!("{}", e);
+                    tracing::error!(error = %e, "Completion stream initiation failed");
                     if (err_str.contains("unexpected end of stream") || err_str.contains("unexpected error when processing the request") || err_str.contains("please wait before trying again")) && retry_count < 10 {
                         tracing::warn!("Stream error (unexpected end), retrying...");
 
