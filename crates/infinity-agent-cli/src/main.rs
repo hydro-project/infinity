@@ -9,6 +9,7 @@ use clap::Parser;
 
 mod component;
 mod inline_viewport;
+mod mcp_proxy;
 mod memory_store;
 mod model_picker;
 mod modifier_diff;
@@ -178,6 +179,48 @@ where
                         Err(e) => {
                             let _ = agent_display_tx.send(DisplayEvent::Info(format!(
                                 "Warning: failed to launch RAP server '{cmd}': {e}"
+                            )));
+                        }
+                    }
+                }
+
+                // Spawn MCP proxy servers and collect their URLs.
+                for (name, cmd, env) in config.mcp_servers() {
+                    let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                        "Starting MCP proxy for '{name}'"
+                    )));
+                    match mcp_proxy::start_mcp_proxy(name.clone(), cmd, env).await {
+                        Ok(port) => {
+                            let url = format!("http://127.0.0.1:{port}");
+                            let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                                "MCP proxy '{name}' ready on port {port}"
+                            )));
+                            urls.push(url);
+                        }
+                        Err(e) => {
+                            let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                                "Warning: failed to start MCP proxy '{name}': {e}"
+                            )));
+                        }
+                    }
+                }
+
+                // Start HTTP MCP proxy servers and collect their URLs.
+                for (name, mcp_url, headers) in config.http_mcp_servers() {
+                    let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                        "Starting HTTP MCP proxy for '{name}'"
+                    )));
+                    match mcp_proxy::start_http_mcp_proxy(name.clone(), mcp_url, headers).await {
+                        Ok(port) => {
+                            let url = format!("http://127.0.0.1:{port}");
+                            let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                                "HTTP MCP proxy '{name}' ready on port {port}"
+                            )));
+                            urls.push(url);
+                        }
+                        Err(e) => {
+                            let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                                "Warning: failed to start HTTP MCP proxy '{name}': {e}"
                             )));
                         }
                     }
