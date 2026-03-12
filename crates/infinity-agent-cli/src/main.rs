@@ -5,6 +5,8 @@ use rig_bedrock::client::Client as BedrockClient;
 use tokio::sync::{mpsc, oneshot};
 use tracing_subscriber::EnvFilter;
 
+use clap::Parser;
+
 mod component;
 mod inline_viewport;
 mod memory_store;
@@ -33,6 +35,15 @@ use sleep_tools::{SleepTool, SleepUntilTool};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
+/// Infinity Agent CLI
+#[derive(Parser, Debug)]
+#[command(name = "infinity-agent-cli", version, about)]
+struct Cli {
+    /// Model provider to use.
+    #[arg(long, value_parser = ["bedrock"])]
+    provider: Option<String>,
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), BoxError> {
     let local = tokio::task::LocalSet::new();
@@ -50,6 +61,7 @@ async fn async_main() -> Result<(), BoxError> {
             .init();
     }
 
+    let _cli = Cli::parse();
     run_with_bedrock().await
 }
 
