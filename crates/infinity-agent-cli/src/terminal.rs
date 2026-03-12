@@ -55,7 +55,7 @@ pub async fn run<R>(
     mut context_window: usize,
     new_session_tx: mpsc::UnboundedSender<String>,
     sessions: Vec<SessionEntry>,
-    load_session_tx: mpsc::UnboundedSender<String>,
+    load_session_tx: mpsc::UnboundedSender<(String, usize)>,
     model_switch_tx: mpsc::UnboundedSender<usize>,
     available_models: Vec<crate::model_picker::ModelEntry>,
 ) -> Result<usize, BoxError>
@@ -351,7 +351,7 @@ where
                                                     let selected_tokens = entry.total_tokens_used;
                                                     thread_id = selected_thread.clone();
                                                     total_tokens_used = selected_tokens;
-                                                    let _ = load_session_tx.send(selected_thread.clone());
+                                                    let _ = load_session_tx.send((selected_thread.clone(), selected_tokens));
                                                     print_line_above(&mut viewport, Line::from(vec![
                                                         Span::styled(
                                                             format!("✦ Loaded session — thread {}", selected_thread),

@@ -17,6 +17,7 @@ mod session_store;
 mod sleep_tools;
 mod terminal;
 mod text_input;
+mod token_usage;
 
 use infinity_agent_core::batch_processor::DisplayEvent;
 use infinity_agent_core::event_processor;
@@ -72,7 +73,7 @@ async fn run_agent<Mdl>(
 ) -> Result<(), BoxError>
 where
     Mdl: CompletionModel + 'static,
-    Mdl::StreamingResponse: Default,
+    Mdl::StreamingResponse: token_usage::WithTotalTokens,
 {
     std::fs::create_dir_all(".infinity").ok();
 
@@ -87,24 +88,6 @@ where
     let state_store = InMemoryStateStore::new();
 
     let mut session_store = session_store::SessionStore::load(sessions_path);
-
-    // Migrate legacy session.json if it exists and sessions.json is empty.
-    let legacy_session_path = ".infinity/session.json";
-    if session_store.sessions.is_empty() {
-        if let Ok(legacy) = std::fs::read_to_string(legacy_session_path) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&legacy) {
-                if let Some(tid) = v.get("thread_id").and_then(|t| t.as_str()) {
-                    let tokens = v
-                        .get("total_tokens_used")
-                        .and_then(|t| t.as_u64())
-                        .unwrap_or(0) as usize;
-                    session_store.upsert(tid, tokens);
-                    session_store.save(sessions_path).ok();
-                    std::fs::remove_file(legacy_session_path).ok();
-                }
-            }
-        }
-    }
 
     let thread_id = uuid::Uuid::new_v4().to_string();
 
@@ -241,7 +224,7 @@ where
     });
 
     let (new_session_tx, mut new_session_rx) = mpsc::unbounded_channel::<String>();
-    let (load_session_tx, mut load_session_rx) = mpsc::unbounded_channel::<String>();
+    let (load_session_tx, mut load_session_rx) = mpsc::unbounded_channel::<(String, usize)>();
     let (model_switch_tx, mut model_switch_rx) = mpsc::unbounded_channel::<usize>();
 
     // Track the active thread_id so we can save the latest on shutdown.
@@ -260,7 +243,7 @@ where
     let load_display_tx = display_tx.clone();
     let load_conversation_store = conversation_store.clone();
     tokio::spawn(async move {
-        while let Some(tid) = load_session_rx.recv().await {
+        while let Some((tid, tokens)) = load_session_rx.recv().await {
             *active_thread_id_for_load.lock().unwrap() = tid.clone();
             // Replay the selected session's history to the display.
             if let Ok(history) = load_conversation_store.load_history(&tid).await {
@@ -269,7 +252,7 @@ where
                     &load_conversation_store,
                     &tid,
                     &history,
-                    0,
+                    tokens,
                 );
             }
         }
@@ -339,15 +322,13 @@ where
 
 // ── History replay helper ───────────────────────────────────────────────────
 
-fn replay_history<R: GetTokenUsage>(
+fn replay_history<R: GetTokenUsage + token_usage::WithTotalTokens>(
     display_tx: &mpsc::UnboundedSender<DisplayEvent<R>>,
     conversation_store: &InMemoryConversationStore,
     thread_id: &str,
     history: &[Message],
-    _initial_tokens: usize,
-) where
-    R: Default,
-{
+    initial_tokens: usize,
+) {
     for message in history {
         match message {
             Message::User { content } => match content.first() {
@@ -386,7 +367,10 @@ fn replay_history<R: GetTokenUsage>(
         }
     }
 
-    let _ = display_tx.send(DisplayEvent::ResponseDone(None, R::default()));
+    let _ = display_tx.send(DisplayEvent::ResponseDone(
+        None,
+        R::with_total_tokens(initial_tokens),
+    ));
 }
 
 fn is_user_text_input(msg: &InputMessage) -> bool {
