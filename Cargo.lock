@@ -1930,6 +1930,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "chrono-tz",
+ "clap",
  "futures-util",
  "http-body-util",
  "hyper 1.8.1",

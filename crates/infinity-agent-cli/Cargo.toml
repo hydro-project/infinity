@@ -28,6 +28,7 @@ hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 reqwest = { workspace = true }
+clap = { version = "4", features = ["derive"] }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["signal"] }
