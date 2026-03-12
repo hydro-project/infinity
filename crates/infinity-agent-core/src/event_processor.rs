@@ -762,7 +762,7 @@ where
                 let llm_next = tokio::select! {
                     res = llm_stream.next() => { cancelled = false; Ok(res) },
                     _ = &mut cancel_rx => { cancelled = true; Ok(None) },
-                    _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                    _ = tokio::time::sleep(Duration::from_secs(60)) => {
                         cancelled = false;
                         if retry_count < 10 {
                             yield CompletionEvent::Info("Stream error (timeout), retrying...".to_string());
