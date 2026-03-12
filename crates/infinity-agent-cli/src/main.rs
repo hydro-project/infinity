@@ -39,7 +39,8 @@ async fn main() -> Result<(), BoxError> {
 }
 
 async fn async_main() -> Result<(), BoxError> {
-    let log_file = std::fs::File::create("/tmp/infinity-agent-cli.log").ok();
+    std::fs::create_dir_all(".infinity").ok();
+    let log_file = std::fs::File::create(".infinity/cli.log").ok();
     if let Some(file) = log_file {
         tracing_subscriber::fmt()
             .with_env_filter(EnvFilter::from_default_env())
