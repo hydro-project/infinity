@@ -210,6 +210,8 @@ impl InlineViewport {
                 let shift_down = ideal_viewport_y - self.viewport_y;
                 queue!(stdout, cursor::RestorePosition)?;
                 queue!(stdout, MoveToNextLine(shift_down))?;
+                queue!(stdout, SavePosition)?;
+                self.viewport_y = ideal_viewport_y;
                 self.last_effective_viewport_y = ideal_viewport_y;
             }
         }
