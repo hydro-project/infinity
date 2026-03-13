@@ -17,6 +17,8 @@ pub struct ToolContext<M: InputSender> {
     pub input_queue_arn: String,
     pub callback_url: String,
     pub user_id: Option<String>,
+    /// Full thread stack: [root, ..ancestors, current_thread].
+    pub thread_stack: Vec<String>,
 }
 
 #[async_trait]
