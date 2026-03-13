@@ -402,3 +402,132 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
         Ok(())
     }
 }
+
+/// Tool that sends a message to a child thread, injected inline into its history.
+pub struct SendMessageToChildTool<C: ConversationStore> {
+    pub conversation_store: C,
+}
+
+#[async_trait]
+impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M>
+    for SendMessageToChildTool<C>
+{
+    fn name(&self) -> &str {
+        "send_message_to_child"
+    }
+
+    fn description(&self) -> &str {
+        "Send a message to a child thread. The message will be injected inline into the child's conversation history."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "thread_id": {
+                    "type": "string",
+                    "description": "The ID of the child thread to send the message to."
+                },
+                "message": {
+                    "type": "string",
+                    "description": "The message content to send to the child thread."
+                }
+            },
+            "required": ["thread_id", "message"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        id: String,
+        call_id: Option<String>,
+        context: &ToolContext<M>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let child_thread_id = args["thread_id"].as_str().ok_or("thread_id is required")?;
+        let message_text = args["message"].as_str().ok_or("message is required")?;
+
+        let (parent_id, spawn_tool_call_id) = self
+            .conversation_store
+            .get_thread_parent_info(child_thread_id)
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+            .ok_or("Child thread not found or has no parent")?;
+
+        if parent_id != context.group_id {
+            let tool_result = InputMessage {
+                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                    id: id.clone(),
+                    call_id,
+                    content: OneOrMany::one(ToolResultContent::Text(Text {
+                        text: format!(
+                            "Error: thread {} is not a child of the current thread {}",
+                            child_thread_id, context.group_id
+                        ),
+                    })),
+                })),
+                group_id: context.group_id.clone(),
+                metadata: None,
+                synthetic: None,
+                display_as: None,
+                subscription: false,
+            };
+            context
+                .message_sender
+                .send_to_input_queue(tool_result, &context.group_id, &id)
+                .await?;
+            return Ok(());
+        }
+
+        tracing::info!(
+            "Sending message from parent {} to child thread {} via tool call {}",
+            context.group_id,
+            child_thread_id,
+            spawn_tool_call_id
+        );
+
+        let child_message = InputMessage {
+            content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                id: String::new(),
+                call_id: None,
+                content: OneOrMany::one(ToolResultContent::Text(Text {
+                    text: format!("Message from parent thread: {}", message_text),
+                })),
+            })),
+            group_id: child_thread_id.to_string(),
+            metadata: None,
+            synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::ParentMessage {
+                tool_call_id: spawn_tool_call_id,
+            })),
+            display_as: None,
+            subscription: false,
+        };
+
+        context
+            .message_sender
+            .send_to_input_queue(child_message, child_thread_id, &id)
+            .await?;
+
+        let tool_result = InputMessage {
+            content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                id: id.clone(),
+                call_id,
+                content: OneOrMany::one(ToolResultContent::Text(Text {
+                    text: "Message sent to child thread.".to_string(),
+                })),
+            })),
+            group_id: context.group_id.clone(),
+            metadata: None,
+            synthetic: None,
+            display_as: None,
+            subscription: false,
+        };
+
+        context
+            .message_sender
+            .send_to_input_queue(tool_result, &context.group_id, &id)
+            .await?;
+
+        Ok(())
+    }
+}
