@@ -39,6 +39,8 @@ pub enum TaggedSyntheticKind {
     },
     #[serde(rename = "thread_report")]
     ThreadReport { tool_call_id: String },
+    #[serde(rename = "parent_message")]
+    ParentMessage { tool_call_id: String },
 }
 
 impl SyntheticKind {
@@ -50,6 +52,9 @@ impl SyntheticKind {
             SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport { tool_call_id }) => {
                 tool_call_id
             }
+            SyntheticKind::Tagged(TaggedSyntheticKind::ParentMessage { tool_call_id }) => {
+                tool_call_id
+            }
             SyntheticKind::SubscriptionEvent(id) => id,
         }
     }
@@ -58,6 +63,13 @@ impl SyntheticKind {
         matches!(
             self,
             SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport { .. })
+        )
+    }
+
+    pub fn is_parent_message(&self) -> bool {
+        matches!(
+            self,
+            SyntheticKind::Tagged(TaggedSyntheticKind::ParentMessage { .. })
         )
     }
 

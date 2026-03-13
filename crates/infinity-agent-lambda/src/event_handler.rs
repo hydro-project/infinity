@@ -12,7 +12,7 @@ use infinity_agent_core::message::InputMessage;
 use infinity_agent_core::tools::config::ToolsConfig;
 use infinity_agent_core::tools::rap_tool::RapTool;
 use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
-use infinity_agent_core::tools::thread::{CloseThreadTool, ReportToParentTool, SpawnThreadTool};
+use infinity_agent_core::tools::thread::{CloseThreadTool, ReportToParentTool, SendMessageToChildTool, SpawnThreadTool};
 use infinity_agent_core::tools::toolset_loader::ToolsetLoader;
 use infinity_agent_core::tools::{Tool, ToolContext};
 
@@ -175,6 +175,9 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     tool_impls.push(Box::new(CloseThreadTool {
         conversation_store: conversation_store.clone(),
         rap_notifier: rap_notifier.clone(),
+    }));
+    tool_impls.push(Box::new(SendMessageToChildTool {
+        conversation_store: conversation_store.clone(),
     }));
     tool_impls.push(Box::new(
         infinity_agent_core::tools::cancel_subscription::CancelSubscriptionTool {
