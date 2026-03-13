@@ -507,11 +507,13 @@ fn print_above(
     viewport: &mut InlineViewport,
     writer: impl FnOnce(&mut io::Stdout) -> io::Result<()>,
 ) -> Result<(), BoxError> {
-    let vp_top = viewport.scroll_region_bottom();
     let mut stdout = io::stdout();
 
     queue!(stdout, cursor::Hide)?;
-    queue!(stdout, SetScrollRegion(1..vp_top))?;
+    queue!(
+        stdout,
+        SetScrollRegion(1..viewport.last_effective_viewport_y)
+    )?;
     queue!(stdout, cursor::RestorePosition)?;
 
     writer(&mut stdout)?;
