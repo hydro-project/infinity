@@ -593,6 +593,7 @@ async fn thread_worker<Mdl>(
         input_queue_arn: String::new(),
         callback_url: callback_url.clone(),
         user_id: None,
+        thread_stack: Vec::new(), // populated by process_batch
     };
     let tool_registry: std::collections::HashMap<String, &dyn Tool<InMemoryMessageSender>> =
         tool_impls

@@ -216,6 +216,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         input_queue_arn: input_queue_arn.clone(),
         callback_url: callback_url.clone(),
         user_id,
+        thread_stack: Vec::new(), // populated in process_batch
     };
 
     let tool_registry: std::collections::HashMap<String, &dyn Tool<SqsMessageSender>> = tool_impls
