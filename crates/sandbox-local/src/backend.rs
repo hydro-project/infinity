@@ -20,7 +20,8 @@ use sandbox_core::types::RepoState;
 pub struct LocalBackend {
     /// group_id -> cached sandbox directory
     cache: Mutex<HashMap<String, PathBuf>>,
-    /// Whether to use macOS sandbox-exec for command execution.
+    /// Whether to use platform-specific sandboxing for command execution
+    /// (macOS sandbox-exec or Linux bubblewrap).
     sandbox_enabled: bool,
     /// Optional base directory in which to create temp directories.
     /// When `None`, the default `tempfile` behaviour is used (typically
@@ -28,8 +29,18 @@ pub struct LocalBackend {
     tempdir_base: Option<PathBuf>,
 }
 
+/// Returns `true` when the current platform supports sandboxed execution.
+fn platform_sandbox_available() -> bool {
+    cfg!(target_os = "macos") || cfg!(target_os = "linux")
+}
+
 impl LocalBackend {
     pub fn new(sandbox_enabled: bool, tempdir_base: Option<PathBuf>) -> Self {
+        if sandbox_enabled && !platform_sandbox_available() {
+            tracing::warn!(
+                "sandbox enabled but not supported on this platform; commands will run unsandboxed"
+            );
+        }
         Self {
             cache: Mutex::new(HashMap::new()),
             sandbox_enabled,
@@ -149,8 +160,9 @@ impl SandboxBackend for LocalBackend {
     /// `argv[1..]` are its arguments.  The caller is responsible for any
     /// shell wrapping (e.g. `&["bash", "-c", cmd]` for user shell commands).
     ///
-    /// On macOS, uses `sandbox-exec` to restrict filesystem write access to
-    /// only the sandbox directory. On other platforms, runs the command directly.
+    /// When sandboxing is enabled, uses `sandbox-exec` on macOS or `bwrap`
+    /// on Linux to restrict filesystem write access to only the sandbox
+    /// directory. On other platforms, runs the command directly.
     async fn execute_command(
         &self,
         sandbox_dir: &Path,
@@ -197,6 +209,38 @@ impl SandboxBackend for LocalBackend {
             // Clean up the scratch tmpdir (best-effort).
             drop(tmp);
             result
+        } else if cfg!(target_os = "linux") && self.sandbox_enabled {
+            let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
+            let sandbox_dir_str = abs_sandbox.to_string_lossy();
+
+            let result = tokio::process::Command::new("bwrap")
+                .args([
+                    "--ro-bind",
+                    "/",
+                    "/",
+                    "--bind",
+                    &sandbox_dir_str,
+                    &sandbox_dir_str,
+                    "--bind",
+                    "/tmp",
+                    "/tmp",
+                    "--dev",
+                    "/dev",
+                    "--proc",
+                    "/proc",
+                    "--",
+                ])
+                .arg(program)
+                .args(args)
+                .current_dir(sandbox_dir)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+                .map_err(|e| SandboxError::CommandError(format!("failed to run command: {e}")))?;
+
+            result
         } else {
             tokio::process::Command::new(program)
                 .args(args)
@@ -221,10 +265,11 @@ impl SandboxBackend for LocalBackend {
     /// `argv[1..]` are its arguments.  The caller is responsible for any
     /// shell wrapping (e.g. `&["bash", "-c", cmd]` for user shell commands).
     ///
-    /// On macOS, uses `sandbox-exec` to restrict filesystem write access to
-    /// only the sandbox directory. On other platforms, runs the command directly.
-    /// The temp directory for `TMPDIR` (macOS sandbox) is stored in the
-    /// returned `SpawnedCommand` so it outlives the child process.
+    /// When sandboxing is enabled, uses `sandbox-exec` on macOS or `bwrap`
+    /// on Linux to restrict filesystem write access to only the sandbox
+    /// directory. On other platforms, runs the command directly.
+    /// The temp directory for `TMPDIR` is stored in the returned
+    /// `SpawnedCommand` so it outlives the child process.
     async fn spawn_command(
         &self,
         sandbox_dir: &Path,
@@ -281,6 +326,43 @@ impl SandboxBackend for LocalBackend {
             Ok(SpawnedCommand {
                 child,
                 _keepalive: Some(Box::new(tmp)),
+            })
+        } else if cfg!(target_os = "linux") && self.sandbox_enabled {
+            let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
+            let sandbox_dir_str = abs_sandbox.to_string_lossy();
+
+            let child = tokio::process::Command::new("bwrap")
+                .args([
+                    "--ro-bind",
+                    "/",
+                    "/",
+                    "--bind",
+                    &sandbox_dir_str,
+                    &sandbox_dir_str,
+                    "--bind",
+                    "/tmp",
+                    "/tmp",
+                    "--dev",
+                    "/dev",
+                    "--proc",
+                    "/proc",
+                    "--",
+                ])
+                .arg(&current_exe)
+                .arg("exec")
+                .arg("--")
+                .arg(program)
+                .args(args)
+                .current_dir(sandbox_dir)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| SandboxError::CommandError(format!("failed to spawn command: {e}")))?;
+
+            Ok(SpawnedCommand {
+                child,
+                _keepalive: None,
             })
         } else {
             let child = tokio::process::Command::new(&current_exe)
