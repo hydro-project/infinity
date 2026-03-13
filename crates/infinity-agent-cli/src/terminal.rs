@@ -522,7 +522,8 @@ fn print_above(
 
     stdout.flush()?;
 
-    viewport.viewport_y = vp_top;
+    let cursor_position = cursor::position().unwrap();
+    viewport.viewport_y = cursor_position.1 + 1;
 
     // don't show the cursor here or flush, that will be handled in printing input bar
 
