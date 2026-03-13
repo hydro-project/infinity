@@ -497,7 +497,7 @@ where
             return Ok(PrepareResult::Handled);
         };
 
-        if synthetic_kind.is_thread_report() || synthetic_kind.is_associative() {
+        if synthetic_kind.is_thread_report() || synthetic_kind.is_associative() || synthetic_kind.is_parent_message() {
             let new_tool_call_id = uuid::Uuid::new_v4().to_string();
             if let UserContent::ToolResult(mut tool_result) = user_content {
                 let synthetic_tool_call = Message::Assistant {
