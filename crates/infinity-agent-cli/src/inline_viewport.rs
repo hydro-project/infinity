@@ -124,15 +124,6 @@ impl InlineViewport {
             self.terminal_size = new_terminal_size;
         }
 
-        let mut stdout = io::stdout();
-
-        // get the cursor back to the bototm of the viewport so we can measure its position
-        queue!(stdout, cursor::RestorePosition)?;
-        stdout.flush()?;
-
-        let cursor_position = cursor::position().unwrap();
-
-        self.viewport_y = cursor_position.1 + 1;
         self.request_clear = true;
 
         let area = Rect::new(0, 0, new_terminal_size.0, self.height);
@@ -184,19 +175,20 @@ impl InlineViewport {
             (false, previous.diff(current))
         };
 
-        queue!(stdout, cursor::Hide)?;
-        queue!(stdout, DisableWrap)?;
-
         // Restore the saved cursor (sits at end of scrollback, one row
         // above the viewport). All subsequent positioning is relative.
-        queue!(stdout, cursor::RestorePosition)?;
         if should_clear {
+            queue!(stdout, cursor::RestorePosition)?;
             queue!(stdout, Clear(cterm::ClearType::FromCursorDown))?;
 
             stdout.flush()?;
             let cursor_position_here = cursor::position().unwrap();
             self.viewport_y = cursor_position_here.1 + 1;
         }
+
+        queue!(stdout, cursor::RestorePosition)?;
+        queue!(stdout, cursor::Hide)?;
+        queue!(stdout, DisableWrap)?;
 
         self.last_effective_viewport_y = self.viewport_y;
         if !is_clearing_due_to_resize {

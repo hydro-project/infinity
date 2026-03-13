@@ -518,9 +518,6 @@ fn print_above(
 
     queue!(stdout, cursor::SavePosition)?;
     queue!(stdout, ResetScrollRegion)?;
-    queue!(stdout, cursor::RestorePosition)?;
-
-    stdout.flush()?;
 
     // don't show the cursor here or flush, that will be handled in printing input bar
 
