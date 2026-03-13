@@ -33,9 +33,14 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
                 "instructions": {
                     "type": "string",
                     "description": "Instructions for the spawned thread describing what it should do. Make sure to include in the instructions what **you plan to do while the thread runs** to make sure the child thread doesn't accidentally duplicate your work."
+                },
+                "child_of": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "The thread stack that you are spawning from, used for validation. Pass the full thread stack from root to current thread. For example, if you are the root thread 'R', pass [\"R\"]. If you are child 'A' of root 'R', pass [\"R\", \"A\"]."
                 }
             },
-            "required": ["instructions"]
+            "required": ["instructions", "child_of"]
         })
     }
 
@@ -60,6 +65,25 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
         call_id: Option<&str>,
         context: &ToolContext<M>,
     ) -> Option<ToolResult> {
+        // Validate child_of matches the actual thread stack
+        let child_of: Vec<String> = args
+            .get("child_of")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        if child_of != context.thread_stack {
+            return Some(ToolResult {
+                id: id.to_string(),
+                call_id: call_id.map(|c| c.to_string()),
+                content: OneOrMany::one(ToolResultContent::Text(Text {
+                    text: format!(
+                        "Error: child_of {:?} does not match the actual thread stack {:?}. You may be confused and think you are in the parent thread, but you are not. You are in thread {}. Do NOT spawn threads — focus on your assigned task.",
+                        child_of, context.thread_stack, context.group_id
+                    ),
+                })),
+            });
+        }
+
         let new_thread_id = self
             .conversation_store
             .spawn_thread(&context.group_id, &id, false)
