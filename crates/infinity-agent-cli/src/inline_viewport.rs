@@ -42,7 +42,7 @@ impl Command for MoveToNextLine {
 pub struct InlineViewport {
     height: u16,
     terminal_size: (u16, u16),
-    pub viewport_y: u16,
+    viewport_y: u16,
     pub last_effective_viewport_y: u16,
     buffers: [Buffer; 2],
     current: usize,
