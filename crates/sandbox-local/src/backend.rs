@@ -119,11 +119,13 @@ impl SandboxBackend for LocalBackend {
         let sandbox_dir = tmp.keep();
 
         let bookmark = format!("sandbox-{}", &state.group_id);
+        let rev = state.base_revision.as_deref();
         let res = jj::jj_git_clone(
             &state.remote_uri,
             &sandbox_dir,
             &bookmark,
             state.bookmark.is_none(),
+            rev,
         )
         .await;
 
@@ -139,6 +141,7 @@ impl SandboxBackend for LocalBackend {
                 &sandbox_dir,
                 &bookmark,
                 state.bookmark.is_none(),
+                rev,
             )
             .await?;
         } else {
