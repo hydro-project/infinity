@@ -28,7 +28,7 @@ use infinity_agent_core::event_processor;
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
 use infinity_agent_core::tools::config::{ToolSetConfig, ToolsConfig};
 use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
-use infinity_agent_core::tools::thread::{CloseThreadTool, ReportToParentTool, SpawnThreadTool};
+use infinity_agent_core::tools::thread::{CloseThreadTool, ReportToParentTool, SendMessageToChildTool, SpawnThreadTool};
 use infinity_agent_core::tools::{Tool, ToolContext};
 use infinity_agent_core::traits::ConversationStore;
 use memory_store::{InMemoryConversationStore, InMemoryMessageSender, InMemoryStateStore};
@@ -486,6 +486,9 @@ async fn agent_loop<Mdl>(
         Box::new(CloseThreadTool {
             conversation_store: conversation_store.clone(),
             rap_notifier: rap_notifier.clone(),
+        }),
+        Box::new(SendMessageToChildTool {
+            conversation_store: conversation_store.clone(),
         }),
         Box::new(
             infinity_agent_core::tools::cancel_subscription::CancelSubscriptionTool {
