@@ -17,6 +17,7 @@ mod rap_callback;
 mod rap_tools;
 mod session_picker;
 mod session_store;
+mod set_title_tool;
 mod sleep_tools;
 mod terminal;
 mod text_input;
@@ -254,9 +255,16 @@ where
         };
 
     // Build extra system prompt with the CWD so the agent knows where it is.
-    let extra_system_prompt = std::env::current_dir()
-        .ok()
-        .map(|cwd| format!("The user's current working directory is: {}", cwd.display()));
+    let extra_system_prompt = std::env::current_dir().ok().map(|cwd| {
+        format!(
+            "The user's current working directory is: {}\n\n\
+             Use the `set_title` tool to give the current thread a short, descriptive title. \
+             Set it once at the start when the user's intent becomes clear, and update it only \
+             when the overall scope of work changes significantly. Do not call it repeatedly \
+             for minor follow-ups within the same task.",
+            cwd.display()
+        )
+    });
 
     let agent_additional_params = active_additional_params.clone();
     let agent_model_id = active_model_id.clone();
@@ -366,8 +374,9 @@ where
         Ok(tokens) => *tokens,
         Err(_) => 0,
     };
+    let final_title = conversation_store.get_title(&final_thread_id);
     // Update the sessions list with the current session's state.
-    session_store.upsert(&final_thread_id, final_tokens);
+    session_store.upsert(&final_thread_id, final_tokens, final_title);
     if let Err(e) = session_store.save(sessions_path) {
         eprintln!("Warning: failed to save sessions: {}", e);
     }
@@ -484,6 +493,9 @@ async fn agent_loop<Mdl>(
                 rap_notifier: rap_notifier.clone(),
             },
         ),
+        Box::new(set_title_tool::SetTitleTool {
+            conversation_store: conversation_store.clone(),
+        }),
     ];
     tool_impls.extend(rap_tools);
 

@@ -7,6 +7,8 @@ pub struct SessionEntry {
     pub total_tokens_used: usize,
     /// ISO 8601 timestamp string (stored as string to avoid chrono serde feature).
     pub last_updated: String,
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 impl SessionEntry {
@@ -43,16 +45,20 @@ impl SessionStore {
     }
 
     /// Insert or update a session entry, then re-sort by most recent first.
-    pub fn upsert(&mut self, thread_id: &str, total_tokens_used: usize) {
+    pub fn upsert(&mut self, thread_id: &str, total_tokens_used: usize, title: Option<String>) {
         let now = Utc::now().to_rfc3339();
         if let Some(entry) = self.sessions.iter_mut().find(|e| e.thread_id == thread_id) {
             entry.total_tokens_used = total_tokens_used;
             entry.last_updated = now;
+            if title.is_some() {
+                entry.title = title;
+            }
         } else {
             self.sessions.push(SessionEntry {
                 thread_id: thread_id.to_string(),
                 total_tokens_used,
                 last_updated: now,
+                title,
             });
         }
         // Sort by last_updated descending (ISO 8601 strings sort lexicographically).
