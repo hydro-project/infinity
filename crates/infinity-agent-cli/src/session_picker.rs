@@ -108,8 +108,14 @@ impl SessionPicker {
                 (Color::DarkGray, Color::Reset, Modifier::empty())
             };
 
-            // Format: "  thread_id_short...  |  tokens  |  last updated  "
-            let tid_display = if session.thread_id.len() > 16 {
+            // Format: "  title_or_id  |  tokens  |  last updated  "
+            let name_display = if let Some(ref title) = session.title {
+                if title.len() > 24 {
+                    format!("{}…", &title[..23])
+                } else {
+                    title.clone()
+                }
+            } else if session.thread_id.len() > 16 {
                 format!("{}…", &session.thread_id[..15])
             } else {
                 session.thread_id.clone()
@@ -117,7 +123,7 @@ impl SessionPicker {
 
             let time_str = session.last_updated_display();
             let tokens_str = format!("{}tok", session.total_tokens_used);
-            let line = format!(" {:<18} {:>10}  {}", tid_display, tokens_str, time_str);
+            let line = format!(" {:<26} {:>10}  {}", name_display, tokens_str, time_str);
 
             // Fill the row background
             for x in area.x..area.right() {

@@ -44,6 +44,8 @@ struct ThreadInfo {
     spawn_tool_call_id: Option<String>,
     closed: bool,
     is_subscription_event: bool,
+    #[serde(default)]
+    title: Option<String>,
 }
 
 /// Per-thread snapshot written to `{dir}/{thread_id}.json`.
@@ -86,6 +88,7 @@ impl InMemoryConversationStore {
                 spawn_tool_call_id: None,
                 closed: false,
                 is_subscription_event: false,
+                title: None,
             }),
             display_as: display_as_map.get(thread_id).cloned().unwrap_or_default(),
         };
@@ -158,6 +161,25 @@ impl InMemoryConversationStore {
         map.get(thread_id)
             .and_then(|inner| inner.get(tool_result_id).cloned())
     }
+
+    /// Set a friendly title for a thread.
+    pub fn set_title(&self, thread_id: &str, title: &str) {
+        self.ensure_thread_loaded(thread_id);
+        {
+            let mut threads = self.threads.lock().unwrap();
+            if let Some(t) = threads.get_mut(thread_id) {
+                t.title = Some(title.to_string());
+            }
+        }
+        self.save_thread(thread_id);
+    }
+
+    /// Get the friendly title for a thread, if set.
+    pub fn get_title(&self, thread_id: &str) -> Option<String> {
+        self.ensure_thread_loaded(thread_id);
+        let threads = self.threads.lock().unwrap();
+        threads.get(thread_id).and_then(|t| t.title.clone())
+    }
 }
 
 #[async_trait]
@@ -180,6 +202,7 @@ impl ConversationStore for InMemoryConversationStore {
                         spawn_tool_call_id: None,
                         closed: false,
                         is_subscription_event: false,
+                        title: None,
                     },
                 );
                 true
@@ -287,6 +310,7 @@ impl ConversationStore for InMemoryConversationStore {
                         spawn_tool_call_id: Some(spawn_tool_call_id.to_string()),
                         closed: false,
                         is_subscription_event: is_for_subscription_event,
+                        title: None,
                     },
                 );
             }
