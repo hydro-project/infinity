@@ -283,7 +283,18 @@ where
                         }
                     }
                     Ok(event_processor::CompletionEvent::Action(CompletionAction::Done(r))) => {
+                        // there may be multiple `Done` if the agent synchronously loops back
                         resp = Some(r);
+                    }
+                    Ok(event_processor::CompletionEvent::SyncToolCall {
+                        ref tool_name,
+                        ref tool_args,
+                    }) => {
+                        let _ = display_tx.send(DisplayEvent::ToolCall {
+                            name: tool_name.clone(),
+                            args: tool_args.clone(),
+                            prefix: thread_prefix.clone(),
+                        });
                     }
                     Ok(event_processor::CompletionEvent::Action(a)) => {
                         if let event_processor::CompletionAction::ExecuteToolCall {
@@ -298,6 +309,8 @@ where
                                 prefix: thread_prefix.clone(),
                             });
                         }
+
+                        assert!(action.is_none());
                         action = Some(a);
                     }
                     Err(e) => {

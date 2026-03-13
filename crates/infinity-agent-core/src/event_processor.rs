@@ -67,6 +67,11 @@ pub enum CompletionEvent<R> {
     TextChunk(String),
     /// The terminal event — what to do next.
     Action(CompletionAction<R>),
+    /// A tool call that was synchronously processed.
+    SyncToolCall {
+        tool_name: String,
+        tool_args: serde_json::Value,
+    },
     /// The model has started thinking (reasoning).
     ThinkingStart,
     /// The model has stopped thinking (reasoning).
@@ -754,6 +759,9 @@ where
                 }
             };
 
+            let mut has_emitted_tool_call = false;
+            let mut should_loop_back = false;
+
             loop {
                 // Race between LLM output and cancellation signal.
                 // We avoid `yield` inside `select!` (async_stream limitation)
@@ -830,116 +838,136 @@ where
                 let completion_id = format!("{}-{}-completion-{}", group_id, message_id, completion_counter);
                 completion_counter += 1;
 
-                history.handle_completion(&chunk, completion_id);
+                if let StreamedAssistantContent::ToolCall { .. } = chunk && has_emitted_tool_call {
 
-                match chunk {
-                    StreamedAssistantContent::Text(text) => {
-                        if is_thinking {
-                            is_thinking = false;
-                            yield CompletionEvent::ThinkingEnd;
+                } else {
+                    history.handle_completion(&chunk, completion_id);
+                    match chunk {
+                        StreamedAssistantContent::Text(text) => {
+                            if is_thinking {
+                                is_thinking = false;
+                                yield CompletionEvent::ThinkingEnd;
+                            }
+                            tracing::info!("[Text] {}", &text.text);
+                            yield CompletionEvent::TextChunk(text.text);
                         }
-                        tracing::info!("[Text] {}", &text.text);
-                        yield CompletionEvent::TextChunk(text.text);
-                    }
-                    StreamedAssistantContent::ToolCall { tool_call: call, .. } => {
-                        if is_thinking {
-                            is_thinking = false;
-                            yield CompletionEvent::ThinkingEnd;
+                        StreamedAssistantContent::ToolCall { tool_call: call, .. } => {
+                            if is_thinking {
+                                is_thinking = false;
+                                yield CompletionEvent::ThinkingEnd;
+                            }
+                            tracing::info!("[Tool Call: {} with arguments {}]", &call.function.name, &call.function.arguments);
+
+                            if has_emitted_tool_call {
+                                tracing::info!("Ignoring batched tool call");
+                            } else {
+                                has_emitted_tool_call = true;
+                                if call.function.name == "receive_event__injected" {
+                                    let tool_result = Message::User {
+                                        content: OneOrMany::one(UserContent::ToolResult(rig::message::ToolResult {
+                                            id: call.id.clone(),
+                                            call_id: call.call_id.clone(),
+                                            content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                                                text: format!("Error: you cannot directly invoke {}, invocations will automatically be injected when events arrive.", call.function.name),
+                                            })),
+                                        })),
+                                    };
+                                    history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
+                                    should_loop_back = true;
+                                    continue;
+                                } else if !tool_names.contains(call.function.name.as_str()) {
+                                    // Unknown tool — inject error and retry the whole completion
+                                    tracing::warn!("Unknown tool '{}' called, injecting error and retrying", call.function.name);
+                                    let tool_result = Message::User {
+                                        content: OneOrMany::one(UserContent::ToolResult(rig::message::ToolResult {
+                                            id: call.id.clone(),
+                                            call_id: call.call_id.clone(),
+                                            content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                                                text: format!("Error: tool '{}' does not exist", call.function.name),
+                                            })),
+                                        })),
+                                    };
+                                    history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
+                                    should_loop_back = true;
+                                    continue;
+                                }
+
+                                // Check for synchronous execution — if the tool provides
+                                // synchronous results, inject into history immediately and
+                                // continue the completion loop instead of returning. This
+                                // prevents race conditions where a concurrent event makes
+                                // the tool call appear cancelled.
+                                let tool = tool_registry.get(call.function.name.as_str()).unwrap();
+                                if tool.supports_sync() {
+                                    history.sync().await?; // we must sync the history so that thread spawning uses the correct state
+
+                                    let res = tool.execute_synchronous(
+                                        &call.function.arguments,
+                                        &call.id,
+                                        call.call_id.as_deref(),
+                                        tool_context,
+                                    ).await.unwrap();
+
+                                    yield CompletionEvent::SyncToolCall {
+                                        tool_name: call.function.name.clone(),
+                                        tool_args: call.function.arguments.clone()
+                                    };
+                                    yield CompletionEvent::SyncToolResult(res.clone());
+
+                                    let sync_id = format!("{}-sync-result-{}", call.id, completion_counter);
+                                    completion_counter += 1;
+                                    history.handle_content(
+                                        Message::User { content: OneOrMany::one(UserContent::ToolResult(res)) },
+                                        sync_id,
+                                    ).await?;
+                                    should_loop_back = true;
+                                } else {
+                                    yield CompletionEvent::Action(CompletionAction::ExecuteToolCall {
+                                        tool_name: call.function.name.clone(),
+                                        tool_args: call.function.arguments.clone(),
+                                        tool_call_id: call.id.clone(),
+                                        call_id: call.call_id.clone(),
+                                    });
+                                }
+                            }
                         }
-                        tracing::info!("[Tool Call: {} with arguments {}]", &call.function.name, &call.function.arguments);
-
-                        // Unknown tool — inject error and retry the whole completion
-                        if call.function.name == "receive_event__injected" {
-                            let tool_result = Message::User {
-                                content: OneOrMany::one(UserContent::ToolResult(rig::message::ToolResult {
-                                    id: call.id.clone(),
-                                    call_id: call.call_id.clone(),
-                                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                                        text: format!("Error: you cannot directly invoke {}, invocations will automatically be injected when events arrive.", call.function.name),
-                                    })),
-                                })),
-                            };
-                            history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
-                            continue 'outer;
-                        } else if !tool_names.contains(call.function.name.as_str()) {
-                            tracing::warn!("Unknown tool '{}' called, injecting error and retrying", call.function.name);
-                            let tool_result = Message::User {
-                                content: OneOrMany::one(UserContent::ToolResult(rig::message::ToolResult {
-                                    id: call.id.clone(),
-                                    call_id: call.call_id.clone(),
-                                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                                        text: format!("Error: tool '{}' does not exist", call.function.name),
-                                    })),
-                                })),
-                            };
-                            history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
-                            continue 'outer;
+                        StreamedAssistantContent::ToolCallDelta { content, .. } => {
+                            match content {
+                                ToolCallDeltaContent::Name(n) => {
+                                    yield CompletionEvent::ThinkingChunk(format!("Invoking tool: {}", n));
+                                }
+                                ToolCallDeltaContent::Delta(d) => {
+                                    yield CompletionEvent::ThinkingChunk(d)
+                                }
+                            }
                         }
+                        StreamedAssistantContent::Reasoning(reasoning) => {
+                            if is_thinking {
+                                is_thinking = false;
+                                yield CompletionEvent::ThinkingEnd;
+                            }
+                            tracing::info!("[Reasoning: {:?}]", reasoning.first_text());
+                        }
+                        StreamedAssistantContent::ReasoningDelta { reasoning, .. } => {
+                            if !is_thinking {
+                                is_thinking = true;
+                                yield CompletionEvent::ThinkingStart;
+                            }
+                            yield CompletionEvent::ThinkingChunk(reasoning);
+                        }
+                        StreamedAssistantContent::Final(r) => {
+                            if is_thinking {
+                                yield CompletionEvent::ThinkingEnd;
+                            }
+                            tracing::info!("Received final message");
+                            yield CompletionEvent::Action(CompletionAction::Done(r));
 
-                        yield CompletionEvent::Action(CompletionAction::ExecuteToolCall {
-                            tool_name: call.function.name.clone(),
-                            tool_args: call.function.arguments.clone(),
-                            tool_call_id: call.id.clone(),
-                            call_id: call.call_id.clone(),
-                        });
-
-                        // Check for synchronous execution — if the tool provides
-                        // synchronous results, inject into history immediately and
-                        // continue the completion loop instead of returning. This
-                        // prevents race conditions where a concurrent event makes
-                        // the tool call appear cancelled.
-                        if let Some(tool) = tool_registry.get(call.function.name.as_str()) && tool.supports_sync() {
-                            history.sync().await?; // we must sync the history so that thread spawning uses the correct state
-
-                            if let Some(res) = tool.execute_synchronous(
-                                &call.function.arguments,
-                                &call.id,
-                                call.call_id.as_deref(),
-                                tool_context,
-                            ).await {
-                                yield CompletionEvent::SyncToolResult(res.clone());
-
-                                let sync_id = format!("{}-sync-result-{}", call.id, completion_counter);
-                                completion_counter += 1;
-                                history.handle_content(
-                                    Message::User { content: OneOrMany::one(UserContent::ToolResult(res)) },
-                                    sync_id,
-                                ).await?;
+                            if should_loop_back {
                                 continue 'outer;
+                            } else {
+                                return;
                             }
                         }
-                    }
-                    StreamedAssistantContent::ToolCallDelta { content, .. } => {
-                        match content {
-                            ToolCallDeltaContent::Name(n) => {
-                                yield CompletionEvent::ThinkingChunk(format!("Invoking tool: {}", n));
-                            }
-                            ToolCallDeltaContent::Delta(d) => {
-                                yield CompletionEvent::ThinkingChunk(d)
-                            }
-                        }
-                    }
-                    StreamedAssistantContent::Reasoning(reasoning) => {
-                        if is_thinking {
-                            is_thinking = false;
-                            yield CompletionEvent::ThinkingEnd;
-                        }
-                        tracing::info!("[Reasoning: {:?}]", reasoning.first_text());
-                    }
-                    StreamedAssistantContent::ReasoningDelta { reasoning, .. } => {
-                        if !is_thinking {
-                            is_thinking = true;
-                            yield CompletionEvent::ThinkingStart;
-                        }
-                        yield CompletionEvent::ThinkingChunk(reasoning);
-                    }
-                    StreamedAssistantContent::Final(r) => {
-                        if is_thinking {
-                            yield CompletionEvent::ThinkingEnd;
-                        }
-                        tracing::info!("Received final message");
-                        yield CompletionEvent::Action(CompletionAction::Done(r));
-                        return;
                     }
                 }
             }
