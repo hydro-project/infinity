@@ -12,8 +12,9 @@ struct Args {
     #[arg(short, long, default_value_t = 3001)]
     port: u16,
 
-    /// Enable macOS sandbox-exec filesystem write restrictions
-    #[arg(long)]
+    /// Enable sandbox filesystem write restrictions (macOS sandbox-exec / Linux bwrap).
+    /// Enabled by default; use --no-enable-sandbox to disable.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     enable_sandbox: bool,
 
     /// Base directory for temporary sandbox directories. When not specified,
