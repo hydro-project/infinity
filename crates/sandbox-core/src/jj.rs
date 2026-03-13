@@ -28,13 +28,15 @@ pub async fn jj_git_clone(
     dest: &Path,
     bookmark_name: &str,
     first_clone: bool,
+    revision: Option<&str>,
 ) -> Result<(), SandboxError> {
     let _ = run_jj(&PathBuf::from(remote), &["workspace", "update-stale"]).await; // this might fail if it's not yet a jj workspace, just ignore for now
 
+    let rev = revision.unwrap_or("@");
     let output = tokio::process::Command::new("jj")
         .args(["--config", "user.name=RAP Sandbox"])
         .args(["--config", "user.email=sandbox@rap"])
-        .args(["workspace", "add", "-r", "@", dest.to_str().unwrap()])
+        .args(["workspace", "add", "-r", rev, dest.to_str().unwrap()])
         .current_dir(remote)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
