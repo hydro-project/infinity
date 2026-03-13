@@ -18,7 +18,7 @@ use crate::metadata::MetadataStore;
 use crate::sandbox::SandboxBackend;
 use crate::types::{
     CloneRepoArgs, CreateFileArgs, DescribeEditsArgs, EditFileArgs, ExecuteCommandArgs, GrepArgs,
-    ReadFileArgs, RepoState,
+    ReadFileArgs, RepoState, SquashSandboxArgs,
 };
 
 #[derive(Debug, Deserialize)]
@@ -223,6 +223,7 @@ async fn invoke_handler<
             "create_file" => handle_create_file(&state_clone, &invocation).await,
             "grep" => handle_grep(&state_clone, &invocation).await,
             "describe_edits" => handle_describe_edits(&state_clone, &invocation).await,
+            "squash_sandbox" => handle_squash_sandbox(&state_clone, &invocation).await,
             _ => Err(SandboxError::Other(format!(
                 "unknown operation: {}",
                 invocation.operation
@@ -362,15 +363,24 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
         .init_repo(&args.repo, &invocation.group_id)
         .await?;
 
+    let base_revision = args
+        .base_thread_id
+        .as_ref()
+        .map(|id| format!("sandbox-{}", id));
+
     let repo_state = RepoState {
         group_id: invocation.group_id.clone(),
         remote_uri: remote_uri.clone(),
         bookmark: None,
+        base_revision: base_revision.clone(),
     };
     state.metadata.put(&repo_state).await?;
 
-    tracing::info!(group_id = %invocation.group_id, remote = %remote_uri, "repo cloned");
-    Ok("Repository initialized.".to_string())
+    tracing::info!(group_id = %invocation.group_id, remote = %remote_uri, base = ?base_revision, "repo cloned");
+    Ok(match base_revision {
+        Some(rev) => format!("Repository initialized on top of {rev}."),
+        None => "Repository initialized.".to_string(),
+    })
 }
 
 /// Run an action inside a sandbox: create → action → push → update metadata → cleanup.
@@ -410,6 +420,7 @@ where
         group_id: group_id.to_string(),
         remote_uri: repo_state.remote_uri.clone(),
         bookmark: Some(bookmark.clone()),
+        base_revision: None,
     };
     state.metadata.put(&updated_state).await?;
 
@@ -578,6 +589,7 @@ async fn push_and_update_metadata<B: SandboxBackend, M: MetadataStore, C: Callba
         group_id: group_id.to_string(),
         remote_uri: repo_state.remote_uri.clone(),
         bookmark: Some(bookmark.clone()),
+        base_revision: None,
     };
     state.metadata.put(&updated).await?;
     tracing::info!(group_id = %group_id, bookmark = %bookmark, "sandbox operation complete");
@@ -1188,6 +1200,35 @@ async fn handle_describe_edits<B: SandboxBackend, M: MetadataStore, C: CallbackC
     .await
 }
 
+async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
+    state: &AppState<B, M, C>,
+    invocation: &RapInvocation,
+) -> Result<(String, Option<String>), SandboxError> {
+    let args: SquashSandboxArgs = serde_json::from_value(invocation.arguments.clone())
+        .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
+
+    let from_bookmark = format!("sandbox-{}", args.from_thread_id);
+    let description = format!("squash_sandbox: from {}", from_bookmark);
+
+    with_sandbox(
+        state,
+        &invocation.group_id,
+        &description,
+        |sandbox_dir| async move {
+            run_jj(
+                &sandbox_dir,
+                &["squash", "--from", &from_bookmark, "--use-destination-message"],
+            )
+            .await?;
+            Ok((
+                format!("Squashed changes from {from_bookmark}."),
+                Some(format!("Squashed from {from_bookmark}")),
+            ))
+        },
+    )
+    .await
+}
+
 /// Build a pretty-printed unified diff for display in the CLI.
 fn build_edit_diff(path: &str, old_str: &str, new_str: &str) -> String {
     use similar::{ChangeTag, TextDiff};
@@ -1229,6 +1270,10 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                         "repo": {
                             "type": "string",
                             "description": "Local path to a git repository, or a git remote URI"
+                        },
+                        "base_thread_id": {
+                            "type": "string",
+                            "description": "Optional thread ID to base this sandbox on top of. The new sandbox will be rebased onto that thread's bookmark."
                         }
                     },
                     "required": ["repo"]
@@ -1348,6 +1393,20 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                         }
                     },
                     "required": ["message"]
+                }),
+            },
+            ToolDef {
+                name: "squash_sandbox".to_string(),
+                description: "Squash changes from a child thread's sandbox into the current thread's sandbox. This runs `jj squash` to merge the child's changes. Use this after a child thread completes its work to incorporate its edits.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "from_thread_id": {
+                            "type": "string",
+                            "description": "The thread ID of the child sandbox to squash from"
+                        }
+                    },
+                    "required": ["from_thread_id"]
                 }),
             },
         ],

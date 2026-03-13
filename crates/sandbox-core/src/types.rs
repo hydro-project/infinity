@@ -9,6 +9,9 @@ pub struct RepoState {
     pub remote_uri: String,
     /// The bookmark name used to track state, set after first push.
     pub bookmark: Option<String>,
+    /// Optional jj revision to base the workspace on (used at creation time).
+    #[serde(default)]
+    pub base_revision: Option<String>,
 }
 
 /// Input for the clone_repo tool.
@@ -16,6 +19,8 @@ pub struct RepoState {
 pub struct CloneRepoArgs {
     /// Local path to a git repo, or a git remote URI.
     pub repo: String,
+    /// Optional thread ID to base this sandbox on top of.
+    pub base_thread_id: Option<String>,
 }
 
 /// Input for the execute_command tool.
@@ -61,6 +66,13 @@ pub struct CreateFileArgs {
 pub struct DescribeEditsArgs {
     /// A description of the edits that were made.
     pub message: String,
+}
+
+/// Input for the squash_sandbox tool.
+#[derive(Debug, Deserialize)]
+pub struct SquashSandboxArgs {
+    /// The thread ID of the child sandbox to squash from.
+    pub from_thread_id: String,
 }
 
 /// Input for the grep tool.

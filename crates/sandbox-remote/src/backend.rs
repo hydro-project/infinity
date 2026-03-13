@@ -124,6 +124,7 @@ impl SandboxBackend for EfsBackend {
             &sandbox_dir,
             &bookmark,
             state.bookmark.is_none(),
+            state.base_revision.as_deref(),
         )
         .await?;
 

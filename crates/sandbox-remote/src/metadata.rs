@@ -45,6 +45,7 @@ impl MetadataStore for DynamoMetadataStore {
             group_id: group_id.to_string(),
             remote_uri,
             bookmark,
+            base_revision: None,
         }))
     }
 
