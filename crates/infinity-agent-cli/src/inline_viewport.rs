@@ -2,7 +2,7 @@ use ratatui::{
     buffer::Buffer,
     crossterm::{
         Command,
-        cursor::{self, MoveUp, SavePosition},
+        cursor::{self, MoveTo, MoveUp, SavePosition},
         queue,
         style::Print,
         terminal::{self as cterm, Clear},
@@ -43,7 +43,7 @@ pub struct InlineViewport {
     height: u16,
     terminal_size: (u16, u16),
     pub viewport_y: u16,
-    last_effective_viewport_y: u16,
+    pub last_effective_viewport_y: u16,
     buffers: [Buffer; 2],
     current: usize,
     request_clear: bool,
@@ -179,11 +179,13 @@ impl InlineViewport {
         // above the viewport). All subsequent positioning is relative.
         if should_clear {
             queue!(stdout, cursor::RestorePosition)?;
-            queue!(stdout, Clear(cterm::ClearType::FromCursorDown))?;
 
             stdout.flush()?;
+
             let cursor_position_here = cursor::position().unwrap();
             self.viewport_y = cursor_position_here.1 + 1;
+
+            queue!(stdout, Clear(cterm::ClearType::FromCursorDown))?;
         }
 
         queue!(stdout, cursor::RestorePosition)?;
@@ -203,9 +205,7 @@ impl InlineViewport {
                 queue!(stdout, cursor::MoveUp(shift_up))?;
                 queue!(stdout, SavePosition)?;
             } else if ideal_viewport_y > self.viewport_y {
-                let shift_down = ideal_viewport_y - self.viewport_y;
-                queue!(stdout, cursor::RestorePosition)?;
-                queue!(stdout, MoveToNextLine(shift_down))?;
+                queue!(stdout, MoveTo(0, ideal_viewport_y - 1))?;
                 self.last_effective_viewport_y = ideal_viewport_y;
             }
         }
