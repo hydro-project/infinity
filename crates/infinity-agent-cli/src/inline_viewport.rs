@@ -103,10 +103,6 @@ impl InlineViewport {
         })
     }
 
-    pub fn scroll_region_bottom(&mut self) -> u16 {
-        self.terminal_size.1.saturating_sub(self.height)
-    }
-
     pub fn area(&self) -> Rect {
         Rect::new(0, 0, self.terminal_size.0, self.height)
     }
