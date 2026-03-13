@@ -216,6 +216,7 @@ where
     let active_thread_id = current_history.borrow().thread_id.clone();
     let completion_message_id = last_message_id;
     tool_context.group_id = active_thread_id.clone(); // might have changed due to HistoryManager::fork_new
+    tool_context.thread_stack = current_history.borrow().get_thread_stack();
 
     let fut = Box::pin(async move {
         let mut hist = current_history.borrow_mut();

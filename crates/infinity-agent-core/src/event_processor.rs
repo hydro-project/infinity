@@ -365,6 +365,14 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         Some(format!("[{}]", labels.join(":")))
     }
 
+    /// Returns the full thread stack: [root, ..ancestors, current_thread].
+    /// For the root thread this is just [root_thread_id].
+    pub fn get_thread_stack(&self) -> Vec<String> {
+        let mut stack = self.ancestor_chain.clone();
+        stack.push(self.thread_id.clone());
+        stack
+    }
+
     pub fn conversation_store(&self) -> &C {
         &self.conversation_store
     }
@@ -685,9 +693,13 @@ where
         let mut is_thinking = false;
         let mut retry_count = 0;
 
-        let preamble = match extra_system_prompt {
-            Some(extra) => format!("{}\n\n{}", include_str!("default_prompt.md"), extra),
-            None => include_str!("default_prompt.md").to_string(),
+        let preamble = {
+            let base = include_str!("default_prompt.md");
+            let thread_info = format!("\n\nYour current thread ID is `{}`. The root thread ID is `{}`.", history.thread_id, history.root_thread_id);
+            match extra_system_prompt {
+                Some(extra) => format!("{}{}\n\n{}", base, thread_info, extra),
+                None => format!("{}{}", base, thread_info),
+            }
         };
 
         'outer: loop {
