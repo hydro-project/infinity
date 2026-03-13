@@ -176,7 +176,7 @@ impl InlineViewport {
         let is_clearing_due_to_resize = self.request_clear;
         let (should_clear, updates) = if self.request_clear
             || ideal_viewport_y != self.last_effective_viewport_y
-            || self.height < old_height
+            || self.height != old_height
         {
             self.request_clear = false;
             (true, Buffer::empty(area).diff(current))
@@ -192,6 +192,10 @@ impl InlineViewport {
         queue!(stdout, cursor::RestorePosition)?;
         if should_clear {
             queue!(stdout, Clear(cterm::ClearType::FromCursorDown))?;
+
+            stdout.flush()?;
+            let cursor_position_here = cursor::position().unwrap();
+            self.viewport_y = cursor_position_here.1 + 1;
         }
 
         self.last_effective_viewport_y = self.viewport_y;
