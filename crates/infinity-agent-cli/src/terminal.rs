@@ -879,8 +879,8 @@ fn render_thinking_bar(
                         // Slow breath cycle (~3s)
                         let phase = self.elapsed_s * std::f64::consts::TAU / 3.0;
                         let wave = (phase.sin() * 0.5 + 0.5) as f32;
-                        let (dr, dg, db) = (20, 55, 100);
-                        let (lr, lg, lb) = (70, 170, 225);
+                        let (dr, dg, db) = (25, 0, 150);
+                        let (lr, lg, lb) = (125, 100, 225);
                         let r = (dr as f32 + (lr as f32 - dr as f32) * wave) as u8;
                         let g = (dg as f32 + (lg as f32 - dg as f32) * wave) as u8;
                         let b = (db as f32 + (lb as f32 - db as f32) * wave) as u8;
