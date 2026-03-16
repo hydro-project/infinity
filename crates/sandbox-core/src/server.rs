@@ -76,6 +76,8 @@ struct ToolDef {
     description: String,
     #[serde(rename = "inputSchema")]
     input_schema: serde_json::Value,
+    #[serde(rename = "displayScript", skip_serializing_if = "Option::is_none")]
+    display_script: Option<String>,
 }
 
 type PendingTasks = Arc<Mutex<Vec<JoinHandle<()>>>>;
@@ -1299,6 +1301,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     },
                     "required": ["repo"]
                 }),
+                display_script: None,
             },
             ToolDef {
                 name: "execute_command".to_string(),
@@ -1313,6 +1316,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     },
                     "required": ["command"]
                 }),
+                display_script: Some(r#""$ " + args.command"#.to_string()),
             },
             ToolDef {
                 name: "read_file".to_string(),
@@ -1335,6 +1339,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     },
                     "required": ["path"]
                 }),
+                display_script: Some(r#"let s = "Read " + args.path; if args.start_line != () { s += ":" + args.start_line; if args.end_line != () { s += "-" + args.end_line; } } s"#.to_string()),
             },
             ToolDef {
                 name: "edit_file".to_string(),
@@ -1357,6 +1362,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     },
                     "required": ["path", "old_str", "new_str"]
                 }),
+                display_script: Some(r#"let n = args.new_str.split("\n").len(); "Edit " + args.path + " (" + n + " lines)""#.to_string()),
             },
             ToolDef {
                 name: "create_file".to_string(),
@@ -1375,6 +1381,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     },
                     "required": ["path", "content"]
                 }),
+                display_script: None,
             },
             ToolDef {
                 name: "grep".to_string(),
@@ -1401,6 +1408,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     },
                     "required": ["query"]
                 }),
+                display_script: Some(r#"let s = "Grep: " + args.query; if args.includePattern != () { s += " in " + args.includePattern; } s"#.to_string()),
             },
             ToolDef {
                 name: "describe_edits".to_string(),
@@ -1415,6 +1423,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     },
                     "required": ["message"]
                 }),
+                display_script: None,
             },
             ToolDef {
                 name: "squash_sandbox".to_string(),
@@ -1429,6 +1438,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     },
                     "required": ["from_thread_id"]
                 }),
+                display_script: None,
             },
         ],
     }
