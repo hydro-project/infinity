@@ -17,10 +17,10 @@ struct Args {
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     enable_sandbox: bool,
 
-    /// Base directory for temporary sandbox directories. When not specified,
-    /// the system default (e.g. /tmp) is used.
-    #[arg(long)]
-    tempdir: Option<std::path::PathBuf>,
+    /// Base directory for temporary sandbox directories.
+    /// Defaults to `./sandboxes` (relative to the working directory).
+    #[arg(long, default_value = "./sandboxes")]
+    tempdir: std::path::PathBuf,
 }
 
 /// Internal entrypoint used when the binary is re-invoked inside a sandbox to
