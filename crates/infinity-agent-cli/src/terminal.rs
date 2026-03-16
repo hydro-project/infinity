@@ -160,6 +160,9 @@ where
                         if prefix.is_none() {
                             end_stream(&mut viewport, &mut mid_stream)?;
                             stream_start = true;
+
+                            thinking = true;
+                            thinking_start = Instant::now();
                         } else if let Some(p) = prefix {
                             thread_buffers.entry(p).or_default();
                         }
@@ -198,7 +201,9 @@ where
                     }
                     DisplayEvent::ResponseDone(prefix, r) => {
                         if prefix.is_none() {
-                            total_tokens_used = r.token_usage().map_or(0, |u| u.total_tokens as usize);
+                            if let Some(r) = r {
+                                total_tokens_used = r.token_usage().map_or(0, |u| u.total_tokens as usize);
+                            }
                             // end_stream(&mut viewport, &mut mid_stream)?;
                             thinking = false;
                         } else if let Some(p) = prefix {

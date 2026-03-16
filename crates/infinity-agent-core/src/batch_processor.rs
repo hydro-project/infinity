@@ -44,7 +44,7 @@ pub enum DisplayEvent<R> {
         prefix: Option<String>,
     },
     Info(String),
-    ResponseDone(Option<String>, R),
+    ResponseDone(Option<String>, Option<R>),
     UserInput(String),
     SubscriptionEvent {
         name: String,
@@ -245,9 +245,11 @@ where
                 cancel_rx,
             ));
 
+            let _ = display_tx.send(DisplayEvent::StartOutput {
+                prefix: thread_prefix.clone(),
+            });
+
             let mut action = None;
-            let mut started = false;
-            let mut any_text = false;
             let mut resp = None;
 
             while let Some(ev) = stream.next().await {
@@ -256,13 +258,6 @@ where
                         let _ = display_tx.send(DisplayEvent::Info(info));
                     }
                     Ok(event_processor::CompletionEvent::TextChunk(chunk)) => {
-                        any_text = true;
-                        if !started {
-                            let _ = display_tx.send(DisplayEvent::StartOutput {
-                                prefix: thread_prefix.clone(),
-                            });
-                            started = true;
-                        }
                         let _ = display_tx.send(DisplayEvent::TextChunk {
                             prefix: thread_prefix.clone(),
                             chunk,
@@ -327,11 +322,7 @@ where
                 }
             }
 
-            if any_text {
-                if let Some(r) = resp {
-                    let _ = display_tx.send(DisplayEvent::ResponseDone(thread_prefix.clone(), r));
-                }
-            }
+            let _ = display_tx.send(DisplayEvent::ResponseDone(thread_prefix.clone(), resp));
 
             action
         };
