@@ -1,3 +1,4 @@
+pub mod git;
 pub mod callback;
 pub mod error;
 pub mod jj;

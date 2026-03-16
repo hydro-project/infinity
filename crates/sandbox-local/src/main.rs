@@ -19,8 +19,8 @@ struct Args {
 
     /// Base directory for temporary sandbox directories.
     /// Defaults to `./sandboxes` (relative to the working directory).
-    #[arg(long, default_value = "./sandboxes")]
-    tempdir: std::path::PathBuf,
+    #[arg(long)]
+    tempdir: Option<std::path::PathBuf>,
 }
 
 /// Internal entrypoint used when the binary is re-invoked inside a sandbox to
@@ -66,9 +66,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
+    let log_file =
+        std::fs::File::create("./rap-sandbox.log").expect("failed to create rap-sandbox.log");
+
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse().unwrap()))
-        .with_writer(std::io::stderr)
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_writer(std::sync::Mutex::new(log_file))
+        .with_ansi(false)
         .init();
 
     let args = Args::parse();
@@ -77,7 +81,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .enable_all()
         .build()?
         .block_on(async {
-            let backend = LocalBackend::new(args.enable_sandbox, args.tempdir);
+            let backend = LocalBackend::new(
+                args.enable_sandbox,
+                args.tempdir
+                    .unwrap_or_else(|| std::env::current_dir().unwrap().join(".sandboxes")),
+            );
             let metadata = FileMetadataStore::new();
             run_server(backend, metadata, args.port).await
         })
