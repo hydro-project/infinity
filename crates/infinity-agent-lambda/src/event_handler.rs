@@ -148,6 +148,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                             parameters: def.input_schema,
                             endpoint: endpoint.clone(),
                             http_client: http_client.clone(),
+                            display_script: def.display_script,
                         }));
                     }
                 }

@@ -45,7 +45,8 @@ Each entry in the `tools` array describes a single operation that the LLM can in
       "number": { "type": "integer", "description": "Pull request number" }
     },
     "required": ["owner", "repo", "number"]
-  }
+  },
+  "displayScript": "\"PR #\" + args.number + \" on \" + args.owner + \"/\" + args.repo"
 }
 ```
 
@@ -55,6 +56,7 @@ Each entry in the `tools` array describes a single operation that the LLM can in
 | `description` | `string` | Yes | Human-readable description of what the tool does. This is passed to the LLM for tool selection. |
 | `inputSchema` | `object` | Yes | JSON Schema defining the expected `arguments` for this tool. MUST be a valid JSON Schema object. |
 | `annotations` | `object` | No | Optional metadata describing tool behavior. See [Annotations](#annotations). |
+| `displayScript` | `string` | No | A [Rhai](https://rhai.rs/) script that returns a human-readable string for displaying the tool call. See [Display Script](#display-script). |
 
 ### Tool Names
 
@@ -89,6 +91,27 @@ Tools MAY include an `annotations` object that provides metadata about their beh
 | `longRunning` | `boolean` | If `true`, indicates the tool is expected to take significant time (minutes or hours) to complete. |
 
 Implementations MAY define additional custom annotations. Custom annotation keys SHOULD use a namespaced format (e.g., `x-mycompany-priority`) to avoid conflicts with future protocol-defined annotations.
+
+### Display Script
+
+Tools MAY include a `displayScript` field containing a [Rhai](https://rhai.rs/) script that produces a human-readable string for displaying the tool call in agent frontends. When present, the agent frontend MAY evaluate the script and use the returned string instead of the default display format (typically `tool_name(args)`).
+
+The runtime makes the tool's arguments available as a single `args` map variable in the script's scope. The script accesses arguments via `args.key`. Missing optional arguments return `()` (Rhai's unit type), which scripts can check against to handle optional fields gracefully.
+
+```json
+{
+  "name": "get_pull_request",
+  "description": "Get details of a specific pull request",
+  "inputSchema": { "..." : "..." },
+  "displayScript": "\"PR #\" + args.number + \" on \" + args.owner + \"/\" + args.repo"
+}
+```
+
+When invoked with `{"owner": "acme", "repo": "widgets", "number": 42}`, the frontend would display: `PR #42 on acme/widgets`.
+
+The script MUST return a string. If the `displayScript` field is absent, if the script fails to evaluate, or if the frontend does not support Rhai evaluation, the frontend MUST fall back to its default tool call display. Frontends MUST NOT treat script evaluation failures as errors — they are expected when arguments are missing or have unexpected types.
+
+Display scripts are purely cosmetic — they do not affect tool invocation, argument validation, or any other protocol behavior. They SHOULD be treated as untrusted input and evaluated in a sandboxed scripting environment.
 
 ## Loading Toolsets
 

@@ -37,6 +37,7 @@ pub enum DisplayEvent<R> {
         name: String,
         args: serde_json::Value,
         prefix: Option<String>,
+        display_script: Option<String>,
     },
     ToolResult {
         text: String,
@@ -310,10 +311,14 @@ where
                         ref tool_name,
                         ref tool_args,
                     }) => {
+                        let ds = tool_registry
+                            .get(tool_name.as_str())
+                            .and_then(|t| t.display_script().map(String::from));
                         let _ = display_tx.send(DisplayEvent::ToolCall {
                             name: tool_name.clone(),
                             args: tool_args.clone(),
                             prefix: thread_prefix.clone(),
+                            display_script: ds,
                         });
                     }
                     Ok(event_processor::CompletionEvent::Action(a)) => {
@@ -323,10 +328,14 @@ where
                             ..
                         } = a
                         {
+                            let ds = tool_registry
+                                .get(tool_name.as_str())
+                                .and_then(|t| t.display_script().map(String::from));
                             let _ = display_tx.send(DisplayEvent::ToolCall {
                                 name: tool_name.clone(),
                                 args: tool_args.clone(),
                                 prefix: thread_prefix.clone(),
+                                display_script: ds,
                             });
                         }
 

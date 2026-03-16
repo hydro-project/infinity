@@ -130,6 +130,7 @@ pub async fn load_rap_tools<M: InputSender + 'static>(
                 parameters: def.input_schema,
                 endpoint: endpoint.clone(),
                 http_client: http_client.clone(),
+                display_script: def.display_script,
             }));
         }
     }

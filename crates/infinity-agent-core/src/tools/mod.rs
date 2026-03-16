@@ -38,6 +38,11 @@ pub trait Tool<M: InputSender>: Send + Sync {
         false
     }
 
+    /// Optional Rhai script for pretty-printing this tool call.
+    fn display_script(&self) -> Option<&str> {
+        None
+    }
+
     /// Execute the tool synchronously, returning results that should be
     /// injected into the conversation history immediately. When this returns
     /// `Some`, `execute` will not be called — the returned messages are
