@@ -111,13 +111,26 @@ struct AppState<B: SandboxBackend, M: MetadataStore, C: CallbackClient> {
     in_flight: InFlightMap,
 }
 
-/// Shared handle to pending background tasks.
+/// Shared handle to pending background tasks and in-flight commands.
 #[derive(Clone)]
 pub struct TaskTracker {
     pending_tasks: PendingTasks,
+    in_flight: InFlightMap,
 }
 
 impl TaskTracker {
+    /// Cancel all in-flight commands by sending the cancel signal,
+    /// which triggers SIGTERM to child processes.
+    pub async fn cancel_all_in_flight(&self) {
+        let senders: Vec<_> = {
+            let mut map = self.in_flight.lock().await;
+            map.drain().map(|(_, tx)| tx).collect()
+        };
+        for tx in senders {
+            let _ = tx.send(());
+        }
+    }
+
     pub async fn drain(&self) {
         let tasks: Vec<JoinHandle<()>> = {
             let mut pending = self.pending_tasks.lock().await;
@@ -141,15 +154,18 @@ where
     let pending_tasks: PendingTasks = Arc::new(Mutex::new(Vec::new()));
     let in_flight: InFlightMap = Arc::new(Mutex::new(HashMap::new()));
 
+    let tracker = TaskTracker {
+        pending_tasks,
+        in_flight: in_flight.clone(),
+    };
+
     let state = Arc::new(AppState {
         backend,
         metadata,
         callback_client,
-        pending_tasks: pending_tasks.clone(),
+        pending_tasks: tracker.pending_tasks.clone(),
         in_flight,
     });
-
-    let tracker = TaskTracker { pending_tasks };
 
     let router = Router::new()
         .route("/.well-known/rap-toolset", get(toolset_handler::<B, M, C>))

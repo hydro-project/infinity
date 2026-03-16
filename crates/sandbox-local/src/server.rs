@@ -42,8 +42,8 @@ pub async fn run_server<B: SandboxBackend + 'static, M: MetadataStore + 'static>
         })
         .await?;
 
-    // Drain any in-flight background tasks before exiting
-    tracker.drain().await;
+    // Cancel any in-flight commands (sends SIGTERM to child processes)
+    tracker.cancel_all_in_flight().await;
 
     Ok(())
 }
