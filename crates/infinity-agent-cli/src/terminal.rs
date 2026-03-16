@@ -238,20 +238,23 @@ where
                             }
                         }
                     }
-                    DisplayEvent::ToolCall { name, args, prefix } => {
+                    DisplayEvent::ToolCall { name, args, prefix, display_script } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
                         thinking_text_buffer.clear();
+
+                        let display_text = eval_display_script(display_script.as_deref(), &args)
+                            .unwrap_or_else(|| format!("{}({})", name, args));
 
                         if prefix.is_none() {
                             spinner_state = Some(SpinnerState::WaitingToolCall);
                             thinking_text_buffer.push_str("waiting for tool call result");
                             thinking_start = Instant::now();
                             print_line_above(&mut viewport, Line::from(vec![
-                                Span::styled(format!("◆ {}({})", name, args), Style::default().fg(Color::Blue)),
+                                Span::styled(format!("◆ {}", display_text), Style::default().fg(Color::Blue)),
                             ]))?;
                             mid_stream = true;
                         } else if let Some(p) = prefix {
-                            *thread_buffers.entry(p.clone()).or_default() = format!("\n◆ {}({})", name, args);
+                            *thread_buffers.entry(p.clone()).or_default() = format!("\n◆ {}", display_text);
 
                             if name != "close_thread" { // never gets a response
                                 thread_tool_call_active.insert(p);
@@ -1045,6 +1048,38 @@ fn write_spans<'a>(
         SetBackgroundColor(CColor::Reset),
         SetAttribute(CAttribute::Reset),
     )
+}
+
+// ── Display script evaluation ───────────────────────────────────────────────
+
+/// Evaluate a Rhai display script with tool arguments as scope variables.
+/// Returns `Some(pretty_string)` on success, `None` if script is absent or fails.
+fn eval_display_script(script: Option<&str>, args: &serde_json::Value) -> Option<String> {
+    let script = script?;
+    let engine = rhai::Engine::new();
+    let mut scope = rhai::Scope::new();
+    let mut map = rhai::Map::new();
+    if let Some(obj) = args.as_object() {
+        for (k, v) in obj {
+            let val: rhai::Dynamic = match v {
+                serde_json::Value::String(s) => s.clone().into(),
+                serde_json::Value::Bool(b) => (*b).into(),
+                serde_json::Value::Number(n) => {
+                    if let Some(i) = n.as_i64() {
+                        i.into()
+                    } else if let Some(f) = n.as_f64() {
+                        f.into()
+                    } else {
+                        continue;
+                    }
+                }
+                other => other.to_string().into(),
+            };
+            map.insert(k.as_str().into(), val);
+        }
+    }
+    scope.push("args", map);
+    engine.eval_with_scope::<String>(&mut scope, script).ok()
 }
 
 // ── Custom crossterm commands ───────────────────────────────────────────────

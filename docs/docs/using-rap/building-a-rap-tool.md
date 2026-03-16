@@ -51,12 +51,13 @@ const TOOLSET_MANIFEST = {
         },
         required: ['location'],
       },
+      displayScript: '"Weather for " + args.location',
     },
   ],
 };
 ```
 
-Each tool in the array has a `name` (which becomes the `operation` field in invocations), a `description` (passed to the LLM for tool selection), and an `inputSchema` (JSON Schema for argument validation). Tool names must be unique within the toolset and should use only letters, digits, underscores, and hyphens.
+Each tool in the array has a `name` (which becomes the `operation` field in invocations), a `description` (passed to the LLM for tool selection), and an `inputSchema` (JSON Schema for argument validation). Tool names must be unique within the toolset and should use only letters, digits, underscores, and hyphens. Tools can optionally include a [`displayScript`](/spec/basic/toolsets#display-script) — a Rhai script that produces a human-readable string for the agent frontend to show instead of the raw tool call.
 
 ### Annotations
 

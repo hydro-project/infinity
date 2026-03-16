@@ -29,6 +29,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 reqwest = { workspace = true }
 clap = { version = "4", features = ["derive"] }
+rhai = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["signal"] }

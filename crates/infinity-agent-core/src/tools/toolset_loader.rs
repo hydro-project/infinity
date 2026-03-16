@@ -12,6 +12,8 @@ pub struct RapToolDef {
     pub input_schema: serde_json::Value,
     #[serde(default)]
     pub annotations: Option<serde_json::Value>,
+    #[serde(default, rename = "displayScript")]
+    pub display_script: Option<String>,
 }
 
 /// A RAP toolset manifest as returned by `/.well-known/rap-toolset`.
