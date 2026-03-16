@@ -25,6 +25,10 @@ impl<M: InputSender + 'static> Tool<M> for SetTitleTool {
         "Set a short, friendly human-readable title for the current thread describing what it is working on."
     }
 
+    fn display_script(&self) -> Option<&str> {
+        Some(r#""Set Thread Title: " + args.title"#)
+    }
+
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",

@@ -429,6 +429,7 @@ fn replay_history<R: GetTokenUsage + token_usage::WithTotalTokens>(
                         name: call.function.name.clone(),
                         args: call.function.arguments.clone(),
                         prefix: None,
+                        display_script: None,
                     });
                 }
                 _ => {}

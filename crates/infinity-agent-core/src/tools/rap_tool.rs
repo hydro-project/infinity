@@ -31,6 +31,7 @@ pub struct RapTool<H: HttpClient> {
     pub parameters: serde_json::Value,
     pub endpoint: String,
     pub http_client: H,
+    pub display_script: Option<String>,
 }
 
 #[async_trait]
@@ -45,6 +46,10 @@ impl<H: HttpClient + 'static, M: InputSender + 'static> Tool<M> for RapTool<H> {
 
     fn parameters(&self) -> serde_json::Value {
         self.parameters.clone()
+    }
+
+    fn display_script(&self) -> Option<&str> {
+        self.display_script.as_deref()
     }
 
     async fn execute(
