@@ -28,7 +28,9 @@ use infinity_agent_core::event_processor;
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
 use infinity_agent_core::tools::config::{ToolSetConfig, ToolsConfig};
 use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
-use infinity_agent_core::tools::thread::{CloseThreadTool, ReportToParentTool, SendMessageToChildTool, SpawnThreadTool};
+use infinity_agent_core::tools::thread::{
+    CloseThreadTool, ReportToParentTool, SendMessageToChildTool, SpawnThreadTool,
+};
 use infinity_agent_core::tools::{Tool, ToolContext};
 use infinity_agent_core::traits::ConversationStore;
 use memory_store::{InMemoryConversationStore, InMemoryMessageSender, InMemoryStateStore};
@@ -309,7 +311,10 @@ where
         while let Some((tid, tokens)) = load_session_rx.recv().await {
             *active_thread_id_for_load.lock().unwrap() = tid.clone();
             // Replay the selected session's history to the display.
-            if let Ok(history) = load_conversation_store.load_history(&tid).await {
+            if let Ok((history, _)) = load_conversation_store
+                .load_history_with_ancestors(&tid)
+                .await
+            {
                 replay_history(
                     &load_display_tx,
                     &load_conversation_store,
@@ -515,6 +520,7 @@ async fn agent_loop<Mdl>(
     > = std::collections::HashMap::new();
 
     while let Some((input_msg, message_id)) = rx.recv().await {
+        tracing::trace!("Received message {:?}", &input_msg);
         let group_id = input_msg.group_id.clone();
 
         // Get or create the per-thread channel + worker task.
@@ -592,11 +598,11 @@ async fn thread_worker<Mdl>(
 
     let tool_context = ToolContext {
         message_sender: sender.clone(),
-        group_id: String::new(), // populated by process_batch
+        group_id: active_group_id.clone(),
         input_queue_arn: String::new(),
         callback_url: callback_url.clone(),
         user_id: None,
-        thread_stack: Vec::new(), // populated by process_batch
+        thread_stack: current_history.borrow().get_thread_stack(),
     };
     let tool_registry: std::collections::HashMap<String, &dyn Tool<InMemoryMessageSender>> =
         tool_impls
