@@ -44,6 +44,8 @@ pub enum PrepareResult {
     Handled,
     /// An OAuth challenge must be forwarded to the user.
     OAuthRequired { auth_url: String },
+    /// Compaction was applied to the in-memory history.
+    CompactionApplied,
 }
 
 /// What the model wants to do after a completion stream finishes.
@@ -107,6 +109,10 @@ pub struct HistoryManager<C: ConversationStore, S: StateStore> {
     /// `handle_content`. Callers can drain this via `take_interrupted_tool_calls`
     /// to send best-effort cancellation notifications to RAP tool servers.
     interrupted_tool_calls: Vec<String>,
+    /// Tracks the absolute store index that the current in-memory compaction
+    /// summary covers up to. Used to compute the correct relative split
+    /// position when a second compaction is applied on top of an existing one.
+    compacted_up_to: Option<i64>,
 }
 
 impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
@@ -127,7 +133,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             .cloned()
             .unwrap_or_else(|| thread_id.clone());
 
-        let history = conversation_store
+        let (history, compacted_up_to) = conversation_store
             .load_history_with_ancestors(&thread_id)
             .await
             .map_err(|e| Box::new(e) as BoxError)?;
@@ -155,6 +161,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             pending_items: Vec::new(),
             pending_complete_tool_calls: HashSet::new(),
             interrupted_tool_calls: Vec::new(),
+            compacted_up_to,
         })
     }
 
@@ -192,8 +199,8 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 }
             }) {
                 tracing::info!(
-                    "Got tool call result for wrong call, ignoring {}",
-                    tool_result.id
+                    "Got tool call result for wrong call, ignoring {:?}",
+                    tool_result
                 );
                 return Ok(false);
             }
@@ -380,6 +387,38 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         &self.state_store
     }
 
+    /// Apply the latest compaction summary: reload from store, truncate
+    /// in-memory history up to the compaction point, and prepend the summary.
+    pub async fn apply_compaction(&mut self) -> Result<bool, BoxError> {
+        if let Ok(Some((summary, up_to_order))) = self
+            .conversation_store
+            .load_latest_compaction_summary_up_to(&self.thread_id, None)
+            .await
+        {
+            // Compute the relative split position in the in-memory history.
+            // If a previous compaction already replaced indices 0..prev with a
+            // single summary message, the in-memory index 0 corresponds to
+            // absolute index (prev - 1) in the store (the -1 accounts for the
+            // summary message itself occupying slot 0).
+            let offset = self.compacted_up_to.map_or(0, |prev| prev as usize - 1);
+            let up_to = (up_to_order as usize).saturating_sub(offset);
+            if up_to <= self.history.len() {
+                let remaining = self.history.split_off(up_to);
+                self.history = vec![Message::Assistant {
+                    id: None,
+                    content: OneOrMany::one(AssistantContent::text(&format!(
+                        "[Compacted conversation summary]\n{}",
+                        summary
+                    ))),
+                }];
+                self.history.extend(remaining);
+                self.compacted_up_to = Some(up_to_order);
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Drain and return tool call IDs that were interrupted by new user messages.
     /// Callers use this to send best-effort cancellation notifications to RAP
     /// tool servers so they can abort in-flight operations.
@@ -397,21 +436,6 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             .await
             .map_err(|e| Box::new(e) as BoxError)
     }
-
-    /// Mutate this HistoryManager in place to become a child thread.
-    /// Keeps the current history and metadata (the child inherits the parent context),
-    /// updates the thread_id and ancestor chain, and clears pending/processed state
-    /// since the child is brand new. No store round-trip needed.
-    pub fn fork_new(&mut self, sub_thread_id: String) {
-        // Parent becomes part of the ancestor chain
-        self.ancestor_chain.push(self.thread_id.clone());
-        self.thread_id = sub_thread_id;
-        self.processed_message_ids.clear();
-        self.processed_tool_calls.clear();
-        self.pending_items.clear();
-        self.pending_complete_tool_calls.clear();
-        self.interrupted_tool_calls.clear();
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -419,15 +443,17 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
 //     synthetics, subscription events, OAuth, dedup, closed threads.
 // ═══════════════════════════════════════════════════════════════════════
 
-pub async fn prepare_input<C, S>(
+pub async fn prepare_input<C, S, M>(
     input_msg: InputMessage,
     message_id: String,
     current_history: &mut HistoryManager<C, S>,
     conversation_store: &C,
+    message_sender: &M,
 ) -> Result<PrepareResult, BoxError>
 where
     C: ConversationStore,
     S: StateStore,
+    M: InputSender,
 {
     // Skip messages for closed threads
     if conversation_store
@@ -439,6 +465,97 @@ where
             "Received message for closed thread {}, skipping",
             input_msg.group_id
         );
+        return Ok(PrepareResult::Handled);
+    }
+
+    // Handle compaction complete: apply compaction to in-memory history, no LLM needed
+    if input_msg.synthetic.as_ref().map_or(false, |s| {
+        matches!(
+            s,
+            crate::message::SyntheticKind::Tagged(
+                crate::message::TaggedSyntheticKind::CompactionComplete
+            )
+        )
+    }) {
+        tracing::info!("Applying compaction to thread {}", input_msg.group_id);
+        current_history.apply_compaction().await?;
+        return Ok(PrepareResult::CompactionApplied);
+    }
+
+    // Handle compaction trigger: spawn a compaction child thread
+    if input_msg.synthetic.as_ref().map_or(false, |s| {
+        matches!(
+            s,
+            crate::message::SyntheticKind::Tagged(crate::message::TaggedSyntheticKind::Compaction)
+        )
+    }) {
+        let spawn_call_id = uuid::Uuid::new_v4().to_string();
+        let sub_thread_id = conversation_store
+            .spawn_thread(&input_msg.group_id, &spawn_call_id, false)
+            .await
+            .map_err(|e| Box::new(e) as BoxError)?;
+        conversation_store
+            .mark_thread_as_compaction(&sub_thread_id)
+            .await
+            .map_err(|e| Box::new(e) as BoxError)?;
+
+        tracing::info!(
+            "Spawned compaction thread {} for parent {}",
+            sub_thread_id,
+            input_msg.group_id
+        );
+
+        // Write spawn tool call + result directly to child's store
+        let spawn_tool_call = Message::Assistant {
+            id: None,
+            content: OneOrMany::one(AssistantContent::ToolCall(rig::message::ToolCall {
+                id: spawn_call_id.clone(),
+                call_id: None,
+                function: rig::message::ToolFunction {
+                    name: "__harness_begin_compaction__".to_string(),
+                    arguments: serde_json::json!({}),
+                },
+                additional_params: None,
+                signature: None,
+            })),
+        };
+        conversation_store
+            .append_messages(
+                &sub_thread_id,
+                vec![(
+                    spawn_tool_call,
+                    format!("{}-compaction-call", spawn_call_id),
+                )],
+            )
+            .await
+            .map_err(|e| Box::new(e) as BoxError)?;
+
+        // Send child its instructions via message sender
+        let child_msg = InputMessage {
+            content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                id: spawn_call_id.clone(),
+                call_id: None,
+                content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                    text: format!(
+                        "This tool call was synthetically injected by the harness. You are now INSIDE a compaction thread. You can see the full conversation history inherited from your parent thread, including all ancestor thread context. \
+                        Summarize ALL of this content into a concise but comprehensive summary that preserves: all important context, decisions made, \
+                        current task progress, relevant code changes and file paths, and any pending work. \
+                        Then call close_thread with your thread ID ({}) and include the summary in report_to_parent.",
+                        sub_thread_id
+                    ),
+                })),
+            })),
+            group_id: sub_thread_id.clone(),
+            metadata: None,
+            synthetic: None,
+            display_as: None,
+            subscription: false,
+        };
+        message_sender
+            .send_to_input_queue(child_msg, &sub_thread_id, &spawn_call_id)
+            .await
+            .map_err(|e| Box::new(e) as BoxError)?;
+
         return Ok(PrepareResult::Handled);
     }
 
@@ -497,7 +614,10 @@ where
             return Ok(PrepareResult::Handled);
         };
 
-        if synthetic_kind.is_thread_report() || synthetic_kind.is_associative() || synthetic_kind.is_parent_message() {
+        if synthetic_kind.is_thread_report()
+            || synthetic_kind.is_associative()
+            || synthetic_kind.is_parent_message()
+        {
             let new_tool_call_id = uuid::Uuid::new_v4().to_string();
             if let UserContent::ToolResult(mut tool_result) = user_content {
                 let synthetic_tool_call = Message::Assistant {
@@ -529,7 +649,7 @@ where
                 return Err("Synthetic message is not a tool result".into());
             }
         } else {
-            // Subscription events spawn a new subthread
+            // Subscription events spawn a new subthread via message sender
             tracing::info!(
                 "Spawning subthread for subscription event from tool call: {}",
                 original_tool_call_id
@@ -546,11 +666,18 @@ where
                 input_msg.group_id
             );
 
-            current_history.fork_new(sub_thread_id.clone());
-
             let event_call_id = uuid::Uuid::new_v4().to_string();
             let spawn_call_id = uuid::Uuid::new_v4().to_string();
 
+            let event_content = if let UserContent::ToolResult(mut tool_result) = user_content {
+                tool_result.id = event_call_id.clone();
+                tool_result.call_id = None;
+                tool_result
+            } else {
+                return Err("Synthetic subscription event is not a tool result".into());
+            };
+
+            // Write event + spawn tool calls directly to child's store
             let event_tool_call = Message::Assistant {
                 id: None,
                 content: OneOrMany::one(AssistantContent::ToolCall(rig::message::ToolCall {
@@ -568,57 +695,60 @@ where
                     signature: None,
                 })),
             };
-
-            let event_content = if let UserContent::ToolResult(mut tool_result) = user_content {
-                tool_result.id = event_call_id.clone();
-                tool_result.call_id = None;
-                tool_result
-            } else {
-                return Err("Synthetic subscription event is not a tool result".into());
+            let event_result = Message::User {
+                content: OneOrMany::one(UserContent::ToolResult(event_content)),
             };
-
-            current_history
-                .handle_content(event_tool_call, format!("{}-event-call", event_call_id))
-                .await?;
-            current_history
-                .handle_content(
-                    Message::User {
-                        content: OneOrMany::one(UserContent::ToolResult(event_content)),
+            let spawn_tool_call = Message::Assistant {
+                id: None,
+                content: OneOrMany::one(AssistantContent::ToolCall(rig::message::ToolCall {
+                    id: spawn_call_id.clone(),
+                    call_id: None,
+                    function: rig::message::ToolFunction {
+                        name: "spawn_thread".to_string(),
+                        arguments: serde_json::json!({
+                            "instructions": "Process the single subscription event above, report to the parent if appropriate, then close the thread after processing this event. Only your report will be visible to the parent."
+                        }),
                     },
-                    format!("{}-event-result", event_call_id),
-                )
-                .await?;
-            current_history
-                .handle_content(
-                    Message::Assistant {
-                        id: None,
-                        content: OneOrMany::one(AssistantContent::ToolCall(rig::message::ToolCall {
-                            id: spawn_call_id.clone(),
-                            call_id: None,
-                            function: rig::message::ToolFunction {
-                                name: "spawn_thread".to_string(),
-                                arguments: serde_json::json!({
-                                    "instructions": "Process the single subscription event above, report to the parent if appropriate, then close the thread after processing this event. Only your report will be visible to the parent."
-                                }),
-                            },
-                            additional_params: None,
-                            signature: None,
-                        })),
-                    },
-                    format!("{}-spawn-call", spawn_call_id),
-                )
-                .await?;
-
-            UserContent::ToolResult(ToolResult {
-                id: spawn_call_id,
-                call_id: None,
-                content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                    text: format!(
-                        "You are now INSIDE the thread for processing the single event above. Your thread ID is {}, the parent which is still subscribing is {}.",
-                        sub_thread_id, input_msg.group_id
-                    ),
+                    additional_params: None,
+                    signature: None,
                 })),
-            })
+            };
+            conversation_store
+                .append_messages(
+                    &sub_thread_id,
+                    vec![
+                        (event_tool_call, format!("{}-event-call", event_call_id)),
+                        (event_result, format!("{}-event-result", event_call_id)),
+                        (spawn_tool_call, format!("{}-spawn-call", spawn_call_id)),
+                    ],
+                )
+                .await
+                .map_err(|e| Box::new(e) as BoxError)?;
+
+            // Send child its instructions via message sender
+            let child_msg = InputMessage {
+                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                    id: spawn_call_id,
+                    call_id: None,
+                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                        text: format!(
+                            "You are now INSIDE the thread for processing the single event above. Your thread ID is {}, the parent which is still subscribing is {}.",
+                            sub_thread_id, input_msg.group_id
+                        ),
+                    })),
+                })),
+                group_id: sub_thread_id.clone(),
+                metadata: None,
+                synthetic: None,
+                display_as: None,
+                subscription: false,
+            };
+            message_sender
+                .send_to_input_queue(child_msg, &sub_thread_id, &event_call_id)
+                .await
+                .map_err(|e| Box::new(e) as BoxError)?;
+
+            return Ok(PrepareResult::Handled);
         }
     } else {
         user_content
@@ -1024,7 +1154,7 @@ mod tests {
     use crate::message::{
         InputMessage, InputMessageContent, OAuthRequired, SyntheticKind, TaggedSyntheticKind,
     };
-    use crate::traits::{ConversationStore, StateStore};
+    use crate::traits::{ConversationStore, InputSender, StateStore};
     use async_trait::async_trait;
     use rig::OneOrMany;
     use rig::message::{
@@ -1043,6 +1173,24 @@ mod tests {
         }
     }
     impl std::error::Error for TestError {}
+
+    // ── No-op InputSender ──
+
+    #[derive(Clone)]
+    struct StubSender;
+
+    #[async_trait]
+    impl InputSender for StubSender {
+        type Error = TestError;
+        async fn send_to_input_queue(
+            &self,
+            _message: crate::message::InputMessage,
+            _group_id: &str,
+            _dedup_id: &str,
+        ) -> Result<(), TestError> {
+            Ok(())
+        }
+    }
 
     // ── No-op ConversationStore ──
 
@@ -1066,19 +1214,11 @@ mod tests {
         async fn ensure_root_thread(&self, _thread_id: &str) -> Result<(), TestError> {
             Ok(())
         }
-        async fn load_history(&self, _session_id: &str) -> Result<Vec<Message>, TestError> {
-            Ok(vec![])
-        }
         async fn load_history_up_to(
             &self,
             _session_id: &str,
-            _up_to_order: i64,
-        ) -> Result<Vec<Message>, TestError> {
-            Ok(vec![])
-        }
-        async fn load_history_with_ancestors(
-            &self,
-            _thread_id: &str,
+            _start_from: Option<i64>,
+            _up_to: Option<i64>,
         ) -> Result<Vec<Message>, TestError> {
             Ok(vec![])
         }
@@ -1117,6 +1257,30 @@ mod tests {
             _thread_id: &str,
         ) -> Result<Vec<(String, i64)>, TestError> {
             Ok(vec![])
+        }
+        async fn mark_thread_as_compaction(&self, _thread_id: &str) -> Result<(), TestError> {
+            Ok(())
+        }
+        async fn is_compaction_thread(&self, _thread_id: &str) -> Result<bool, TestError> {
+            Ok(false)
+        }
+        async fn get_thread_spawn_order(&self, _thread_id: &str) -> Result<Option<i64>, TestError> {
+            Ok(None)
+        }
+        async fn save_compaction_summary(
+            &self,
+            _thread_id: &str,
+            _summary: &str,
+            _up_to_order: i64,
+        ) -> Result<(), TestError> {
+            Ok(())
+        }
+        async fn load_latest_compaction_summary_up_to(
+            &self,
+            _thread_id: &str,
+            _up_to_order: Option<i64>,
+        ) -> Result<Option<(String, i64)>, TestError> {
+            Ok(None)
         }
     }
 
@@ -1259,6 +1423,7 @@ mod tests {
             "msg-1".to_string(),
             &mut hm,
             &store,
+            &StubSender,
         )
         .await
         .unwrap();
@@ -1279,6 +1444,7 @@ mod tests {
             "msg-1".to_string(),
             &mut hm,
             &store,
+            &StubSender,
         )
         .await
         .unwrap();
@@ -1306,7 +1472,7 @@ mod tests {
             subscription: false,
         };
 
-        let result = prepare_input(input, "msg-1".to_string(), &mut hm, &store)
+        let result = prepare_input(input, "msg-1".to_string(), &mut hm, &store, &StubSender)
             .await
             .unwrap();
 
@@ -1325,6 +1491,7 @@ mod tests {
             "msg-1".to_string(),
             &mut hm,
             &store,
+            &StubSender,
         )
         .await
         .unwrap();
@@ -1336,6 +1503,7 @@ mod tests {
             "msg-1".to_string(),
             &mut hm,
             &store,
+            &StubSender,
         )
         .await
         .unwrap();
@@ -1362,6 +1530,7 @@ mod tests {
             "msg-2".to_string(),
             &mut hm,
             &store,
+            &StubSender,
         )
         .await
         .unwrap();
@@ -1384,7 +1553,7 @@ mod tests {
 
         let input = tool_result_input("thread-1", "tc-1", "tool output", None);
 
-        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store)
+        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store, &StubSender)
             .await
             .unwrap();
 
@@ -1427,7 +1596,7 @@ mod tests {
             })),
         );
 
-        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store)
+        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store, &StubSender)
             .await
             .unwrap();
 
@@ -1464,7 +1633,7 @@ mod tests {
             })),
         );
 
-        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store)
+        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store, &StubSender)
             .await
             .unwrap();
 
@@ -1512,21 +1681,12 @@ mod tests {
             )),
         );
 
-        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store)
+        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store, &StubSender)
             .await
             .unwrap();
 
-        assert_eq!(result, PrepareResult::Ready);
-        assert_eq!(hm.thread_id, "sub-thread-1");
-        insta::assert_json_snapshot!(
-            hm.history,
-            {
-                "[3].content[0].id" => "[uuid]",
-                "[4].content[0].id" => "[uuid]",
-                "[5].content[0].id" => "[uuid]",
-                "[6].content[0].id" => "[uuid]",
-            }
-        );
+        assert_eq!(result, PrepareResult::Handled);
+        assert_eq!(hm.thread_id, "thread-1");
     }
 
     #[tokio::test]
@@ -1557,21 +1717,12 @@ mod tests {
             )),
         );
 
-        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store)
+        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store, &StubSender)
             .await
             .unwrap();
 
-        assert_eq!(result, PrepareResult::Ready);
-        assert_eq!(hm.thread_id, "sub-thread-1");
-        insta::assert_json_snapshot!(
-            hm.history,
-            {
-                "[3].content[0].id" => "[uuid]",
-                "[4].content[0].id" => "[uuid]",
-                "[5].content[0].id" => "[uuid]",
-                "[6].content[0].id" => "[uuid]",
-            }
-        );
+        assert_eq!(result, PrepareResult::Handled);
+        assert_eq!(hm.thread_id, "thread-1");
     }
 
     #[tokio::test]
@@ -1592,7 +1743,7 @@ mod tests {
             )),
         );
 
-        let result = prepare_input(input, "msg-1".to_string(), &mut hm, &store)
+        let result = prepare_input(input, "msg-1".to_string(), &mut hm, &store, &StubSender)
             .await
             .unwrap();
 
@@ -1615,7 +1766,7 @@ mod tests {
             subscription: false,
         };
 
-        let _ = prepare_input(input, "msg-1".to_string(), &mut hm, &store)
+        let _ = prepare_input(input, "msg-1".to_string(), &mut hm, &store, &StubSender)
             .await
             .unwrap();
 
@@ -1660,7 +1811,7 @@ mod tests {
             )),
         );
 
-        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store)
+        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store, &StubSender)
             .await
             .unwrap();
 
@@ -1702,7 +1853,7 @@ mod tests {
             )),
         );
 
-        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store)
+        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store, &StubSender)
             .await
             .unwrap();
 

@@ -115,6 +115,31 @@ impl DsqlConversationStore {
         .await
         .map_err(|e| Error::from(format!("Failed to create thread_hierarchy table: {}", e)))?;
 
+        sqlx::query(
+            r#"ALTER TABLE thread_hierarchy ADD COLUMN IF NOT EXISTS is_compaction BOOLEAN NOT NULL DEFAULT FALSE"#,
+        )
+        .execute(&pool)
+        .await
+        .map_err(|e| Error::from(format!("Failed to add is_compaction column: {}", e)))?;
+
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS compaction_summaries (
+                thread_id VARCHAR(255) NOT NULL,
+                up_to_order BIGINT NOT NULL,
+                summary TEXT NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                PRIMARY KEY (thread_id, up_to_order)
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .map_err(|e| {
+            Error::from(format!(
+                "Failed to create compaction_summaries table: {}",
+                e
+            ))
+        })?;
+
         Ok(Self { pool })
     }
 }
@@ -136,41 +161,37 @@ impl ConversationStore for DsqlConversationStore {
         Ok(())
     }
 
-    async fn load_history(&self, session_id: &str) -> Result<Vec<Message>, DsqlError> {
-        let rows = sqlx::query(
-            r#"SELECT message_data FROM conversation_history
-            WHERE session_id = $1 ORDER BY message_order ASC"#,
-        )
-        .bind(session_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| DsqlError(format!("Failed to load history: {}", e)))?;
-
-        let mut messages = Vec::new();
-        for row in rows {
-            let json_str: String = row.get("message_data");
-            if let Ok(message) = serde_json::from_str::<Message>(&json_str) {
-                messages.push(message);
-            }
-        }
-        Ok(messages)
-    }
-
     async fn load_history_up_to(
         &self,
         session_id: &str,
-        up_to_order: i64,
+        start_from: Option<i64>,
+        up_to: Option<i64>,
     ) -> Result<Vec<Message>, DsqlError> {
-        let rows = sqlx::query(
-            r#"SELECT message_data FROM conversation_history
-            WHERE session_id = $1 AND message_order <= $2
-            ORDER BY message_order ASC"#,
-        )
-        .bind(session_id)
-        .bind(up_to_order)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| DsqlError(format!("Failed to load history up to order: {}", e)))?;
+        let mut query =
+            String::from("SELECT message_data FROM conversation_history WHERE session_id = $1");
+        let mut bind_idx = 2;
+
+        if start_from.is_some() {
+            query.push_str(&format!(" AND message_order > ${}", bind_idx));
+            bind_idx += 1;
+        }
+        if up_to.is_some() {
+            query.push_str(&format!(" AND message_order <= ${}", bind_idx));
+        }
+        query.push_str(" ORDER BY message_order ASC");
+
+        let mut q = sqlx::query(&query).bind(session_id);
+        if let Some(n) = start_from {
+            q = q.bind(n);
+        }
+        if let Some(n) = up_to {
+            q = q.bind(n);
+        }
+
+        let rows = q
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| DsqlError(format!("Failed to load history: {}", e)))?;
 
         let mut messages = Vec::new();
         for row in rows {
@@ -180,19 +201,6 @@ impl ConversationStore for DsqlConversationStore {
             }
         }
         Ok(messages)
-    }
-
-    async fn load_history_with_ancestors(
-        &self,
-        thread_id: &str,
-    ) -> Result<Vec<Message>, DsqlError> {
-        let ancestors = self.get_ancestor_chain(thread_id).await?;
-        let mut combined = Vec::new();
-        for (tid, cutoff) in &ancestors {
-            combined.extend(self.load_history_up_to(tid, *cutoff).await?);
-        }
-        combined.extend(self.load_history(thread_id).await?);
-        Ok(combined)
     }
 
     async fn append_messages(
@@ -374,5 +382,91 @@ impl ConversationStore for DsqlConversationStore {
 
         result.reverse();
         Ok(result)
+    }
+
+    async fn save_compaction_summary(
+        &self,
+        thread_id: &str,
+        summary: &str,
+        up_to_order: i64,
+    ) -> Result<(), DsqlError> {
+        sqlx::query(
+            r#"INSERT INTO compaction_summaries (thread_id, up_to_order, summary)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (thread_id, up_to_order) DO UPDATE SET summary = $3"#,
+        )
+        .bind(thread_id)
+        .bind(up_to_order)
+        .bind(summary)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DsqlError(format!("Failed to save compaction summary: {}", e)))?;
+        Ok(())
+    }
+
+    async fn load_latest_compaction_summary_up_to(
+        &self,
+        thread_id: &str,
+        up_to_order: Option<i64>,
+    ) -> Result<Option<(String, i64)>, DsqlError> {
+        let row = match up_to_order {
+            Some(n) => {
+                sqlx::query(
+                    r#"SELECT summary, up_to_order FROM compaction_summaries
+                    WHERE thread_id = $1 AND up_to_order <= $2
+                    ORDER BY up_to_order DESC LIMIT 1"#,
+                )
+                .bind(thread_id)
+                .bind(n)
+                .fetch_optional(&self.pool)
+                .await
+            }
+            None => {
+                sqlx::query(
+                    r#"SELECT summary, up_to_order FROM compaction_summaries
+                    WHERE thread_id = $1 ORDER BY up_to_order DESC LIMIT 1"#,
+                )
+                .bind(thread_id)
+                .fetch_optional(&self.pool)
+                .await
+            }
+        }
+        .map_err(|e| DsqlError(format!("Failed to load compaction summary: {}", e)))?;
+
+        Ok(row.map(|r| {
+            let summary: String = r.get("summary");
+            let up_to_order: i64 = r.get("up_to_order");
+            (summary, up_to_order)
+        }))
+    }
+
+    async fn is_compaction_thread(&self, thread_id: &str) -> Result<bool, DsqlError> {
+        let row: Option<(bool,)> =
+            sqlx::query_as(r#"SELECT is_compaction FROM thread_hierarchy WHERE thread_id = $1"#)
+                .bind(thread_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| DsqlError(format!("Failed to check compaction thread: {}", e)))?;
+        Ok(row.map(|(v,)| v).unwrap_or(false))
+    }
+
+    async fn mark_thread_as_compaction(&self, thread_id: &str) -> Result<(), DsqlError> {
+        sqlx::query(r#"UPDATE thread_hierarchy SET is_compaction = TRUE WHERE thread_id = $1"#)
+            .bind(thread_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DsqlError(format!("Failed to mark compaction thread: {}", e)))?;
+        Ok(())
+    }
+
+    async fn get_thread_spawn_order(&self, thread_id: &str) -> Result<Option<i64>, DsqlError> {
+        let row: Option<(Option<i64>,)> = sqlx::query_as(
+            r#"SELECT spawn_message_order FROM thread_hierarchy WHERE thread_id = $1"#,
+        )
+        .bind(thread_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DsqlError(format!("Failed to get spawn order: {}", e)))?;
+        Ok(row.and_then(|(v,)| v))
     }
 }

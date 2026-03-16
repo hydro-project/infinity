@@ -1217,7 +1217,12 @@ async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackC
         |sandbox_dir| async move {
             run_jj(
                 &sandbox_dir,
-                &["squash", "--from", &from_bookmark, "--use-destination-message"],
+                &[
+                    "squash",
+                    "--from",
+                    &from_bookmark,
+                    "--use-destination-message",
+                ],
             )
             .await?;
             Ok((
