@@ -23,10 +23,8 @@ pub struct LocalBackend {
     /// Whether to use platform-specific sandboxing for command execution
     /// (macOS sandbox-exec or Linux bubblewrap).
     sandbox_enabled: bool,
-    /// Optional base directory in which to create temp directories.
-    /// When `None`, the default `tempfile` behaviour is used (typically
-    /// the OS temp directory).
-    tempdir_base: Option<PathBuf>,
+    /// Base directory in which to create temp directories.
+    tempdir_base: PathBuf,
 }
 
 /// Returns `true` when the current platform supports sandboxed execution.
@@ -35,7 +33,7 @@ fn platform_sandbox_available() -> bool {
 }
 
 impl LocalBackend {
-    pub fn new(sandbox_enabled: bool, tempdir_base: Option<PathBuf>) -> Self {
+    pub fn new(sandbox_enabled: bool, tempdir_base: PathBuf) -> Self {
         if sandbox_enabled && !platform_sandbox_available() {
             tracing::warn!(
                 "sandbox enabled but not supported on this platform; commands will run unsandboxed"
@@ -51,10 +49,8 @@ impl LocalBackend {
     /// Create a new temporary directory, respecting the configured
     /// `tempdir_base` when one was provided.
     fn make_tempdir(&self) -> std::io::Result<tempfile::TempDir> {
-        match &self.tempdir_base {
-            Some(base) => tempfile::tempdir_in(base),
-            None => tempfile::tempdir(),
-        }
+        std::fs::create_dir_all(&self.tempdir_base)?;
+        tempfile::tempdir_in(&self.tempdir_base)
     }
 }
 
