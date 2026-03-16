@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use rig::message::Message;
+use rig::OneOrMany;
+use rig::message::{AssistantContent, Message};
 
 use crate::message::InputMessage;
 
@@ -10,18 +11,92 @@ pub trait ConversationStore: Send + Sync + Clone {
 
     async fn ensure_root_thread(&self, thread_id: &str) -> Result<(), Self::Error>;
 
-    async fn load_history(&self, session_id: &str) -> Result<Vec<Message>, Self::Error>;
-
+    /// Load history for a session. `start_from` (exclusive) and `up_to`
+    /// (inclusive) are optional bounds on message order. `None` means unbounded.
     async fn load_history_up_to(
         &self,
         session_id: &str,
-        up_to_order: i64,
+        start_from: Option<i64>,
+        up_to: Option<i64>,
     ) -> Result<Vec<Message>, Self::Error>;
 
+    /// Load full history for a thread including ancestor context and compaction.
+    /// Walks backwards through ancestors to find the most recent compaction
+    /// summary, skipping all earlier ancestors (their content is in the summary).
+    /// Returns `(history, leaf_compacted_up_to)` where the second element is
+    /// the absolute store index the leaf thread's compaction covers, if any.
     async fn load_history_with_ancestors(
         &self,
         thread_id: &str,
-    ) -> Result<Vec<Message>, Self::Error>;
+    ) -> Result<(Vec<Message>, Option<i64>), Self::Error> {
+        // Check the thread itself first
+        if let Ok(Some((summary, compacted_up_to))) = self
+            .load_latest_compaction_summary_up_to(thread_id, None)
+            .await
+        {
+            let mut combined = vec![Message::Assistant {
+                id: None,
+                content: OneOrMany::one(AssistantContent::text(&format!(
+                    "[Compacted conversation summary]\n{}",
+                    summary
+                ))),
+            }];
+            combined.extend(
+                self.load_history_up_to(thread_id, Some(compacted_up_to), None)
+                    .await?,
+            );
+            return Ok((combined, Some(compacted_up_to)));
+        }
+
+        let ancestors = self.get_ancestor_chain(thread_id).await?;
+
+        // Walk backwards to find the first ancestor with a compaction summary
+        let mut compaction_idx = None;
+        let mut compaction_summary = None;
+        for i in (0..ancestors.len()).rev() {
+            let (ref tid, cutoff) = ancestors[i];
+            if let Ok(Some((summary, compacted_up_to))) = self
+                .load_latest_compaction_summary_up_to(tid, Some(cutoff))
+                .await
+            {
+                compaction_idx = Some(i);
+                compaction_summary = Some((summary, compacted_up_to));
+                break;
+            }
+        }
+
+        let mut combined = Vec::new();
+
+        if let (Some(idx), Some((summary, compacted_up_to))) = (compaction_idx, compaction_summary)
+        {
+            // Prepend the compaction summary (covers all ancestors before idx + ancestor idx's messages up to compacted_up_to)
+            combined.push(Message::Assistant {
+                id: None,
+                content: OneOrMany::one(AssistantContent::text(&format!(
+                    "[Compacted conversation summary]\n{}",
+                    summary
+                ))),
+            });
+            // Load remaining messages from the compacted ancestor (after summary, up to cutoff)
+            let (_, cutoff) = &ancestors[idx];
+            combined.extend(
+                self.load_history_up_to(&ancestors[idx].0, Some(compacted_up_to), Some(*cutoff))
+                    .await?,
+            );
+            // Load subsequent ancestors normally
+            for (tid, cutoff) in &ancestors[idx + 1..] {
+                combined.extend(self.load_history_up_to(tid, None, Some(*cutoff)).await?);
+            }
+        } else {
+            // No compaction anywhere — load all ancestors
+            for (tid, cutoff) in &ancestors {
+                combined.extend(self.load_history_up_to(tid, None, Some(*cutoff)).await?);
+            }
+        }
+
+        combined.extend(self.load_history_up_to(thread_id, None, None).await?);
+        Ok((combined, None))
+    }
 
     async fn append_messages(
         &self,
@@ -48,6 +123,29 @@ pub trait ConversationStore: Send + Sync + Clone {
     ) -> Result<Option<(String, String)>, Self::Error>;
 
     async fn get_ancestor_chain(&self, thread_id: &str) -> Result<Vec<(String, i64)>, Self::Error>;
+
+    // ── Compaction support ──
+
+    async fn mark_thread_as_compaction(&self, thread_id: &str) -> Result<(), Self::Error>;
+
+    async fn is_compaction_thread(&self, thread_id: &str) -> Result<bool, Self::Error>;
+
+    async fn get_thread_spawn_order(&self, thread_id: &str) -> Result<Option<i64>, Self::Error>;
+
+    async fn save_compaction_summary(
+        &self,
+        thread_id: &str,
+        summary: &str,
+        up_to_order: i64,
+    ) -> Result<(), Self::Error>;
+
+    /// Load the latest compaction summary. When `up_to_order` is `Some(n)`,
+    /// only return summaries whose `up_to_order` is <= n.
+    async fn load_latest_compaction_summary_up_to(
+        &self,
+        thread_id: &str,
+        up_to_order: Option<i64>,
+    ) -> Result<Option<(String, i64)>, Self::Error>;
 }
 
 /// Key-value state store for processed message IDs, metadata, toolset caches

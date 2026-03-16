@@ -334,6 +334,67 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
 
         tracing::info!("Closed thread {}", thread_id);
 
+        // Handle compaction threads: store summary and skip normal parent reporting
+        let is_compaction = self
+            .conversation_store
+            .is_compaction_thread(thread_id)
+            .await
+            .unwrap_or(false);
+
+        if is_compaction {
+            if let Some((parent_id, _)) = self
+                .conversation_store
+                .get_thread_parent_info(thread_id)
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+            {
+                if let Some(report_text) = report {
+                    let up_to_order = self
+                        .conversation_store
+                        .get_thread_spawn_order(thread_id)
+                        .await
+                        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+                        .unwrap_or(0);
+                    self.conversation_store
+                        .save_compaction_summary(&parent_id, report_text, up_to_order)
+                        .await
+                        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                    tracing::info!(
+                        "Stored compaction summary for thread {} up to order {}",
+                        parent_id,
+                        up_to_order
+                    );
+                }
+
+                // Notify the parent thread to apply the compaction
+                let notify_msg = InputMessage {
+                    content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                        id: String::new(),
+                        call_id: None,
+                        content: OneOrMany::one(ToolResultContent::Text(Text {
+                            text: "Compaction complete".to_string(),
+                        })),
+                    })),
+                    group_id: parent_id,
+                    metadata: None,
+                    synthetic: Some(SyntheticKind::Tagged(
+                        TaggedSyntheticKind::CompactionComplete,
+                    )),
+                    display_as: None,
+                    subscription: false,
+                };
+                let notify_group_id = notify_msg.group_id.clone();
+                context
+                    .message_sender
+                    .send_to_input_queue(notify_msg, &notify_group_id, &id)
+                    .await?;
+            }
+            if let Some(ref notifier) = self.rap_notifier {
+                notifier.notify_thread_closed(thread_id).await;
+            }
+            return Ok(());
+        }
+
         let is_subscription = self
             .conversation_store
             .is_subscription_event_thread(thread_id)

@@ -64,27 +64,34 @@ pub enum DisplayEvent<R> {
 
 /// Process a single input message: run prepare_input and emit display events.
 /// Returns `Some(message_id)` if the item is ready for completion, `None` otherwise.
-async fn process_input_item<C, S, R>(
+async fn process_input_item<C, S, R, M>(
     input_msg: InputMessage,
     message_id: String,
     current_history: &mut HistoryManager<C, S>,
     conversation_store: &C,
     display_tx: &mpsc::UnboundedSender<DisplayEvent<R>>,
+    message_sender: &M,
 ) -> Option<String>
 where
     C: ConversationStore,
     S: StateStore,
+    M: InputSender,
 {
     let prepare_result = event_processor::prepare_input(
         input_msg.clone(),
         message_id.clone(),
         current_history,
         conversation_store,
+        message_sender,
     )
     .await;
 
     match prepare_result {
         Ok(event_processor::PrepareResult::Handled) => None,
+        Ok(event_processor::PrepareResult::CompactionApplied) => {
+            let _ = display_tx.send(DisplayEvent::Info("✦ Compaction applied".to_string()));
+            None
+        }
         Ok(event_processor::PrepareResult::OAuthRequired { auth_url }) => {
             let _ = display_tx.send(DisplayEvent::OAuthRequired { auth_url });
             None
@@ -160,7 +167,7 @@ pub async fn process_batch<'a, Mdl, C, S, M, H>(
     tool_names: &'a HashSet<String>,
     tool_defs: &'a [ToolDefinition],
     tool_registry: &'a HashMap<String, &'a dyn Tool<M>>,
-    mut tool_context: ToolContext<M>,
+    tool_context: ToolContext<M>,
     extra_system_prompt: &'a Option<String>,
     additional_request_params: Option<serde_json::Value>,
     model_id_override: Option<String>,
@@ -183,6 +190,7 @@ where
             &mut *current_history.borrow_mut(),
             conversation_store,
             display_tx,
+            &tool_context.message_sender,
         )
         .await
         {
@@ -215,8 +223,6 @@ where
     let prefix = current_history.borrow().get_thread_nesting_prefix();
     let active_thread_id = current_history.borrow().thread_id.clone();
     let completion_message_id = last_message_id;
-    tool_context.group_id = active_thread_id.clone(); // might have changed due to HistoryManager::fork_new
-    tool_context.thread_stack = current_history.borrow().get_thread_stack();
 
     let fut = Box::pin(async move {
         let mut hist = current_history.borrow_mut();

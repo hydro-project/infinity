@@ -30,6 +30,8 @@ pub struct InMemoryConversationStore {
     /// thread_id -> tool_result_id -> display_as text.
     /// Persisted separately because rig's `Message` type does not carry display_as.
     display_as_map: Arc<Mutex<HashMap<String, HashMap<String, String>>>>,
+    /// thread_id -> compaction summaries
+    compaction_summaries: Arc<Mutex<HashMap<String, Vec<CompactionSummary>>>>,
     /// Directory where per-thread JSON files are stored. `None` disables persistence.
     dir: Option<PathBuf>,
     /// Tracks which thread IDs have already been loaded (or attempted) from disk.
@@ -46,6 +48,14 @@ struct ThreadInfo {
     is_subscription_event: bool,
     #[serde(default)]
     title: Option<String>,
+    #[serde(default)]
+    is_compaction: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct CompactionSummary {
+    summary: String,
+    up_to_order: i64,
 }
 
 /// Per-thread snapshot written to `{dir}/{thread_id}.json`.
@@ -55,6 +65,8 @@ struct ThreadSnapshot {
     thread_info: ThreadInfo,
     #[serde(default)]
     display_as: HashMap<String, String>,
+    #[serde(default)]
+    compaction_summaries: Vec<CompactionSummary>,
 }
 
 impl InMemoryConversationStore {
@@ -66,6 +78,7 @@ impl InMemoryConversationStore {
             messages: Arc::new(Mutex::new(HashMap::new())),
             threads: Arc::new(Mutex::new(HashMap::new())),
             display_as_map: Arc::new(Mutex::new(HashMap::new())),
+            compaction_summaries: Arc::new(Mutex::new(HashMap::new())),
             dir: Some(dir),
             loaded: Arc::new(Mutex::new(HashSet::new())),
         }
@@ -78,6 +91,7 @@ impl InMemoryConversationStore {
         let messages = self.messages.lock().unwrap();
         let threads = self.threads.lock().unwrap();
         let display_as_map = self.display_as_map.lock().unwrap();
+        let compaction_summaries = self.compaction_summaries.lock().unwrap();
 
         let snapshot = ThreadSnapshot {
             messages: messages.get(thread_id).cloned().unwrap_or_default(),
@@ -89,8 +103,13 @@ impl InMemoryConversationStore {
                 closed: false,
                 is_subscription_event: false,
                 title: None,
+                is_compaction: false,
             }),
             display_as: display_as_map.get(thread_id).cloned().unwrap_or_default(),
+            compaction_summaries: compaction_summaries
+                .get(thread_id)
+                .cloned()
+                .unwrap_or_default(),
         };
 
         let path = dir.join(format!("{}.json", thread_id));
@@ -119,6 +138,7 @@ impl InMemoryConversationStore {
                 let mut messages = self.messages.lock().unwrap();
                 let mut threads = self.threads.lock().unwrap();
                 let mut display_as_map = self.display_as_map.lock().unwrap();
+                let mut compaction_summaries = self.compaction_summaries.lock().unwrap();
 
                 assert!(
                     messages
@@ -133,6 +153,11 @@ impl InMemoryConversationStore {
                 assert!(
                     display_as_map
                         .insert(thread_id.to_string(), snapshot.display_as)
+                        .is_none()
+                );
+                assert!(
+                    compaction_summaries
+                        .insert(thread_id.to_string(), snapshot.compaction_summaries)
                         .is_none()
                 );
             }
@@ -203,6 +228,7 @@ impl ConversationStore for InMemoryConversationStore {
                         closed: false,
                         is_subscription_event: false,
                         title: None,
+                        is_compaction: false,
                     },
                 );
                 true
@@ -214,44 +240,22 @@ impl ConversationStore for InMemoryConversationStore {
         Ok(())
     }
 
-    async fn load_history(&self, session_id: &str) -> Result<Vec<Message>, MemoryError> {
-        self.ensure_thread_loaded(session_id);
-        let msgs = self.messages.lock().unwrap();
-        Ok(msgs
-            .get(session_id)
-            .map(|v| v.iter().map(|(m, _)| m.clone()).collect())
-            .unwrap_or_default())
-    }
-
     async fn load_history_up_to(
         &self,
         session_id: &str,
-        up_to_order: i64,
+        start_from: Option<i64>,
+        up_to: Option<i64>,
     ) -> Result<Vec<Message>, MemoryError> {
         self.ensure_thread_loaded(session_id);
         let msgs = self.messages.lock().unwrap();
         Ok(msgs
             .get(session_id)
             .map(|v| {
-                v.iter()
-                    .take(up_to_order as usize)
-                    .map(|(m, _)| m.clone())
-                    .collect()
+                let start = start_from.unwrap_or(0) as usize;
+                let end = up_to.map(|u| u as usize).unwrap_or(v.len());
+                v[start..end].iter().map(|(m, _)| m.clone()).collect()
             })
             .unwrap_or_default())
-    }
-
-    async fn load_history_with_ancestors(
-        &self,
-        thread_id: &str,
-    ) -> Result<Vec<Message>, MemoryError> {
-        let ancestors = self.get_ancestor_chain(thread_id).await?;
-        let mut combined = Vec::new();
-        for (tid, cutoff) in &ancestors {
-            combined.extend(self.load_history_up_to(tid, *cutoff).await?);
-        }
-        combined.extend(self.load_history(thread_id).await?);
-        Ok(combined)
     }
 
     async fn append_messages(
@@ -311,6 +315,7 @@ impl ConversationStore for InMemoryConversationStore {
                         closed: false,
                         is_subscription_event: is_for_subscription_event,
                         title: None,
+                        is_compaction: false,
                     },
                 );
             }
@@ -389,6 +394,68 @@ impl ConversationStore for InMemoryConversationStore {
         }
         result.reverse();
         Ok(result)
+    }
+
+    async fn save_compaction_summary(
+        &self,
+        thread_id: &str,
+        summary: &str,
+        up_to_order: i64,
+    ) -> Result<(), MemoryError> {
+        self.ensure_thread_loaded(thread_id);
+        {
+            let mut cs = self.compaction_summaries.lock().unwrap();
+            cs.entry(thread_id.to_string())
+                .or_default()
+                .push(CompactionSummary {
+                    summary: summary.to_string(),
+                    up_to_order,
+                });
+        }
+        self.save_thread(thread_id);
+        Ok(())
+    }
+
+    async fn load_latest_compaction_summary_up_to(
+        &self,
+        thread_id: &str,
+        up_to_order: Option<i64>,
+    ) -> Result<Option<(String, i64)>, MemoryError> {
+        self.ensure_thread_loaded(thread_id);
+        let cs = self.compaction_summaries.lock().unwrap();
+        Ok(cs.get(thread_id).and_then(|v| {
+            v.iter()
+                .rev()
+                .find(|s| up_to_order.map_or(true, |n| s.up_to_order <= n))
+                .map(|s| (s.summary.clone(), s.up_to_order))
+        }))
+    }
+
+    async fn is_compaction_thread(&self, thread_id: &str) -> Result<bool, MemoryError> {
+        self.ensure_thread_loaded(thread_id);
+        let threads = self.threads.lock().unwrap();
+        Ok(threads
+            .get(thread_id)
+            .map(|t| t.is_compaction)
+            .unwrap_or(false))
+    }
+
+    async fn mark_thread_as_compaction(&self, thread_id: &str) -> Result<(), MemoryError> {
+        self.ensure_thread_loaded(thread_id);
+        {
+            let mut threads = self.threads.lock().unwrap();
+            if let Some(t) = threads.get_mut(thread_id) {
+                t.is_compaction = true;
+            }
+        }
+        self.save_thread(thread_id);
+        Ok(())
+    }
+
+    async fn get_thread_spawn_order(&self, thread_id: &str) -> Result<Option<i64>, MemoryError> {
+        self.ensure_thread_loaded(thread_id);
+        let threads = self.threads.lock().unwrap();
+        Ok(threads.get(thread_id).and_then(|t| t.spawn_message_order))
     }
 }
 
