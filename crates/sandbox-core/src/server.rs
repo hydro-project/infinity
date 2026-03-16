@@ -1243,6 +1243,7 @@ async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackC
                 ],
             )
             .await?;
+            run_jj(&sandbox_dir, &["bookmark", "delete", &from_bookmark]).await?;
             Ok((
                 format!("Squashed changes from {from_bookmark}."),
                 Some(format!("Squashed from {from_bookmark}")),
