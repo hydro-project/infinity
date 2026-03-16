@@ -178,6 +178,7 @@ where
                             end_stream(&mut viewport, &mut mid_stream)?;
                             stream_start = true;
 
+                            thinking_text_buffer.clear();
                             if spinner_state == Some(SpinnerState::WaitingToolCall) {
                                 spinner_state = Some(SpinnerState::Thinking);
                             } else {
@@ -243,6 +244,7 @@ where
 
                         if prefix.is_none() {
                             spinner_state = Some(SpinnerState::WaitingToolCall);
+                            thinking_text_buffer.push_str("waiting for tool call result");
                             thinking_start = Instant::now();
                             print_line_above(&mut viewport, Line::from(vec![
                                 Span::styled(format!("◆ {}({})", name, args), Style::default().fg(Color::Blue)),
@@ -689,7 +691,7 @@ fn draw_viewport(
         UiMode::Normal => (input.preferred_height(current_width), false),
     };
 
-    let mut desired_lines = thread_rows + 1 + content_height + 1; // threads + border + content + status
+    let mut desired_lines = 1 + thread_rows + 1 + content_height + 1; // gap + threads + border + content + status
     if spinner_state.is_some() {
         desired_lines += 1;
     }
@@ -699,6 +701,7 @@ fn draw_viewport(
 
         // Build constraints dynamically
         let mut constraints: Vec<Constraint> = Vec::new();
+        constraints.push(Constraint::Length(1));
         if spinner_state.is_some() {
             constraints.push(Constraint::Length(1));
         }
@@ -710,7 +713,7 @@ fn draw_viewport(
         constraints.push(Constraint::Length(1)); // status
 
         let areas = Layout::vertical(constraints).split(area);
-        let mut idx = 0;
+        let mut idx = 1; // skip gap
 
         // Thinking bar
         if let Some(state) = spinner_state {
