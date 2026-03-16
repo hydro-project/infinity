@@ -41,6 +41,10 @@ pub enum TaggedSyntheticKind {
     ThreadReport { tool_call_id: String },
     #[serde(rename = "parent_message")]
     ParentMessage { tool_call_id: String },
+    #[serde(rename = "compaction")]
+    Compaction,
+    #[serde(rename = "compaction_complete")]
+    CompactionComplete,
 }
 
 impl SyntheticKind {
@@ -55,6 +59,8 @@ impl SyntheticKind {
             SyntheticKind::Tagged(TaggedSyntheticKind::ParentMessage { tool_call_id }) => {
                 tool_call_id
             }
+            SyntheticKind::Tagged(TaggedSyntheticKind::Compaction) => "",
+            SyntheticKind::Tagged(TaggedSyntheticKind::CompactionComplete) => "",
             SyntheticKind::SubscriptionEvent(id) => id,
         }
     }
@@ -71,6 +77,10 @@ impl SyntheticKind {
             self,
             SyntheticKind::Tagged(TaggedSyntheticKind::ParentMessage { .. })
         )
+    }
+
+    pub fn is_compaction(&self) -> bool {
+        matches!(self, SyntheticKind::Tagged(TaggedSyntheticKind::Compaction))
     }
 
     /// Associative subscription events are injected inline into the subscribing

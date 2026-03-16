@@ -12,7 +12,9 @@ use infinity_agent_core::message::InputMessage;
 use infinity_agent_core::tools::config::ToolsConfig;
 use infinity_agent_core::tools::rap_tool::RapTool;
 use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
-use infinity_agent_core::tools::thread::{CloseThreadTool, ReportToParentTool, SendMessageToChildTool, SpawnThreadTool};
+use infinity_agent_core::tools::thread::{
+    CloseThreadTool, ReportToParentTool, SendMessageToChildTool, SpawnThreadTool,
+};
 use infinity_agent_core::tools::toolset_loader::ToolsetLoader;
 use infinity_agent_core::tools::{Tool, ToolContext};
 
@@ -215,11 +217,11 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
 
     let tool_context = ToolContext {
         message_sender: sender.clone(),
-        group_id: String::new(), // populated in process_batch
+        group_id: group_id.clone(),
         input_queue_arn: input_queue_arn.clone(),
         callback_url: callback_url.clone(),
         user_id,
-        thread_stack: Vec::new(), // populated in process_batch
+        thread_stack: current_history.borrow().get_thread_stack(),
     };
 
     let tool_registry: std::collections::HashMap<String, &dyn Tool<SqsMessageSender>> = tool_impls

@@ -8,7 +8,9 @@ use crate::{
     text_input::{TextInput, TextInputWidget},
 };
 use infinity_agent_core::batch_processor::DisplayEvent;
-use infinity_agent_core::message::{InputMessage, InputMessageContent};
+use infinity_agent_core::message::{
+    InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind,
+};
 use ratatui::{
     crossterm::{
         Command, cursor,
@@ -166,6 +168,11 @@ where
                         prefix,
                         chunk
                     } => {
+                        if !thinking {
+                            thinking = true;
+                            thinking_start = Instant::now();
+                        }
+
                         if prefix.is_none() {
                             let chunk = if stream_start {
                                 stream_start = false;
@@ -201,6 +208,7 @@ where
                         }
                     }
                     DisplayEvent::ToolCall { name, args, prefix } => {
+                        thinking = false;
                         end_stream(&mut viewport, &mut mid_stream)?;
                         thinking_text_buffer.clear();
 
@@ -251,9 +259,6 @@ where
                                 )?;
                                 print_line_above(&mut viewport, Line::from(vec![]))?;
                             }
-
-                            thinking = true;
-                            thinking_start = Instant::now();
                         } else if let Some(p) = prefix {
                             thread_tool_call_active.remove(&p);
                         }
@@ -458,6 +463,20 @@ where
                                                     ),
                                                 ]))?;
                                                 total_tokens_used = 0;
+                                            }
+                                            (KeyCode::Char('k'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                                let msg = InputMessage {
+                                                    content: InputMessageContent::User(UserContent::text("__compaction_trigger__")),
+                                                    group_id: thread_id.clone(),
+                                                    metadata: None,
+                                                    synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::Compaction)),
+                                                    display_as: None,
+                                                    subscription: false,
+                                                };
+                                                let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
+                                                print_line_above(&mut viewport, Line::from(vec![
+                                                    Span::styled("✦ Compaction triggered", Style::default().fg(Color::Yellow)),
+                                                ]))?;
                                             }
                                             (KeyCode::Enter, _) => {
                                                 if !input.is_empty() {
