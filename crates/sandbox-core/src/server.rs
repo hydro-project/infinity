@@ -831,7 +831,7 @@ async fn handle_execute_command_streaming_inner<
 
     // ── Fixed-interval subscription event loop ──
     let mut accumulated = String::new();
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
     interval.tick().await; // consume first immediate tick
 
     loop {

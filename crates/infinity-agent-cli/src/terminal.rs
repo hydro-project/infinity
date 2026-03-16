@@ -45,6 +45,17 @@ enum UiMode {
     ModelPicker,
 }
 
+/// Spinner animation state — only affected by main-thread (prefix=None) events.
+#[derive(Clone, Copy, PartialEq)]
+enum SpinnerState {
+    /// After StartOutput but before any thinking/text/tool call.
+    LoadingContext,
+    /// Model is thinking or emitting text.
+    Thinking,
+    /// Waiting for a tool call result.
+    WaitingToolCall,
+}
+
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 const VIEWPORT_HEIGHT: u16 = 2;
@@ -103,7 +114,7 @@ where
     let available_sessions = sessions;
     let mut mid_stream = false;
     let mut stream_start = true;
-    let mut thinking = false;
+    let mut spinner_state: Option<SpinnerState> = None;
     let mut thinking_start = Instant::now();
     let mut total_tokens_used = 0;
     let mut thread_buffers: BTreeMap<String, String> = BTreeMap::new();
@@ -116,7 +127,7 @@ where
         &session_picker,
         &model_picker,
         &ui_mode,
-        thinking,
+        spinner_state,
         &thinking_start,
         &model_name,
         total_tokens_used,
@@ -126,8 +137,8 @@ where
     )?;
 
     loop {
-        // When thinking, tick every 50ms for animation; otherwise wait indefinitely
-        let tick_timeout = if thinking {
+        // When animating, tick every 16ms; otherwise wait indefinitely
+        let tick_timeout = if spinner_state.is_some() {
             tokio::time::sleep(tokio::time::Duration::from_millis(16))
         } else {
             // Sleep forever (effectively disabled)
@@ -141,13 +152,19 @@ where
             evt = display_rx.recv() => {
                 let evt = evt.expect("agent loop terminated unexpectedly");
                 match evt {
-                    DisplayEvent::ThinkingStart => {
-                        thinking = true;
-                        thinking_start = Instant::now();
-                        thinking_text_buffer.clear();
+                    DisplayEvent::ThinkingStart { prefix } => {
+                        if prefix.is_none() {
+                            if spinner_state == Some(SpinnerState::LoadingContext) {
+                                spinner_state = Some(SpinnerState::Thinking);
+                            }
+                            thinking_start = Instant::now();
+                            thinking_text_buffer.clear();
+                        }
                     }
-                    DisplayEvent::ThinkingEnd => {
-                        thinking_text_buffer.clear();
+                    DisplayEvent::ThinkingEnd { prefix } => {
+                        if prefix.is_none() {
+                            thinking_text_buffer.clear();
+                        }
                     }
                     DisplayEvent::ThinkingChunk { prefix, chunk } => {
                         if prefix.is_none() {
@@ -161,7 +178,11 @@ where
                             end_stream(&mut viewport, &mut mid_stream)?;
                             stream_start = true;
 
-                            thinking = true;
+                            if spinner_state == Some(SpinnerState::WaitingToolCall) {
+                                spinner_state = Some(SpinnerState::Thinking);
+                            } else {
+                                spinner_state = Some(SpinnerState::LoadingContext);
+                            }
                             thinking_start = Instant::now();
                         } else if let Some(p) = prefix {
                             thread_buffers.entry(p).or_default();
@@ -171,9 +192,12 @@ where
                         prefix,
                         chunk
                     } => {
-                        if !thinking {
-                            thinking = true;
-                            thinking_start = Instant::now();
+                        if prefix.is_none() {
+                            if spinner_state.is_none() {
+                                thinking_start = Instant::now();
+                            }
+
+                            spinner_state = Some(SpinnerState::Thinking);
                         }
 
                         if prefix.is_none() {
@@ -204,8 +228,9 @@ where
                             if let Some(r) = r {
                                 total_tokens_used = r.token_usage().map_or(0, |u| u.total_tokens as usize);
                             }
-                            // end_stream(&mut viewport, &mut mid_stream)?;
-                            thinking = false;
+                            if spinner_state != Some(SpinnerState::WaitingToolCall) {
+                                spinner_state = None;
+                            }
                         } else if let Some(p) = prefix {
                             if !thread_tool_call_active.contains(&p) {
                                 thread_buffers.remove(&p);
@@ -213,11 +238,12 @@ where
                         }
                     }
                     DisplayEvent::ToolCall { name, args, prefix } => {
-                        thinking = false;
                         end_stream(&mut viewport, &mut mid_stream)?;
                         thinking_text_buffer.clear();
 
                         if prefix.is_none() {
+                            spinner_state = Some(SpinnerState::WaitingToolCall);
+                            thinking_start = Instant::now();
                             print_line_above(&mut viewport, Line::from(vec![
                                 Span::styled(format!("◆ {}({})", name, args), Style::default().fg(Color::Blue)),
                             ]))?;
@@ -279,7 +305,7 @@ where
                             Span::styled(format!("> {}", sanitized), Style::default().add_modifier(Modifier::BOLD)),
                         ]))?;
 
-                        thinking = true;
+                        spinner_state = Some(SpinnerState::LoadingContext);
                         thinking_start = Instant::now();
                     }
                     DisplayEvent::SubscriptionEvent { name, text, prefix } => {
@@ -307,7 +333,7 @@ where
                             )?;
                         }
 
-                        thinking = true;
+                        spinner_state = Some(SpinnerState::LoadingContext);
                         thinking_start = Instant::now();
                     }
                     DisplayEvent::OAuthRequired { auth_url } => {
@@ -320,7 +346,7 @@ where
                         ]))?;
                     }
                 }
-                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &ui_mode, thinking, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer)?;
+                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer)?;
             }
 
             _ = poll_crossterm_event() => {
@@ -512,12 +538,12 @@ where
                     viewport.handle_resize()?;
                 }
 
-                if got_resize || any_change || thinking {
-                    draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &ui_mode, thinking, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer)?;
+                if got_resize || any_change || spinner_state.is_some() {
+                    draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer)?;
                 }
             }
 
-            _ = &mut tick_timeout, if thinking => {
+            _ = &mut tick_timeout, if spinner_state.is_some() => {
                 // Animation tick — redraw the input bar to advance the gradient
 
             }
@@ -601,7 +627,7 @@ fn draw_viewport(
     session_picker: &Option<SessionPicker>,
     model_picker: &Option<ModelPicker>,
     ui_mode: &UiMode,
-    thinking: bool,
+    spinner_state: Option<SpinnerState>,
     thinking_start: &Instant,
     model_name: &str,
     total_tokens_used: usize,
@@ -664,7 +690,7 @@ fn draw_viewport(
     };
 
     let mut desired_lines = thread_rows + 1 + content_height + 1; // threads + border + content + status
-    if thinking {
+    if spinner_state.is_some() {
         desired_lines += 1;
     }
 
@@ -673,7 +699,7 @@ fn draw_viewport(
 
         // Build constraints dynamically
         let mut constraints: Vec<Constraint> = Vec::new();
-        if thinking {
+        if spinner_state.is_some() {
             constraints.push(Constraint::Length(1));
         }
         if thread_rows > 0 {
@@ -687,8 +713,8 @@ fn draw_viewport(
         let mut idx = 0;
 
         // Thinking bar
-        if thinking {
-            render_thinking_bar(frame, areas[idx], thinking_start, thinking_text);
+        if let Some(state) = spinner_state {
+            render_thinking_bar(frame, areas[idx], thinking_start, thinking_text, state);
             idx += 1;
         }
 
@@ -736,74 +762,128 @@ fn draw_viewport(
     Ok(())
 }
 
-/// Render an 8-column pulsing purple gradient bar fixed at the left edge.
-/// Each column uses a different block character to simulate wave height,
-/// with a sine wave rippling across the columns over time.
-/// Thinking text from the root thread is shown to the right of the spinner
-/// in gray, using the same character-level wrapping as thread buffers.
+/// Render an 8-column animated spinner bar with state-dependent visuals.
+///
+/// - **LoadingContext**: orange/red bars bouncing up and down (warming up).
+/// - **Thinking**: full-height bars with a sliding hydro-color gradient (swimming).
+/// - **WaitingToolCall**: slow breathing dark-to-light blue bars.
+///
+/// Thinking text from the root thread is shown to the right of the spinner.
 fn render_thinking_bar(
     frame: &mut crate::inline_viewport::ViewportFrame,
     area: ratatui::layout::Rect,
     thinking_start: &Instant,
     thinking_text: &str,
+    state: SpinnerState,
 ) {
     use ratatui::buffer::Buffer;
     use ratatui::widgets::Widget;
 
-    // Base purple gradient across 8 columns (dark edges → bright center)
-    const GRADIENT: [(u8, u8, u8); 8] = [
-        (60, 20, 80),
-        (90, 30, 120),
-        (130, 50, 170),
-        (170, 70, 210),
-        (190, 90, 240),
-        (170, 70, 210),
-        (130, 50, 170),
-        (90, 30, 120),
-    ];
-
-    // Block characters from shortest to tallest
+    const NUM_COLS: usize = 8;
     const BLOCKS: [char; 5] = ['▁', '▂', '▄', '▆', '█'];
+
+    // Hydro gradient: smooth loop from #0096FF to #0FDBA2 and back (16 stops)
+    const HYDRO: [(u8, u8, u8); 16] = [
+        (0, 150, 255),
+        (1, 158, 243),
+        (3, 167, 231),
+        (5, 175, 220),
+        (7, 184, 208),
+        (9, 193, 196),
+        (11, 201, 185),
+        (13, 210, 173),
+        (15, 219, 162),
+        (13, 210, 173),
+        (11, 201, 185),
+        (9, 193, 196),
+        (7, 184, 208),
+        (5, 175, 220),
+        (3, 167, 231),
+        (1, 158, 243),
+    ];
 
     if area.width == 0 {
         return;
     }
 
     let elapsed_s = thinking_start.elapsed().as_secs_f64();
-
-    // Split the area: fixed spinner on the left, flexible text on the right.
-    let spinner_width = (GRADIENT.len() as u16).min(area.width);
+    let spinner_width = (NUM_COLS as u16).min(area.width);
     let areas = Layout::horizontal([
         Constraint::Length(spinner_width),
-        Constraint::Length(1), // gap
-        Constraint::Min(0),    // text
+        Constraint::Length(1),
+        Constraint::Min(0),
     ])
     .split(area);
     let spinner_area = areas[0];
     let text_area = areas[2];
 
-    // Render the spinner gradient (single-cell block chars written directly)
     struct SpinnerWidget {
         elapsed_s: f64,
+        state: SpinnerState,
     }
 
     impl Widget for SpinnerWidget {
         fn render(self, area: ratatui::layout::Rect, buf: &mut Buffer) {
-            let cols = (area.width as usize).min(GRADIENT.len());
+            let cols = (area.width as usize).min(NUM_COLS);
             let y = area.y;
+
             for col in 0..cols {
-                let phase = self.elapsed_s * std::f64::consts::TAU / 1.2 - (col as f64) * 0.7;
-                let wave = (phase.sin() * 0.5 + 0.5) as f32;
-
-                let block_idx = (wave * (BLOCKS.len() - 1) as f32).round() as usize;
-                let ch = BLOCKS[block_idx.min(BLOCKS.len() - 1)];
-
-                let (r, g, b) = GRADIENT[col];
-                let dim = 0.3_f32;
-                let t = dim + (1.0 - dim) * wave;
-                let r = (r as f32 * t) as u8;
-                let g = (g as f32 * t) as u8;
-                let b = (b as f32 * t) as u8;
+                let (ch, r, g, b) = match self.state {
+                    SpinnerState::LoadingContext => {
+                        // Orange/red bars bouncing up and down — fast, like warming up
+                        const WARM: [(u8, u8, u8); 8] = [
+                            (180, 60, 20),
+                            (210, 80, 25),
+                            (240, 120, 40),
+                            (255, 160, 60),
+                            (255, 180, 80),
+                            (255, 160, 60),
+                            (240, 120, 40),
+                            (210, 80, 25),
+                        ];
+                        let phase = self.elapsed_s * std::f64::consts::TAU / 0.8;
+                        let wave = (phase.sin() * 0.5 + 0.5) as f32;
+                        let idx = (wave * (BLOCKS.len() - 1) as f32).round() as usize;
+                        let ch = BLOCKS[idx.min(BLOCKS.len() - 1)];
+                        let (br, bg, bb) = WARM
+                            [std::cmp::min((phase * WARM.len() as f64) as usize, WARM.len() - 1)];
+                        let dim = 0.3_f32;
+                        let t = dim + (1.0 - dim) * wave;
+                        (
+                            ch,
+                            (br as f32 * t) as u8,
+                            (bg as f32 * t) as u8,
+                            (bb as f32 * t) as u8,
+                        )
+                    }
+                    SpinnerState::Thinking => {
+                        // Full-height bars — small sliding window into gradient
+                        // 0.4 step per column
+                        let pos = col as f64 * 0.5 + self.elapsed_s * 12.0;
+                        let len = HYDRO.len() as f64;
+                        let pos = ((pos % len) + len) % len;
+                        let idx_a = pos.floor() as usize % HYDRO.len();
+                        let idx_b = (idx_a + 1) % HYDRO.len();
+                        let frac = (pos - pos.floor()) as f32;
+                        let (ar, ag, ab) = HYDRO[idx_a];
+                        let (br2, bg2, bb2) = HYDRO[idx_b];
+                        let hr = (ar as f32 + (br2 as f32 - ar as f32) * frac) as u8;
+                        let hg = (ag as f32 + (bg2 as f32 - ag as f32) * frac) as u8;
+                        let hb = (ab as f32 + (bb2 as f32 - ab as f32) * frac) as u8;
+                        ('█', hr, hg, hb)
+                    }
+                    SpinnerState::WaitingToolCall => {
+                        // Slow breath cycle (~3s)
+                        let phase = self.elapsed_s * std::f64::consts::TAU / 3.0;
+                        let wave = (phase.sin() * 0.5 + 0.5) as f32;
+                        let (dr, dg, db) = (20, 55, 100);
+                        let (lr, lg, lb) = (70, 170, 225);
+                        let r = (dr as f32 + (lr as f32 - dr as f32) * wave) as u8;
+                        let g = (dg as f32 + (lg as f32 - dg as f32) * wave) as u8;
+                        let b = (db as f32 + (lb as f32 - db as f32) * wave) as u8;
+                        ('█', r, g, b)
+                    }
+                };
 
                 let x = area.x + col as u16;
                 buf[(x, y)].set_char(ch).set_fg(Color::Rgb(r, g, b));
@@ -811,9 +891,9 @@ fn render_thinking_bar(
         }
     }
 
-    frame.render_widget(SpinnerWidget { elapsed_s }, spinner_area);
+    frame.render_widget(SpinnerWidget { elapsed_s, state }, spinner_area);
 
-    // Render thinking text in the text area using Line/Span
+    // Render thinking text in the text area
     if text_area.width > 0 && !thinking_text.is_empty() {
         let tail = wrap_tail(thinking_text, text_area.width as usize);
         let line = Line::from(Span::styled(tail, Style::default().fg(Color::DarkGray)));
