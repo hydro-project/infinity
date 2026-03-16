@@ -16,7 +16,7 @@ use rig::message::{AssistantContent, Message, ToolResultContent, UserContent};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::event_processor::{self, CompletionAction, HistoryManager};
-use crate::message::{InputMessage, InputMessageContent};
+use crate::message::{InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind};
 use crate::rap_notifier::RapNotifier;
 use crate::tools::{Tool, ToolContext};
 use crate::traits::{ConversationStore, HttpClient, InputSender, StateStore};
@@ -124,8 +124,18 @@ where
                         && let Message::Assistant { content, .. } = h
                         && let AssistantContent::ToolCall(c) = content.first()
                     {
+                        let name =
+                            if let SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
+                                ref child_thread_id,
+                                ..
+                            }) = *synth
+                            {
+                                format!("Report from child thread {}", child_thread_id)
+                            } else {
+                                format!("{}({})", c.function.name, c.function.arguments)
+                            };
                         let _ = display_tx.send(DisplayEvent::SubscriptionEvent {
-                            name: format!("{}({})", c.function.name, c.function.arguments),
+                            name,
                             text: text.text,
                             prefix: current_history.get_thread_nesting_prefix(),
                         });

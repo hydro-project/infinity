@@ -217,6 +217,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Repor
             metadata: None,
             synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
                 tool_call_id: spawn_tool_call_id,
+                child_thread_id: context.group_id.clone(),
             })),
             display_as: None,
             subscription: false,
@@ -441,6 +442,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
                     metadata: None,
                     synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
                         tool_call_id: spawn_tool_call_id,
+                        child_thread_id: thread_id.to_string(),
                     })),
                     display_as: None,
                     subscription: false,
