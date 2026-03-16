@@ -7,6 +7,7 @@ use rig::{
     agent::Text,
     message::{ToolResult, ToolResultContent, UserContent},
 };
+use std::io::Write;
 
 use crate::memory_store::InMemoryConversationStore;
 
@@ -46,6 +47,12 @@ impl<M: InputSender + 'static> Tool<M> for SetTitleTool {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let title = args["title"].as_str().unwrap_or("").to_string();
         self.conversation_store.set_title(&context.group_id, &title);
+
+        // Update terminal title when on the root thread
+        if context.thread_stack.len() <= 1 {
+            let _ = write!(std::io::stdout(), "\x1b]0;{}\x07", title);
+            let _ = std::io::stdout().flush();
+        }
 
         let msg = InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {

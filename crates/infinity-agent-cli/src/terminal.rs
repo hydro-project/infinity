@@ -389,6 +389,7 @@ where
                                                     let selected_tokens = entry.total_tokens_used;
                                                     thread_id = selected_thread.clone();
                                                     total_tokens_used = selected_tokens;
+                                                    set_terminal_title(entry.title.as_deref().unwrap_or(""));
                                                     let _ = load_session_tx.send((selected_thread.clone(), selected_tokens));
                                                     print_line_above(&mut viewport, Line::from(vec![
                                                         Span::styled(
@@ -489,6 +490,7 @@ where
                                                 let new_id = uuid::Uuid::new_v4().to_string();
                                                 let _ = new_session_tx.send(new_id.clone());
                                                 thread_id = new_id.clone();
+                                                set_terminal_title("");
                                                 print_line_above(&mut viewport, Line::from(vec![
                                                     Span::styled(
                                                         format!("✦ New session created — thread {}", new_id),
@@ -977,6 +979,8 @@ fn render_status_row(
 
 fn cleanup() -> Result<(), BoxError> {
     let mut stdout = io::stdout();
+    // Reset terminal title
+    write!(stdout, "\x1b]0;\x07")?;
     queue!(stdout, event::DisableBracketedPaste)?;
     queue!(stdout, ResetScrollRegion)?;
     cterm::disable_raw_mode()?;
@@ -985,6 +989,12 @@ fn cleanup() -> Result<(), BoxError> {
     writeln!(stdout)?;
     stdout.flush()?;
     Ok(())
+}
+
+fn set_terminal_title(title: &str) {
+    let mut stdout = io::stdout();
+    let _ = write!(stdout, "\x1b]0;{}\x07", title);
+    let _ = stdout.flush();
 }
 
 async fn poll_crossterm_event() {
