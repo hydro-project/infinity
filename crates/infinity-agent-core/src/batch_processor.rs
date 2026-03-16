@@ -54,8 +54,12 @@ pub enum DisplayEvent<R> {
     OAuthRequired {
         auth_url: String,
     },
-    ThinkingStart,
-    ThinkingEnd,
+    ThinkingStart {
+        prefix: Option<String>,
+    },
+    ThinkingEnd {
+        prefix: Option<String>,
+    },
     ThinkingChunk {
         prefix: Option<String>,
         chunk: String,
@@ -264,10 +268,14 @@ where
                         });
                     }
                     Ok(event_processor::CompletionEvent::ThinkingStart) => {
-                        let _ = display_tx.send(DisplayEvent::ThinkingStart);
+                        let _ = display_tx.send(DisplayEvent::ThinkingStart {
+                            prefix: thread_prefix.clone(),
+                        });
                     }
                     Ok(event_processor::CompletionEvent::ThinkingEnd) => {
-                        let _ = display_tx.send(DisplayEvent::ThinkingEnd);
+                        let _ = display_tx.send(DisplayEvent::ThinkingEnd {
+                            prefix: thread_prefix.clone(),
+                        });
                     }
                     Ok(event_processor::CompletionEvent::ThinkingChunk(chunk)) => {
                         let _ = display_tx.send(DisplayEvent::ThinkingChunk {
