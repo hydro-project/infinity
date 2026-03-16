@@ -438,7 +438,7 @@ fn replay_history<R: GetTokenUsage + token_usage::WithTotalTokens>(
 
     let _ = display_tx.send(DisplayEvent::ResponseDone(
         None,
-        R::with_total_tokens(initial_tokens),
+        Some(R::with_total_tokens(initial_tokens)),
     ));
 }
 
