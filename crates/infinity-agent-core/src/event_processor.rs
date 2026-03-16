@@ -865,7 +865,7 @@ where
                 r = stream_result => {
                     Ok(r)
                 }
-                _ = tokio::time::sleep(Duration::from_secs(15)) => {
+                _ = tokio::time::sleep(Duration::from_secs(30)) => {
                     if retry_count < 10 {
                         yield CompletionEvent::Info("Stream error (timeout initiating request), retrying...".to_string());
                         retry_count += 1;
