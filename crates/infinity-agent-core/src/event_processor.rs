@@ -1593,6 +1593,7 @@ mod tests {
             "thread report data",
             Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
                 tool_call_id: "tc-sub".to_string(),
+                child_thread_id: "thread-1".to_string(),
             })),
         );
 
@@ -1630,6 +1631,7 @@ mod tests {
             "thread report data",
             Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
                 tool_call_id: "tc-sub".to_string(),
+                child_thread_id: "thread-1".to_string(),
             })),
         );
 
