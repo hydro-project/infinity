@@ -309,6 +309,14 @@ impl TextInput {
                 }
             }
 
+            // ── Ctrl+J → newline (universal alternative to Alt+Enter) ──
+            // macOS Terminal.app uses Option for character composition by
+            // default, so Alt+Enter is not recognized there.
+            KeyCode::Char('j') if ctrl => {
+                self.insert_newline();
+                KeyResult::Captured
+            }
+
             // ── Let Ctrl+<key> combos we don't handle fall through ──
             KeyCode::Char(_) if ctrl => KeyResult::NotCaptured,
 

@@ -456,7 +456,7 @@ where
                                                     "    Enter              Send message",
                                                     "",
                                                     "  Editing",
-                                                    "    Alt+Enter          Insert newline",
+                                                    "    Alt+Enter/Ctrl+J   Insert newline",
                                                     "    Up                 Move cursor up a line",
                                                     "    Down               Move cursor down a line",
                                                     "    Ctrl+A             Move to line start",
