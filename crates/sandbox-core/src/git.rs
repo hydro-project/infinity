@@ -50,6 +50,7 @@ pub async fn git_worktree_add(
             args.push(sp);
         }
         run_git(repo_dir, &args).await?;
+        git_commit_all(&worktree_path, "sandbox init").await?;
     }
     Ok(())
 }
@@ -67,14 +68,29 @@ pub async fn git_worktree_remove(
 /// Stage all changes and create a commit.
 pub async fn git_commit_all(dir: &Path, message: &str) -> Result<(), SandboxError> {
     run_git(dir, &["add", "-A"]).await?;
-    run_git(dir, &["commit", "--allow-empty", "-m", message]).await?;
+    run_git(
+        dir,
+        &["commit", "--allow-empty", "--no-verify", "-m", message],
+    )
+    .await?;
     Ok(())
 }
 
 /// Stage all changes and amend the current commit.
 pub async fn git_amend_all(dir: &Path, message: &str) -> Result<(), SandboxError> {
     run_git(dir, &["add", "-A"]).await?;
-    run_git(dir, &["commit", "--amend", "--allow-empty", "-m", message]).await?;
+    run_git(
+        dir,
+        &[
+            "commit",
+            "--amend",
+            "--allow-empty",
+            "--no-verify",
+            "-m",
+            message,
+        ],
+    )
+    .await?;
     Ok(())
 }
 
