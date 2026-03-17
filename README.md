@@ -32,7 +32,7 @@ cd InfinityAgents/
 
 # Install the CLI and the sandbox RAP server
 cargo install --path ./crates/infinity-agent-cli
-cargo install --path ./crates/sandbox-local
+infinity-agent-cli rap install --user --crate sandbox-local --git https://github.com/hydro-project/infinity
 ```
 
 Then, in any Git repo:
