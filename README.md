@@ -1,64 +1,100 @@
 # Infinity Agents
 
-This project is a proof-of-concept of Infinity Agents: a new runtime and architecture for agents that can run indefinitely with zero resource usage when they are idle.
+This repo contains three components:
 
-## Architecture
+1. **Infinity Code** — A coding agent CLI with threads, sandboxes, and persistence
+2. **Infinity Agents** — The core Rust runtime for building RAP agents (local CLI + AWS Lambda)
+3. **Reactive Agent Protocol (RAP)** — An async, event-driven protocol for agent-tool communication
 
-This prototype uses Lambda + SQS + EventBridge to enable agents that can sleep for arbitrary durations without consuming resources. When an agent needs to wait (for CI/CD subscriptions, long tool calls, user input, rate limits, etc.), it can immediately hibernate and consume zero resources. The agent resumes exactly where it left off when woken.
+---
 
-See [the docs](docs/) for details on the hibernation mechanism and system design.
+## Infinity Code
 
-## Quick Start
+A coding agent built with RAP that you can run in your terminal today.
+
+### Features
+
+- **Agent threads** — The agent can spin up subthreads that work on tasks concurrently while the parent continues to run. Subthreads send updates to the parent in real-time.
+- **Sandboxes** — Uses macOS sandboxing APIs to restrict filesystem writes and guard against rogue commands. Each sandbox is a [Jujutsu](https://jj-vcs.dev) workspace, so agent work never touches your repo folder — it shows up as a branch you can inspect and squash. Supports macOS sandbox APIs and Linux via [bubblewrap](https://github.com/containers/bubblewrap).
+- **Persistence** — Full conversation context is persisted to local disk. You can shut down the CLI, boot it back up, and continue with all your existing context.
+- **MCP support** — Load any MCP server as a tool set via config.
+
+### Quick Start
+
+You'll need:
+- [Rust](https://rustup.rs)
+- [Jujutsu](https://docs.jj-vcs.dev/latest) (your repo can be a regular Git repo)
+- [Ripgrep](https://github.com/BurntSushi/ripgrep) (`brew install ripgrep`)
 
 ```bash
-# Install cargo-lambda
-brew install cargo-lambda/tap/cargo-lambda
+git clone https://github.com/hydro-project/infinity
+cd InfinityAgents/
 
-# Deploy
-cd agent
-npx cdk deploy
+# Install the CLI and the sandbox RAP server
+cargo install --path ./crates/infinity-agent-cli
+cargo install --path ./crates/sandbox-local
 ```
 
-## Creating Agents
-Infinity Agents are created using the CDK, with a special Infinity Agents framework:
+Then, in any Git repo:
 
-```typescript
-import { InfinityAgent } from './infinity-agents';
-import { LambdaMCPToolSet } from './infinity-agents/mcp';
+```bash
+infinity-agent-cli
 
-export class MyAgent extends InfinityAgent {
-  constructor(scope: Construct, id: string) {
-    super(scope, id);
+# do your task...
 
-    // Add MCP servers
-    new LambdaMCPToolSet(this, 'GithubMcp', {
-      name: 'github',
-      command: 'npx',
-      args: ['-y', '@modelcontextprotocol/server-github'],
-      env: { GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN },
-    });
+# Inspect what the agent did:
+jj show sandbox-...
 
-    // Setup Slack
-    const api = new apigateway.RestApi(this, 'Api', { /* ... */ });
-    this.setupSlackIntegration(this, api);
-  }
-}
+# Incorporate changes into your working copy:
+jj squash --from sandbox-...
 ```
 
-See [CDK docs](docs/docs/infinity-runtime/cloud-deployment) for complete CDK documentation.
+I recommend [Ghostty](https://ghostty.org) as your terminal for the best experience.
 
-## Key Features
+---
 
-- **Zero idle cost** - Lambda only runs when processing messages
-- **Infinite sleep** - Agents can hibernate for hours/days/months via EventBridge Scheduler
-- **Interruption handling** - User messages and subscription events wake sleeping agents immediately (in milliseconds)
-- **Tool abstraction** - Each tool is an independent Lambda with its own queue
-- **MCP support** - Wrap any MCP server as a tool set
-- **Conversation state** - DynamoDB stores durable conversation history to ensure fault tolerance
-- **Threaded execution** - Agents can spawn nested child threads to decompose tasks into parallel sub-work, each with inherited context truncated at the spawn point. See [Threading](docs/docs/infinity-runtime/threading) for details.
+## Infinity Agents (Runtime)
+
+The core Rust runtime that powers Infinity Code and can be used to build your own RAP agents. It comes in two flavors that share the same engine (`infinity-agent-core`):
+
+| | Cloud (Lambda) | Local (CLI) |
+|---|---|---|
+| State | Aurora DSQL + DynamoDB | In-memory + file persistence |
+| Messaging | SQS FIFO | `mpsc` channels |
+| Hibernation | Lambda exits, SQS/EventBridge restarts | Process stays alive, idle on channel |
+| Tool auth | SigV4-signed HTTP | Plain HTTP |
+
+Both run the same three-phase agent loop: **Prepare** (load history, append input) → **Completion** (stream LLM response, collect tool calls) → **Execute** (dispatch tools via HTTP, persist state, exit).
+
+See the [runtime docs](docs/docs/infinity-runtime/overview) for details.
+
+---
+
+## Reactive Agent Protocol (RAP)
+
+RAP replaces MCP's synchronous request/response model with async, event-driven communication. Tool calls are fire-and-forget: the agent invokes a tool via HTTP, the tool acknowledges immediately, and the agent shuts down. When the tool finishes — 100ms or 3 days later — it POSTs the result to a callback URL and the agent wakes up.
+
+This enables:
+- **Subscriptions** — Tools register ongoing event streams (GitHub webhooks, Slack messages, etc.) that wake the agent on each event
+- **Long-running tool calls** — CI pipelines, deployments, and approval workflows don't block anything
+- **Agent hibernation** — Zero compute cost between messages; agents can run for weeks
+
+RAP is fully compatible with MCP — any MCP server works through a proxy layer.
+
+See the [RAP spec](docs/spec/overview) and [docs](docs/docs/what-is-rap) for the full protocol.
+
+---
 
 ## Project Structure
-- `src/` - Infinity Agent Leader (Rust, Bedrock streaming, tool orchestration)
-- `agent/lib/infinity-agents` - Infinity Agents SDK
-- `agent/lib/{example-agent.ts, toolsets}` - Example Agent and Custom Tools
-- `docs/` - Architecture and usage documentation
+
+```
+crates/
+  infinity-agent-cli/    # Local CLI binary
+  infinity-agent-core/   # Shared agent loop, tools, traits
+  infinity-agent-lambda/  # AWS Lambda runtime
+  sandbox-core/          # Sandbox RAP server (shared logic)
+  sandbox-local/         # Local sandbox backend (macOS sandboxing + jj)
+  sandbox-remote/        # Remote sandbox backend
+agent/                   # CDK constructs for cloud deployment
+docs/                  # RAP specification and documentation site
+```
