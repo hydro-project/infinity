@@ -239,7 +239,10 @@ impl SandboxBackend for LocalBackend {
                 "--proc",
                 "/proc",
             ];
-            let writable_strs: Vec<String> = writable.iter().map(|p| p.to_string_lossy().to_string()).collect();
+            let writable_strs: Vec<String> = writable
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
             for p in &writable_strs {
                 bwrap_args.extend(["--bind", p.as_str(), p.as_str()]);
             }
@@ -365,7 +368,10 @@ impl SandboxBackend for LocalBackend {
                 "--proc",
                 "/proc",
             ];
-            let writable_strs: Vec<String> = writable.iter().map(|p| p.to_string_lossy().to_string()).collect();
+            let writable_strs: Vec<String> = writable
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
             for p in &writable_strs {
                 bwrap_args.extend(["--bind", p.as_str(), p.as_str()]);
             }
