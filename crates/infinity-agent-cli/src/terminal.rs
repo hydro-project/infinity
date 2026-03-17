@@ -770,7 +770,7 @@ fn draw_viewport(
     Ok(())
 }
 
-/// Render an 8-column animated spinner bar with state-dependent visuals.
+/// Render a 10-column animated spinner bar with state-dependent visuals.
 ///
 /// - **LoadingContext**: orange/red bars bouncing up and down (warming up).
 /// - **Thinking**: full-height bars with a sliding hydro-color gradient (swimming).
@@ -787,7 +787,7 @@ fn render_thinking_bar(
     use ratatui::buffer::Buffer;
     use ratatui::widgets::Widget;
 
-    const NUM_COLS: usize = 8;
+    const NUM_COLS: usize = 10;
     const BLOCKS: [char; 5] = ['▁', '▂', '▄', '▆', '█'];
 
     // Hydro gradient: smooth loop from #0096FF to #0FDBA2 and back (16 stops)
