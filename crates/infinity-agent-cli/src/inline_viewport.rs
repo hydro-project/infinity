@@ -1,13 +1,19 @@
+use crate::modifier_diff::ModifierDiff;
 use ratatui::{
     buffer::Buffer,
     crossterm::{
         Command,
         cursor::{self, MoveTo, MoveUp, SavePosition},
         queue,
-        style::Print,
+        style::{
+            Attribute as CAttribute, Color as CColor, Colors, Print, SetAttribute,
+            SetBackgroundColor, SetColors, SetForegroundColor,
+        },
         terminal::{self as cterm, Clear},
     },
     layout::{Position, Rect},
+    style::{Color, Modifier},
+    text::{Line, Span},
     widgets::Widget,
 };
 use std::fmt;
@@ -43,7 +49,7 @@ pub struct InlineViewport {
     height: u16,
     terminal_size: (u16, u16),
     viewport_y: u16,
-    pub last_effective_viewport_y: u16,
+    last_effective_viewport_y: u16,
     buffers: [Buffer; 2],
     current: usize,
     request_clear: bool,
@@ -61,6 +67,60 @@ impl Command for EnableWrap {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
         write!(f, "\x1b[?7h")
     }
+}
+
+pub(crate) struct SetScrollRegion(std::ops::Range<u16>);
+impl Command for SetScrollRegion {
+    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        write!(f, "\x1b[{};{}r", self.0.start, self.0.end)
+    }
+}
+
+pub(crate) struct ResetScrollRegion;
+impl Command for ResetScrollRegion {
+    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        write!(f, "\x1b[r")
+    }
+}
+
+fn write_spans<'a>(
+    w: &mut impl Write,
+    spans: impl Iterator<Item = &'a Span<'a>>,
+) -> io::Result<()> {
+    let mut fg = Color::Reset;
+    let mut bg = Color::Reset;
+    let mut mods = Modifier::empty();
+
+    for span in spans {
+        let mut next = mods;
+        next.insert(span.style.add_modifier);
+        next.remove(span.style.sub_modifier);
+        if next != mods {
+            ModifierDiff {
+                from: mods,
+                to: next,
+            }
+            .queue(w)?;
+            mods = next;
+        }
+
+        let nfg = span.style.fg.unwrap_or(Color::Reset);
+        let nbg = span.style.bg.unwrap_or(Color::Reset);
+        if nfg != fg || nbg != bg {
+            queue!(w, SetColors(Colors::new(nfg.into(), nbg.into())))?;
+            fg = nfg;
+            bg = nbg;
+        }
+
+        queue!(w, Print(&span.content))?;
+    }
+
+    queue!(
+        w,
+        SetForegroundColor(CColor::Reset),
+        SetBackgroundColor(CColor::Reset),
+        SetAttribute(CAttribute::Reset),
+    )
 }
 
 impl InlineViewport {
@@ -127,6 +187,44 @@ impl InlineViewport {
         self.current = 0;
 
         Ok(())
+    }
+
+    pub fn print_above(
+        &mut self,
+        writer: impl FnOnce(&mut io::Stdout) -> io::Result<()>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut stdout = io::stdout();
+
+        queue!(stdout, cursor::Hide)?;
+        queue!(
+            stdout,
+            SetScrollRegion(1..self.last_effective_viewport_y)
+        )?;
+        queue!(stdout, cursor::RestorePosition)?;
+
+        writer(&mut stdout)?;
+
+        queue!(stdout, cursor::SavePosition)?;
+        queue!(stdout, ResetScrollRegion)?;
+
+        Ok(())
+    }
+
+    pub fn print_line_above(
+        &mut self,
+        line: Line<'_>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.print_above(|w| {
+            write!(w, "\r\n")?;
+            write_spans(w, line.iter())
+        })
+    }
+
+    pub fn print_spans_above(
+        &mut self,
+        line: Line<'_>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.print_above(|w| write_spans(w, line.iter()))
     }
 
     /// Draw the viewport using relative cursor movement from the saved
