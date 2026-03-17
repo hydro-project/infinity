@@ -23,6 +23,8 @@ pub async fn run_git(dir: &Path, args: &[&str]) -> Result<String, SandboxError> 
 }
 
 /// Create a git worktree with a new branch.
+/// If the branch already exists (e.g. from a previous session), prunes stale
+/// worktrees and checks out the existing branch instead of creating a new one.
 pub async fn git_worktree_add(
     repo_dir: &Path,
     worktree_path: &Path,
@@ -30,12 +32,25 @@ pub async fn git_worktree_add(
     start_point: Option<&str>,
 ) -> Result<(), SandboxError> {
     let wt_str = worktree_path.to_string_lossy();
-    let mut args = vec!["worktree", "add", "-b", branch, &wt_str];
-    tracing::trace!("Worktree command: {:?}", &args);
-    if let Some(sp) = start_point {
-        args.push(sp);
+
+    // Check if the branch already exists
+    let branch_exists = run_git(repo_dir, &["rev-parse", "--verify", branch])
+        .await
+        .is_ok();
+
+    if branch_exists {
+        // Prune stale worktree entries whose directories no longer exist
+        let _ = run_git(repo_dir, &["worktree", "prune"]).await;
+        // Check out the existing branch into the new worktree
+        let args = vec!["worktree", "add", &wt_str, branch];
+        run_git(repo_dir, &args).await?;
+    } else {
+        let mut args = vec!["worktree", "add", "-b", branch, &wt_str];
+        if let Some(sp) = start_point {
+            args.push(sp);
+        }
+        run_git(repo_dir, &args).await?;
     }
-    run_git(repo_dir, &args).await?;
     Ok(())
 }
 
