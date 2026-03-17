@@ -381,27 +381,34 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
         .init_repo(&args.repo, &invocation.group_id)
         .await?;
 
-    let base_revision = args
+    let bookmark = format!("sandbox-{}", invocation.group_id);
+    let path = std::path::PathBuf::from(&remote_uri);
+
+    // Resolve the base revision to an absolute jj change_id.
+    let _ = crate::jj::run_jj(&path, &["workspace", "update-stale"]).await;
+    let rev_to_resolve = args
         .base_thread_id
         .as_ref()
         .map(|id| format!("sandbox-{}", id));
+    let base_revision =
+        crate::jj::jj_resolve_revision(&path, rev_to_resolve.as_deref().unwrap_or("@")).await?;
 
     let repo_state = RepoState {
         group_id: invocation.group_id.clone(),
         remote_uri: remote_uri.clone(),
-        bookmark: None,
-        base_revision: base_revision.clone(),
+        bookmark: bookmark.clone(),
+        base_revision: Some(base_revision),
     };
     state.metadata.put(&repo_state).await?;
 
-    tracing::info!(group_id = %invocation.group_id, remote = %remote_uri, base = ?base_revision, "repo cloned");
-    Ok(match base_revision {
+    tracing::info!(group_id = %invocation.group_id, remote = %remote_uri, "repo cloned");
+    Ok(match rev_to_resolve {
         Some(rev) => format!("Repository initialized on top of {rev}."),
         None => "Repository initialized.".to_string(),
     })
 }
 
-/// Run an action inside a sandbox: create → action → push → update metadata → cleanup.
+/// Run an action inside a sandbox: create → action → push → cleanup.
 ///
 /// The closure receives the sandbox directory path and returns `(text, display_as)`.
 /// `text` is the full result sent to the model; `display_as` is an optional short
@@ -433,20 +440,11 @@ where
 
     state.backend.push_sandbox(&sandbox_dir, group_id).await?;
 
-    let bookmark = format!("sandbox-{}", group_id);
-    let updated_state = RepoState {
-        group_id: group_id.to_string(),
-        remote_uri: repo_state.remote_uri.clone(),
-        bookmark: Some(bookmark.clone()),
-        base_revision: None,
-    };
-    state.metadata.put(&updated_state).await?;
-
     if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
         tracing::warn!("failed to cleanup sandbox: {e}");
     }
 
-    tracing::info!(group_id = %group_id, bookmark = %bookmark, "sandbox operation complete");
+    tracing::info!(group_id = %group_id, "sandbox operation complete");
 
     result
 }
@@ -594,23 +592,15 @@ async fn send_subscription_event<C: CallbackClient>(
     }
 }
 
-/// Push sandbox changes and update metadata (extracted from `with_sandbox`).
-async fn push_and_update_metadata<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
+/// Push sandbox changes (extracted from `with_sandbox`).
+async fn push_sandbox_changes<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     state: &AppState<B, M, C>,
     sandbox_dir: &std::path::Path,
     group_id: &str,
-    repo_state: &RepoState,
+    _repo_state: &RepoState,
 ) -> Result<(), SandboxError> {
     state.backend.push_sandbox(sandbox_dir, group_id).await?;
-    let bookmark = format!("sandbox-{}", group_id);
-    let updated = RepoState {
-        group_id: group_id.to_string(),
-        remote_uri: repo_state.remote_uri.clone(),
-        bookmark: Some(bookmark.clone()),
-        base_revision: None,
-    };
-    state.metadata.put(&updated).await?;
-    tracing::info!(group_id = %group_id, bookmark = %bookmark, "sandbox operation complete");
+    tracing::info!(group_id = %group_id, "sandbox operation complete");
     Ok(())
 }
 
@@ -676,7 +666,7 @@ async fn handle_execute_command_streaming_inner<
     // Check for early cancellation before spawning the process.
     if cancel_rx.try_recv().is_ok() {
         let _ =
-            push_and_update_metadata(state, &sandbox_dir, &invocation.group_id, &repo_state).await;
+            push_sandbox_changes(state, &sandbox_dir, &invocation.group_id, &repo_state).await;
         if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
             tracing::warn!("failed to cleanup sandbox: {e}");
         }
@@ -701,7 +691,7 @@ async fn handle_execute_command_streaming_inner<
         Err(e) => {
             state.in_flight.lock().await.remove(&invocation.id);
             let _ =
-                push_and_update_metadata(state, &sandbox_dir, &invocation.group_id, &repo_state)
+                push_sandbox_changes(state, &sandbox_dir, &invocation.group_id, &repo_state)
                     .await;
             if let Err(ce) = state.backend.cleanup_sandbox(&sandbox_dir).await {
                 tracing::warn!("failed to cleanup sandbox: {ce}");
@@ -784,7 +774,7 @@ async fn handle_execute_command_streaming_inner<
                 #[cfg(unix)]
                 kill_process(child_pid);
                 // let text = format_cancel_output(&stdout_buf, &stderr_buf);
-                let _ = push_and_update_metadata(state, &sandbox_dir, &invocation.group_id, &repo_state).await;
+                let _ = push_sandbox_changes(state, &sandbox_dir, &invocation.group_id, &repo_state).await;
                 // TODO: determine if sending this would be in-spec
                 // send_subscription_event(&state.callback_client, invocation, &text, true).await;
                 if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
@@ -814,7 +804,7 @@ async fn handle_execute_command_streaming_inner<
         state.in_flight.lock().await.remove(&invocation.id);
         let text = format_exec_output(&stdout_buf, &stderr_buf, code);
         let _ =
-            push_and_update_metadata(state, &sandbox_dir, &invocation.group_id, &repo_state).await;
+            push_sandbox_changes(state, &sandbox_dir, &invocation.group_id, &repo_state).await;
         send_tool_result(&state.callback_client, invocation, &text, None, false).await;
         if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
             tracing::warn!("failed to cleanup sandbox: {e}");
@@ -866,7 +856,7 @@ async fn handle_execute_command_streaming_inner<
                     accumulated.push_str("[cancelled]");
                 }
 
-                let _ = push_and_update_metadata(
+                let _ = push_sandbox_changes(
                     state,
                     &sandbox_dir,
                     &invocation.group_id,
@@ -911,7 +901,7 @@ async fn handle_execute_command_streaming_inner<
                             accumulated.push_str(&format!("\n[exit code: {code}]"));
                         }
 
-                        let _ = push_and_update_metadata(
+                        let _ = push_sandbox_changes(
                             state,
                             &sandbox_dir,
                             &invocation.group_id,
@@ -933,7 +923,7 @@ async fn handle_execute_command_streaming_inner<
                     None => {
                         state.in_flight.lock().await.remove(&invocation.id);
 
-                        let _ = push_and_update_metadata(
+                        let _ = push_sandbox_changes(
                             state,
                             &sandbox_dir,
                             &invocation.group_id,

@@ -112,3 +112,8 @@ pub async fn git_has_commits_on_branch(dir: &Path, branch: &str) -> Result<bool,
     let output = run_git(dir, &["log", &range, "--oneline"]).await?;
     Ok(!output.trim().is_empty())
 }
+
+/// Check if the top commit on a branch has no file changes vs its parent.
+pub async fn git_branch_top_is_empty(dir: &Path) -> bool {
+    run_git(dir, &["diff", "--quiet", "HEAD~1"]).await.is_ok()
+}
