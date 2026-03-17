@@ -10,6 +10,7 @@ pub async fn run_git(dir: &Path, args: &[&str]) -> Result<String, SandboxError> 
         .current_dir(dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .stdin(Stdio::null())
         .output()
         .await
         .map_err(|e| SandboxError::CommandError(format!("failed to spawn git: {e}")))?;
