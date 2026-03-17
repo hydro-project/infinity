@@ -7,9 +7,9 @@ pub struct RepoState {
     pub group_id: String,
     /// The git remote URI (local path or s3 URI).
     pub remote_uri: String,
-    /// The bookmark name used to track state, set after first push.
-    pub bookmark: Option<String>,
-    /// Optional jj revision to base the workspace on (used at creation time).
+    /// The bookmark name used to track state.
+    pub bookmark: String,
+    /// Absolute jj revision (change_id) the workspace is based on.
     #[serde(default)]
     pub base_revision: Option<String>,
 }

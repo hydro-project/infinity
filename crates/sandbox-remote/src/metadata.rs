@@ -39,13 +39,22 @@ impl MetadataStore for DynamoMetadataStore {
             .ok_or_else(|| SandboxError::MetadataError("missing remote_uri".into()))?
             .clone();
 
-        let bookmark = item.get("bookmark").and_then(|v| v.as_s().ok()).cloned();
+        let bookmark = item
+            .get("bookmark")
+            .and_then(|v| v.as_s().ok())
+            .cloned()
+            .unwrap_or_else(|| format!("sandbox-{group_id}"));
+
+        let base_revision = item
+            .get("base_revision")
+            .and_then(|v| v.as_s().ok())
+            .cloned();
 
         Ok(Some(RepoState {
             group_id: group_id.to_string(),
             remote_uri,
             bookmark,
-            base_revision: None,
+            base_revision,
         }))
     }
 
@@ -55,10 +64,11 @@ impl MetadataStore for DynamoMetadataStore {
             .put_item()
             .table_name(&self.table_name)
             .item("group_id", AttributeValue::S(state.group_id.clone()))
-            .item("remote_uri", AttributeValue::S(state.remote_uri.clone()));
+            .item("remote_uri", AttributeValue::S(state.remote_uri.clone()))
+            .item("bookmark", AttributeValue::S(state.bookmark.clone()));
 
-        if let Some(ref bookmark) = state.bookmark {
-            req = req.item("bookmark", AttributeValue::S(bookmark.clone()));
+        if let Some(ref base_revision) = state.base_revision {
+            req = req.item("base_revision", AttributeValue::S(base_revision.clone()));
         }
 
         req.send()
