@@ -90,9 +90,6 @@ async fn run_cargo_install(
     draw_spinner(viewport, &spinner_start, &status)?;
 
     loop {
-        let tick = tokio::time::sleep(tokio::time::Duration::from_millis(16));
-        tokio::pin!(tick);
-
         tokio::select! {
             biased;
             line = line_rx.recv() => {
@@ -118,8 +115,7 @@ async fn run_cargo_install(
                         }
                     }
                 }
-            }
-            _ = &mut tick => {
+
                 draw_spinner(viewport, &spinner_start, &status)?;
             }
         }
