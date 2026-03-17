@@ -118,13 +118,11 @@ impl SandboxBackend for EfsBackend {
         let tmp = tempfile::tempdir().map_err(SandboxError::Io)?;
         let sandbox_dir = tmp.keep();
 
-        let bookmark = format!("sandbox-{}", &state.group_id);
         jj::jj_git_clone(
             &state.remote_uri,
             &sandbox_dir,
-            &bookmark,
-            state.bookmark.is_none(),
-            state.base_revision.as_deref(),
+            &state.bookmark,
+            state.base_revision.as_deref().unwrap(),
         )
         .await?;
 
