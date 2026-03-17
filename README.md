@@ -28,7 +28,7 @@ You'll need:
 
 ```bash
 # Install the CLI and the sandbox RAP server
-cargo install -p infinity-agent-cli --git https://github.com/hydro-project/infinity
+cargo install infinity-agent-cli --git https://github.com/hydro-project/infinity
 infinity rap install --user --crate sandbox-local --git https://github.com/hydro-project/infinity
 ```
 
