@@ -177,7 +177,6 @@ impl InlineViewport {
             queue!(stdout, cursor::RestorePosition)?;
 
             stdout.flush()?;
-
             let cursor_position_here = cursor::position().unwrap();
             self.viewport_y = cursor_position_here.1 + 1;
 
@@ -200,6 +199,7 @@ impl InlineViewport {
                 queue!(stdout, cursor::RestorePosition)?;
                 queue!(stdout, cursor::MoveUp(shift_up))?;
                 queue!(stdout, SavePosition)?;
+                self.last_effective_viewport_y = self.viewport_y;
             } else if ideal_viewport_y > self.viewport_y {
                 queue!(stdout, MoveTo(0, ideal_viewport_y - 1))?;
                 self.last_effective_viewport_y = ideal_viewport_y;
