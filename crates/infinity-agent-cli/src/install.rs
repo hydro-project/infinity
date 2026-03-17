@@ -95,8 +95,7 @@ async fn run_cargo_install(
             line = line_rx.recv() => {
                 match line {
                     Some(text) => {
-                        terminal::print_line_above(
-                            viewport,
+                        viewport.print_line_above(
                             Line::from(Span::styled(&text, Style::default().fg(Color::DarkGray))),
                         )?;
                         draw_spinner(viewport, &spinner_start, &status)?;
@@ -132,8 +131,7 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
     cterm::enable_raw_mode()?;
     let mut viewport = InlineViewport::new(2)?;
 
-    terminal::print_line_above(
-        &mut viewport,
+    viewport.print_line_above(
         Line::from(Span::styled(
             format!("Installing {}...", args.crate_name),
             Style::default().fg(Color::Yellow),
@@ -148,8 +146,7 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
     )
     .await
     {
-        terminal::print_line_above(
-            &mut viewport,
+        viewport.print_line_above(
             Line::from(Span::styled(
                 format!("✗ {e}"),
                 Style::default().fg(Color::Red),
@@ -176,8 +173,7 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
         config
             .tool_sets
             .retain(|ts| ts.id() != Some(&args.crate_name));
-        terminal::print_line_above(
-            &mut viewport,
+        viewport.print_line_above(
             Line::from(Span::styled(
                 format!("Replacing existing entry for {}", args.crate_name),
                 Style::default().fg(Color::Yellow),
@@ -197,8 +193,7 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
     );
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
 
-    terminal::print_line_above(
-        &mut viewport,
+    viewport.print_line_above(
         Line::from(Span::styled(
             format!(
                 "✓ Installed and registered {} in {}",
@@ -229,8 +224,7 @@ pub async fn run_update() -> Result<(), BoxError> {
     cterm::enable_raw_mode()?;
     let mut viewport = InlineViewport::new(2)?;
 
-    terminal::print_line_above(
-        &mut viewport,
+    viewport.print_line_above(
         Line::from(Span::styled(
             format!("Updating {} RAP tool(s)...", installable.len()),
             Style::default().fg(Color::Yellow),
@@ -239,8 +233,7 @@ pub async fn run_update() -> Result<(), BoxError> {
 
     let mut failed = Vec::new();
     for (_command, crate_name, git, path) in &installable {
-        terminal::print_line_above(
-            &mut viewport,
+        viewport.print_line_above(
             Line::from(Span::styled(
                 format!("→ Updating {crate_name}..."),
                 Style::default().fg(Color::Cyan),
@@ -250,8 +243,7 @@ pub async fn run_update() -> Result<(), BoxError> {
 
         match run_cargo_install(&mut viewport, crate_name, git.as_deref(), path.as_deref()).await {
             Ok(()) => {
-                terminal::print_line_above(
-                    &mut viewport,
+                viewport.print_line_above(
                     Line::from(Span::styled(
                         format!("  ✓ {crate_name}"),
                         Style::default().fg(Color::Green),
@@ -259,8 +251,7 @@ pub async fn run_update() -> Result<(), BoxError> {
                 )?;
             }
             Err(e) => {
-                terminal::print_line_above(
-                    &mut viewport,
+                viewport.print_line_above(
                     Line::from(Span::styled(
                         format!("  ✗ {crate_name}: {e}"),
                         Style::default().fg(Color::Red),
@@ -280,7 +271,7 @@ pub async fn run_update() -> Result<(), BoxError> {
             Style::default().fg(Color::Red),
         )
     };
-    terminal::print_line_above(&mut viewport, Line::from(summary))?;
+    viewport.print_line_above(Line::from(summary))?;
     viewport.draw(2, |_| {})?;
     terminal::cleanup()?;
 

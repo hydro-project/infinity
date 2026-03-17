@@ -1,8 +1,7 @@
 use crate::{
     component::{Component, KeyResult},
-    inline_viewport::InlineViewport,
+    inline_viewport::{InlineViewport, ResetScrollRegion},
     model_picker::{ModelPicker, ModelPickerResult, ModelPickerWidget},
-    modifier_diff::ModifierDiff,
     session_picker::{SessionPicker, SessionPickerResult, SessionPickerWidget},
     session_store::SessionEntry,
     text_input::{TextInput, TextInputWidget},
@@ -13,13 +12,9 @@ use infinity_agent_core::message::{
 };
 use ratatui::{
     crossterm::{
-        Command, cursor,
+        cursor,
         event::{self, Event, KeyCode, KeyModifiers},
         queue,
-        style::{
-            Attribute as CAttribute, Color as CColor, Colors, Print, SetAttribute,
-            SetBackgroundColor, SetColors, SetForegroundColor,
-        },
         terminal::{self as cterm},
     },
     layout::{Constraint, Layout},
@@ -30,7 +25,6 @@ use ratatui::{
 use rig::completion::GetTokenUsage;
 use rig::message::UserContent;
 use std::collections::{BTreeMap, HashSet};
-use std::fmt;
 use std::io::{self, Write};
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -89,7 +83,7 @@ where
     let mut viewport = InlineViewport::new(VIEWPORT_HEIGHT)?;
     let has_sessions = !sessions.is_empty();
 
-    print_above(&mut viewport, |w| {
+    viewport.print_above(|w| {
         write!(w, "\r\nInfinity Agent CLI — thread {}\r\n", thread_id)?;
         write!(
             w,
@@ -97,8 +91,7 @@ where
         )
     })?;
     if has_sessions {
-        print_line_above(
-            &mut viewport,
+        viewport.print_line_above(
             Line::from(Span::styled(
                 "Existing sessions found, Ctrl+L to load.",
                 Style::default()
@@ -230,7 +223,7 @@ where
                                 let first_chunk = !mid_stream;
                                 mid_stream = true;
                                 let sanitized = chunk.replace('\n', "\r\n");
-                                print_above(&mut viewport, |w| {
+                                viewport.print_above(|w| {
                                     if first_chunk {
                                         write!(w, "\r\n")?;
                                     }
@@ -266,7 +259,7 @@ where
                             spinner_state = Some(SpinnerState::WaitingToolCall);
                             thinking_text_buffer.push_str("waiting for tool call result");
                             thinking_start = Instant::now();
-                            print_line_above(&mut viewport, Line::from(vec![
+                            viewport.print_line_above(Line::from(vec![
                                 Span::styled(format!("◆ {}", display_text), Style::default().fg(Color::Blue)),
                             ]))?;
                             mid_stream = true;
@@ -291,16 +284,14 @@ where
                                 let result_line = Line::from(vec![
                                     Span::styled(format!(" ✓ {}", first), Style::default().fg(Color::Green)),
                                 ]);
-                                print_above(&mut viewport, |w| {
-                                    write_spans(w, result_line.iter())
-                                })?;
+                                viewport.print_spans_above(result_line)?;
                                 mid_stream = false;
                             } else {
                                 // Multi line: end stream, print check + first line, then remaining lines
                                 // end_stream(&mut viewport, &mut mid_stream)?;
                                 mid_stream = false;
                                 let first = lines.first().copied().unwrap_or("");
-                                print_line_above(&mut viewport, Line::from(vec![
+                                viewport.print_line_above(Line::from(vec![
                                     Span::styled("✓ ", Style::default().fg(Color::Green)),
                                     Span::styled(first.to_string(), Style::default().fg(Color::DarkGray)),
                                 ]))?;
@@ -310,7 +301,7 @@ where
                                     2,
                                     Style::default().fg(Color::DarkGray),
                                 )?;
-                                print_line_above(&mut viewport, Line::from(vec![]))?;
+                                viewport.print_line_above(Line::from(vec![]))?;
                             }
                         } else if let Some(p) = prefix {
                             thread_tool_call_active.remove(&p);
@@ -318,12 +309,12 @@ where
                     }
                     DisplayEvent::Info(text) => {
                         end_stream(&mut viewport, &mut mid_stream)?;
-                        print_line_above(&mut viewport, Line::from(text))?;
+                        viewport.print_line_above(Line::from(text))?;
                     }
                     DisplayEvent::UserInput(text) => {
                         let sanitized = text.replace('\n', "\r\n");
                         end_stream(&mut viewport, &mut mid_stream)?;
-                        print_line_above(&mut viewport, Line::from(vec![
+                        viewport.print_line_above(Line::from(vec![
                             Span::styled(format!("> {}", sanitized), Style::default().add_modifier(Modifier::BOLD)),
                         ]))?;
 
@@ -337,13 +328,13 @@ where
                         if lines.len() <= 1 {
                             // Single line: print inline
                             let first = lines.first().copied().unwrap_or("");
-                            print_line_above(&mut viewport, Line::from(vec![
+                            viewport.print_line_above(Line::from(vec![
                                 Span::raw(pfx),
                                 Span::styled(format!("⚡{}: {}", name, first), Style::default().fg(Color::Indexed(208))),
                             ]))?;
                         } else {
                             // Multi line: print header, then all lines from next line
-                            print_line_above(&mut viewport, Line::from(vec![
+                            viewport.print_line_above(Line::from(vec![
                                 Span::raw(pfx),
                                 Span::styled(format!("⚡{}:", name), Style::default().fg(Color::Indexed(208))),
                             ]))?;
@@ -360,7 +351,7 @@ where
                     }
                     DisplayEvent::OAuthRequired { auth_url } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
-                        print_line_above(&mut viewport, Line::from(vec![
+                        viewport.print_line_above(Line::from(vec![
                             Span::styled(
                                 format!("OAuth required — open this URL:\n  {}", auth_url),
                                 Style::default().fg(Color::Yellow),
@@ -411,7 +402,7 @@ where
                                                     total_tokens_used = selected_tokens;
                                                     set_terminal_title(entry.title.as_deref().unwrap_or(""));
                                                     let _ = load_session_tx.send((selected_thread.clone(), selected_tokens));
-                                                    print_line_above(&mut viewport, Line::from(vec![
+                                                    viewport.print_line_above(Line::from(vec![
                                                         Span::styled(
                                                             format!("✦ Loaded session — thread {}", selected_thread),
                                                             Style::default().fg(Color::Yellow),
@@ -435,7 +426,7 @@ where
                                                         model_name = entry.display_name.to_string();
                                                         context_window = entry.context_window;
                                                         let _ = model_switch_tx.send(idx);
-                                                        print_line_above(&mut viewport, Line::from(vec![
+                                                        viewport.print_line_above(Line::from(vec![
                                                             Span::styled(
                                                                 format!("✦ Switched to model: {}", entry.display_name),
                                                                 Style::default().fg(Color::Yellow),
@@ -491,7 +482,7 @@ where
                                                 }
                                                 help.push(format!("╰{bar}╯"));
                                                 for line in &help {
-                                                    print_line_above(&mut viewport, Line::from(vec![
+                                                    viewport.print_line_above(Line::from(vec![
                                                         Span::styled(line.clone(), Style::default().fg(Color::Cyan)),
                                                     ]))?;
                                                 }
@@ -511,7 +502,7 @@ where
                                                 let _ = new_session_tx.send(new_id.clone());
                                                 thread_id = new_id.clone();
                                                 set_terminal_title("");
-                                                print_line_above(&mut viewport, Line::from(vec![
+                                                viewport.print_line_above(Line::from(vec![
                                                     Span::styled(
                                                         format!("✦ New session created — thread {}", new_id),
                                                         Style::default().fg(Color::Yellow),
@@ -529,7 +520,7 @@ where
                                                     subscription: false,
                                                 };
                                                 let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
-                                                print_line_above(&mut viewport, Line::from(vec![
+                                                viewport.print_line_above(Line::from(vec![
                                                     Span::styled("✦ Compaction triggered", Style::default().fg(Color::Yellow)),
                                                 ]))?;
                                             }
@@ -577,39 +568,6 @@ where
 
 // ── Scroll-region helpers ───────────────────────────────────────────────────
 
-pub(crate) fn print_above(
-    viewport: &mut InlineViewport,
-    writer: impl FnOnce(&mut io::Stdout) -> io::Result<()>,
-) -> Result<(), BoxError> {
-    let mut stdout = io::stdout();
-
-    queue!(stdout, cursor::Hide)?;
-    queue!(
-        stdout,
-        SetScrollRegion(1..viewport.last_effective_viewport_y)
-    )?;
-    queue!(stdout, cursor::RestorePosition)?;
-
-    writer(&mut stdout)?;
-
-    queue!(stdout, cursor::SavePosition)?;
-    queue!(stdout, ResetScrollRegion)?;
-
-    // don't show the cursor here or flush, that will be handled in printing input bar
-
-    Ok(())
-}
-
-pub(crate) fn print_line_above(
-    viewport: &mut InlineViewport,
-    line: Line<'_>,
-) -> Result<(), BoxError> {
-    print_above(viewport, |w| {
-        write!(w, "\r\n")?;
-        write_spans(w, line.iter())
-    })
-}
-
 /// Print continuation lines with consistent indentation and diff-aware coloring.
 fn print_continuation_lines(
     viewport: &mut InlineViewport,
@@ -627,8 +585,7 @@ fn print_continuation_lines(
         } else {
             base_style
         };
-        print_line_above(
-            viewport,
+        viewport.print_line_above(
             Line::from(vec![
                 Span::raw(" ".repeat(indent)),
                 Span::styled(line.to_string(), style),
@@ -640,7 +597,7 @@ fn print_continuation_lines(
 
 fn end_stream(viewport: &mut InlineViewport, mid_stream: &mut bool) -> Result<(), BoxError> {
     if *mid_stream {
-        print_above(viewport, |w| write!(w, "\r\n"))?;
+        viewport.print_above(|w| write!(w, "\r\n"))?;
         *mid_stream = false;
     }
     Ok(())
@@ -1028,48 +985,6 @@ pub(crate) async fn poll_crossterm_event() {
     .ok();
 }
 
-// ── Span writing ────────────────────────────────────────────────────────────
-
-fn write_spans<'a>(
-    w: &mut impl Write,
-    spans: impl Iterator<Item = &'a Span<'a>>,
-) -> io::Result<()> {
-    let mut fg = Color::Reset;
-    let mut bg = Color::Reset;
-    let mut mods = Modifier::empty();
-
-    for span in spans {
-        let mut next = mods;
-        next.insert(span.style.add_modifier);
-        next.remove(span.style.sub_modifier);
-        if next != mods {
-            ModifierDiff {
-                from: mods,
-                to: next,
-            }
-            .queue(w)?;
-            mods = next;
-        }
-
-        let nfg = span.style.fg.unwrap_or(Color::Reset);
-        let nbg = span.style.bg.unwrap_or(Color::Reset);
-        if nfg != fg || nbg != bg {
-            queue!(w, SetColors(Colors::new(nfg.into(), nbg.into())))?;
-            fg = nfg;
-            bg = nbg;
-        }
-
-        queue!(w, Print(&span.content))?;
-    }
-
-    queue!(
-        w,
-        SetForegroundColor(CColor::Reset),
-        SetBackgroundColor(CColor::Reset),
-        SetAttribute(CAttribute::Reset),
-    )
-}
-
 // ── Display script evaluation ───────────────────────────────────────────────
 
 /// Evaluate a Rhai display script with tool arguments as scope variables.
@@ -1102,20 +1017,3 @@ fn eval_display_script(script: Option<&str>, args: &serde_json::Value) -> Option
     engine.eval_with_scope::<String>(&mut scope, script).ok()
 }
 
-// ── Custom crossterm commands ───────────────────────────────────────────────
-
-pub(crate) struct SetScrollRegion(pub(crate) std::ops::Range<u16>);
-
-impl Command for SetScrollRegion {
-    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
-        write!(f, "\x1b[{};{}r", self.0.start, self.0.end)
-    }
-}
-
-pub(crate) struct ResetScrollRegion;
-
-impl Command for ResetScrollRegion {
-    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
-        write!(f, "\x1b[r")
-    }
-}
