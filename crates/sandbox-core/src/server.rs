@@ -390,8 +390,19 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
         .base_thread_id
         .as_ref()
         .map(|id| format!("sandbox-{}", id));
-    let base_revision =
-        crate::jj::jj_resolve_revision(&path, rev_to_resolve.as_deref().unwrap_or("@")).await?;
+    let base_res =
+        crate::jj::jj_resolve_revision(&path, rev_to_resolve.as_deref().unwrap_or("@")).await;
+    let base_revision = if base_res.as_ref().is_err_and(|e| match e {
+        SandboxError::JujutsuError(e) if e.contains("It looks like this is a git repo.") => {
+            true
+        }
+        _ => false,
+    }) {
+        run_jj(&path, &["git", "init"]).await?;
+        crate::jj::jj_resolve_revision(&path, rev_to_resolve.as_deref().unwrap_or("@")).await?
+    } else {
+        base_res?
+    };
 
     let repo_state = RepoState {
         group_id: invocation.group_id.clone(),
