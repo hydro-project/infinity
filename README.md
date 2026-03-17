@@ -27,18 +27,15 @@ You'll need:
 - [Ripgrep](https://github.com/BurntSushi/ripgrep) (`brew install ripgrep`)
 
 ```bash
-git clone https://github.com/hydro-project/infinity
-cd InfinityAgents/
-
 # Install the CLI and the sandbox RAP server
-cargo install --path ./crates/infinity-agent-cli
-infinity-agent-cli rap install --user --crate sandbox-local --git https://github.com/hydro-project/infinity
+cargo install -p infinity-agent-cli --git https://github.com/hydro-project/infinity
+infinity rap install --user --crate sandbox-local --git https://github.com/hydro-project/infinity
 ```
 
 Then, in any Git repo:
 
 ```bash
-infinity-agent-cli
+infinity
 
 # do your task...
 
