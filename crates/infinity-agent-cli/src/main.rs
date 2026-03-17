@@ -9,6 +9,7 @@ use clap::Parser;
 
 mod component;
 mod inline_viewport;
+mod install;
 mod mcp_proxy;
 mod memory_store;
 mod model_picker;
@@ -26,7 +27,7 @@ mod token_usage;
 use infinity_agent_core::batch_processor::DisplayEvent;
 use infinity_agent_core::event_processor;
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
-use infinity_agent_core::tools::config::{ToolSetConfig, ToolsConfig};
+use infinity_agent_core::tools::config::ToolsConfig;
 use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
 use infinity_agent_core::tools::thread::{
     CloseThreadTool, ReportToParentTool, SendMessageToChildTool, SpawnThreadTool,
@@ -43,9 +44,49 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 #[derive(Parser, Debug)]
 #[command(name = "infinity-agent-cli", version, about)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
     /// Model provider to use.
     #[arg(long, value_parser = ["bedrock"])]
     provider: Option<String>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Commands {
+    /// RAP tool management
+    Rap {
+        #[command(subcommand)]
+        action: RapCommands,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum RapCommands {
+    /// Install a RAP crate and register it in rap.json
+    Install {
+        /// Install to user-level ~/.infinity/rap.json (required)
+        #[arg(long)]
+        user: bool,
+
+        /// Crate name to install
+        #[arg(long = "crate")]
+        crate_name: String,
+
+        /// Git repository URL (passed to cargo install --git)
+        #[arg(long)]
+        git: Option<String>,
+
+        /// Local path (passed to cargo install --path)
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Re-install all RAP tools that have a recorded source
+    Update {
+        /// Update user-level ~/.infinity/rap.json tools (required)
+        #[arg(long)]
+        user: bool,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -65,7 +106,35 @@ async fn async_main() -> Result<(), BoxError> {
             .init();
     }
 
-    let _cli = Cli::parse();
+    let cli = Cli::parse();
+
+    // Handle subcommands
+    if let Some(Commands::Rap { action }) = cli.command {
+        return match action {
+            RapCommands::Install {
+                user,
+                crate_name,
+                git,
+                path,
+            } => {
+                if !user {
+                    return Err("--user is currently required for rap install".into());
+                }
+                install::run_install(install::InstallArgs {
+                    crate_name,
+                    git,
+                    path,
+                })
+                .await
+            }
+            RapCommands::Update { user } => {
+                if !user {
+                    return Err("--user is currently required for rap update".into());
+                }
+                install::run_update().await
+            }
+        };
+    }
     run_with_bedrock().await
 }
 
@@ -136,16 +205,11 @@ where
         .await
         .expect("Failed to start RAP callback server");
 
-    // Ensure .infinity/rap.json exists, creating it with defaults if needed
+    // Ensure .infinity/rap.json exists, creating an empty one if needed
     let rap_config_path = ".infinity/rap.json";
     if !std::path::Path::new(rap_config_path).exists() {
         std::fs::create_dir_all(".infinity").ok();
-        let rap_bins = discover_rap_binaries();
-        let tool_sets: Vec<ToolSetConfig> = rap_bins
-            .into_iter()
-            .map(|bin| ToolSetConfig::ToolsetCommand { command: bin })
-            .collect();
-        let default_config = ToolsConfig { tool_sets };
+        let default_config = ToolsConfig::empty();
         let json = serde_json::to_string_pretty(&default_config)
             .expect("failed to serialize default rap config");
         std::fs::write(rap_config_path, json).expect("failed to write .infinity/rap.json");
@@ -154,107 +218,116 @@ where
         ));
     }
 
+    // Merge global ~/.infinity/rap.json into the local config
+    let mut merged_config = install::load_config(std::path::Path::new(rap_config_path));
+    if let Ok(user_path) = install::user_config_path() {
+        if user_path.exists() {
+            let user_config = install::load_config(&user_path);
+            merged_config.merge(user_config);
+            let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                "Merged user config from {}",
+                user_path.display()
+            )));
+        }
+    }
+
     // Load RAP tool servers from config file.
     // Servers can be specified as static URLs or as commands to launch.
     // Command-based servers are spawned with RAP_EMBEDDED=1 and must emit
     // a JSON line `{"port": <u16>}` on stdout when ready.
     let mut spawned_children: Vec<std::process::Child> = Vec::new();
-    let mut tool_server_urls: Vec<String> = Vec::new();
+    let tool_server_urls: Vec<String>;
 
-    let rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>> =
-        match ToolsConfig::from_file(rap_config_path).ok() {
-            Some(config) => {
-                let mut urls = config.toolset_server_urls();
+    let rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>> = {
+        let config = merged_config;
+        let mut urls = config.toolset_server_urls();
 
-                // Spawn command-based servers and collect their URLs.
-                for cmd in config.toolset_commands() {
-                    let _ = agent_display_tx
-                        .send(DisplayEvent::Info(format!("Launching RAP server: {cmd}")));
-                    match spawn_rap_server(&cmd) {
-                        Ok((child, port)) => {
-                            let url = format!("http://127.0.0.1:{port}");
-                            let _ = agent_display_tx.send(DisplayEvent::Info(format!(
-                                "RAP server ready on port {port}"
-                            )));
-                            urls.push(url);
-                            spawned_children.push(child);
-                        }
-                        Err(e) => {
-                            let _ = agent_display_tx.send(DisplayEvent::Info(format!(
-                                "Warning: failed to launch RAP server '{cmd}': {e}"
-                            )));
-                        }
-                    }
-                }
-
-                // Spawn MCP proxy servers and collect their URLs.
-                for (name, cmd, env) in config.mcp_servers() {
+        // Spawn command-based servers and collect their URLs.
+        for cmd in config.toolset_commands() {
+            let _ =
+                agent_display_tx.send(DisplayEvent::Info(format!("Launching RAP server: {cmd}")));
+            match spawn_rap_server(&cmd) {
+                Ok((child, port)) => {
+                    let url = format!("http://127.0.0.1:{port}");
                     let _ = agent_display_tx.send(DisplayEvent::Info(format!(
-                        "Starting MCP proxy for '{name}'"
+                        "RAP server ready on port {port}"
                     )));
-                    match mcp_proxy::start_mcp_proxy(name.clone(), cmd, env).await {
-                        Ok(port) => {
-                            let url = format!("http://127.0.0.1:{port}");
-                            let _ = agent_display_tx.send(DisplayEvent::Info(format!(
-                                "MCP proxy '{name}' ready on port {port}"
-                            )));
-                            urls.push(url);
-                        }
-                        Err(e) => {
-                            let _ = agent_display_tx.send(DisplayEvent::Info(format!(
-                                "Warning: failed to start MCP proxy '{name}': {e}"
-                            )));
-                        }
-                    }
+                    urls.push(url);
+                    spawned_children.push(child);
                 }
-
-                // Start HTTP MCP proxy servers and collect their URLs.
-                for (name, mcp_url, headers) in config.http_mcp_servers() {
+                Err(e) => {
                     let _ = agent_display_tx.send(DisplayEvent::Info(format!(
-                        "Starting HTTP MCP proxy for '{name}'"
+                        "Warning: failed to launch RAP server '{cmd}': {e}"
                     )));
-                    match mcp_proxy::start_http_mcp_proxy(name.clone(), mcp_url, headers).await {
-                        Ok(port) => {
-                            let url = format!("http://127.0.0.1:{port}");
-                            let _ = agent_display_tx.send(DisplayEvent::Info(format!(
-                                "HTTP MCP proxy '{name}' ready on port {port}"
-                            )));
-                            urls.push(url);
-                        }
-                        Err(e) => {
-                            let _ = agent_display_tx.send(DisplayEvent::Info(format!(
-                                "Warning: failed to start HTTP MCP proxy '{name}': {e}"
-                            )));
-                        }
-                    }
                 }
+            }
+        }
 
-                tool_server_urls = urls.clone();
+        // Spawn MCP proxy servers and collect their URLs.
+        for (name, cmd, env) in config.mcp_servers() {
+            let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                "Starting MCP proxy for '{name}'"
+            )));
+            match mcp_proxy::start_mcp_proxy(name.clone(), cmd, env).await {
+                Ok(port) => {
+                    let url = format!("http://127.0.0.1:{port}");
+                    let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                        "MCP proxy '{name}' ready on port {port}"
+                    )));
+                    urls.push(url);
+                }
+                Err(e) => {
+                    let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                        "Warning: failed to start MCP proxy '{name}': {e}"
+                    )));
+                }
+            }
+        }
 
-                if !urls.is_empty() {
-                    match rap_tools::load_rap_tools(&urls).await {
-                        Ok(tools) => {
-                            let _ = agent_display_tx.send(DisplayEvent::Info(format!(
-                                "Loaded {} RAP tool(s) from {}",
-                                tools.len(),
-                                rap_config_path
-                            )));
-                            tools
-                        }
-                        Err(e) => {
-                            let _ = agent_display_tx.send(DisplayEvent::Info(format!(
-                                "Warning: failed to load RAP tools: {}",
-                                e
-                            )));
-                            Vec::new()
-                        }
-                    }
-                } else {
+        // Start HTTP MCP proxy servers and collect their URLs.
+        for (name, mcp_url, headers) in config.http_mcp_servers() {
+            let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                "Starting HTTP MCP proxy for '{name}'"
+            )));
+            match mcp_proxy::start_http_mcp_proxy(name.clone(), mcp_url, headers).await {
+                Ok(port) => {
+                    let url = format!("http://127.0.0.1:{port}");
+                    let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                        "HTTP MCP proxy '{name}' ready on port {port}"
+                    )));
+                    urls.push(url);
+                }
+                Err(e) => {
+                    let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                        "Warning: failed to start HTTP MCP proxy '{name}': {e}"
+                    )));
+                }
+            }
+        }
+
+        tool_server_urls = urls.clone();
+
+        if !urls.is_empty() {
+            match rap_tools::load_rap_tools(&urls).await {
+                Ok(tools) => {
+                    let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                        "Loaded {} RAP tool(s)",
+                        tools.len(),
+                    )));
+                    tools
+                }
+                Err(e) => {
+                    let _ = agent_display_tx.send(DisplayEvent::Info(format!(
+                        "Warning: failed to load RAP tools: {}",
+                        e
+                    )));
                     Vec::new()
                 }
             }
-            None => Vec::new(),
-        };
+        } else {
+            Vec::new()
+        }
+    };
 
     // Build extra system prompt with the CWD so the agent knows where it is.
     let extra_system_prompt = std::env::current_dir().ok().map(|cwd| {
@@ -770,36 +843,3 @@ fn spawn_rap_server(command: &str) -> Result<(std::process::Child, u16), BoxErro
     Ok((child, ready.port))
 }
 
-/// Scan `$PATH` for executables whose name starts with `rap-` and return
-/// their names (not full paths — they're on PATH so the bare name suffices).
-fn discover_rap_binaries() -> Vec<String> {
-    let path_var = match std::env::var("PATH") {
-        Ok(p) => p,
-        Err(_) => return Vec::new(),
-    };
-
-    let mut seen = std::collections::HashSet::new();
-    let mut bins = Vec::new();
-
-    for dir in std::env::split_paths(&path_var) {
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with("rap-") && seen.insert(name.to_string()) {
-                // Quick sanity check: must be a file (or symlink to one) and executable.
-                if let Ok(meta) = entry.metadata() {
-                    if meta.is_file() {
-                        bins.push(name.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    bins.sort();
-    bins
-}
