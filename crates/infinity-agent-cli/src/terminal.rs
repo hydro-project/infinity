@@ -47,7 +47,7 @@ enum UiMode {
 
 /// Spinner animation state — only affected by main-thread (prefix=None) events.
 #[derive(Clone, Copy, PartialEq)]
-enum SpinnerState {
+pub(crate) enum SpinnerState {
     /// After StartOutput but before any thinking/text/tool call.
     LoadingContext,
     /// Model is thinking or emitting text.
@@ -560,7 +560,7 @@ where
 
 // ── Scroll-region helpers ───────────────────────────────────────────────────
 
-fn print_above(
+pub(crate) fn print_above(
     viewport: &mut InlineViewport,
     writer: impl FnOnce(&mut io::Stdout) -> io::Result<()>,
 ) -> Result<(), BoxError> {
@@ -583,7 +583,10 @@ fn print_above(
     Ok(())
 }
 
-fn print_line_above(viewport: &mut InlineViewport, line: Line<'_>) -> Result<(), BoxError> {
+pub(crate) fn print_line_above(
+    viewport: &mut InlineViewport,
+    line: Line<'_>,
+) -> Result<(), BoxError> {
     print_above(viewport, |w| {
         write!(w, "\r\n")?;
         write_spans(w, line.iter())
@@ -777,7 +780,7 @@ fn draw_viewport(
 /// - **WaitingToolCall**: slow breathing dark-to-light blue bars.
 ///
 /// Thinking text from the root thread is shown to the right of the spinner.
-fn render_thinking_bar(
+pub(crate) fn render_thinking_bar(
     frame: &mut crate::inline_viewport::ViewportFrame,
     area: ratatui::layout::Rect,
     thinking_start: &Instant,
@@ -980,7 +983,7 @@ fn render_status_row(
     frame.render_widget(line, area);
 }
 
-fn cleanup() -> Result<(), BoxError> {
+pub(crate) fn cleanup() -> Result<(), BoxError> {
     let mut stdout = io::stdout();
     // Reset terminal title
     write!(stdout, "\x1b]0;\x07")?;
@@ -1000,7 +1003,7 @@ fn set_terminal_title(title: &str) {
     let _ = stdout.flush();
 }
 
-async fn poll_crossterm_event() {
+pub(crate) async fn poll_crossterm_event() {
     tokio::task::spawn_blocking(|| {
         let _ = event::poll(std::time::Duration::from_millis(16));
     })
@@ -1084,7 +1087,7 @@ fn eval_display_script(script: Option<&str>, args: &serde_json::Value) -> Option
 
 // ── Custom crossterm commands ───────────────────────────────────────────────
 
-struct SetScrollRegion(std::ops::Range<u16>);
+pub(crate) struct SetScrollRegion(pub(crate) std::ops::Range<u16>);
 
 impl Command for SetScrollRegion {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
@@ -1092,7 +1095,7 @@ impl Command for SetScrollRegion {
     }
 }
 
-struct ResetScrollRegion;
+pub(crate) struct ResetScrollRegion;
 
 impl Command for ResetScrollRegion {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
