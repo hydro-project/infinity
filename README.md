@@ -30,6 +30,10 @@ You'll need:
 # Install the CLI and the sandbox RAP server
 cargo install infinity-agent-cli --git https://github.com/hydro-project/infinity
 infinity rap install --user --crate sandbox-local --git https://github.com/hydro-project/infinity
+
+# later, to update:
+cargo install infinity-agent-cli --git https://github.com/hydro-project/infinity
+infinity rap update
 ```
 
 Then, in any Git repo:
@@ -44,6 +48,18 @@ jj show sandbox-...
 
 # Incorporate changes into your working copy:
 jj squash --from sandbox-...
+```
+
+Infinity Code supports MCP servers. For example, you can add an MCP server. Edit `~/.infinity/rap.json` (or `.infinity/rap.json` for local config):
+```
+"tool_sets": [
+  ...,
+  {
+    "type": "mcp_server",
+    "name": "my-mcp-server",
+    "command": [ "/path/to/mcp-server" ]
+  }
+]
 ```
 
 I recommend [Ghostty](https://ghostty.org) as your terminal for the best experience.
