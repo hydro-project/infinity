@@ -10,6 +10,12 @@ use sandbox_core::jj::{self, run_jj};
 use sandbox_core::sandbox::{ExecResult, SandboxBackend, SpawnedCommand};
 use sandbox_core::types::RepoState;
 
+/// Cached sandbox entry: sandbox directory + the repo state that created it.
+struct CachedSandbox {
+    dir: PathBuf,
+    state: RepoState,
+}
+
 /// Local sandbox backend.
 /// The "remote" is just the original local git directory.
 /// Each sandbox is a temp dir with a jj workspace pointing at that local path.
@@ -18,8 +24,8 @@ use sandbox_core::types::RepoState;
 /// `create_sandbox` calls for the same group reuse the existing workspace
 /// instead of running `jj workspace add` every time.
 pub struct LocalBackend {
-    /// group_id -> cached sandbox directory
-    cache: Mutex<HashMap<String, PathBuf>>,
+    /// group_id -> cached sandbox
+    cache: Mutex<HashMap<String, CachedSandbox>>,
     /// Whether to use platform-specific sandboxing for command execution
     /// (macOS sandbox-exec or Linux bubblewrap).
     sandbox_enabled: bool,
@@ -66,16 +72,43 @@ impl LocalBackend {
 impl Drop for LocalBackend {
     fn drop(&mut self) {
         let cache = self.cache.get_mut().unwrap_or_else(|e| e.into_inner());
-        for (group_id, dir) in cache.drain() {
+        for (group_id, entry) in cache.drain() {
+            let dir = &entry.dir;
+            let branch = format!("sandbox-{group_id}");
             tracing::info!(group_id = %group_id, dir = %dir.display(), "dropping cached sandbox");
-            // Best-effort: forget the jj workspace then remove the directory.
+            if jj_bookmark_is_empty_sync(dir, &branch) {
+                let _ = Command::new("jj")
+                    .args([
+                        "--config", "user.name=RAP Sandbox",
+                        "--config", "user.email=sandbox@rap",
+                        "abandon", &branch,
+                    ])
+                    .current_dir(dir)
+                    .status();
+            }
             let _ = Command::new("jj")
                 .args(["workspace", "forget"])
-                .current_dir(&dir)
+                .current_dir(dir)
                 .status();
-            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::remove_dir_all(dir);
         }
     }
+}
+
+/// Check if a jj bookmark's commit is empty (sync, for Drop).
+fn jj_bookmark_is_empty_sync(dir: &Path, bookmark: &str) -> bool {
+    Command::new("jj")
+        .args([
+            "--config", "user.name=RAP Sandbox",
+            "--config", "user.email=sandbox@rap",
+            "log", "--no-graph", "-r", bookmark, "-T", "empty",
+        ])
+        .current_dir(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
+        .unwrap_or(false)
 }
 
 #[async_trait]
@@ -108,7 +141,7 @@ impl SandboxBackend for LocalBackend {
         {
             let maybe_dir = {
                 let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-                cache.get(&state.group_id).cloned()
+                cache.get(&state.group_id).map(|e| e.dir.clone())
             };
 
             if let Some(dir) = maybe_dir
@@ -120,17 +153,15 @@ impl SandboxBackend for LocalBackend {
             }
         }
 
+        let base_revision = state.base_revision.as_deref().unwrap();
         let tmp = self.make_tempdir().map_err(SandboxError::Io)?;
         let sandbox_dir = tmp.keep();
 
-        let bookmark = format!("sandbox-{}", &state.group_id);
-        let rev = state.base_revision.as_deref();
         let res = jj::jj_git_clone(
             &state.remote_uri,
             &sandbox_dir,
-            &bookmark,
-            state.bookmark.is_none(),
-            rev,
+            &state.bookmark,
+            base_revision,
         )
         .await;
 
@@ -144,9 +175,8 @@ impl SandboxBackend for LocalBackend {
             jj::jj_git_clone(
                 &state.remote_uri,
                 &sandbox_dir,
-                &bookmark,
-                state.bookmark.is_none(),
-                rev,
+                &state.bookmark,
+                base_revision,
             )
             .await?;
         } else {
@@ -156,7 +186,13 @@ impl SandboxBackend for LocalBackend {
         // Store in cache for future reuse.
         {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-            cache.insert(state.group_id.clone(), sandbox_dir.clone());
+            cache.insert(
+                state.group_id.clone(),
+                CachedSandbox {
+                    dir: sandbox_dir.clone(),
+                    state: state.clone(),
+                },
+            );
         }
 
         Ok(sandbox_dir)
@@ -431,27 +467,26 @@ impl SandboxBackend for LocalBackend {
     /// Runs `jj workspace forget` and deletes the sandbox directory, then
     /// removes it from the cache so it won't be reused.
     async fn cleanup_sandbox_permanently(&self, group_id: &str) -> Result<(), SandboxError> {
-        let dir = {
+        let entry = {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             cache.remove(group_id)
         };
 
-        if let Some(dir) = dir {
-            tracing::info!(
-                group_id = %group_id,
-                dir = %dir.display(),
-                "permanently cleaning up sandbox"
-            );
-            // Best-effort: forget the jj workspace then remove the directory.
-            let _ = run_jj(&dir, &["workspace", "forget"]).await;
-            if dir.exists() {
-                std::fs::remove_dir_all(&dir).map_err(SandboxError::Io)?;
-            }
-        } else {
-            tracing::info!(
-                group_id = %group_id,
-                "no cached sandbox to clean up"
-            );
+        let Some(entry) = entry else {
+            tracing::info!(group_id = %group_id, "no cached sandbox to clean up");
+            return Ok(());
+        };
+
+        let dir = &entry.dir;
+        let branch = format!("sandbox-{group_id}");
+        tracing::info!(group_id = %group_id, dir = %dir.display(), "permanently cleaning up sandbox");
+
+        if jj::jj_bookmark_is_empty(dir, &branch).await {
+            let _ = run_jj(dir, &["abandon", &branch]).await;
+        }
+        let _ = run_jj(dir, &["workspace", "forget"]).await;
+        if dir.exists() {
+            std::fs::remove_dir_all(dir).map_err(SandboxError::Io)?;
         }
 
         Ok(())
