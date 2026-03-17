@@ -64,7 +64,8 @@ impl Tool<SqsMessageSender> for SleepTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "seconds": { "type": "number", "description": "Number of seconds to sleep" }
+                "seconds": { "type": "number", "description": "Number of seconds to sleep" },
+                "reason": { "type": "string", "description": "Human-readable reason for sleeping" }
             },
             "required": ["seconds"]
         })
