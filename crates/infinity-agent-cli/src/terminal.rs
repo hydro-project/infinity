@@ -71,6 +71,7 @@ pub async fn run<R>(
     load_session_tx: mpsc::UnboundedSender<(String, usize)>,
     model_switch_tx: mpsc::UnboundedSender<usize>,
     available_models: Vec<crate::model_picker::ModelEntry>,
+    initial_message: Option<String>,
 ) -> Result<usize, BoxError>
 where
     R: GetTokenUsage,
@@ -135,6 +136,22 @@ where
         &thread_buffers,
         &thinking_text_buffer,
     )?;
+
+    // Send the initial message if provided via --message/-m.
+    if let Some(text) = initial_message {
+        let trimmed = text.trim().to_string();
+        if !trimmed.is_empty() {
+            let msg = InputMessage {
+                content: InputMessageContent::User(UserContent::text(&trimmed)),
+                group_id: thread_id.clone(),
+                metadata: None,
+                synthetic: None,
+                display_as: None,
+                subscription: false,
+            };
+            let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
+        }
+    }
 
     loop {
         // When animating, tick every 16ms; otherwise wait indefinitely
