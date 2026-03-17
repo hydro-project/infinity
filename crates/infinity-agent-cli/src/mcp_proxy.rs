@@ -316,7 +316,7 @@ impl ProxyState {
         Ok(())
     }
 
-    async fn list_tools(&self) -> Result<String, BoxError> {
+    async fn list_tools(&self) -> Result<(String, Option<String>), BoxError> {
         self.ensure_client().await?;
         let mut guard = self.client.lock().await;
         let client = guard.as_mut().unwrap();
@@ -329,7 +329,7 @@ impl ProxyState {
             .cloned()
             .unwrap_or_default();
         if tools.is_empty() {
-            return Ok("No tools available from this MCP server.".to_string());
+            return Ok(("No tools available from this MCP server.".to_string(), None));
         }
         let mut out = format!("Available tools ({}):\n\n", tools.len());
         for tool in &tools {
@@ -347,7 +347,7 @@ impl ProxyState {
             }
             out.push('\n');
         }
-        Ok(out)
+        Ok((out, Some(format!("Loaded {} tools", tools.len()))))
     }
 
     async fn invoke_tool(
@@ -471,7 +471,7 @@ async fn handle(req: Request<Incoming>, state: Arc<ProxyState>) -> Response<Full
     // Return immediately, process async
     let state = state.clone();
     tokio::spawn(async move {
-        let result = if inv.operation.ends_with("_list_tools") {
+        let res = if inv.operation.ends_with("_list_tools") {
             state.list_tools().await
         } else if inv.operation.ends_with("_invoke_tool") {
             let tool_name = inv
@@ -485,14 +485,14 @@ async fn handle(req: Request<Incoming>, state: Arc<ProxyState>) -> Response<Full
                 .get("arguments")
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
-            state.invoke_tool(&tool_name, args).await
+            state.invoke_tool(&tool_name, args).await.map(|r| (r, None))
         } else {
             Err(format!("unknown operation: {}", inv.operation).into())
         };
 
-        let text = match result {
+        let (text, display_as) = match res {
             Ok(t) => t,
-            Err(e) => format!("MCP tool error: {e}"),
+            Err(e) => (format!("MCP tool error: {e}"), None),
         };
 
         let callback_body = serde_json::json!({
@@ -501,6 +501,7 @@ async fn handle(req: Request<Incoming>, state: Arc<ProxyState>) -> Response<Full
             "id": inv.id,
             "call_id": inv.call_id,
             "text": text,
+            "display_as": display_as,
         });
 
         if let Err(e) = reqwest::Client::new()
