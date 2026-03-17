@@ -50,6 +50,10 @@ struct Cli {
     /// Model provider to use.
     #[arg(long, value_parser = ["bedrock"])]
     provider: Option<String>,
+
+    /// Send an initial message to the agent on startup.
+    #[arg(short, long)]
+    message: Option<String>,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -135,10 +139,10 @@ async fn async_main() -> Result<(), BoxError> {
             }
         };
     }
-    run_with_bedrock().await
+    run_with_bedrock(cli.message).await
 }
 
-async fn run_with_bedrock() -> Result<(), BoxError> {
+async fn run_with_bedrock(initial_message: Option<String>) -> Result<(), BoxError> {
     let provider = model_picker::BedrockProvider;
     let models = provider.available_models();
     let default_idx = provider.default_model_index();
@@ -147,7 +151,7 @@ async fn run_with_bedrock() -> Result<(), BoxError> {
     let client = BedrockClient::from_env();
     let model = client.completion_model(&default_model.model_id);
 
-    run_agent(model, models, default_idx, None).await
+    run_agent(model, models, default_idx, None, initial_message).await
 }
 
 async fn run_agent<Mdl>(
@@ -155,6 +159,7 @@ async fn run_agent<Mdl>(
     models: Vec<ModelEntry>,
     default_model_index: usize,
     startup_info: Option<String>,
+    initial_message: Option<String>,
 ) -> Result<(), BoxError>
 where
     Mdl: CompletionModel + 'static,
@@ -426,6 +431,7 @@ where
         load_session_tx,
         model_switch_tx,
         models,
+        initial_message,
     )
     .await;
     agent_handle.abort();

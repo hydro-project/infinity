@@ -5,3 +5,6 @@ node_modules/
 
 # Lambda layer build artifacts
 jj-layer/
+
+/.jj/
+/.infinity/
