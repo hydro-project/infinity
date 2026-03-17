@@ -27,6 +27,15 @@ pub struct LocalBackend {
     tempdir_base: PathBuf,
 }
 
+/// Returns the list of additional writable paths for a sandbox.
+fn extra_writable_paths(_sandbox_dir: &Path, tmp_dir: Option<&Path>) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(t) = tmp_dir {
+        paths.push(t.to_path_buf());
+    }
+    paths
+}
+
 /// Returns `true` when the current platform supports sandboxed execution.
 fn platform_sandbox_available() -> bool {
     cfg!(target_os = "macos") || cfg!(target_os = "linux")
@@ -177,16 +186,18 @@ impl SandboxBackend for LocalBackend {
 
             let tmp = self.make_tempdir().map_err(SandboxError::Io)?;
             let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
-            let tmp_str = abs_tmp.to_string_lossy();
 
+            let writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
+            let subpath_rules: String = std::iter::once(sandbox_dir_str.to_string())
+                .chain(writable.iter().map(|p| p.to_string_lossy().to_string()))
+                .map(|p| format!("\n       (subpath \"{p}\")"))
+                .collect();
             let profile = format!(
                 "(version 1)\n\
                  (debug deny)\n\
                  (allow default)\n\
                  (deny file-write*)\n\
-                 (allow file-write*\n\
-                     (subpath \"{sandbox_dir_str}\")\n\
-                     (subpath \"{tmp_str}\"))\n\
+                 (allow file-write*{subpath_rules})\n\
                  (allow file-write-data\n\
                      (require-all\n\
                          (path \"/dev/null\")\n\
@@ -212,23 +223,29 @@ impl SandboxBackend for LocalBackend {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
+            let writable = extra_writable_paths(sandbox_dir, None);
+            let mut bwrap_args = vec![
+                "--ro-bind",
+                "/",
+                "/",
+                "--bind",
+                &sandbox_dir_str,
+                &sandbox_dir_str,
+                "--bind",
+                "/tmp",
+                "/tmp",
+                "--dev",
+                "/dev",
+                "--proc",
+                "/proc",
+            ];
+            let writable_strs: Vec<String> = writable.iter().map(|p| p.to_string_lossy().to_string()).collect();
+            for p in &writable_strs {
+                bwrap_args.extend(["--bind", p.as_str(), p.as_str()]);
+            }
+            bwrap_args.push("--");
             let result = tokio::process::Command::new("bwrap")
-                .args([
-                    "--ro-bind",
-                    "/",
-                    "/",
-                    "--bind",
-                    &sandbox_dir_str,
-                    &sandbox_dir_str,
-                    "--bind",
-                    "/tmp",
-                    "/tmp",
-                    "--dev",
-                    "/dev",
-                    "--proc",
-                    "/proc",
-                    "--",
-                ])
+                .args(&bwrap_args)
                 .arg(program)
                 .args(args)
                 .current_dir(sandbox_dir)
@@ -292,16 +309,18 @@ impl SandboxBackend for LocalBackend {
 
             let tmp = self.make_tempdir().map_err(SandboxError::Io)?;
             let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
-            let tmp_str = abs_tmp.to_string_lossy();
 
+            let writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
+            let subpath_rules: String = std::iter::once(sandbox_dir_str.to_string())
+                .chain(writable.iter().map(|p| p.to_string_lossy().to_string()))
+                .map(|p| format!("\n       (subpath \"{p}\")"))
+                .collect();
             let profile = format!(
                 "(version 1)\n\
                  (debug deny)\n\
                  (allow default)\n\
                  (deny file-write*)\n\
-                 (allow file-write*\n\
-                     (subpath \"{sandbox_dir_str}\")\n\
-                     (subpath \"{tmp_str}\"))\n\
+                 (allow file-write*{subpath_rules})\n\
                  (allow file-write-data\n\
                      (require-all\n\
                          (path \"/dev/null\")\n\
@@ -330,23 +349,29 @@ impl SandboxBackend for LocalBackend {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
+            let writable = extra_writable_paths(sandbox_dir, None);
+            let mut bwrap_args = vec![
+                "--ro-bind",
+                "/",
+                "/",
+                "--bind",
+                &sandbox_dir_str,
+                &sandbox_dir_str,
+                "--bind",
+                "/tmp",
+                "/tmp",
+                "--dev",
+                "/dev",
+                "--proc",
+                "/proc",
+            ];
+            let writable_strs: Vec<String> = writable.iter().map(|p| p.to_string_lossy().to_string()).collect();
+            for p in &writable_strs {
+                bwrap_args.extend(["--bind", p.as_str(), p.as_str()]);
+            }
+            bwrap_args.push("--");
             let child = tokio::process::Command::new("bwrap")
-                .args([
-                    "--ro-bind",
-                    "/",
-                    "/",
-                    "--bind",
-                    &sandbox_dir_str,
-                    &sandbox_dir_str,
-                    "--bind",
-                    "/tmp",
-                    "/tmp",
-                    "--dev",
-                    "/dev",
-                    "--proc",
-                    "/proc",
-                    "--",
-                ])
+                .args(&bwrap_args)
                 .arg(&current_exe)
                 .arg("exec")
                 .arg("--")
