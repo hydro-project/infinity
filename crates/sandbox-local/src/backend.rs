@@ -157,31 +157,13 @@ impl SandboxBackend for LocalBackend {
         let tmp = self.make_tempdir().map_err(SandboxError::Io)?;
         let sandbox_dir = tmp.keep();
 
-        let res = jj::jj_git_clone(
+        jj::jj_git_clone(
             &state.remote_uri,
             &sandbox_dir,
             &state.bookmark,
             base_revision,
         )
-        .await;
-
-        if res.as_ref().is_err_and(|e| match e {
-            SandboxError::JujutsuError(e) if e.contains("It looks like this is a git repo.") => {
-                true
-            }
-            _ => false,
-        }) {
-            run_jj(&PathBuf::from(&state.remote_uri), &["git", "init"]).await?;
-            jj::jj_git_clone(
-                &state.remote_uri,
-                &sandbox_dir,
-                &state.bookmark,
-                base_revision,
-            )
-            .await?;
-        } else {
-            res?;
-        }
+        .await?;
 
         // Store in cache for future reuse.
         {
