@@ -240,7 +240,7 @@ async fn invoke_handler<
             "edit_file" => handle_edit_file(&state_clone, &invocation).await,
             "create_file" => handle_create_file(&state_clone, &invocation).await,
             "grep" => handle_grep(&state_clone, &invocation).await,
-            "describe_overall changes" => {
+            "describe_overall_changes" => {
                 handle_describe_overall_changes(&state_clone, &invocation).await
             }
             "squash_sandbox" => handle_squash_sandbox(&state_clone, &invocation).await,
