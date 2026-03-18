@@ -201,6 +201,23 @@ where
         let _ = display_tx.send(DisplayEvent::Info(info));
     }
 
+    // Pre-start sccache server if available (avoids issues starting from within a sandbox)
+    match std::process::Command::new("sccache")
+        .arg("--start-server")
+        .stderr(std::process::Stdio::piped())
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let _ = display_tx.send(DisplayEvent::Info("Started sccache server".to_string()));
+        }
+        Ok(_) => {
+            let _ = display_tx.send(DisplayEvent::Info(
+                "sccache server already running".to_string(),
+            ));
+        }
+        Err(_) => {} // sccache not available
+    }
+
     let agent_store = conversation_store.clone();
 
     // Spawn a task that boots the agent (callback server, RAP config, tool loading)
