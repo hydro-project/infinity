@@ -59,7 +59,7 @@ pub async fn jj_git_clone(
     let output = tokio::process::Command::new("jj")
         .args(["--config", "user.name=RAP Sandbox"])
         .args(["--config", "user.email=sandbox@rap"])
-        .args(["workspace", "add", "-r", revision, dest.to_str().unwrap()])
+        .args(["workspace", "add", "-r", "root()", dest.to_str().unwrap()])
         .current_dir(remote)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -74,8 +74,10 @@ pub async fn jj_git_clone(
         )));
     }
 
-    let _ = run_jj(dest, &["bookmark", "set", bookmark_name]).await;
-    run_jj(dest, &["edit", bookmark_name]).await?;
+    if run_jj(dest, &["edit", bookmark_name]).await.is_err() {
+        run_jj(dest, &["new", revision]).await?;
+        run_jj(dest, &["bookmark", "set", bookmark_name]).await?;
+    }
 
     Ok(())
 }
