@@ -145,15 +145,6 @@ where
     }
 
     loop {
-        // When animating, tick every 16ms; otherwise wait indefinitely
-        let tick_timeout = if spinner_state.is_some() {
-            tokio::time::sleep(tokio::time::Duration::from_millis(16))
-        } else {
-            // Sleep forever (effectively disabled)
-            tokio::time::sleep(tokio::time::Duration::from_secs(86400))
-        };
-        tokio::pin!(tick_timeout);
-
         tokio::select! {
             biased;
 
@@ -554,11 +545,6 @@ where
                 if got_resize || any_change || spinner_state.is_some() {
                     draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer)?;
                 }
-            }
-
-            _ = &mut tick_timeout, if spinner_state.is_some() => {
-                // Animation tick — redraw the input bar to advance the gradient
-
             }
         }
     }
