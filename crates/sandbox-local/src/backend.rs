@@ -54,6 +54,23 @@ impl LocalBackend {
                 "sandbox enabled but not supported on this platform; commands will run unsandboxed"
             );
         }
+
+        // Pre-start sccache server if available to avoid startup issues
+        // when sccache is first invoked from within a sandboxed command.
+        match Command::new("sccache")
+            .arg("--start-server")
+            .stderr(Stdio::piped())
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                tracing::info!("pre-started sccache server");
+            }
+            Ok(_) => {
+                tracing::debug!("sccache server already running");
+            }
+            Err(_) => {} // sccache not available
+        }
+
         Self {
             cache: Mutex::new(HashMap::new()),
             sandbox_enabled,
