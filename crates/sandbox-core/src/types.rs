@@ -1,5 +1,20 @@
 use serde::{Deserialize, Serialize};
 
+/// The version-control mode used by a sandbox.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SandboxMode {
+    /// Jujutsu workspace (the default for repos with `.jj`).
+    Jj {
+        /// Absolute jj change_id the workspace is based on.
+        base_revision: String,
+    },
+    /// Plain git worktree.
+    Git {
+        /// Absolute git commit hash the worktree is based on.
+        base_revision: String,
+    },
+}
+
 /// Metadata stored per group_id tracking the repo state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoState {
@@ -9,9 +24,11 @@ pub struct RepoState {
     pub remote_uri: String,
     /// The bookmark name used to track state.
     pub bookmark: String,
-    /// Absolute jj revision (change_id) the workspace is based on.
+    /// The version-control mode and its associated data.
+    pub mode: SandboxMode,
+    /// Path to the created sandbox workspace.
     #[serde(default)]
-    pub base_revision: Option<String>,
+    pub sandbox_path: Option<String>,
 }
 
 /// Input for the clone_repo tool.
