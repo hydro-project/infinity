@@ -433,26 +433,39 @@ where
                                 UiMode::Normal => {
                                     // Let the input area handle the keystroke first.
                                     if matches!(input.handle_keystroke(key), KeyResult::NotCaptured) {
-                                        // Input didn't consume it — handle at the terminal level.
-                                        match (key.code, key.modifiers) {
-                                            (KeyCode::Char('c') | KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                        // Map both Ctrl shortcuts and slash commands to a
+                                        // canonical command, then handle in one place.
+                                        let (command, user_text): (Option<&str>, Option<String>) = match (key.code, key.modifiers) {
+                                            (KeyCode::Char('c') | KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => (Some("/quit"), None),
+                                            (KeyCode::Char('h'), m) if m.contains(KeyModifiers::CONTROL) => (Some("/help"), None),
+                                            (KeyCode::Char('l'), m) if m.contains(KeyModifiers::CONTROL) => (Some("/load"), None),
+                                            (KeyCode::Char('m'), m) if m.contains(KeyModifiers::CONTROL) => (Some("/model"), None),
+                                            (KeyCode::Char('n'), m) if m.contains(KeyModifiers::CONTROL) => (Some("/new"), None),
+                                            (KeyCode::Char('k'), m) if m.contains(KeyModifiers::CONTROL) => (Some("/compact"), None),
+                                            (KeyCode::Enter, _) if !input.is_empty() => {
+                                                let trimmed = input.take_text().trim().to_string();
+                                                match trimmed.as_str() {
+                                                    "/help" | "/h" => (Some("/help"), None),
+                                                    "/quit" | "/exit" | "/q" => (Some("/quit"), None),
+                                                    "/new" | "/n" => (Some("/new"), None),
+                                                    "/load" | "/l" => (Some("/load"), None),
+                                                    "/model" | "/m" => (Some("/model"), None),
+                                                    "/compact" | "/k" => (Some("/compact"), None),
+                                                    _ => (None, Some(trimmed)),
+                                                }
+                                            }
+                                            _ => (None, None),
+                                        };
+
+                                        match command {
+                                            Some("/help") => {
+                                                show_help(&mut viewport)?;
+                                            }
+                                            Some("/quit") => {
                                                 cleanup()?;
                                                 return Ok(total_tokens_used);
                                             }
-                                            (KeyCode::Char('h'), m) if m.contains(KeyModifiers::CONTROL) => {
-                                                show_help(&mut viewport)?;
-                                            }
-                                            (KeyCode::Char('l'), m) if m.contains(KeyModifiers::CONTROL) => {
-                                                if !available_sessions.is_empty() {
-                                                    session_picker = Some(SessionPicker::new(available_sessions.clone()));
-                                                    ui_mode = UiMode::SessionPicker;
-                                                }
-                                            }
-                                            (KeyCode::Char('m'), m) if m.contains(KeyModifiers::CONTROL) => {
-                                                model_picker = Some(ModelPicker::new(available_models.clone()));
-                                                ui_mode = UiMode::ModelPicker;
-                                            }
-                                            (KeyCode::Char('n'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                            Some("/new") => {
                                                 let new_id = uuid::Uuid::new_v4().to_string();
                                                 let _ = new_session_tx.send(new_id.clone());
                                                 thread_id = new_id.clone();
@@ -465,7 +478,17 @@ where
                                                 ]))?;
                                                 total_tokens_used = 0;
                                             }
-                                            (KeyCode::Char('k'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                            Some("/load") => {
+                                                if !available_sessions.is_empty() {
+                                                    session_picker = Some(SessionPicker::new(available_sessions.clone()));
+                                                    ui_mode = UiMode::SessionPicker;
+                                                }
+                                            }
+                                            Some("/model") => {
+                                                model_picker = Some(ModelPicker::new(available_models.clone()));
+                                                ui_mode = UiMode::ModelPicker;
+                                            }
+                                            Some("/compact") => {
                                                 let msg = InputMessage {
                                                     content: InputMessageContent::User(UserContent::text("__compaction_trigger__")),
                                                     group_id: thread_id.clone(),
@@ -479,70 +502,19 @@ where
                                                     Span::styled("✦ Compaction triggered", Style::default().fg(Color::Yellow)),
                                                 ]))?;
                                             }
-                                            (KeyCode::Enter, _) => {
-                                                if !input.is_empty() {
-                                                    let text = input.take_text();
-                                                    let trimmed = text.trim().to_string();
-                                                    match trimmed.as_str() {
-                                                        "/help" | "/h" => {
-                                                            show_help(&mut viewport)?;
-                                                        }
-                                                        "/quit" | "/exit" | "/q" => {
-                                                            cleanup()?;
-                                                            return Ok(total_tokens_used);
-                                                        }
-                                                        "/new" | "/n" => {
-                                                            let new_id = uuid::Uuid::new_v4().to_string();
-                                                            let _ = new_session_tx.send(new_id.clone());
-                                                            thread_id = new_id.clone();
-                                                            set_terminal_title("");
-                                                            viewport.print_line_above(Line::from(vec![
-                                                                Span::styled(
-                                                                    format!("✦ New session created — thread {}", new_id),
-                                                                    Style::default().fg(Color::Yellow),
-                                                                ),
-                                                            ]))?;
-                                                            total_tokens_used = 0;
-                                                        }
-                                                        "/load" | "/l" => {
-                                                            if !available_sessions.is_empty() {
-                                                                session_picker = Some(SessionPicker::new(available_sessions.clone()));
-                                                                ui_mode = UiMode::SessionPicker;
-                                                            }
-                                                        }
-                                                        "/model" | "/m" => {
-                                                            model_picker = Some(ModelPicker::new(available_models.clone()));
-                                                            ui_mode = UiMode::ModelPicker;
-                                                        }
-                                                        "/compact" | "/k" => {
-                                                            let msg = InputMessage {
-                                                                content: InputMessageContent::User(UserContent::text("__compaction_trigger__")),
-                                                                group_id: thread_id.clone(),
-                                                                metadata: None,
-                                                                synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::Compaction)),
-                                                                display_as: None,
-                                                                subscription: false,
-                                                            };
-                                                            let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
-                                                            viewport.print_line_above(Line::from(vec![
-                                                                Span::styled("✦ Compaction triggered", Style::default().fg(Color::Yellow)),
-                                                            ]))?;
-                                                        }
-                                                        _ => {
-                                                            let msg = InputMessage {
-                                                                content: InputMessageContent::User(UserContent::text(&trimmed)),
-                                                                group_id: thread_id.clone(),
-                                                                metadata: None,
-                                                                synthetic: None,
-                                                                display_as: None,
-                                                                subscription: false,
-                                                            };
-                                                            let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
-                                                        }
-                                                    }
+                                            _ => {
+                                                if let Some(trimmed) = user_text {
+                                                    let msg = InputMessage {
+                                                        content: InputMessageContent::User(UserContent::text(&trimmed)),
+                                                        group_id: thread_id.clone(),
+                                                        metadata: None,
+                                                        synthetic: None,
+                                                        display_as: None,
+                                                        subscription: false,
+                                                    };
+                                                    let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
                                                 }
                                             }
-                                            _ => {}
                                         }
                                     }
                                 }
@@ -637,9 +609,10 @@ fn show_help(viewport: &mut InlineViewport) -> Result<(), BoxError> {
     }
     help.push(format!("╰{bar}╯"));
     for line in &help {
-        viewport.print_line_above(Line::from(vec![
-            Span::styled(line.clone(), Style::default().fg(Color::Cyan)),
-        ]))?;
+        viewport.print_line_above(Line::from(vec![Span::styled(
+            line.clone(),
+            Style::default().fg(Color::Cyan),
+        )]))?;
     }
     Ok(())
 }
