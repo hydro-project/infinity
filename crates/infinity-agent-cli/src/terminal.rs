@@ -87,12 +87,12 @@ where
         write!(w, "\r\nInfinity Agent CLI — thread {}\r\n", thread_id)?;
         write!(
             w,
-            "Type your messages below. Ctrl+C to exit. Ctrl+N for new session.\r\n"
+            "Type your messages below. /help for commands. Ctrl+C to exit.\r\n"
         )
     })?;
     if has_sessions {
         viewport.print_line_above(Line::from(Span::styled(
-            "Existing sessions found, Ctrl+L to load.",
+            "Existing sessions found, /load or Ctrl+L to load.",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -440,41 +440,7 @@ where
                                                 return Ok(total_tokens_used);
                                             }
                                             (KeyCode::Char('h'), m) if m.contains(KeyModifiers::CONTROL) => {
-                                                const W: usize = 47;
-                                                let bar: String = "─".repeat(W);
-                                                let rows = [
-                                                    "",
-                                                    "  Navigation",
-                                                    "    Ctrl+C / Ctrl+D    Exit",
-                                                    "    Ctrl+N             New session",
-                                                    "    Ctrl+L             Load session",
-                                                    "    Ctrl+M             Switch model",
-                                                    "    Ctrl+H             Show this help",
-                                                    "    Enter              Send message",
-                                                    "",
-                                                    "  Editing",
-                                                    "    Alt+Enter/Ctrl+J   Insert newline",
-                                                    "    Up                 Move cursor up a line",
-                                                    "    Down               Move cursor down a line",
-                                                    "    Ctrl+A             Move to line start",
-                                                    "    Ctrl+E             Move to line end",
-                                                    "    Alt+Left / Alt+B   Move word left",
-                                                    "    Alt+Right / Alt+F  Move word right",
-                                                    "    Alt+Backspace      Delete word left",
-                                                    "    Ctrl+C             Clear input (non-empty)",
-                                                    "",
-                                                ];
-                                                let mut help: Vec<String> = Vec::new();
-                                                help.push(format!("╭{bar}╮"));
-                                                for row in rows {
-                                                    help.push(format!("│{:<W$}│", row));
-                                                }
-                                                help.push(format!("╰{bar}╯"));
-                                                for line in &help {
-                                                    viewport.print_line_above(Line::from(vec![
-                                                        Span::styled(line.clone(), Style::default().fg(Color::Cyan)),
-                                                    ]))?;
-                                                }
+                                                show_help(&mut viewport)?;
                                             }
                                             (KeyCode::Char('l'), m) if m.contains(KeyModifiers::CONTROL) => {
                                                 if !available_sessions.is_empty() {
@@ -517,15 +483,63 @@ where
                                                 if !input.is_empty() {
                                                     let text = input.take_text();
                                                     let trimmed = text.trim().to_string();
-                                                    let msg = InputMessage {
-                                                        content: InputMessageContent::User(UserContent::text(&trimmed)),
-                                                        group_id: thread_id.clone(),
-                                                        metadata: None,
-                                                        synthetic: None,
-                                                        display_as: None,
-                                                        subscription: false,
-                                                    };
-                                                    let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
+                                                    match trimmed.as_str() {
+                                                        "/help" | "/h" => {
+                                                            show_help(&mut viewport)?;
+                                                        }
+                                                        "/quit" | "/exit" | "/q" => {
+                                                            cleanup()?;
+                                                            return Ok(total_tokens_used);
+                                                        }
+                                                        "/new" | "/n" => {
+                                                            let new_id = uuid::Uuid::new_v4().to_string();
+                                                            let _ = new_session_tx.send(new_id.clone());
+                                                            thread_id = new_id.clone();
+                                                            set_terminal_title("");
+                                                            viewport.print_line_above(Line::from(vec![
+                                                                Span::styled(
+                                                                    format!("✦ New session created — thread {}", new_id),
+                                                                    Style::default().fg(Color::Yellow),
+                                                                ),
+                                                            ]))?;
+                                                            total_tokens_used = 0;
+                                                        }
+                                                        "/load" | "/l" => {
+                                                            if !available_sessions.is_empty() {
+                                                                session_picker = Some(SessionPicker::new(available_sessions.clone()));
+                                                                ui_mode = UiMode::SessionPicker;
+                                                            }
+                                                        }
+                                                        "/model" | "/m" => {
+                                                            model_picker = Some(ModelPicker::new(available_models.clone()));
+                                                            ui_mode = UiMode::ModelPicker;
+                                                        }
+                                                        "/compact" | "/k" => {
+                                                            let msg = InputMessage {
+                                                                content: InputMessageContent::User(UserContent::text("__compaction_trigger__")),
+                                                                group_id: thread_id.clone(),
+                                                                metadata: None,
+                                                                synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::Compaction)),
+                                                                display_as: None,
+                                                                subscription: false,
+                                                            };
+                                                            let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
+                                                            viewport.print_line_above(Line::from(vec![
+                                                                Span::styled("✦ Compaction triggered", Style::default().fg(Color::Yellow)),
+                                                            ]))?;
+                                                        }
+                                                        _ => {
+                                                            let msg = InputMessage {
+                                                                content: InputMessageContent::User(UserContent::text(&trimmed)),
+                                                                group_id: thread_id.clone(),
+                                                                metadata: None,
+                                                                synthetic: None,
+                                                                display_as: None,
+                                                                subscription: false,
+                                                            };
+                                                            let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
+                                                        }
+                                                    }
                                                 }
                                             }
                                             _ => {}
@@ -585,6 +599,51 @@ fn end_stream(viewport: &mut InlineViewport, mid_stream: &mut bool) -> Result<()
     Ok(())
 }
 
+fn show_help(viewport: &mut InlineViewport) -> Result<(), BoxError> {
+    const W: usize = 55;
+    let bar: String = "─".repeat(W);
+    let rows = [
+        "",
+        "  Slash Commands",
+        "    /help, /h          Show this help",
+        "    /quit, /q          Exit",
+        "    /new, /n           New session",
+        "    /load, /l          Load session",
+        "    /model, /m         Switch model",
+        "    /compact, /k       Trigger compaction",
+        "",
+        "  Keyboard Shortcuts",
+        "    Ctrl+C / Ctrl+D    Exit",
+        "    Ctrl+N             New session",
+        "    Ctrl+L             Load session",
+        "    Ctrl+M             Switch model",
+        "    Ctrl+H             Show this help",
+        "    Enter              Send message",
+        "",
+        "  Editing",
+        "    Alt+Enter/Ctrl+J   Insert newline",
+        "    Up / Down          Move cursor up/down a line",
+        "    Ctrl+A / Ctrl+E    Move to line start/end",
+        "    Alt+Left / Alt+B   Move word left",
+        "    Alt+Right / Alt+F  Move word right",
+        "    Alt+Backspace      Delete word left",
+        "    Ctrl+C             Clear input (non-empty)",
+        "",
+    ];
+    let mut help: Vec<String> = Vec::new();
+    help.push(format!("╭{bar}╮"));
+    for row in rows {
+        help.push(format!("│{:<W$}│", row));
+    }
+    help.push(format!("╰{bar}╯"));
+    for line in &help {
+        viewport.print_line_above(Line::from(vec![
+            Span::styled(line.clone(), Style::default().fg(Color::Cyan)),
+        ]))?;
+    }
+    Ok(())
+}
+
 // ── Viewport drawing ────────────────────────────────────────────────────────
 
 fn draw_viewport(
@@ -616,7 +675,7 @@ fn draw_viewport(
         UiMode::SessionPicker | UiMode::ModelPicker => {
             "↑↓ navigate  enter select  esc cancel".to_string()
         }
-        UiMode::Normal => format!("{} (ctrl-h for help)", model_name),
+        UiMode::Normal => format!("{} (/help for commands)", model_name),
     };
 
     // Snapshot thread lines for the closure.
