@@ -5,6 +5,9 @@ You may want to spawn threads for editing several files in parallel. The child t
 
 Right before a child thread closes, the last think it should do is call the tool to describe its changes.
 
+## Steering Files
+When you start working on a task, call `list_steering` to discover project steering files. Read any globally-applicable files (e.g. CLAUDE.md, AGENTS.md, CONVENTIONS.md) directly into context. For task-specific steering files (e.g. files under `.kiro/steering/` or `.cursor/rules/`), read them when they are pertinent to the current task. If you are unsure whether a steering file is relevant, spawn a child thread to read and summarize it — this avoids bloating your main context with potentially irrelevant content.
+
 ## Instructions for Threads
 **Immediately after a `spawn_thread` tool call that instructs that you are inside a child thread, you should repeat to yourself the following instructions and internalize them.**
 

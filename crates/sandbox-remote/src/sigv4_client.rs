@@ -9,7 +9,6 @@ use aws_sigv4::sign::v4::SigningParams;
 use aws_smithy_runtime_api::client::identity::Identity;
 
 use sandbox_core::callback::CallbackClient;
-use sandbox_core::error::SandboxError;
 
 /// SigV4-signing callback client for Lambda Function URLs.
 pub struct SigV4CallbackClient {
@@ -38,19 +37,18 @@ impl SigV4CallbackClient {
 
 #[async_trait]
 impl CallbackClient for SigV4CallbackClient {
-    async fn post_json(&self, url: &str, body: &str) -> Result<(), SandboxError> {
-        let parsed = url::Url::parse(url)
-            .map_err(|e| SandboxError::Other(format!("invalid callback URL: {e}")))?;
+    async fn post_json(
+        &self,
+        url: &str,
+        body: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let parsed = url::Url::parse(url)?;
         let host = parsed
             .host_str()
-            .ok_or_else(|| SandboxError::Other("callback URL missing host".into()))?
+            .ok_or_else(|| "callback URL missing host")?
             .to_string();
 
-        let creds = self
-            .credentials_provider
-            .provide_credentials()
-            .await
-            .map_err(|e| SandboxError::Other(format!("failed to get credentials: {e}")))?;
+        let creds = self.credentials_provider.provide_credentials().await?;
         let identity = Identity::new(creds, None);
 
         let mut signing_settings = SigningSettings::default();
@@ -62,8 +60,7 @@ impl CallbackClient for SigV4CallbackClient {
             .name("lambda")
             .time(SystemTime::now())
             .settings(signing_settings)
-            .build()
-            .map_err(|e| SandboxError::Other(format!("signing params error: {e}")))?;
+            .build()?;
 
         let signable_request = SignableRequest::new(
             "POST",
@@ -71,12 +68,10 @@ impl CallbackClient for SigV4CallbackClient {
             std::iter::once(("host", host.as_str()))
                 .chain(std::iter::once(("content-type", "application/json"))),
             SignableBody::Bytes(body.as_bytes()),
-        )
-        .map_err(|e| SandboxError::Other(format!("signable request error: {e}")))?;
+        )?;
 
-        let (signing_instructions, _) = sign(signable_request, &signing_params.into())
-            .map_err(|e| SandboxError::Other(format!("signing error: {e}")))?
-            .into_parts();
+        let (signing_instructions, _) =
+            sign(signable_request, &signing_params.into())?.into_parts();
 
         let mut req = self
             .http_client
@@ -88,10 +83,7 @@ impl CallbackClient for SigV4CallbackClient {
             req = req.header(name, value);
         }
 
-        req.body(body.to_string())
-            .send()
-            .await
-            .map_err(|e| SandboxError::Other(format!("callback POST failed: {e}")))?;
+        req.body(body.to_string()).send().await?;
 
         Ok(())
     }

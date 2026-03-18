@@ -5,13 +5,17 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing;
 
-use crate::callback::CallbackClient;
+use rap_protocol::{
+    CallbackClient, RapInvocation, RapToolResult, ToolDef, ToolsetManifest,
+    send_subscription_event, send_tool_result,
+};
+
 use crate::error::SandboxError;
 use crate::git;
 use crate::jj::run_jj;
@@ -22,63 +26,11 @@ use crate::types::{
     GrepArgs, ReadFileArgs, RepoState, SandboxMode, SquashSandboxArgs,
 };
 
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct RapInvocation {
-    operation: String,
-    arguments: serde_json::Value,
-    id: String,
-    call_id: Option<String>,
-    callback_url: String,
-    group_id: String,
-    user_id: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct RapToolResult {
-    r#type: String,
-    group_id: String,
-    id: String,
-    call_id: Option<String>,
-    text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    display_as: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    subscription: Option<bool>,
-}
-
-#[derive(Debug, Serialize)]
-struct RapSubscriptionEvent {
-    r#type: String,
-    group_id: String,
-    tool_call_id: String,
-    text: String,
-    associative: bool,
-}
-
 /// Events produced by the stdout/stderr readers and process exit waiter.
 enum OutputEvent {
     Stdout(String),
     Stderr(String),
     Exit(i32),
-}
-
-#[derive(Serialize)]
-struct ToolsetManifest {
-    name: String,
-    description: String,
-    endpoint: String,
-    tools: Vec<ToolDef>,
-}
-
-#[derive(Serialize)]
-struct ToolDef {
-    name: String,
-    description: String,
-    #[serde(rename = "inputSchema")]
-    input_schema: serde_json::Value,
-    #[serde(rename = "displayScript", skip_serializing_if = "Option::is_none")]
-    display_script: Option<String>,
 }
 
 type PendingTasks = Arc<Mutex<Vec<JoinHandle<()>>>>;
@@ -587,49 +539,6 @@ fn format_exec_output(stdout: &str, stderr: &str, exit_code: i32) -> String {
 //     }
 //     text
 // }
-
-/// Send a `tool_result` callback.
-async fn send_tool_result<C: CallbackClient>(
-    client: &C,
-    invocation: &RapInvocation,
-    text: &str,
-    display_as: Option<String>,
-    subscription: bool,
-) {
-    let result = RapToolResult {
-        r#type: "tool_result".to_string(),
-        group_id: invocation.group_id.clone(),
-        id: invocation.id.clone(),
-        call_id: invocation.call_id.clone(),
-        text: text.to_string(),
-        display_as,
-        subscription: if subscription { Some(true) } else { None },
-    };
-    let body = serde_json::to_string(&result).unwrap();
-    if let Err(e) = client.post_json(&invocation.callback_url, &body).await {
-        tracing::error!("failed to send tool result: {e}");
-    }
-}
-
-/// Send a `subscription_event` callback.
-async fn send_subscription_event<C: CallbackClient>(
-    client: &C,
-    invocation: &RapInvocation,
-    text: &str,
-    associative: bool,
-) {
-    let event = RapSubscriptionEvent {
-        r#type: "subscription_event".to_string(),
-        group_id: invocation.group_id.clone(),
-        tool_call_id: invocation.id.clone(),
-        text: text.to_string(),
-        associative,
-    };
-    let body = serde_json::to_string(&event).unwrap();
-    if let Err(e) = client.post_json(&invocation.callback_url, &body).await {
-        tracing::error!("failed to send subscription event: {e}");
-    }
-}
 
 /// Top-level streaming handler for execute_command. Manages its own callbacks.
 async fn handle_execute_command_streaming<
