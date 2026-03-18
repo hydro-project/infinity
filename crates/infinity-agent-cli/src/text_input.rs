@@ -383,6 +383,15 @@ impl TextInput {
         std::mem::take(&mut self.buf)
     }
 
+    pub fn text(&self) -> &str {
+        &self.buf
+    }
+
+    pub fn set_text(&mut self, s: &str) {
+        self.buf = s.to_string();
+        self.cursor = self.buf.len();
+    }
+
     pub fn is_empty(&self) -> bool {
         self.buf.trim().is_empty()
     }
