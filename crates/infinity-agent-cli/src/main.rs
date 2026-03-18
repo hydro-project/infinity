@@ -63,6 +63,8 @@ enum Commands {
         #[command(subcommand)]
         action: RapCommands,
     },
+    /// Update the CLI itself
+    Update,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -113,30 +115,33 @@ async fn async_main() -> Result<(), BoxError> {
     let cli = Cli::parse();
 
     // Handle subcommands
-    if let Some(Commands::Rap { action }) = cli.command {
-        return match action {
-            RapCommands::Install {
-                user,
-                crate_name,
-                git,
-                path,
-            } => {
-                if !user {
-                    return Err("--user is currently required for rap install".into());
-                }
-                install::run_install(install::InstallArgs {
+    if let Some(command) = cli.command {
+        return match command {
+            Commands::Update => install::run_self_update().await,
+            Commands::Rap { action } => match action {
+                RapCommands::Install {
+                    user,
                     crate_name,
                     git,
                     path,
-                })
-                .await
-            }
-            RapCommands::Update { user } => {
-                if !user {
-                    return Err("--user is currently required for rap update".into());
+                } => {
+                    if !user {
+                        return Err("--user is currently required for rap install".into());
+                    }
+                    install::run_install(install::InstallArgs {
+                        crate_name,
+                        git,
+                        path,
+                    })
+                    .await
                 }
-                install::run_update().await
-            }
+                RapCommands::Update { user } => {
+                    if !user {
+                        return Err("--user is currently required for rap update".into());
+                    }
+                    install::run_update().await
+                }
+            },
         };
     }
     run_with_bedrock(cli.message).await
