@@ -91,14 +91,12 @@ where
         )
     })?;
     if has_sessions {
-        viewport.print_line_above(
-            Line::from(Span::styled(
-                "Existing sessions found, Ctrl+L to load.",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )),
-        )?;
+        viewport.print_line_above(Line::from(Span::styled(
+            "Existing sessions found, Ctrl+L to load.",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )))?;
     }
 
     let mut input = TextInput::new();
@@ -585,12 +583,10 @@ fn print_continuation_lines(
         } else {
             base_style
         };
-        viewport.print_line_above(
-            Line::from(vec![
-                Span::raw(" ".repeat(indent)),
-                Span::styled(line.to_string(), style),
-            ]),
-        )?;
+        viewport.print_line_above(Line::from(vec![
+            Span::raw(" ".repeat(indent)),
+            Span::styled(line.to_string(), style),
+        ]))?;
     }
     Ok(())
 }
@@ -1016,4 +1012,3 @@ fn eval_display_script(script: Option<&str>, args: &serde_json::Value) -> Option
     scope.push("args", map);
     engine.eval_with_scope::<String>(&mut scope, script).ok()
 }
-

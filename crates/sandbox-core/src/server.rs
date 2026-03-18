@@ -17,8 +17,8 @@ use crate::jj::run_jj;
 use crate::metadata::MetadataStore;
 use crate::sandbox::SandboxBackend;
 use crate::types::{
-    CloneRepoArgs, CreateFileArgs, DescribeEditsArgs, EditFileArgs, ExecuteCommandArgs, GrepArgs,
-    ReadFileArgs, RepoState, SquashSandboxArgs,
+    CloneRepoArgs, CreateFileArgs, DescribeOverallChangesArgs, EditFileArgs, ExecuteCommandArgs,
+    GrepArgs, ReadFileArgs, RepoState, SquashSandboxArgs,
 };
 
 #[derive(Debug, Deserialize)]
@@ -240,7 +240,9 @@ async fn invoke_handler<
             "edit_file" => handle_edit_file(&state_clone, &invocation).await,
             "create_file" => handle_create_file(&state_clone, &invocation).await,
             "grep" => handle_grep(&state_clone, &invocation).await,
-            "describe_edits" => handle_describe_edits(&state_clone, &invocation).await,
+            "describe_overall changes" => {
+                handle_describe_overall_changes(&state_clone, &invocation).await
+            }
             "squash_sandbox" => handle_squash_sandbox(&state_clone, &invocation).await,
             _ => Err(SandboxError::Other(format!(
                 "unknown operation: {}",
@@ -427,7 +429,7 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
 async fn with_sandbox<B, M, C, F, Fut>(
     state: &AppState<B, M, C>,
     group_id: &str,
-    jj_description: &str,
+    jj_description: Option<&str>,
     action: F,
 ) -> Result<(String, Option<String>), SandboxError>
 where
@@ -445,7 +447,9 @@ where
 
     let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;
 
-    run_jj(&sandbox_dir, &["describe", "-m", jj_description]).await?;
+    if let Some(jj_description) = jj_description {
+        run_jj(&sandbox_dir, &["describe", "-m", jj_description]).await?;
+    }
 
     let result = action(sandbox_dir.clone()).await;
 
@@ -968,12 +972,10 @@ async fn handle_read_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
     let args: ReadFileArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
-    let description = format!("read_file: {}", args.path);
-
     with_sandbox(
         state,
         &invocation.group_id,
-        &description,
+        None,
         |sandbox_dir| async move {
             let file_path = sandbox_dir.join(&args.path);
             let content = tokio::fs::read_to_string(&file_path)
@@ -1019,12 +1021,10 @@ async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
     let args: EditFileArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
-    let description = format!("edit_file: {}", args.path);
-
     with_sandbox(
         state,
         &invocation.group_id,
-        &description,
+        None,
         |sandbox_dir| async move {
             let file_path = sandbox_dir.join(&args.path);
             let content = tokio::fs::read_to_string(&file_path)
@@ -1068,12 +1068,10 @@ async fn handle_create_file<B: SandboxBackend, M: MetadataStore, C: CallbackClie
     let args: CreateFileArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
-    let description = format!("create_file: {}", args.path);
-
     with_sandbox(
         state,
         &invocation.group_id,
-        &description,
+        None,
         |sandbox_dir| async move {
             let file_path = sandbox_dir.join(&args.path);
 
@@ -1112,7 +1110,6 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     let args: GrepArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
-    let description = format!("grep: {}", args.query);
     let query_for_display = args.query.clone();
     let backend = &state.backend;
 
@@ -1128,7 +1125,7 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     with_sandbox(
         state,
         &invocation.group_id,
-        &description,
+        None,
         |sandbox_dir| async move {
             let exclude_glob: Option<String>;
             let mut cmd_parts = vec!["rg", "--line-number"];
@@ -1203,17 +1200,17 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     .await
 }
 
-async fn handle_describe_edits<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
+async fn handle_describe_overall_changes<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
 ) -> Result<(String, Option<String>), SandboxError> {
-    let args: DescribeEditsArgs = serde_json::from_value(invocation.arguments.clone())
+    let args: DescribeOverallChangesArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
     with_sandbox(
         state,
         &invocation.group_id,
-        &args.message,
+        Some(&args.message),
         |_sandbox_dir| async move { Ok(("Edits described.".to_string(), None)) },
     )
     .await
@@ -1227,12 +1224,11 @@ async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackC
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
     let from_bookmark = format!("sandbox-{}", args.from_thread_id);
-    let description = format!("squash_sandbox: from {}", from_bookmark);
 
     with_sandbox(
         state,
         &invocation.group_id,
-        &description,
+        None,
         |sandbox_dir| async move {
             run_jj(
                 &sandbox_dir,
@@ -1307,7 +1303,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
             },
             ToolDef {
                 name: "execute_command".to_string(),
-                description: "Execute a bash command in a sandboxed copy of the repository. The sandbox is an isolated temporary directory with the repo's current state. There is no need to cd to folders like /tmp before running commands.".to_string(),
+                description: "Execute a bash command in a sandboxed copy of the repository. The sandbox is an isolated temporary directory with the repo's current state. There is no need to cd to folders like /tmp before running commands. This overwrites `describe_overall_changes`, so after you complete the task you should update it again.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -1413,8 +1409,8 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                 display_script: Some(r#"let s = "Grep: " + args.query; if args.includePattern != () { s += " in " + args.includePattern; } s"#.to_string()),
             },
             ToolDef {
-                name: "describe_edits".to_string(),
-                description: "Call this after finishing a coding task or subtask to describe the edits you made. Use a git-style commit message: a short one-line summary, followed by a blank line, then detailed explanations of what was changed and why.".to_string(),
+                name: "describe_overall_changes".to_string(),
+                description: "Call this after finishing a coding task or subtask to describe the overall changes. Use a git-style commit message: a short one-line summary, followed by a blank line, then detailed explanations of what was changed and why.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {

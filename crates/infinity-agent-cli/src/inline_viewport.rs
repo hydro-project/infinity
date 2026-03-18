@@ -196,10 +196,7 @@ impl InlineViewport {
         let mut stdout = io::stdout();
 
         queue!(stdout, cursor::Hide)?;
-        queue!(
-            stdout,
-            SetScrollRegion(1..self.last_effective_viewport_y)
-        )?;
+        queue!(stdout, SetScrollRegion(1..self.last_effective_viewport_y))?;
         queue!(stdout, cursor::RestorePosition)?;
 
         writer(&mut stdout)?;
