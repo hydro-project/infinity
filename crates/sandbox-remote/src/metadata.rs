@@ -4,7 +4,7 @@ use aws_sdk_dynamodb::types::AttributeValue;
 
 use sandbox_core::error::SandboxError;
 use sandbox_core::metadata::MetadataStore;
-use sandbox_core::types::RepoState;
+use sandbox_core::types::{RepoState, SandboxMode};
 
 pub struct DynamoMetadataStore {
     client: Client,
@@ -48,13 +48,15 @@ impl MetadataStore for DynamoMetadataStore {
         let base_revision = item
             .get("base_revision")
             .and_then(|v| v.as_s().ok())
-            .cloned();
+            .cloned()
+            .unwrap_or_default();
 
         Ok(Some(RepoState {
             group_id: group_id.to_string(),
             remote_uri,
             bookmark,
-            base_revision,
+            mode: SandboxMode::Jj { base_revision },
+            sandbox_path: None,
         }))
     }
 
@@ -67,7 +69,7 @@ impl MetadataStore for DynamoMetadataStore {
             .item("remote_uri", AttributeValue::S(state.remote_uri.clone()))
             .item("bookmark", AttributeValue::S(state.bookmark.clone()));
 
-        if let Some(ref base_revision) = state.base_revision {
+        if let SandboxMode::Jj { ref base_revision } = state.mode {
             req = req.item("base_revision", AttributeValue::S(base_revision.clone()));
         }
 

@@ -78,20 +78,17 @@ pub async fn git_commit_all(dir: &Path, message: &str) -> Result<(), SandboxErro
 }
 
 /// Stage all changes and amend the current commit.
-pub async fn git_amend_all(dir: &Path, message: &str) -> Result<(), SandboxError> {
+/// When `message` is `Some`, the commit message is replaced; when `None` the
+/// existing message is kept (`--no-edit`).
+pub async fn git_amend_all(dir: &Path, message: Option<&str>) -> Result<(), SandboxError> {
     run_git(dir, &["add", "-A"]).await?;
-    run_git(
-        dir,
-        &[
-            "commit",
-            "--amend",
-            "--allow-empty",
-            "--no-verify",
-            "-m",
-            message,
-        ],
-    )
-    .await?;
+    let mut args = vec!["commit", "--amend", "--allow-empty", "--no-verify"];
+    if let Some(msg) = message {
+        args.extend(["-m", msg]);
+    } else {
+        args.push("--no-edit");
+    }
+    run_git(dir, &args).await?;
     Ok(())
 }
 
