@@ -44,7 +44,7 @@ fn draw_spinner(
             Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(frame.area());
         terminal::render_thinking_bar(
             frame,
-            areas[0],
+            areas[1],
             start,
             status,
             terminal::SpinnerState::Thinking,
@@ -62,6 +62,7 @@ async fn run_cargo_install(
 ) -> Result<(), BoxError> {
     let mut cmd = Command::new("cargo");
     cmd.arg("install");
+    cmd.env("CARGO_NET_GIT_FETCH_WITH_CLI", "true");
     if let Some(git) = git {
         cmd.args(["--git", git]);
     } else if let Some(path) = path {
@@ -200,21 +201,22 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
     Ok(())
 }
 
-pub async fn run_update() -> Result<(), BoxError> {
+/// Update RAP tools, printing progress into an existing viewport. Returns names of failures.
+async fn update_rap_tools(viewport: &mut InlineViewport) -> Result<Vec<String>, BoxError> {
     let config_path = user_config_path()?;
     let config = load_config(&config_path);
     let installable = config.installable_commands();
 
     if installable.is_empty() {
-        eprintln!(
-            "No RAP tools with recorded sources found in {}",
-            config_path.display()
-        );
-        return Ok(());
+        viewport.print_line_above(Line::from(Span::styled(
+            format!(
+                "No RAP tools with recorded sources in {}",
+                config_path.display()
+            ),
+            Style::default().fg(Color::DarkGray),
+        )))?;
+        return Ok(vec![]);
     }
-
-    cterm::enable_raw_mode()?;
-    let mut viewport = InlineViewport::new(2)?;
 
     viewport.print_line_above(Line::from(Span::styled(
         format!("Updating {} RAP tool(s)...", installable.len()),
@@ -229,7 +231,7 @@ pub async fn run_update() -> Result<(), BoxError> {
         )))?;
         viewport.draw(2, |_| {})?;
 
-        match run_cargo_install(&mut viewport, crate_name, git.as_deref(), path.as_deref()).await {
+        match run_cargo_install(viewport, crate_name, git.as_deref(), path.as_deref()).await {
             Ok(()) => {
                 viewport.print_line_above(Line::from(Span::styled(
                     format!("  ✓ {crate_name}"),
@@ -246,6 +248,45 @@ pub async fn run_update() -> Result<(), BoxError> {
         }
         viewport.draw(2, |_| {})?;
     }
+    Ok(failed)
+}
+
+/// Update the CLI binary itself, printing progress into an existing viewport.
+async fn update_cli(viewport: &mut InlineViewport) -> Result<(), BoxError> {
+    let (git, path) = detect_install_source()?;
+
+    viewport.print_line_above(Line::from(Span::styled(
+        "Updating infinity-agent-cli...",
+        Style::default().fg(Color::Yellow),
+    )))?;
+
+    if let Err(e) = run_cargo_install(
+        viewport,
+        "infinity-agent-cli",
+        git.as_deref(),
+        path.as_deref(),
+    )
+    .await
+    {
+        viewport.print_line_above(Line::from(Span::styled(
+            format!("✗ {e}"),
+            Style::default().fg(Color::Red),
+        )))?;
+        return Err(e);
+    }
+
+    viewport.print_line_above(Line::from(Span::styled(
+        "✓ infinity-agent-cli updated",
+        Style::default().fg(Color::Green),
+    )))?;
+    Ok(())
+}
+
+pub async fn run_update() -> Result<(), BoxError> {
+    cterm::enable_raw_mode()?;
+    let mut viewport = InlineViewport::new(2)?;
+
+    let failed = update_rap_tools(&mut viewport).await?;
 
     let summary = if failed.is_empty() {
         Span::styled("✓ All tools updated", Style::default().fg(Color::Green))
@@ -260,6 +301,76 @@ pub async fn run_update() -> Result<(), BoxError> {
     terminal::cleanup()?;
 
     if failed.is_empty() {
+        Ok(())
+    } else {
+        Err("some tools failed to update".into())
+    }
+}
+
+/// Detect how `infinity-agent-cli` was originally installed by reading
+/// `~/.cargo/.crates2.json`. Returns `(git, path)` — both None means registry.
+fn detect_install_source() -> Result<(Option<String>, Option<String>), BoxError> {
+    let home = dirs::home_dir().ok_or("could not determine home directory")?;
+    let crates_file = home.join(".cargo").join(".crates2.json");
+    let data = std::fs::read_to_string(&crates_file)
+        .map_err(|e| format!("failed to read {}: {e}", crates_file.display()))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&data).map_err(|e| format!("failed to parse .crates2.json: {e}"))?;
+    let installs = json
+        .get("installs")
+        .and_then(|v| v.as_object())
+        .ok_or("unexpected .crates2.json format")?;
+
+    let key = installs
+        .keys()
+        .find(|k| k.starts_with("infinity-agent-cli "))
+        .ok_or(
+            "infinity-agent-cli not found in .crates2.json — was it installed via cargo install?",
+        )?;
+
+    // Key format: "infinity-agent-cli 0.1.0 (source+url#hash)"
+    let source = key
+        .rsplit_once('(')
+        .and_then(|(_, rest)| rest.strip_suffix(')'))
+        .ok_or("could not parse source from .crates2.json key")?;
+
+    if let Some(url) = source.strip_prefix("git+") {
+        // Strip #commit-hash if present
+        let url = url.split_once('#').map_or(url, |(u, _)| u);
+        Ok((Some(url.to_string()), None))
+    } else if let Some(path) = source.strip_prefix("path+file://") {
+        Ok((None, Some(path.to_string())))
+    } else {
+        // registry install
+        Ok((None, None))
+    }
+}
+
+pub async fn run_self_update() -> Result<(), BoxError> {
+    cterm::enable_raw_mode()?;
+    let mut viewport = InlineViewport::new(2)?;
+
+    if let Err(e) = update_cli(&mut viewport).await {
+        viewport.draw(2, |_| {})?;
+        terminal::cleanup()?;
+        return Err(e);
+    }
+
+    let rap_failed = update_rap_tools(&mut viewport).await?;
+
+    let summary = if rap_failed.is_empty() {
+        Span::styled("✓ Everything updated", Style::default().fg(Color::Green))
+    } else {
+        Span::styled(
+            format!("✗ {} RAP tool(s) failed to update", rap_failed.len()),
+            Style::default().fg(Color::Red),
+        )
+    };
+    viewport.print_line_above(Line::from(summary))?;
+    viewport.draw(2, |_| {})?;
+    terminal::cleanup()?;
+
+    if rap_failed.is_empty() {
         Ok(())
     } else {
         Err("some tools failed to update".into())
