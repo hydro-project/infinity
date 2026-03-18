@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use sandbox_core::error::SandboxError;
 use sandbox_core::jj::{self, run_jj};
 use sandbox_core::sandbox::{ExecResult, SandboxBackend, SpawnedCommand};
-use sandbox_core::types::RepoState;
+use sandbox_core::types::{RepoState, SandboxMode};
 
 /// EFS-backed sandbox backend for remote (Lambda) mode.
 ///
@@ -115,6 +115,15 @@ impl SandboxBackend for EfsBackend {
     /// Create a temp dir and jj git clone from the EFS bare repo.
     /// If we have a previous bookmark, fetch and create a new working copy on top of it.
     async fn create_sandbox(&self, state: &RepoState) -> Result<PathBuf, SandboxError> {
+        let base_revision = match &state.mode {
+            SandboxMode::Jj { base_revision } => base_revision.as_str(),
+            _ => {
+                return Err(SandboxError::Other(
+                    "EFS backend only supports Jj mode".to_string(),
+                ));
+            }
+        };
+
         let tmp = tempfile::tempdir().map_err(SandboxError::Io)?;
         let sandbox_dir = tmp.keep();
 
@@ -122,7 +131,7 @@ impl SandboxBackend for EfsBackend {
             &state.remote_uri,
             &sandbox_dir,
             &state.bookmark,
-            state.base_revision.as_deref().unwrap(),
+            base_revision,
         )
         .await?;
 
@@ -176,7 +185,12 @@ impl SandboxBackend for EfsBackend {
     }
 
     /// Push the sandbox's working copy back to the EFS bare repo.
-    async fn push_sandbox(&self, sandbox_dir: &Path, group_id: &str) -> Result<(), SandboxError> {
+    async fn push_sandbox(
+        &self,
+        sandbox_dir: &Path,
+        group_id: &str,
+        _description: Option<&str>,
+    ) -> Result<(), SandboxError> {
         let bookmark = format!("sandbox-{group_id}");
         jj::jj_push_working_copy(sandbox_dir, &bookmark).await
     }

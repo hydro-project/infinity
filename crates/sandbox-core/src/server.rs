@@ -13,12 +13,13 @@ use tracing;
 
 use crate::callback::CallbackClient;
 use crate::error::SandboxError;
+use crate::git;
 use crate::jj::run_jj;
 use crate::metadata::MetadataStore;
 use crate::sandbox::SandboxBackend;
 use crate::types::{
     CloneRepoArgs, CreateFileArgs, DescribeOverallChangesArgs, EditFileArgs, ExecuteCommandArgs,
-    GrepArgs, ReadFileArgs, RepoState, SquashSandboxArgs,
+    GrepArgs, ReadFileArgs, RepoState, SandboxMode, SquashSandboxArgs,
 };
 
 #[derive(Debug, Deserialize)]
@@ -387,38 +388,56 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
     let path = std::path::PathBuf::from(&remote_uri);
 
     // Resolve the base revision to an absolute jj change_id.
-    let _ = crate::jj::run_jj(&path, &["workspace", "update-stale"]).await;
-    let rev_to_resolve = args
-        .base_thread_id
-        .as_ref()
-        .map(|id| format!("sandbox-{}", id));
-    let base_res =
-        crate::jj::jj_resolve_revision(&path, rev_to_resolve.as_deref().unwrap_or("@")).await;
-    let base_revision = if base_res.as_ref().is_err_and(|e| match e {
-        SandboxError::JujutsuError(e) if e.contains("It looks like this is a git repo.") => {
-            true
-        }
-        _ => false,
-    }) {
-        run_jj(&path, &["git", "init"]).await?;
-        crate::jj::jj_resolve_revision(&path, rev_to_resolve.as_deref().unwrap_or("@")).await?
+    let (repo_state, msg) = if path.join(".jj").is_dir() {
+        // Jujutsu repo — resolve base revision via jj.
+        let _ = crate::jj::run_jj(&path, &["workspace", "update-stale"]).await;
+        let rev_to_resolve = args
+            .base_thread_id
+            .as_ref()
+            .map(|id| format!("sandbox-{}", id));
+        let base_revision =
+            crate::jj::jj_resolve_revision(&path, rev_to_resolve.as_deref().unwrap_or("@")).await?;
+
+        let rs = RepoState {
+            group_id: invocation.group_id.clone(),
+            remote_uri: remote_uri.clone(),
+            bookmark: bookmark.clone(),
+            mode: SandboxMode::Jj { base_revision },
+            sandbox_path: None,
+        };
+        let msg = match rev_to_resolve {
+            Some(rev) => format!("Repository initialized on top of {rev}."),
+            None => "Repository initialized (using Jujutsu workspaces).".to_string(),
+        };
+        (rs, msg)
     } else {
-        base_res?
+        // Plain git repo — resolve base revision via git rev-parse.
+        let rev_to_resolve = args
+            .base_thread_id
+            .as_ref()
+            .map(|id| format!("sandbox-{}", id));
+        let rev = rev_to_resolve.as_deref().unwrap_or("HEAD");
+        let output = crate::git::run_git(&path, &["rev-parse", rev]).await?;
+        let base_revision = output.trim().to_string();
+
+        let rs = RepoState {
+            group_id: invocation.group_id.clone(),
+            remote_uri: remote_uri.clone(),
+            bookmark: bookmark.clone(),
+            mode: SandboxMode::Git { base_revision },
+            sandbox_path: None,
+        };
+        let msg = match rev_to_resolve {
+            Some(rev) => format!("Repository initialized on top of {rev}."),
+            None => "Repository initialized (using Git worktrees).".to_string(),
+        };
+        (rs, msg)
     };
 
-    let repo_state = RepoState {
-        group_id: invocation.group_id.clone(),
-        remote_uri: remote_uri.clone(),
-        bookmark: bookmark.clone(),
-        base_revision: Some(base_revision),
-    };
     state.metadata.put(&repo_state).await?;
 
     tracing::info!(group_id = %invocation.group_id, remote = %remote_uri, "repo cloned");
-    Ok(match rev_to_resolve {
-        Some(rev) => format!("Repository initialized on top of {rev}."),
-        None => "Repository initialized.".to_string(),
-    })
+    Ok(msg)
 }
 
 /// Run an action inside a sandbox: create → action → push → cleanup.
@@ -447,13 +466,18 @@ where
 
     let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;
 
-    if let Some(jj_description) = jj_description {
-        run_jj(&sandbox_dir, &["describe", "-m", jj_description]).await?;
+    if let Some(description) = jj_description {
+        if matches!(&repo_state.mode, SandboxMode::Jj { .. }) {
+            run_jj(&sandbox_dir, &["describe", "-m", description]).await?;
+        }
     }
 
     let result = action(sandbox_dir.clone()).await;
 
-    state.backend.push_sandbox(&sandbox_dir, group_id).await?;
+    state
+        .backend
+        .push_sandbox(&sandbox_dir, group_id, jj_description)
+        .await?;
 
     if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
         tracing::warn!("failed to cleanup sandbox: {e}");
@@ -607,18 +631,6 @@ async fn send_subscription_event<C: CallbackClient>(
     }
 }
 
-/// Push sandbox changes (extracted from `with_sandbox`).
-async fn push_sandbox_changes<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
-    state: &AppState<B, M, C>,
-    sandbox_dir: &std::path::Path,
-    group_id: &str,
-    _repo_state: &RepoState,
-) -> Result<(), SandboxError> {
-    state.backend.push_sandbox(sandbox_dir, group_id).await?;
-    tracing::info!(group_id = %group_id, "sandbox operation complete");
-    Ok(())
-}
-
 /// Top-level streaming handler for execute_command. Manages its own callbacks.
 async fn handle_execute_command_streaming<
     B: SandboxBackend + 'static,
@@ -676,12 +688,16 @@ async fn handle_execute_command_streaming_inner<
     }
 
     let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;
-    run_jj(&sandbox_dir, &["describe", "-m", &args.command]).await?;
+    if matches!(repo_state.mode, SandboxMode::Jj { .. }) {
+        run_jj(&sandbox_dir, &["describe", "-m", &args.command]).await?;
+    }
 
     // Check for early cancellation before spawning the process.
     if cancel_rx.try_recv().is_ok() {
-        let _ =
-            push_sandbox_changes(state, &sandbox_dir, &invocation.group_id, &repo_state).await;
+        let _ = state
+            .backend
+            .push_sandbox(&sandbox_dir, &invocation.group_id, None)
+            .await;
         if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
             tracing::warn!("failed to cleanup sandbox: {e}");
         }
@@ -705,9 +721,10 @@ async fn handle_execute_command_streaming_inner<
         Ok(s) => s,
         Err(e) => {
             state.in_flight.lock().await.remove(&invocation.id);
-            let _ =
-                push_sandbox_changes(state, &sandbox_dir, &invocation.group_id, &repo_state)
-                    .await;
+            let _ = state
+                .backend
+                .push_sandbox(&sandbox_dir, &invocation.group_id, None)
+                .await;
             if let Err(ce) = state.backend.cleanup_sandbox(&sandbox_dir).await {
                 tracing::warn!("failed to cleanup sandbox: {ce}");
             }
@@ -789,7 +806,7 @@ async fn handle_execute_command_streaming_inner<
                 #[cfg(unix)]
                 kill_process(child_pid);
                 // let text = format_cancel_output(&stdout_buf, &stderr_buf);
-                let _ = push_sandbox_changes(state, &sandbox_dir, &invocation.group_id, &repo_state).await;
+                let _ = state.backend.push_sandbox(&sandbox_dir, &invocation.group_id, None).await;
                 // TODO: determine if sending this would be in-spec
                 // send_subscription_event(&state.callback_client, invocation, &text, true).await;
                 if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
@@ -818,8 +835,10 @@ async fn handle_execute_command_streaming_inner<
         // Process finished within 5 seconds — return a normal tool_result.
         state.in_flight.lock().await.remove(&invocation.id);
         let text = format_exec_output(&stdout_buf, &stderr_buf, code);
-        let _ =
-            push_sandbox_changes(state, &sandbox_dir, &invocation.group_id, &repo_state).await;
+        let _ = state
+            .backend
+            .push_sandbox(&sandbox_dir, &invocation.group_id, None)
+            .await;
         send_tool_result(&state.callback_client, invocation, &text, None, false).await;
         if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
             tracing::warn!("failed to cleanup sandbox: {e}");
@@ -871,11 +890,10 @@ async fn handle_execute_command_streaming_inner<
                     accumulated.push_str("[cancelled]");
                 }
 
-                let _ = push_sandbox_changes(
-                    state,
+                let _ = state.backend.push_sandbox(
                     &sandbox_dir,
                     &invocation.group_id,
-                    &repo_state,
+                    None,
                 )
                 .await;
                 send_subscription_event(
@@ -916,11 +934,10 @@ async fn handle_execute_command_streaming_inner<
                             accumulated.push_str(&format!("\n[exit code: {code}]"));
                         }
 
-                        let _ = push_sandbox_changes(
-                            state,
+                        let _ = state.backend.push_sandbox(
                             &sandbox_dir,
                             &invocation.group_id,
-                            &repo_state,
+                            None,
                         )
                         .await;
                         send_subscription_event(
@@ -938,11 +955,10 @@ async fn handle_execute_command_streaming_inner<
                     None => {
                         state.in_flight.lock().await.remove(&invocation.id);
 
-                        let _ = push_sandbox_changes(
-                            state,
+                        let _ = state.backend.push_sandbox(
                             &sandbox_dir,
                             &invocation.group_id,
-                            &repo_state,
+                            None,
                         )
                         .await;
                         if !accumulated.is_empty() {
@@ -1225,29 +1241,48 @@ async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackC
 
     let from_bookmark = format!("sandbox-{}", args.from_thread_id);
 
-    with_sandbox(
-        state,
-        &invocation.group_id,
-        None,
-        |sandbox_dir| async move {
-            run_jj(
-                &sandbox_dir,
-                &[
-                    "squash",
-                    "--from",
-                    &from_bookmark,
-                    "--use-destination-message",
-                ],
-            )
-            .await?;
-            run_jj(&sandbox_dir, &["bookmark", "delete", &from_bookmark]).await?;
+    let repo_state = state
+        .metadata
+        .get(&invocation.group_id)
+        .await?
+        .ok_or_else(|| SandboxError::RepoNotFound(invocation.group_id.clone()))?;
+
+    match &repo_state.mode {
+        SandboxMode::Git { .. } => {
+            let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;
+            git::git_merge_branch(&sandbox_dir, &from_bookmark).await?;
+            let _ = git::git_delete_branch(&sandbox_dir, &from_bookmark).await;
             Ok((
                 format!("Squashed changes from {from_bookmark}."),
                 Some(format!("Squashed from {from_bookmark}")),
             ))
-        },
-    )
-    .await
+        }
+        SandboxMode::Jj { .. } => {
+            with_sandbox(
+                state,
+                &invocation.group_id,
+                None,
+                |sandbox_dir| async move {
+                    run_jj(
+                        &sandbox_dir,
+                        &[
+                            "squash",
+                            "--from",
+                            &from_bookmark,
+                            "--use-destination-message",
+                        ],
+                    )
+                    .await?;
+                    run_jj(&sandbox_dir, &["bookmark", "delete", &from_bookmark]).await?;
+                    Ok((
+                        format!("Squashed changes from {from_bookmark}."),
+                        Some(format!("Squashed from {from_bookmark}")),
+                    ))
+                },
+            )
+            .await
+        }
+    }
 }
 
 /// Build a pretty-printed unified diff for display in the CLI.

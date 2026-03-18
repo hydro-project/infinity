@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use sandbox_core::error::SandboxError;
 use sandbox_core::jj::{self, run_jj};
 use sandbox_core::sandbox::{ExecResult, SandboxBackend, SpawnedCommand};
-use sandbox_core::types::RepoState;
+use sandbox_core::types::{RepoState, SandboxMode};
 
 /// Cached sandbox entry: sandbox directory + the repo state that created it.
 struct CachedSandbox {
@@ -93,21 +93,39 @@ impl Drop for LocalBackend {
             let dir = &entry.dir;
             let branch = format!("sandbox-{group_id}");
             tracing::info!(group_id = %group_id, dir = %dir.display(), "dropping cached sandbox");
-            if jj_bookmark_is_empty_sync(dir, &branch) {
-                let _ = Command::new("jj")
-                    .args([
-                        "--config", "user.name=RAP Sandbox",
-                        "--config", "user.email=sandbox@rap",
-                        "abandon", &branch,
-                    ])
-                    .current_dir(dir)
-                    .status();
+            match &entry.state.mode {
+                SandboxMode::Jj { .. } => {
+                    if jj_bookmark_is_empty_sync(dir, &branch) {
+                        let _ = Command::new("jj")
+                            .args([
+                                "--config", "user.name=RAP Sandbox",
+                                "--config", "user.email=sandbox@rap",
+                                "abandon", &branch,
+                            ])
+                            .current_dir(dir)
+                            .status();
+                    }
+                    let _ = Command::new("jj")
+                        .args(["workspace", "forget"])
+                        .current_dir(dir)
+                        .status();
+                    let _ = std::fs::remove_dir_all(dir);
+                }
+                SandboxMode::Git { .. } => {
+                    let original_repo = PathBuf::from(&entry.state.remote_uri);
+                    let empty = git_branch_top_is_empty_sync(dir);
+                    let _ = Command::new("git")
+                        .args(["worktree", "remove", "--force", &dir.to_string_lossy()])
+                        .current_dir(&original_repo)
+                        .status();
+                    if empty {
+                        let _ = Command::new("git")
+                            .args(["branch", "-D", &branch])
+                            .current_dir(&original_repo)
+                            .status();
+                    }
+                }
             }
-            let _ = Command::new("jj")
-                .args(["workspace", "forget"])
-                .current_dir(dir)
-                .status();
-            let _ = std::fs::remove_dir_all(dir);
         }
     }
 }
@@ -125,6 +143,16 @@ fn jj_bookmark_is_empty_sync(dir: &Path, bookmark: &str) -> bool {
         .stderr(Stdio::null())
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
+        .unwrap_or(false)
+}
+
+/// Check if the top commit on a git branch is empty (sync, for Drop).
+fn git_branch_top_is_empty_sync(dir: &Path) -> bool {
+    Command::new("git")
+        .args(["diff", "--cached", "--quiet", "HEAD~1"])
+        .current_dir(dir)
+        .status()
+        .map(|s| s.success())
         .unwrap_or(false)
 }
 
@@ -165,22 +193,42 @@ impl SandboxBackend for LocalBackend {
                 && dir.exists()
             {
                 tracing::info!(group_id = %state.group_id, "reusing cached sandbox");
-                run_jj(&dir, &["workspace", "update-stale"]).await?;
+                match &state.mode {
+                    SandboxMode::Jj { .. } => {
+                        run_jj(&dir, &["workspace", "update-stale"]).await?;
+                    }
+                    SandboxMode::Git { .. } => {}
+                }
                 return Ok(dir);
             }
         }
 
-        let base_revision = state.base_revision.as_deref().unwrap();
-        let tmp = self.make_tempdir().map_err(SandboxError::Io)?;
-        let sandbox_dir = tmp.keep();
-
-        jj::jj_git_clone(
-            &state.remote_uri,
-            &sandbox_dir,
-            &state.bookmark,
-            base_revision,
-        )
-        .await?;
+        let sandbox_dir = match &state.mode {
+            SandboxMode::Jj { base_revision } => {
+                let tmp = self.make_tempdir().map_err(SandboxError::Io)?;
+                let sandbox_dir = tmp.keep();
+                jj::jj_git_clone(
+                    &state.remote_uri,
+                    &sandbox_dir,
+                    &state.bookmark,
+                    base_revision,
+                )
+                .await?;
+                sandbox_dir
+            }
+            SandboxMode::Git { base_revision } => {
+                let tmp = self.make_tempdir().map_err(SandboxError::Io)?;
+                let sandbox_dir = tmp.keep();
+                git::git_worktree_add(
+                    &PathBuf::from(&state.remote_uri),
+                    &sandbox_dir,
+                    &state.bookmark,
+                    Some(base_revision),
+                )
+                .await?;
+                sandbox_dir
+            }
+        };
 
         // Store in cache for future reuse.
         {
@@ -450,9 +498,23 @@ impl SandboxBackend for LocalBackend {
     }
 
     /// Push the sandbox's working copy back to the local git remote.
-    async fn push_sandbox(&self, sandbox_dir: &Path, group_id: &str) -> Result<(), SandboxError> {
-        let bookmark = format!("sandbox-{group_id}");
-        jj::jj_push_working_copy(sandbox_dir, &bookmark).await
+    async fn push_sandbox(
+        &self,
+        sandbox_dir: &Path,
+        group_id: &str,
+        description: Option<&str>,
+    ) -> Result<(), SandboxError> {
+        let state = {
+            let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            cache.get(group_id).map(|e| e.state.clone())
+        };
+        match state.as_ref().map(|s| &s.mode) {
+            Some(SandboxMode::Git { .. }) => git::git_amend_all(sandbox_dir, description).await,
+            Some(SandboxMode::Jj { .. }) | None => {
+                let bookmark = format!("sandbox-{group_id}");
+                jj::jj_push_working_copy(sandbox_dir, &bookmark).await
+            }
+        }
     }
 
     /// No-op for the local backend — sandboxes are cached and cleaned up
@@ -480,12 +542,24 @@ impl SandboxBackend for LocalBackend {
         let branch = format!("sandbox-{group_id}");
         tracing::info!(group_id = %group_id, dir = %dir.display(), "permanently cleaning up sandbox");
 
-        if jj::jj_bookmark_is_empty(dir, &branch).await {
-            let _ = run_jj(dir, &["abandon", &branch]).await;
-        }
-        let _ = run_jj(dir, &["workspace", "forget"]).await;
-        if dir.exists() {
-            std::fs::remove_dir_all(dir).map_err(SandboxError::Io)?;
+        match &entry.state.mode {
+            SandboxMode::Jj { .. } => {
+                if jj::jj_bookmark_is_empty(dir, &branch).await {
+                    let _ = run_jj(dir, &["abandon", &branch]).await;
+                }
+                let _ = run_jj(dir, &["workspace", "forget"]).await;
+                if dir.exists() {
+                    std::fs::remove_dir_all(dir).map_err(SandboxError::Io)?;
+                }
+            }
+            SandboxMode::Git { .. } => {
+                let original_repo = PathBuf::from(&entry.state.remote_uri);
+                let empty = git::git_branch_top_is_empty(dir).await;
+                let _ = git::git_worktree_remove(&original_repo, dir).await;
+                if empty {
+                    let _ = git::git_delete_branch(&original_repo, &branch).await;
+                }
+            }
         }
 
         Ok(())
