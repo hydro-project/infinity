@@ -4,7 +4,7 @@ This repo contains three components:
 
 1. **Infinity Code** — A coding agent CLI with threads, sandboxes, and persistence
 2. **Infinity Agents** — The core Rust runtime for building RAP agents (local CLI + AWS Lambda)
-3. **Reactive Agent Protocol (RAP)** — An async, event-driven protocol for agent-tool communication
+3. [**Reactive Agent Protocol (RAP)**](docs/) — An async, event-driven protocol for agent-tool communication
 
 ---
 
@@ -15,7 +15,7 @@ A coding agent built with RAP that you can run in your terminal today.
 ### Features
 
 - **Agent threads** — The agent can spin up subthreads that work on tasks concurrently while the parent continues to run. Subthreads send updates to the parent in real-time.
-- **Sandboxes** — Uses macOS sandboxing APIs to restrict filesystem writes and guard against rogue commands. Each sandbox is a [Jujutsu](https://jj-vcs.dev) workspace, so agent work never touches your repo folder — it shows up as a branch you can inspect and squash. Supports macOS sandbox APIs and Linux via [bubblewrap](https://github.com/containers/bubblewrap).
+- **Sandboxes** — Uses macOS sandboxing APIs to restrict filesystem writes and guard against rogue commands. Each sandbox is an isolated workspace (Jujutsu workspace or git worktree) so agent work never touches your repo folder — it shows up as a branch you can inspect and merge. Supports macOS sandbox APIs and Linux via [bubblewrap](https://github.com/containers/bubblewrap).
 - **Persistence** — Full conversation context is persisted to local disk. You can shut down the CLI, boot it back up, and continue with all your existing context.
 - **MCP support** — Load any MCP server as a tool set via config.
 
@@ -23,7 +23,6 @@ A coding agent built with RAP that you can run in your terminal today.
 
 You'll need:
 - [Rust](https://rustup.rs)
-- [Jujutsu](https://docs.jj-vcs.dev/latest) (your repo can be a regular Git repo)
 - [Ripgrep](https://github.com/BurntSushi/ripgrep) (`brew install ripgrep`)
 
 ```bash
@@ -35,19 +34,45 @@ infinity rap install --user --git https://github.com/hydro-project/infinity --cr
 infinity update
 ```
 
-Then, in any Git repo:
+### Sandbox Modes
+
+The sandbox automatically detects your repository type and uses the appropriate isolation strategy. In all modes, the agent never writes to your working directory — changes appear on a branch or bookmark you can inspect and merge.
+
+#### Jujutsu (default for repos with `.jj`)
+
+If your repo has a `.jj` directory, the sandbox creates isolated [Jujutsu workspaces](https://jj-vcs.dev) via `jj workspace add`. Each thread gets its own workspace with a bookmark named `sandbox-{thread_id}`.
+
+Requires [Jujutsu](https://docs.jj-vcs.dev/latest) installed (`brew install jj`). Your repo can be a regular Git repo — just run `jj git init --colocate` to add jj on top.
 
 ```bash
 infinity
 
-# do your task...
-
 # Inspect what the agent did:
+jj log -r 'bookmarks("sandbox-")'
 jj show sandbox-...
 
 # Incorporate changes into your working copy:
 jj squash --from sandbox-...
 ```
+
+#### Git (plain git repos without jj)
+
+For git repos without a `.jj` directory, the sandbox uses [git worktrees](https://git-scm.com/docs/git-worktree). Each thread gets a worktree on a branch named `sandbox-{thread_id}`.
+
+No extra dependencies beyond git.
+
+```bash
+infinity
+
+# Inspect what the agent did:
+git log sandbox-...
+git diff HEAD...sandbox-...
+
+# Incorporate changes into your working copy:
+git merge sandbox-...
+```
+
+### MCP Servers
 
 Infinity Code supports MCP servers. For example, you can add an MCP server. Edit `~/.infinity/rap.json` (or `.infinity/rap.json` for local config):
 ```
