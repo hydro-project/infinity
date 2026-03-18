@@ -131,12 +131,10 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
     cterm::enable_raw_mode()?;
     let mut viewport = InlineViewport::new(2)?;
 
-    viewport.print_line_above(
-        Line::from(Span::styled(
-            format!("Installing {}...", args.crate_name),
-            Style::default().fg(Color::Yellow),
-        )),
-    )?;
+    viewport.print_line_above(Line::from(Span::styled(
+        format!("Installing {}...", args.crate_name),
+        Style::default().fg(Color::Yellow),
+    )))?;
 
     if let Err(e) = run_cargo_install(
         &mut viewport,
@@ -146,12 +144,10 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
     )
     .await
     {
-        viewport.print_line_above(
-            Line::from(Span::styled(
-                format!("✗ {e}"),
-                Style::default().fg(Color::Red),
-            )),
-        )?;
+        viewport.print_line_above(Line::from(Span::styled(
+            format!("✗ {e}"),
+            Style::default().fg(Color::Red),
+        )))?;
         viewport.draw(2, |_| {})?;
         terminal::cleanup()?;
         return Err(e);
@@ -173,12 +169,10 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
         config
             .tool_sets
             .retain(|ts| ts.id() != Some(&args.crate_name));
-        viewport.print_line_above(
-            Line::from(Span::styled(
-                format!("Replacing existing entry for {}", args.crate_name),
-                Style::default().fg(Color::Yellow),
-            )),
-        )?;
+        viewport.print_line_above(Line::from(Span::styled(
+            format!("Replacing existing entry for {}", args.crate_name),
+            Style::default().fg(Color::Yellow),
+        )))?;
     }
     config.add_installed_command(
         args.crate_name.clone(),
@@ -193,16 +187,14 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
     );
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
 
-    viewport.print_line_above(
-        Line::from(Span::styled(
-            format!(
-                "✓ Installed and registered {} in {}",
-                args.crate_name,
-                config_path.display()
-            ),
-            Style::default().fg(Color::Green),
-        )),
-    )?;
+    viewport.print_line_above(Line::from(Span::styled(
+        format!(
+            "✓ Installed and registered {} in {}",
+            args.crate_name,
+            config_path.display()
+        ),
+        Style::default().fg(Color::Green),
+    )))?;
     viewport.draw(2, |_| {})?;
     terminal::cleanup()?;
     Ok(())
@@ -224,39 +216,31 @@ pub async fn run_update() -> Result<(), BoxError> {
     cterm::enable_raw_mode()?;
     let mut viewport = InlineViewport::new(2)?;
 
-    viewport.print_line_above(
-        Line::from(Span::styled(
-            format!("Updating {} RAP tool(s)...", installable.len()),
-            Style::default().fg(Color::Yellow),
-        )),
-    )?;
+    viewport.print_line_above(Line::from(Span::styled(
+        format!("Updating {} RAP tool(s)...", installable.len()),
+        Style::default().fg(Color::Yellow),
+    )))?;
 
     let mut failed = Vec::new();
     for (_command, crate_name, git, path) in &installable {
-        viewport.print_line_above(
-            Line::from(Span::styled(
-                format!("→ Updating {crate_name}..."),
-                Style::default().fg(Color::Cyan),
-            )),
-        )?;
+        viewport.print_line_above(Line::from(Span::styled(
+            format!("→ Updating {crate_name}..."),
+            Style::default().fg(Color::Cyan),
+        )))?;
         viewport.draw(2, |_| {})?;
 
         match run_cargo_install(&mut viewport, crate_name, git.as_deref(), path.as_deref()).await {
             Ok(()) => {
-                viewport.print_line_above(
-                    Line::from(Span::styled(
-                        format!("  ✓ {crate_name}"),
-                        Style::default().fg(Color::Green),
-                    )),
-                )?;
+                viewport.print_line_above(Line::from(Span::styled(
+                    format!("  ✓ {crate_name}"),
+                    Style::default().fg(Color::Green),
+                )))?;
             }
             Err(e) => {
-                viewport.print_line_above(
-                    Line::from(Span::styled(
-                        format!("  ✗ {crate_name}: {e}"),
-                        Style::default().fg(Color::Red),
-                    )),
-                )?;
+                viewport.print_line_above(Line::from(Span::styled(
+                    format!("  ✗ {crate_name}: {e}"),
+                    Style::default().fg(Color::Red),
+                )))?;
                 failed.push(crate_name.clone());
             }
         }

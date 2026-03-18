@@ -61,9 +61,9 @@ pub struct CreateFileArgs {
     pub content: String,
 }
 
-/// Input for the describe_edits tool.
+/// Input for the describe_overall_changes tool.
 #[derive(Debug, Deserialize)]
-pub struct DescribeEditsArgs {
+pub struct DescribeOverallChangesArgs {
     /// A description of the edits that were made.
     pub message: String,
 }
