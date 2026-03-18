@@ -22,7 +22,6 @@ mod set_title_tool;
 mod sleep_tools;
 mod terminal;
 mod text_input;
-mod token_usage;
 
 use infinity_agent_core::batch_processor::DisplayEvent;
 use infinity_agent_core::event_processor;
@@ -168,7 +167,6 @@ async fn run_agent<Mdl>(
 ) -> Result<(), BoxError>
 where
     Mdl: CompletionModel + 'static,
-    Mdl::StreamingResponse: token_usage::WithTotalTokens,
 {
     std::fs::create_dir_all(".infinity").ok();
 
@@ -371,40 +369,21 @@ where
         .await;
     });
 
-    let (new_session_tx, mut new_session_rx) = mpsc::unbounded_channel::<String>();
-    let (load_session_tx, mut load_session_rx) = mpsc::unbounded_channel::<(String, usize)>();
+    let (load_session_tx, mut load_session_rx) = mpsc::unbounded_channel::<String>();
     let (model_switch_tx, mut model_switch_rx) = mpsc::unbounded_channel::<usize>();
-
-    // Track the active thread_id so we can save the latest on shutdown.
-    let active_thread_id = std::sync::Arc::new(std::sync::Mutex::new(thread_id.clone()));
-    let active_thread_id_for_new = active_thread_id.clone();
-    let active_thread_id_for_load = active_thread_id.clone();
-
-    // Listen for new-session signals from the terminal (Ctrl+N).
-    tokio::spawn(async move {
-        while let Some(new_id) = new_session_rx.recv().await {
-            *active_thread_id_for_new.lock().unwrap() = new_id;
-        }
-    });
+    let (session_update_tx, mut session_update_rx) = mpsc::unbounded_channel::<(String, usize)>();
 
     // Listen for load-session requests from the terminal (Ctrl+L → pick).
     let load_display_tx = display_tx.clone();
     let load_conversation_store = conversation_store.clone();
     tokio::spawn(async move {
-        while let Some((tid, tokens)) = load_session_rx.recv().await {
-            *active_thread_id_for_load.lock().unwrap() = tid.clone();
+        while let Some(tid) = load_session_rx.recv().await {
             // Replay the selected session's history to the display.
             if let Ok((history, _)) = load_conversation_store
                 .load_history_with_ancestors(&tid)
                 .await
             {
-                replay_history(
-                    &load_display_tx,
-                    &load_conversation_store,
-                    &tid,
-                    &history,
-                    tokens,
-                );
+                replay_history(&load_display_tx, &load_conversation_store, &tid, &history);
             }
         }
     });
@@ -425,18 +404,30 @@ where
 
     let sessions_list = session_store.sessions.clone();
 
+    // Persist session store on every ResponseDone (prefix=None).
+    let session_update_conversation_store = conversation_store.clone();
+    tokio::spawn(async move {
+        while let Some((tid, tokens)) = session_update_rx.recv().await {
+            let title = session_update_conversation_store.get_title(&tid);
+            session_store.upsert(&tid, tokens, title);
+            if let Err(e) = session_store.save(sessions_path) {
+                tracing::warn!("failed to save sessions: {}", e);
+            }
+        }
+    });
+
     let result = terminal::run(
         input_tx,
         display_rx,
         thread_id,
         initial_model_name,
         initial_context_window,
-        new_session_tx,
         sessions_list,
         load_session_tx,
         model_switch_tx,
         models,
         initial_message,
+        session_update_tx,
     )
     .await;
     agent_handle.abort();
@@ -457,30 +448,16 @@ where
         let _ = child.wait();
     }
 
-    // Persist session metadata on shutdown (conversation history is saved incrementally per-thread).
-    let final_thread_id = active_thread_id.lock().unwrap().clone();
-    let final_tokens = match &result {
-        Ok(tokens) => *tokens,
-        Err(_) => 0,
-    };
-    let final_title = conversation_store.get_title(&final_thread_id);
-    // Update the sessions list with the current session's state.
-    session_store.upsert(&final_thread_id, final_tokens, final_title);
-    if let Err(e) = session_store.save(sessions_path) {
-        eprintln!("Warning: failed to save sessions: {}", e);
-    }
-
-    result.map(|_| ())
+    result
 }
 
 // ── History replay helper ───────────────────────────────────────────────────
 
-fn replay_history<R: GetTokenUsage + token_usage::WithTotalTokens>(
+fn replay_history<R: GetTokenUsage>(
     display_tx: &mpsc::UnboundedSender<DisplayEvent<R>>,
     conversation_store: &InMemoryConversationStore,
     thread_id: &str,
     history: &[Message],
-    initial_tokens: usize,
 ) {
     for message in history {
         match message {
@@ -521,10 +498,7 @@ fn replay_history<R: GetTokenUsage + token_usage::WithTotalTokens>(
         }
     }
 
-    let _ = display_tx.send(DisplayEvent::ResponseDone(
-        None,
-        Some(R::with_total_tokens(initial_tokens)),
-    ));
+    let _ = display_tx.send(DisplayEvent::ResponseDone(None, None));
 }
 
 fn is_user_text_input(msg: &InputMessage) -> bool {
