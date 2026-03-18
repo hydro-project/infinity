@@ -70,13 +70,13 @@ pub async fn run<R>(
     mut thread_id: String,
     mut model_name: String,
     mut context_window: usize,
-    new_session_tx: mpsc::UnboundedSender<String>,
     sessions: Vec<SessionEntry>,
-    load_session_tx: mpsc::UnboundedSender<(String, usize)>,
+    load_session_tx: mpsc::UnboundedSender<String>,
     model_switch_tx: mpsc::UnboundedSender<usize>,
     available_models: Vec<crate::model_picker::ModelEntry>,
     initial_message: Option<String>,
-) -> Result<usize, BoxError>
+    session_update_tx: mpsc::UnboundedSender<(String, usize)>,
+) -> Result<(), BoxError>
 where
     R: GetTokenUsage,
 {
@@ -240,6 +240,7 @@ where
                         if prefix.is_none() {
                             if let Some(r) = r {
                                 total_tokens_used = r.token_usage().map_or(0, |u| u.total_tokens as usize);
+                                let _ = session_update_tx.send((thread_id.clone(), total_tokens_used));
                             }
                             if spinner_state != Some(SpinnerState::WaitingToolCall) {
                                 spinner_state = None;
@@ -403,7 +404,7 @@ where
                                                     thread_id = selected_thread.clone();
                                                     total_tokens_used = selected_tokens;
                                                     set_terminal_title(entry.title.as_deref().unwrap_or(""));
-                                                    let _ = load_session_tx.send((selected_thread.clone(), selected_tokens));
+                                                    let _ = load_session_tx.send(selected_thread.clone()); // request conversation replay
                                                     viewport.print_line_above(Line::from(vec![
                                                         Span::styled(
                                                             format!("✦ Loaded session — thread {}", selected_thread),
@@ -498,11 +499,10 @@ where
                                             }
                                             Some("/quit") => {
                                                 cleanup()?;
-                                                return Ok(total_tokens_used);
+                                                return Ok(());
                                             }
                                             Some("/new") => {
                                                 let new_id = uuid::Uuid::new_v4().to_string();
-                                                let _ = new_session_tx.send(new_id.clone());
                                                 thread_id = new_id.clone();
                                                 set_terminal_title("");
                                                 viewport.print_line_above(Line::from(vec![
