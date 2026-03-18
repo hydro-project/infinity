@@ -6,6 +6,8 @@ members = [
     "crates/sandbox-core",
     "crates/sandbox-local",
     "crates/sandbox-remote",
+    "crates/rap-protocol",
+    "crates/rap-steering-server",
 ]
 resolver = "2"
 
