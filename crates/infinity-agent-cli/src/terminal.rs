@@ -54,6 +54,16 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 const VIEWPORT_HEIGHT: u16 = 2;
 
+/// Slash commands available for autocomplete hints.
+const SLASH_COMMANDS: &[(&str, &str)] = &[
+    ("/help", "Show help"),
+    ("/quit", "Exit"),
+    ("/new", "New session"),
+    ("/load", "Load session"),
+    ("/model", "Switch model"),
+    ("/compact", "Trigger compaction"),
+];
+
 pub async fn run<R>(
     input_tx: mpsc::UnboundedSender<(InputMessage, String)>,
     mut display_rx: mpsc::UnboundedReceiver<DisplayEvent<R>>,
@@ -112,6 +122,8 @@ where
     let mut thread_buffers: BTreeMap<String, String> = BTreeMap::new();
     let mut thread_tool_call_active: HashSet<String> = HashSet::new();
     let mut thinking_text_buffer = String::new();
+    // Tab-completion state: (prefix that was typed, current selection index)
+    let mut tab_complete: Option<(String, usize)> = None;
 
     draw_viewport(
         &mut viewport,
@@ -126,6 +138,7 @@ where
         context_window,
         &thread_buffers,
         &thinking_text_buffer,
+        &tab_complete,
     )?;
 
     // Send the initial message if provided via --message/-m.
@@ -348,7 +361,7 @@ where
                         ]))?;
                     }
                 }
-                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer)?;
+                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete)?;
             }
 
             _ = poll_crossterm_event() => {
@@ -431,8 +444,29 @@ where
                                     }
                                 }
                                 UiMode::Normal => {
+                                    // Handle Tab for autocomplete cycling.
+                                    if key.code == KeyCode::Tab {
+                                        let prefix = tab_complete.as_ref().map(|(p, _)| p.clone())
+                                            .unwrap_or_else(|| input.text().trim().to_string());
+                                        if prefix.starts_with('/') && !prefix.contains(' ') && !prefix.is_empty() {
+                                            let matches: Vec<&str> = SLASH_COMMANDS
+                                                .iter()
+                                                .filter(|(cmd, _)| cmd.starts_with(&prefix))
+                                                .map(|(cmd, _)| *cmd)
+                                                .collect();
+                                            if !matches.is_empty() {
+                                                let idx = tab_complete.as_ref().map(|(_, i)| (i + 1) % matches.len()).unwrap_or(0);
+                                                input.set_text(matches[idx]);
+                                                tab_complete = Some((prefix, idx));
+                                            }
+                                        }
+                                    } else {
                                     // Let the input area handle the keystroke first.
-                                    if matches!(input.handle_keystroke(key), KeyResult::NotCaptured) {
+                                    let captured = input.handle_keystroke(key);
+                                    if matches!(captured, KeyResult::Captured) {
+                                        tab_complete = None;
+                                    }
+                                    if matches!(captured, KeyResult::NotCaptured) {
                                         // Map both Ctrl shortcuts and slash commands to a
                                         // canonical command, then handle in one place.
                                         let (command, user_text): (Option<&str>, Option<String>) = match (key.code, key.modifiers) {
@@ -443,6 +477,7 @@ where
                                             (KeyCode::Char('n'), m) if m.contains(KeyModifiers::CONTROL) => (Some("/new"), None),
                                             (KeyCode::Char('k'), m) if m.contains(KeyModifiers::CONTROL) => (Some("/compact"), None),
                                             (KeyCode::Enter, _) if !input.is_empty() => {
+                                                tab_complete = None;
                                                 let trimmed = input.take_text().trim().to_string();
                                                 match trimmed.as_str() {
                                                     "/help" | "/h" => (Some("/help"), None),
@@ -517,6 +552,7 @@ where
                                             }
                                         }
                                     }
+                                    }
                                 }
                             }
                         }
@@ -529,7 +565,7 @@ where
                 }
 
                 if got_resize || any_change || spinner_state.is_some() {
-                    draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer)?;
+                    draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete)?;
                 }
             }
         }
@@ -632,6 +668,7 @@ fn draw_viewport(
     context_window: usize,
     thread_buffers: &BTreeMap<String, String>,
     thinking_text: &str,
+    tab_complete: &Option<(String, usize)>,
 ) -> Result<(), BoxError> {
     let max_context = context_window;
     let current_width = viewport.area().width;
@@ -687,7 +724,38 @@ fn draw_viewport(
         UiMode::Normal => (input.preferred_height(current_width), false),
     };
 
-    let mut desired_lines = 1 + thread_rows + 1 + content_height + 1; // gap + threads + border + content + status
+    // Compute autocomplete hints for slash commands.
+    let (autocomplete, ac_selected): (Vec<(&str, &str)>, Option<usize>) =
+        if matches!(ui_mode, UiMode::Normal) {
+            let prefix = tab_complete
+                .as_ref()
+                .map(|(p, _)| p.as_str())
+                .unwrap_or_else(|| input.text().trim());
+            if prefix.starts_with('/') && !prefix.contains(' ') && !prefix.is_empty() {
+                let matches: Vec<(&str, &str)> = SLASH_COMMANDS
+                    .iter()
+                    .filter(|(cmd, _)| cmd.starts_with(prefix))
+                    .copied()
+                    .collect();
+                let sel = tab_complete.as_ref().map(|(_, i)| *i);
+                (matches, sel)
+            } else {
+                (Vec::new(), None)
+            }
+        } else {
+            (Vec::new(), None)
+        };
+    // Layout autocomplete as a table: multiple columns per row.
+    const AC_COL_WIDTH: usize = 30; // fixed width per command cell
+    let ac_cols = (current_width as usize / AC_COL_WIDTH).max(1);
+    let ac_data_rows = (autocomplete.len() + ac_cols - 1) / ac_cols;
+    let autocomplete_rows = if autocomplete.is_empty() {
+        0u16
+    } else {
+        ac_data_rows as u16 + 1
+    }; // +1 for blank line
+
+    let mut desired_lines = 1 + thread_rows + 1 + autocomplete_rows + content_height + 1; // gap + threads + border + autocomplete + content + status
     if spinner_state.is_some() {
         desired_lines += 1;
     }
@@ -705,6 +773,9 @@ fn draw_viewport(
             constraints.push(Constraint::Length(thread_rows));
         }
         constraints.push(Constraint::Length(1)); // border
+        if autocomplete_rows > 0 {
+            constraints.push(Constraint::Length(autocomplete_rows));
+        }
         constraints.push(Constraint::Min(1)); // content (input or picker)
         constraints.push(Constraint::Length(1)); // status
 
@@ -737,6 +808,51 @@ fn draw_viewport(
         // Border
         frame.render_widget(Block::default().borders(Borders::TOP), areas[idx]);
         idx += 1;
+
+        // Autocomplete hints (table layout)
+        if autocomplete_rows > 0 {
+            let ac_area = areas[idx];
+            idx += 1;
+            for row_i in 0..ac_data_rows {
+                if (row_i as u16) >= ac_area.height {
+                    break;
+                }
+                let rect = ratatui::layout::Rect {
+                    x: ac_area.x,
+                    y: ac_area.y + row_i as u16,
+                    width: ac_area.width,
+                    height: 1,
+                };
+                let mut spans = Vec::new();
+                for col_i in 0..ac_cols {
+                    let entry_idx = row_i * ac_cols + col_i;
+                    if entry_idx >= autocomplete.len() {
+                        break;
+                    }
+                    let (cmd, desc) = autocomplete[entry_idx];
+                    let selected = ac_selected == Some(entry_idx);
+                    let cmd_w = 10;
+                    let desc_w = AC_COL_WIDTH - cmd_w;
+                    let cmd_style = if selected {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .bg(Color::DarkGray)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Cyan)
+                    };
+                    let desc_style = if selected {
+                        Style::default().fg(Color::White).bg(Color::DarkGray)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    };
+                    spans.push(Span::styled(format!("{:<cmd_w$}", cmd), cmd_style));
+                    spans.push(Span::styled(format!("{:<desc_w$}", desc), desc_style));
+                }
+                frame.render_widget(Line::from(spans), rect);
+            }
+            // blank line is the last row of ac_area, left empty
+        }
 
         // Content area — either session picker, model picker, or input
         if is_picker {
