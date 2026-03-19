@@ -36,7 +36,7 @@ pub trait ConversationStore: Send + Sync + Clone {
         {
             let mut combined = vec![Message::Assistant {
                 id: None,
-                content: OneOrMany::one(AssistantContent::text(&format!(
+                content: OneOrMany::one(AssistantContent::text(format!(
                     "[Compacted conversation summary]\n{}",
                     summary
                 ))),
@@ -72,7 +72,7 @@ pub trait ConversationStore: Send + Sync + Clone {
             // Prepend the compaction summary (covers all ancestors before idx + ancestor idx's messages up to compacted_up_to)
             combined.push(Message::Assistant {
                 id: None,
-                content: OneOrMany::one(AssistantContent::text(&format!(
+                content: OneOrMany::one(AssistantContent::text(format!(
                     "[Compacted conversation summary]\n{}",
                     summary
                 ))),

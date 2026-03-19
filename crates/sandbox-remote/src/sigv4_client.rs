@@ -45,7 +45,7 @@ impl CallbackClient for SigV4CallbackClient {
         let parsed = url::Url::parse(url)?;
         let host = parsed
             .host_str()
-            .ok_or_else(|| "callback URL missing host")?
+            .ok_or("callback URL missing host")?
             .to_string();
 
         let creds = self.credentials_provider.provide_credentials().await?;

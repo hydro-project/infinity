@@ -30,6 +30,12 @@ pub struct RenderResult {
     pub cursor_position: Position,
 }
 
+impl Default for TextInput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TextInput {
     pub fn new() -> Self {
         Self {
@@ -411,10 +417,11 @@ impl TextInput {
 
         // If the cursor sits past a full last line, it will render on an
         // extra row — make sure we reserve space for it.
-        if let Some(last) = lines.last() {
-            if last.chars().count() >= inner_w as usize && self.cursor == self.buf.len() {
-                text_rows += 1;
-            }
+        if let Some(last) = lines.last()
+            && last.chars().count() >= inner_w as usize
+            && self.cursor == self.buf.len()
+        {
+            text_rows += 1;
         }
 
         PAD_Y * 2 + text_rows
@@ -480,16 +487,14 @@ impl TextInput {
         // Cursor is past all wrapped content — place it at col 0 of the
         // next row (happens when the last line is exactly full) or at the
         // end of the last line.
-        if !found_cursor {
-            if let Some(last) = lines.last() {
-                let last_full = last.chars().count() >= inner.width as usize;
-                if last_full && self.cursor == self.buf.len() {
-                    cursor_row = lines.len() as u16;
-                    cursor_col = 0;
-                } else {
-                    cursor_row = lines.len().saturating_sub(1) as u16;
-                    cursor_col = last.chars().count() as u16;
-                }
+        if !found_cursor && let Some(last) = lines.last() {
+            let last_full = last.chars().count() >= inner.width as usize;
+            if last_full && self.cursor == self.buf.len() {
+                cursor_row = lines.len() as u16;
+                cursor_col = 0;
+            } else {
+                cursor_row = lines.len().saturating_sub(1) as u16;
+                cursor_col = last.chars().count() as u16;
             }
         }
 
