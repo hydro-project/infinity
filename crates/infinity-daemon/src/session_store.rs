@@ -1,0 +1,127 @@
+use std::{collections::HashMap, path::PathBuf};
+
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SessionEntry {
+    pub total_tokens_used: usize,
+    pub last_updated: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    pub cwd: PathBuf,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SessionStore {
+    pub sessions: HashMap<String, SessionEntry>,
+    #[serde(skip)]
+    path: String,
+    #[serde(skip)]
+    change_tx: Option<mpsc::UnboundedSender<String>>,
+}
+
+impl SessionStore {
+    pub fn load(path: &str, change_tx: mpsc::UnboundedSender<String>) -> Self {
+        let sessions = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| {
+                // Try new HashMap format first
+                if let Ok(store) = serde_json::from_str::<Self>(&s) {
+                    return Some(store.sessions);
+                }
+                // Fall back to legacy Vec format
+                #[derive(Deserialize)]
+                struct LegacyEntry {
+                    thread_id: String,
+                    total_tokens_used: usize,
+                    last_updated: String,
+                    #[serde(default)]
+                    title: Option<String>,
+                }
+                #[derive(Deserialize)]
+                struct LegacyStore {
+                    sessions: Vec<LegacyEntry>,
+                }
+                if let Ok(legacy) = serde_json::from_str::<LegacyStore>(&s) {
+                    let map = legacy
+                        .sessions
+                        .into_iter()
+                        .map(|e| {
+                            (
+                                e.thread_id,
+                                SessionEntry {
+                                    total_tokens_used: e.total_tokens_used,
+                                    last_updated: e.last_updated,
+                                    title: e.title,
+                                    cwd: std::env::current_dir().unwrap(),
+                                },
+                            )
+                        })
+                        .collect();
+                    return Some(map);
+                }
+                None
+            })
+            .unwrap_or_default();
+
+        Self {
+            sessions,
+            path: path.to_string(),
+            change_tx: Some(change_tx),
+        }
+    }
+
+    pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(&self.path, json)?;
+        Ok(())
+    }
+
+    fn notify(&self, session_id: &str) {
+        if let Some(ref tx) = self.change_tx {
+            let _ = tx.send(session_id.to_string());
+        }
+    }
+
+    pub fn update(&mut self, session_id: &str, total_tokens_used: usize, title: Option<String>) {
+        let now = Utc::now().to_rfc3339();
+        let entry = self.sessions.get_mut(session_id).unwrap();
+        entry.total_tokens_used = total_tokens_used;
+        entry.last_updated = now;
+        if title.is_some() {
+            entry.title = title;
+        }
+        self.notify(session_id);
+    }
+
+    pub fn create(&mut self, session_id: &str, cwd: PathBuf) {
+        self.sessions.insert(
+            session_id.to_string(),
+            SessionEntry {
+                total_tokens_used: 0,
+                last_updated: Utc::now().to_rfc3339(),
+                title: None,
+                cwd,
+            },
+        );
+    }
+
+    pub fn get_cwd(&self, session_id: &str) -> &PathBuf {
+        &self.sessions.get(session_id).unwrap().cwd
+    }
+
+    pub fn set_title(&mut self, session_id: &str, title: &str) {
+        if let Some(entry) = self.sessions.get_mut(session_id) {
+            entry.title = Some(title.to_string());
+            self.notify(session_id);
+        } else {
+            self.update(session_id, 0, Some(title.to_string()));
+        }
+    }
+
+    pub fn get_title(&self, session_id: &str) -> Option<String> {
+        self.sessions.get(session_id).and_then(|e| e.title.clone())
+    }
+}

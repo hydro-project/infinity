@@ -3,13 +3,9 @@ use crate::{
     inline_viewport::{InlineViewport, ResetScrollRegion},
     model_picker::{ModelPicker, ModelPickerResult, ModelPickerWidget},
     session_picker::{SessionPicker, SessionPickerResult, SessionPickerWidget},
-    session_store::SessionEntry,
     text_input::{TextInput, TextInputWidget},
 };
 use infinity_agent_core::batch_processor::DisplayEvent;
-use infinity_agent_core::message::{
-    InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind,
-};
 use ratatui::{
     crossterm::{
         cursor,
@@ -23,13 +19,13 @@ use ratatui::{
     widgets::{Block, Borders},
 };
 use rig::completion::GetTokenUsage;
-use rig::message::UserContent;
 use std::collections::{BTreeMap, HashSet};
 use std::io::{self, Write};
 use std::time::Instant;
 use tokio::sync::mpsc;
 
 /// The current UI mode determines which component is active.
+#[derive(PartialEq, Eq)]
 enum UiMode {
     /// Normal input mode.
     Normal,
@@ -64,18 +60,26 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/compact", "Trigger compaction"),
 ];
 
+pub struct SessionChanged {
+    pub session_id: String,
+    pub title: Option<String>,
+    pub total_tokens_used: usize,
+}
+
 pub async fn run<R>(
-    input_tx: mpsc::UnboundedSender<(InputMessage, String)>,
+    input_tx: mpsc::UnboundedSender<String>,
     mut display_rx: mpsc::UnboundedReceiver<DisplayEvent<R>>,
-    mut thread_id: String,
     mut model_name: String,
     mut context_window: usize,
-    sessions: Vec<SessionEntry>,
-    load_session_tx: mpsc::UnboundedSender<String>,
+    initial_sessions: std::collections::HashMap<String, infinity_protocol::SessionInfo>,
+    load_session_tx: mpsc::UnboundedSender<Option<String>>,
     model_switch_tx: mpsc::UnboundedSender<usize>,
     available_models: Vec<crate::model_picker::ModelEntry>,
     initial_message: Option<String>,
-    session_update_tx: mpsc::UnboundedSender<(String, usize)>,
+    mut session_rx: mpsc::UnboundedReceiver<SessionChanged>,
+    mut sessions_updated_rx: mpsc::UnboundedReceiver<
+        std::collections::HashMap<String, infinity_protocol::SessionInfo>,
+    >,
 ) -> Result<(), BoxError>
 where
     R: GetTokenUsage,
@@ -91,10 +95,11 @@ where
     }
 
     let mut viewport = InlineViewport::new(VIEWPORT_HEIGHT)?;
-    let has_sessions = !sessions.is_empty();
+    let has_sessions = !initial_sessions.is_empty();
+    let mut thread_id = None;
 
     viewport.print_above(|w| {
-        write!(w, "\r\nInfinity Agent CLI — thread {}\r\n", thread_id)?;
+        write!(w, "\r\nInfinity Agent CLI\r\n")?;
         write!(
             w,
             "Type your messages below. /help for commands. Ctrl+C to exit.\r\n"
@@ -113,7 +118,7 @@ where
     let mut ui_mode = UiMode::Normal;
     let mut session_picker: Option<SessionPicker> = None;
     let mut model_picker: Option<ModelPicker> = None;
-    let available_sessions = sessions;
+    let mut sessions = initial_sessions;
     let mut mid_stream = false;
     let mut stream_start = true;
     let mut spinner_state: Option<SpinnerState> = None;
@@ -145,21 +150,57 @@ where
     if let Some(text) = initial_message {
         let trimmed = text.trim().to_string();
         if !trimmed.is_empty() {
-            let msg = InputMessage {
-                content: InputMessageContent::User(UserContent::text(&trimmed)),
-                group_id: thread_id.clone(),
-                metadata: None,
-                synthetic: None,
-                display_as: None,
-                subscription: false,
-            };
-            let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
+            let _ = input_tx.send(trimmed);
         }
     }
 
     loop {
         tokio::select! {
             biased;
+
+            change = session_rx.recv() => {
+                if let Some(change) = change {
+                    thread_id = Some(change.session_id.clone());
+                    total_tokens_used = change.total_tokens_used;
+                    thread_buffers.clear(); // for now, we can't properly restore themn
+                    set_terminal_title(change.title.as_deref().unwrap_or(""));
+                    viewport.print_line_above(Line::from(""))?;
+                    viewport.print_line_above(Line::from(Span::styled(
+                        format!("✦ Loading session — thread {}", change.session_id),
+                        Style::default().fg(Color::Cyan),
+                    )))?;
+                }
+            }
+
+            updates = sessions_updated_rx.recv() => {
+                if let Some(updates) = updates {
+                    // Update terminal title if the current session's title changed
+                    if let Some(ref tid) = thread_id {
+                        if let Some(info) = updates.get(tid) {
+                            if let Some(ref title) = info.title {
+                                set_terminal_title(title);
+                            }
+                        }
+                    }
+
+                    sessions.extend(updates);
+
+                    if let Some(session_picker) = session_picker.as_mut() {
+                        let last_picked_id = session_picker.sessions[session_picker.selected].0.clone();
+
+                        let mut other_sessions: Vec<(String, infinity_protocol::SessionInfo)> = sessions.iter()
+                            .filter(|(id, _)| thread_id.as_ref().is_none_or(|tid| tid != id.as_str()))
+                            .map(|(id, info)| (id.clone(), info.clone()))
+                            .collect();
+                        other_sessions.sort_by(|a, b| b.1.last_updated.cmp(&a.1.last_updated));
+
+                        session_picker.sessions = other_sessions;
+                        if let Some(found) = session_picker.sessions.iter().position(|s| s.0 == last_picked_id) {
+                            session_picker.selected = found;
+                        }
+                    }
+                }
+            }
 
             evt = display_rx.recv() => {
                 let evt = evt.expect("agent loop terminated unexpectedly");
@@ -240,16 +281,14 @@ where
                         if prefix.is_none() {
                             if let Some(r) = r {
                                 total_tokens_used = r.token_usage().map_or(0, |u| u.total_tokens as usize);
-                                let _ = session_update_tx.send((thread_id.clone(), total_tokens_used));
                             }
                             if spinner_state != Some(SpinnerState::WaitingToolCall) {
                                 spinner_state = None;
                             }
-                        } else if let Some(p) = prefix {
-                            if !thread_tool_call_active.contains(&p) {
+                        } else if let Some(p) = prefix
+                            && !thread_tool_call_active.contains(&p) {
                                 thread_buffers.remove(&p);
                             }
-                        }
                     }
                     DisplayEvent::ToolCall { name, args, prefix, display_script } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
@@ -323,6 +362,7 @@ where
 
                         spinner_state = Some(SpinnerState::LoadingContext);
                         thinking_start = Instant::now();
+                        stream_start = true; // any new assistant output is a start
                     }
                     DisplayEvent::SubscriptionEvent { name, text, prefix } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
@@ -398,19 +438,8 @@ where
                                         // Check if the picker produced a result.
                                         if let Some(result) = picker.take_result() {
                                             match result {
-                                                SessionPickerResult::Selected(entry) => {
-                                                    let selected_thread = entry.thread_id.clone();
-                                                    let selected_tokens = entry.total_tokens_used;
-                                                    thread_id = selected_thread.clone();
-                                                    total_tokens_used = selected_tokens;
-                                                    set_terminal_title(entry.title.as_deref().unwrap_or(""));
-                                                    let _ = load_session_tx.send(selected_thread.clone()); // request conversation replay
-                                                    viewport.print_line_above(Line::from(vec![
-                                                        Span::styled(
-                                                            format!("✦ Loaded session — thread {}", selected_thread),
-                                                            Style::default().fg(Color::Yellow),
-                                                        ),
-                                                    ]))?;
+                                                SessionPickerResult::Selected(session_id) => {
+                                                    let _ = load_session_tx.send(Some(session_id));
                                                 }
                                                 SessionPickerResult::Cancelled => {}
                                             }
@@ -502,52 +531,40 @@ where
                                                 return Ok(());
                                             }
                                             Some("/new") => {
-                                                let new_id = uuid::Uuid::new_v4().to_string();
-                                                thread_id = new_id.clone();
-                                                set_terminal_title("");
+                                                let _ = load_session_tx.send(None);
                                                 viewport.print_line_above(Line::from(vec![
                                                     Span::styled(
-                                                        format!("✦ New session created — thread {}", new_id),
+                                                        "✦ Lazily creating a new session",
                                                         Style::default().fg(Color::Yellow),
                                                     ),
                                                 ]))?;
                                                 total_tokens_used = 0;
+                                                thread_buffers.clear();
+                                                thread_id = None;
+                                                spinner_state = None;
                                             }
                                             Some("/load") => {
-                                                if !available_sessions.is_empty() {
-                                                    session_picker = Some(SessionPicker::new(available_sessions.clone()));
-                                                    ui_mode = UiMode::SessionPicker;
-                                                }
+                                                let mut other_sessions: Vec<(String, infinity_protocol::SessionInfo)> = sessions.iter()
+                                                    .filter(|(id, _)| thread_id.as_ref().is_none_or(|tid| tid != id.as_str()))
+                                                    .map(|(id, info)| (id.clone(), info.clone()))
+                                                    .collect();
+                                                other_sessions.sort_by(|a, b| b.1.last_updated.cmp(&a.1.last_updated));
+                                                session_picker = Some(SessionPicker::new(other_sessions));
+                                                ui_mode = UiMode::SessionPicker;
                                             }
                                             Some("/model") => {
                                                 model_picker = Some(ModelPicker::new(available_models.clone()));
                                                 ui_mode = UiMode::ModelPicker;
                                             }
                                             Some("/compact") => {
-                                                let msg = InputMessage {
-                                                    content: InputMessageContent::User(UserContent::text("__compaction_trigger__")),
-                                                    group_id: thread_id.clone(),
-                                                    metadata: None,
-                                                    synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::Compaction)),
-                                                    display_as: None,
-                                                    subscription: false,
-                                                };
-                                                let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
+                                                let _ = input_tx.send("__compact__".to_string());
                                                 viewport.print_line_above(Line::from(vec![
                                                     Span::styled("✦ Compaction triggered", Style::default().fg(Color::Yellow)),
                                                 ]))?;
                                             }
                                             _ => {
                                                 if let Some(trimmed) = user_text {
-                                                    let msg = InputMessage {
-                                                        content: InputMessageContent::User(UserContent::text(&trimmed)),
-                                                        group_id: thread_id.clone(),
-                                                        metadata: None,
-                                                        synthetic: None,
-                                                        display_as: None,
-                                                        subscription: false,
-                                                    };
-                                                    let _ = input_tx.send((msg, uuid::Uuid::new_v4().to_string()));
+                                                    let _ = input_tx.send(trimmed);
                                                 }
                                             }
                                         }
@@ -564,7 +581,7 @@ where
                     viewport.handle_resize()?;
                 }
 
-                if got_resize || any_change || spinner_state.is_some() {
+                if got_resize || any_change || spinner_state.is_some() || ui_mode == UiMode::SessionPicker {
                     draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete)?;
                 }
             }
@@ -748,7 +765,7 @@ fn draw_viewport(
     // Layout autocomplete as a table: multiple columns per row.
     const AC_COL_WIDTH: usize = 30; // fixed width per command cell
     let ac_cols = (current_width as usize / AC_COL_WIDTH).max(1);
-    let ac_data_rows = (autocomplete.len() + ac_cols - 1) / ac_cols;
+    let ac_data_rows = autocomplete.len().div_ceil(ac_cols);
     let autocomplete_rows = if autocomplete.is_empty() {
         0u16
     } else {

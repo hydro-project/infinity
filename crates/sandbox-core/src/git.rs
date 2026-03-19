@@ -51,7 +51,7 @@ pub async fn git_worktree_add(
             args.push(sp);
         }
         run_git(repo_dir, &args).await?;
-        git_commit_all(&worktree_path, "sandbox init").await?;
+        git_commit_all(worktree_path, "sandbox init").await?;
     }
     Ok(())
 }

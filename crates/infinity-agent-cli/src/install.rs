@@ -2,7 +2,6 @@
 
 use crate::inline_viewport::InlineViewport;
 use crate::terminal;
-use infinity_agent_core::tools::config::ToolsConfig;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::{
     crossterm::{
@@ -25,14 +24,7 @@ pub struct InstallArgs {
     pub path: Option<String>,
 }
 
-pub fn user_config_path() -> Result<std::path::PathBuf, BoxError> {
-    let home = dirs::home_dir().ok_or("could not determine home directory")?;
-    Ok(home.join(".infinity").join("rap.json"))
-}
-
-pub fn load_config(path: &std::path::Path) -> ToolsConfig {
-    ToolsConfig::from_file(&path.to_string_lossy()).unwrap_or_else(|_| ToolsConfig::empty())
-}
+pub use infinity_daemon::config::{load_config, user_config_path};
 
 fn draw_spinner(
     viewport: &mut InlineViewport,
@@ -106,14 +98,13 @@ async fn run_cargo_install(
             }
             _ = terminal::poll_crossterm_event() => {
                 while event::poll(std::time::Duration::ZERO)? {
-                    if let Event::Key(key) = event::read()? {
-                        if matches!(key.code, KeyCode::Char('c'))
+                    if let Event::Key(key) = event::read()?
+                        && matches!(key.code, KeyCode::Char('c'))
                             && key.modifiers.contains(KeyModifiers::CONTROL)
                         {
                             let _ = child.kill();
                             return Err("installation cancelled".into());
                         }
-                    }
                 }
 
                 draw_spinner(viewport, &spinner_start, &status)?;

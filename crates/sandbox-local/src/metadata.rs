@@ -8,25 +8,26 @@ use sandbox_core::types::RepoState;
 
 /// File-based metadata store for local mode.
 ///
-/// Persists each group's [`RepoState`] as `sandbox/{group_id}.json` relative
-/// to the process's current working directory.
-#[derive(Default, Clone)]
-pub struct FileMetadataStore;
+/// Persists each group's [`RepoState`] as `{base_dir}/{group_id}.json`.
+#[derive(Clone)]
+pub struct FileMetadataStore {
+    base_dir: PathBuf,
+}
 
 impl FileMetadataStore {
-    pub fn new() -> Self {
-        Self
+    pub fn new(base_dir: PathBuf) -> Self {
+        Self { base_dir }
     }
 
-    fn path_for(group_id: &str) -> PathBuf {
-        PathBuf::from("sandbox").join(format!("{group_id}.json"))
+    fn path_for(&self, group_id: &str) -> PathBuf {
+        self.base_dir.join(format!("{group_id}.json"))
     }
 }
 
 #[async_trait]
 impl MetadataStore for FileMetadataStore {
     async fn get(&self, group_id: &str) -> Result<Option<RepoState>, SandboxError> {
-        let path = Self::path_for(group_id);
+        let path = self.path_for(group_id);
         match std::fs::read_to_string(&path) {
             Ok(contents) => {
                 let state: RepoState = serde_json::from_str(&contents).map_err(|e| {
@@ -40,7 +41,7 @@ impl MetadataStore for FileMetadataStore {
     }
 
     async fn put(&self, state: &RepoState) -> Result<(), SandboxError> {
-        let path = Self::path_for(&state.group_id);
+        let path = self.path_for(&state.group_id);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(SandboxError::Io)?;
         }
