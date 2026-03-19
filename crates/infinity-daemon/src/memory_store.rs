@@ -133,34 +133,34 @@ impl InMemoryConversationStore {
 
         // Try to read the per-thread file.
         let path = dir.join(format!("{}.json", thread_id));
-        if let Ok(json) = std::fs::read_to_string(&path) {
-            if let Ok(snapshot) = serde_json::from_str::<ThreadSnapshot>(&json) {
-                let mut messages = self.messages.lock().unwrap();
-                let mut threads = self.threads.lock().unwrap();
-                let mut display_as_map = self.display_as_map.lock().unwrap();
-                let mut compaction_summaries = self.compaction_summaries.lock().unwrap();
+        if let Ok(json) = std::fs::read_to_string(&path)
+            && let Ok(snapshot) = serde_json::from_str::<ThreadSnapshot>(&json)
+        {
+            let mut messages = self.messages.lock().unwrap();
+            let mut threads = self.threads.lock().unwrap();
+            let mut display_as_map = self.display_as_map.lock().unwrap();
+            let mut compaction_summaries = self.compaction_summaries.lock().unwrap();
 
-                assert!(
-                    messages
-                        .insert(thread_id.to_string(), snapshot.messages)
-                        .is_none()
-                );
-                assert!(
-                    threads
-                        .insert(thread_id.to_string(), snapshot.thread_info)
-                        .is_none()
-                );
-                assert!(
-                    display_as_map
-                        .insert(thread_id.to_string(), snapshot.display_as)
-                        .is_none()
-                );
-                assert!(
-                    compaction_summaries
-                        .insert(thread_id.to_string(), snapshot.compaction_summaries)
-                        .is_none()
-                );
-            }
+            assert!(
+                messages
+                    .insert(thread_id.to_string(), snapshot.messages)
+                    .is_none()
+            );
+            assert!(
+                threads
+                    .insert(thread_id.to_string(), snapshot.thread_info)
+                    .is_none()
+            );
+            assert!(
+                display_as_map
+                    .insert(thread_id.to_string(), snapshot.display_as)
+                    .is_none()
+            );
+            assert!(
+                compaction_summaries
+                    .insert(thread_id.to_string(), snapshot.compaction_summaries)
+                    .is_none()
+            );
         }
 
         // Mark as loaded even if the file didn't exist — avoids repeated fs checks.
@@ -185,25 +185,6 @@ impl InMemoryConversationStore {
         let map = self.display_as_map.lock().unwrap();
         map.get(thread_id)
             .and_then(|inner| inner.get(tool_result_id).cloned())
-    }
-
-    /// Set a friendly title for a thread.
-    pub fn set_title(&self, thread_id: &str, title: &str) {
-        self.ensure_thread_loaded(thread_id);
-        {
-            let mut threads = self.threads.lock().unwrap();
-            if let Some(t) = threads.get_mut(thread_id) {
-                t.title = Some(title.to_string());
-            }
-        }
-        self.save_thread(thread_id);
-    }
-
-    /// Get the friendly title for a thread, if set.
-    pub fn get_title(&self, thread_id: &str) -> Option<String> {
-        self.ensure_thread_loaded(thread_id);
-        let threads = self.threads.lock().unwrap();
-        threads.get(thread_id).and_then(|t| t.title.clone())
     }
 }
 
@@ -426,7 +407,7 @@ impl ConversationStore for InMemoryConversationStore {
         Ok(cs.get(thread_id).and_then(|v| {
             v.iter()
                 .rev()
-                .find(|s| up_to_order.map_or(true, |n| s.up_to_order <= n))
+                .find(|s| up_to_order.is_none_or(|n| s.up_to_order <= n))
                 .map(|s| (s.summary.clone(), s.up_to_order))
         }))
     }
@@ -468,6 +449,12 @@ pub struct InMemoryStateStore {
     metadata: Arc<Mutex<HashMap<String, serde_json::Value>>>,
     /// Per-thread active subscriptions: thread_id → set of tool_call_ids.
     subscriptions: Arc<Mutex<HashMap<String, HashSet<String>>>>,
+}
+
+impl Default for InMemoryStateStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl InMemoryStateStore {

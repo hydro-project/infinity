@@ -1,45 +1,40 @@
 [package]
-name = "infinity-agent-cli"
+name = "infinity-daemon"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "infinity_agent_cli"
+name = "infinity_daemon"
 path = "src/lib.rs"
 
 [[bin]]
-name = "infinity"
+name = "infinity-daemon"
 path = "src/main.rs"
 
 [dependencies]
 infinity-agent-core = { path = "../infinity-agent-core" }
 infinity-protocol = { path = "../infinity-protocol" }
-infinity-daemon = { path = "../infinity-daemon" }
 
 rig-core = { workspace = true }
 rig-bedrock = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "io-util", "io-std", "sync", "process", "net"] }
-futures-util = { workspace = true }
-async-trait = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "io-util", "sync", "process", "net", "signal", "macros"] }
 uuid = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+reqwest = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
-ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
-unicode-width = "0.2"
 hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
-reqwest = { workspace = true }
-clap = { version = "4", features = ["derive"] }
-dirs = "6"
 tokio-util = { version = "0.7", features = ["codec"] }
 bytes = "1"
 bincode = "1"
-rhai = { workspace = true }
+dirs = "6"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["signal"] }

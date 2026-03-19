@@ -217,13 +217,13 @@ where
     // Best-effort: notify RAP tool servers about interrupted tool calls
     {
         let interrupted = current_history.borrow_mut().take_interrupted_tool_calls();
-        if !interrupted.is_empty() {
-            if let Some(notifier) = rap_notifier {
-                for call_id in &interrupted {
-                    notifier
-                        .notify_tool_cancelled(active_group_id, call_id)
-                        .await;
-                }
+        if !interrupted.is_empty()
+            && let Some(notifier) = rap_notifier
+        {
+            for call_id in &interrupted {
+                notifier
+                    .notify_tool_cancelled(active_group_id, call_id)
+                    .await;
             }
         }
     }
@@ -357,12 +357,11 @@ where
 
         hist.sync().await.ok();
 
-        if let Some(action) = action {
-            if let Err(e) =
+        if let Some(action) = action
+            && let Err(e) =
                 event_processor::execute_action(action, tool_registry, &tool_context).await
-            {
-                let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
-            }
+        {
+            let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
         }
     });
 

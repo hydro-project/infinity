@@ -84,10 +84,10 @@ impl ToolsConfig {
             .filter_map(|ts| ts.id().map(|s| s.to_string()))
             .collect();
         for ts in other.tool_sets {
-            if let Some(id) = ts.id() {
-                if existing_ids.contains(id) {
-                    continue;
-                }
+            if let Some(id) = ts.id()
+                && existing_ids.contains(id)
+            {
+                continue;
             }
             self.tool_sets.push(ts);
         }

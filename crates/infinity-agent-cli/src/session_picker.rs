@@ -1,5 +1,5 @@
 use crate::component::{Component, KeyResult};
-use crate::session_store::SessionEntry;
+use infinity_protocol::SessionInfo;
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{KeyCode, KeyEvent},
@@ -8,30 +8,23 @@ use ratatui::{
     widgets::Widget,
 };
 
-/// Maximum visible rows in the session picker.
 pub const MAX_VISIBLE_ROWS: u16 = 5;
 
-/// Result of the session picker interaction.
 pub enum SessionPickerResult {
-    /// User selected a session.
-    Selected(SessionEntry),
-    /// User cancelled (Escape).
+    /// User selected a session (id).
+    Selected(String),
     Cancelled,
 }
 
-/// A scrollable session picker overlay.
 pub struct SessionPicker {
-    sessions: Vec<SessionEntry>,
-    /// Index of the currently highlighted session.
-    selected: usize,
-    /// Scroll offset for the visible window.
+    pub sessions: Vec<(String, SessionInfo)>,
+    pub selected: usize,
     scroll_offset: usize,
-    /// Pending result to be consumed by the caller.
     result: Option<SessionPickerResult>,
 }
 
 impl SessionPicker {
-    pub fn new(sessions: Vec<SessionEntry>) -> Self {
+    pub fn new(sessions: Vec<(String, SessionInfo)>) -> Self {
         Self {
             sessions,
             selected: 0,
@@ -40,19 +33,16 @@ impl SessionPicker {
         }
     }
 
-    /// Take the pending result, if any.
     pub fn take_result(&mut self) -> Option<SessionPickerResult> {
         self.result.take()
     }
 
-    /// The number of rows this picker wants to display (capped at MAX_VISIBLE_ROWS).
     pub fn visible_rows(&self) -> u16 {
         (self.sessions.len() as u16).min(MAX_VISIBLE_ROWS)
     }
 
-    /// Total height including the top border row.
     pub fn preferred_height(&self) -> u16 {
-        self.visible_rows() + 1 // +1 for border
+        self.visible_rows() + 1
     }
 
     fn move_up(&mut self) {
@@ -75,8 +65,8 @@ impl SessionPicker {
     }
 
     fn confirm(&mut self) {
-        if let Some(entry) = self.sessions.get(self.selected) {
-            self.result = Some(SessionPickerResult::Selected(entry.clone()));
+        if let Some((id, _)) = self.sessions.get(self.selected) {
+            self.result = Some(SessionPickerResult::Selected(id.clone()));
         }
     }
 
@@ -84,53 +74,45 @@ impl SessionPicker {
         self.result = Some(SessionPickerResult::Cancelled);
     }
 
-    /// Render the session list into the given area.
     pub fn render(&self, area: Rect, buf: &mut Buffer) {
         if area.height == 0 || area.width == 0 {
             return;
         }
-
         let visible = self.visible_rows() as usize;
         let end = (self.scroll_offset + visible).min(self.sessions.len());
 
-        for (i, session) in self.sessions[self.scroll_offset..end].iter().enumerate() {
+        for (i, (id, info)) in self.sessions[self.scroll_offset..end].iter().enumerate() {
             let y = area.y + i as u16;
             if y >= area.bottom() {
                 break;
             }
 
-            let abs_idx = self.scroll_offset + i;
-            let is_selected = abs_idx == self.selected;
-
+            let is_selected = self.scroll_offset + i == self.selected;
             let (fg, bg, modifier) = if is_selected {
                 (Color::Black, Color::White, Modifier::BOLD)
             } else {
                 (Color::DarkGray, Color::Reset, Modifier::empty())
             };
 
-            // Format: "  title_or_id  |  tokens  |  last updated  "
-            let name_display = if let Some(ref title) = session.title {
+            let name = if let Some(ref title) = info.title {
                 if title.len() > 24 {
                     format!("{}…", &title[..23])
                 } else {
                     title.clone()
                 }
-            } else if session.thread_id.len() > 16 {
-                format!("{}…", &session.thread_id[..15])
+            } else if id.len() > 16 {
+                format!("{}…", &id[..15])
             } else {
-                session.thread_id.clone()
+                id.clone()
             };
 
-            let time_str = session.last_updated_display();
-            let tokens_str = format!("{}tok", session.total_tokens_used);
-            let line = format!(" {:<26} {:>10}  {}", name_display, tokens_str, time_str);
+            let time_str = &info.last_updated;
+            let tokens_str = format!("{}tok", info.total_tokens_used);
+            let line = format!(" {:<26} {:>10}  {}", name, tokens_str, time_str);
 
-            // Fill the row background
             for x in area.x..area.right() {
                 buf[(x, y)].set_char(' ').set_bg(bg);
             }
-
-            // Write text
             for (col, ch) in line.chars().enumerate() {
                 let x = area.x + col as u16;
                 if x >= area.right() {
@@ -165,12 +147,11 @@ impl Component for SessionPicker {
                 self.cancel();
                 KeyResult::Captured
             }
-            _ => KeyResult::Captured, // swallow all keys while picker is open
+            _ => KeyResult::Captured,
         }
     }
 }
 
-/// Widget adapter for rendering the SessionPicker.
 pub struct SessionPickerWidget<'a> {
     picker: &'a SessionPicker,
 }

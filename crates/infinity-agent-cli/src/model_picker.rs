@@ -7,65 +7,11 @@ use ratatui::{
     widgets::Widget,
 };
 
+// Re-export data types from daemon
+pub use infinity_daemon::model_picker::{BedrockProvider, ModelEntry, ModelProvider};
+
 /// Maximum visible rows in the model picker.
 pub const MAX_VISIBLE_ROWS: u16 = 5;
-
-/// A model available for selection.
-#[derive(Clone)]
-pub struct ModelEntry {
-    /// Human-readable name shown in the picker and status bar.
-    pub display_name: String,
-    /// Model identifier passed to the provider (e.g. Bedrock model ARN).
-    pub model_id: String,
-    /// Extra fields merged into `additional_params` on every completion request.
-    pub additional_request_params: Option<serde_json::Value>,
-    /// Context window size in tokens, used for the status-bar percentage.
-    pub context_window: usize,
-}
-
-/// Trait for model providers to expose their available models.
-pub trait ModelProvider {
-    /// Return the list of models available from this provider.
-    fn available_models(&self) -> Vec<ModelEntry>;
-    /// Index of the default model in the list returned by `available_models()`.
-    fn default_model_index(&self) -> usize;
-    /// Check whether this provider's credentials / prerequisites are satisfied.
-    /// Used for auto-detection when no explicit `--provider` flag is given.
-    fn is_available(&self) -> impl std::future::Future<Output = Result<(), String>> + Send;
-}
-
-/// Bedrock model provider.
-pub struct BedrockProvider;
-
-impl ModelProvider for BedrockProvider {
-    fn available_models(&self) -> Vec<ModelEntry> {
-        vec![
-            ModelEntry {
-                display_name: "claude-opus-4-6 1m".to_string(),
-                model_id: "global.anthropic.claude-opus-4-6-v1".to_string(),
-                additional_request_params: Some(serde_json::json!({
-                    "anthropic_beta": ["context-1m-2025-08-07"]
-                })),
-                context_window: 1_000_000,
-            },
-            ModelEntry {
-                display_name: "claude-opus-4-6".to_string(),
-                model_id: "global.anthropic.claude-opus-4-6-v1".to_string(),
-                additional_request_params: None,
-                context_window: 200_000,
-            },
-        ]
-    }
-
-    fn default_model_index(&self) -> usize {
-        0
-    }
-
-    async fn is_available(&self) -> Result<(), String> {
-        // Bedrock uses ambient AWS credentials; assume always available.
-        Ok(())
-    }
-}
 
 /// Result of the model picker interaction.
 pub enum ModelPickerResult {

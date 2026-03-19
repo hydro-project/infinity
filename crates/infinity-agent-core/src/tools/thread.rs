@@ -86,7 +86,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
 
         let new_thread_id = self
             .conversation_store
-            .spawn_thread(&context.group_id, &id, false)
+            .spawn_thread(&context.group_id, id, false)
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
             .unwrap();
@@ -131,7 +131,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
         let child_group_id = child_result.group_id.clone();
         context
             .message_sender
-            .send_to_input_queue(child_result, &child_group_id, &id)
+            .send_to_input_queue(child_result, &child_group_id, id)
             .await
             .unwrap();
 

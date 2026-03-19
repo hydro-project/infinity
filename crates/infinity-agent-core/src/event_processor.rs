@@ -406,7 +406,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 let remaining = self.history.split_off(up_to);
                 self.history = vec![Message::Assistant {
                     id: None,
-                    content: OneOrMany::one(AssistantContent::text(&format!(
+                    content: OneOrMany::one(AssistantContent::text(format!(
                         "[Compacted conversation summary]\n{}",
                         summary
                     ))),
@@ -469,7 +469,7 @@ where
     }
 
     // Handle compaction complete: apply compaction to in-memory history, no LLM needed
-    if input_msg.synthetic.as_ref().map_or(false, |s| {
+    if input_msg.synthetic.as_ref().is_some_and(|s| {
         matches!(
             s,
             crate::message::SyntheticKind::Tagged(
@@ -483,7 +483,7 @@ where
     }
 
     // Handle compaction trigger: spawn a compaction child thread
-    if input_msg.synthetic.as_ref().map_or(false, |s| {
+    if input_msg.synthetic.as_ref().is_some_and(|s| {
         matches!(
             s,
             crate::message::SyntheticKind::Tagged(crate::message::TaggedSyntheticKind::Compaction)
@@ -849,13 +849,12 @@ where
                                 "type": "adaptive"
                             }
                         });
-                        if let Some(extra) = additional_request_params {
-                            if let (Some(base_obj), Some(extra_obj)) = (base.as_object_mut(), extra.as_object()) {
+                        if let Some(extra) = additional_request_params
+                            && let (Some(base_obj), Some(extra_obj)) = (base.as_object_mut(), extra.as_object()) {
                                 for (k, v) in extra_obj {
                                     base_obj.insert(k.clone(), v.clone());
                                 }
                             }
-                        }
                         Some(base)
                     },
                     output_schema: None,

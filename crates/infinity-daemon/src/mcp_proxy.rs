@@ -272,13 +272,13 @@ impl McpTransport for HttpMcpClient {
         if content_type.contains("text/event-stream") {
             // Parse SSE: look for data: lines
             for line in text.lines() {
-                if let Some(data) = line.strip_prefix("data: ") {
-                    if let Ok(msg) = serde_json::from_str::<JsonRpcResponse>(data) {
-                        if let Some(err) = msg.error {
-                            return Err(format!("MCP error: {}", err.message).into());
-                        }
-                        return Ok(msg.result.unwrap_or(serde_json::Value::Null));
+                if let Some(data) = line.strip_prefix("data: ")
+                    && let Ok(msg) = serde_json::from_str::<JsonRpcResponse>(data)
+                {
+                    if let Some(err) = msg.error {
+                        return Err(format!("MCP error: {}", err.message).into());
                     }
+                    return Ok(msg.result.unwrap_or(serde_json::Value::Null));
                 }
             }
             return Err("No response in SSE stream".into());
