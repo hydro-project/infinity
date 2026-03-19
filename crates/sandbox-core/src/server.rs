@@ -418,10 +418,10 @@ where
 
     let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;
 
-    if let Some(description) = jj_description {
-        if matches!(&repo_state.mode, SandboxMode::Jj { .. }) {
-            run_jj(&sandbox_dir, &["describe", "-m", description]).await?;
-        }
+    if let Some(description) = jj_description
+        && matches!(&repo_state.mode, SandboxMode::Jj { .. })
+    {
+        run_jj(&sandbox_dir, &["describe", "-m", description]).await?;
     }
 
     let result = action(sandbox_dir.clone()).await;
@@ -905,7 +905,7 @@ async fn handle_read_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
             let file_path = sandbox_dir.join(&args.path);
             let content = tokio::fs::read_to_string(&file_path)
                 .await
-                .map_err(|e| SandboxError::Io(e))?;
+                .map_err(SandboxError::Io)?;
 
             let lines: Vec<&str> = content.lines().collect();
             let total_lines = lines.len();
@@ -954,7 +954,7 @@ async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
             let file_path = sandbox_dir.join(&args.path);
             let content = tokio::fs::read_to_string(&file_path)
                 .await
-                .map_err(|e| SandboxError::Io(e))?;
+                .map_err(SandboxError::Io)?;
 
             let matches: Vec<_> = content.match_indices(&args.old_str).collect();
 
@@ -975,7 +975,7 @@ async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
             let new_content = content.replacen(&args.old_str, &args.new_str, 1);
             tokio::fs::write(&file_path, &new_content)
                 .await
-                .map_err(|e| SandboxError::Io(e))?;
+                .map_err(SandboxError::Io)?;
 
             // Build a unified diff for display
             let display = build_edit_diff(&args.path, &args.old_str, &args.new_str);
@@ -1012,12 +1012,12 @@ async fn handle_create_file<B: SandboxBackend, M: MetadataStore, C: CallbackClie
             if let Some(parent) = file_path.parent() {
                 tokio::fs::create_dir_all(parent)
                     .await
-                    .map_err(|e| SandboxError::Io(e))?;
+                    .map_err(SandboxError::Io)?;
             }
 
             tokio::fs::write(&file_path, &args.content)
                 .await
-                .map_err(|e| SandboxError::Io(e))?;
+                .map_err(SandboxError::Io)?;
 
             let line_count = args.content.lines().count();
             let display = format!("Created {} ({} lines)", args.path, line_count);
@@ -1098,11 +1098,11 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
                 // Context lines have "file-line-content" (dash after line number)
                 if let Some(colon1) = line.find(':') {
                     let rest = &line[colon1 + 1..];
-                    if let Some(colon2) = rest.find(':') {
-                        if rest[..colon2].parse::<usize>().is_ok() {
-                            files.insert(&line[..colon1]);
-                            match_count += 1;
-                        }
+                    if let Some(colon2) = rest.find(':')
+                        && rest[..colon2].parse::<usize>().is_ok()
+                    {
+                        files.insert(&line[..colon1]);
+                        match_count += 1;
                     }
                 }
             }

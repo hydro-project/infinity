@@ -27,6 +27,12 @@ pub struct SimpleHttpClient {
     client: reqwest::Client,
 }
 
+impl Default for SimpleHttpClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SimpleHttpClient {
     pub fn new() -> Self {
         Self {
@@ -81,6 +87,12 @@ impl std::error::Error for CacheError {}
 
 pub struct InMemoryToolsetCache {
     store: Arc<Mutex<HashMap<String, String>>>,
+}
+
+impl Default for InMemoryToolsetCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl InMemoryToolsetCache {

@@ -8,6 +8,8 @@ members = [
     "crates/sandbox-remote",
     "crates/rap-protocol",
     "crates/rap-steering-server",
+    "crates/infinity-protocol",
+    "crates/infinity-daemon",
 ]
 resolver = "2"
 

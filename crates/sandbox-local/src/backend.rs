@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 
 use sandbox_core::error::SandboxError;
+use sandbox_core::git;
 use sandbox_core::jj::{self, run_jj};
 use sandbox_core::sandbox::{ExecResult, SandboxBackend, SpawnedCommand};
 use sandbox_core::types::{RepoState, SandboxMode};
@@ -23,17 +24,18 @@ struct CachedSandbox {
 /// Sandbox directories are cached by group_id so that repeated
 /// `create_sandbox` calls for the same group reuse the existing workspace
 /// instead of running `jj workspace add` every time.
+///
+/// Sandbox temp directories are created under `{remote_uri}/.infinity/.sandboxes/`.
 pub struct LocalBackend {
     /// group_id -> cached sandbox
     cache: Mutex<HashMap<String, CachedSandbox>>,
     /// Whether to use platform-specific sandboxing for command execution
     /// (macOS sandbox-exec or Linux bubblewrap).
     sandbox_enabled: bool,
-    /// Base directory in which to create temp directories.
-    tempdir_base: PathBuf,
 }
 
 /// Returns the list of additional writable paths for a sandbox.
+/// Includes the temp dir.
 fn extra_writable_paths(_sandbox_dir: &Path, tmp_dir: Option<&Path>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(t) = tmp_dir {
@@ -48,7 +50,7 @@ fn platform_sandbox_available() -> bool {
 }
 
 impl LocalBackend {
-    pub fn new(sandbox_enabled: bool, tempdir_base: PathBuf) -> Self {
+    pub fn new(sandbox_enabled: bool) -> Self {
         if sandbox_enabled && !platform_sandbox_available() {
             tracing::warn!(
                 "sandbox enabled but not supported on this platform; commands will run unsandboxed"
@@ -74,16 +76,65 @@ impl LocalBackend {
         Self {
             cache: Mutex::new(HashMap::new()),
             sandbox_enabled,
-            tempdir_base,
         }
     }
 
-    /// Create a new temporary directory, respecting the configured
-    /// `tempdir_base` when one was provided.
-    fn make_tempdir(&self) -> std::io::Result<tempfile::TempDir> {
-        std::fs::create_dir_all(&self.tempdir_base)?;
-        tempfile::tempdir_in(&self.tempdir_base)
+    /// Compute the sandboxes base directory for a given repo.
+    fn sandboxes_dir_for(remote_uri: &str) -> PathBuf {
+        PathBuf::from(remote_uri)
+            .join(".infinity")
+            .join(".sandboxes")
     }
+
+    /// Create a new temporary directory under `{remote_uri}/.infinity/.sandboxes/`.
+    fn make_tempdir(remote_uri: &str) -> std::io::Result<tempfile::TempDir> {
+        let base = Self::sandboxes_dir_for(remote_uri);
+        std::fs::create_dir_all(&base)?;
+        tempfile::tempdir_in(&base)
+    }
+
+    /// Create a scratch temporary directory alongside an existing sandbox dir.
+    /// Used for TMPDIR in sandboxed command execution.
+    fn make_scratch_tempdir(sandbox_dir: &Path) -> std::io::Result<tempfile::TempDir> {
+        let base = sandbox_dir.parent().unwrap_or(sandbox_dir);
+        std::fs::create_dir_all(base)?;
+        tempfile::tempdir_in(base)
+    }
+}
+
+/// Check if a jj bookmark's commit is empty (no changes) using a synchronous command.
+fn jj_bookmark_is_empty(dir: &Path, bookmark: &str) -> bool {
+    Command::new("jj")
+        .args([
+            "--config",
+            "user.name=RAP Sandbox",
+            "--config",
+            "user.email=sandbox@rap",
+            "log",
+            "--no-graph",
+            "-r",
+            bookmark,
+            "-T",
+            "empty",
+        ])
+        .current_dir(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
+        .unwrap_or(false)
+}
+
+/// Check if the top commit on the current branch has no file changes (sync, for Drop).
+fn git_branch_top_is_empty_sync(dir: &Path) -> bool {
+    Command::new("git")
+        .args(["diff", "--quiet", "HEAD~1"])
+        .current_dir(dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 impl Drop for LocalBackend {
@@ -95,12 +146,15 @@ impl Drop for LocalBackend {
             tracing::info!(group_id = %group_id, dir = %dir.display(), "dropping cached sandbox");
             match &entry.state.mode {
                 SandboxMode::Jj { .. } => {
-                    if jj_bookmark_is_empty_sync(dir, &branch) {
+                    if jj_bookmark_is_empty(dir, &branch) {
                         let _ = Command::new("jj")
                             .args([
-                                "--config", "user.name=RAP Sandbox",
-                                "--config", "user.email=sandbox@rap",
-                                "abandon", &branch,
+                                "--config",
+                                "user.name=RAP Sandbox",
+                                "--config",
+                                "user.email=sandbox@rap",
+                                "abandon",
+                                &branch,
                             ])
                             .current_dir(dir)
                             .status();
@@ -130,32 +184,6 @@ impl Drop for LocalBackend {
     }
 }
 
-/// Check if a jj bookmark's commit is empty (sync, for Drop).
-fn jj_bookmark_is_empty_sync(dir: &Path, bookmark: &str) -> bool {
-    Command::new("jj")
-        .args([
-            "--config", "user.name=RAP Sandbox",
-            "--config", "user.email=sandbox@rap",
-            "log", "--no-graph", "-r", bookmark, "-T", "empty",
-        ])
-        .current_dir(dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
-        .unwrap_or(false)
-}
-
-/// Check if the top commit on a git branch is empty (sync, for Drop).
-fn git_branch_top_is_empty_sync(dir: &Path) -> bool {
-    Command::new("git")
-        .args(["diff", "--cached", "--quiet", "HEAD~1"])
-        .current_dir(dir)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
 #[async_trait]
 impl SandboxBackend for LocalBackend {
     /// For local mode, the repo arg is a path to an existing git dir.
@@ -173,7 +201,6 @@ impl SandboxBackend for LocalBackend {
                 "local repo path does not exist: {repo}"
             )));
         }
-        // Return the absolute path as the remote URI
         let abs = path.canonicalize().map_err(SandboxError::Io)?;
         Ok(abs.to_string_lossy().to_string())
     }
@@ -205,7 +232,7 @@ impl SandboxBackend for LocalBackend {
 
         let sandbox_dir = match &state.mode {
             SandboxMode::Jj { base_revision } => {
-                let tmp = self.make_tempdir().map_err(SandboxError::Io)?;
+                let tmp = Self::make_tempdir(&state.remote_uri).map_err(SandboxError::Io)?;
                 let sandbox_dir = tmp.keep();
                 jj::jj_git_clone(
                     &state.remote_uri,
@@ -217,7 +244,7 @@ impl SandboxBackend for LocalBackend {
                 sandbox_dir
             }
             SandboxMode::Git { base_revision } => {
-                let tmp = self.make_tempdir().map_err(SandboxError::Io)?;
+                let tmp = Self::make_tempdir(&state.remote_uri).map_err(SandboxError::Io)?;
                 let sandbox_dir = tmp.keep();
                 git::git_worktree_add(
                     &PathBuf::from(&state.remote_uri),
@@ -267,7 +294,7 @@ impl SandboxBackend for LocalBackend {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
-            let tmp = self.make_tempdir().map_err(SandboxError::Io)?;
+            let tmp = Self::make_scratch_tempdir(sandbox_dir).map_err(SandboxError::Io)?;
             let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
 
             let writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
@@ -330,7 +357,8 @@ impl SandboxBackend for LocalBackend {
                 bwrap_args.extend(["--bind", p.as_str(), p.as_str()]);
             }
             bwrap_args.push("--");
-            let result = tokio::process::Command::new("bwrap")
+
+            tokio::process::Command::new("bwrap")
                 .args(&bwrap_args)
                 .arg(program)
                 .args(args)
@@ -340,9 +368,7 @@ impl SandboxBackend for LocalBackend {
                 .stderr(Stdio::piped())
                 .output()
                 .await
-                .map_err(|e| SandboxError::CommandError(format!("failed to run command: {e}")))?;
-
-            result
+                .map_err(|e| SandboxError::CommandError(format!("failed to run command: {e}")))?
         } else {
             tokio::process::Command::new(program)
                 .args(args)
@@ -393,7 +419,7 @@ impl SandboxBackend for LocalBackend {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
-            let tmp = self.make_tempdir().map_err(SandboxError::Io)?;
+            let tmp = Self::make_scratch_tempdir(sandbox_dir).map_err(SandboxError::Io)?;
             let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
 
             let writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
@@ -525,8 +551,7 @@ impl SandboxBackend for LocalBackend {
 
     /// Permanently clean up the cached sandbox for the given group_id.
     ///
-    /// Runs `jj workspace forget` and deletes the sandbox directory, then
-    /// removes it from the cache so it won't be reused.
+    /// For jj mode: runs `jj workspace forget` and deletes the sandbox directory.
     async fn cleanup_sandbox_permanently(&self, group_id: &str) -> Result<(), SandboxError> {
         let entry = {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
