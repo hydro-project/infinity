@@ -185,7 +185,8 @@ async fn run_client(
 
     let (display_tx, display_rx) = mpsc::unbounded_channel::<DisplayEvent<DaemonTokenUsage>>();
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<String>();
-    let (load_session_tx, mut load_session_rx) = mpsc::unbounded_channel::<Option<String>>();
+    let (load_session_tx, mut load_session_rx) =
+        mpsc::unbounded_channel::<(Option<String>, bool)>();
     let (model_switch_tx, mut model_switch_rx) = mpsc::unbounded_channel::<usize>();
     let (session_tx, session_rx) = mpsc::unbounded_channel::<SessionChanged>();
     let (sessions_updated_tx, sessions_updated_rx) =
@@ -217,6 +218,7 @@ async fn run_client(
 
     let mut active_session: Option<String> = None;
     let mut pending_input: Vec<String> = Vec::new();
+    let mut terminal_result: Option<Result<Result<bool, BoxError>, tokio::task::JoinError>> = None;
 
     loop {
         tokio::select! {
@@ -253,9 +255,13 @@ async fn run_client(
             }
 
             maybe_target = load_session_rx.recv() => {
-                let Some(maybe_target) = maybe_target else { break };
+                let Some((maybe_target, shut_down_old)) = maybe_target else { break };
                 if let Some(ref sid) = active_session {
-                    let _ = to_daemon.send(ClientMessage::Disconnect { session_id: sid.clone() });
+                    if shut_down_old {
+                        let _ = to_daemon.send(ClientMessage::ShutdownSession { session_id: sid.clone() });
+                    } else {
+                        let _ = to_daemon.send(ClientMessage::Disconnect { session_id: sid.clone() });
+                    }
                 }
                 active_session = None;
 
@@ -273,7 +279,10 @@ async fn run_client(
                 }
             }
 
-            _ = &mut terminal_handle => { break; }
+            res = &mut terminal_handle => {
+                terminal_result = Some(res);
+                break;
+            }
 
             text = input_rx.recv() => {
                 let Some(text) = text else { break };
@@ -287,12 +296,19 @@ async fn run_client(
         }
     }
 
+    let result = match terminal_result {
+        Some(r) => r,
+        None => terminal_handle.await,
+    };
+    let keep_running = matches!(result, Ok(Ok(true)));
+
     if let Some(sid) = active_session {
-        let _ = to_daemon.send(ClientMessage::Disconnect { session_id: sid });
+        if keep_running {
+            let _ = to_daemon.send(ClientMessage::Disconnect { session_id: sid });
+        } else {
+            let _ = to_daemon.send(ClientMessage::ShutdownSession { session_id: sid });
+        }
     }
 
-    match terminal_handle.await {
-        Ok(result) => result,
-        Err(_) => Ok(()),
-    }
+    Ok(())
 }
