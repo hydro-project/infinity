@@ -2,6 +2,7 @@ use crate::{
     component::{Component, KeyResult},
     inline_viewport::{InlineViewport, ResetScrollRegion},
     model_picker::{ModelPicker, ModelPickerResult, ModelPickerWidget},
+    quit_picker::{QuitPicker, QuitPickerResult, QuitPickerWidget},
     session_picker::{SessionPicker, SessionPickerResult, SessionPickerWidget},
     text_input::{TextInput, TextInputWidget},
 };
@@ -33,6 +34,8 @@ enum UiMode {
     SessionPicker,
     /// Model picker overlay is visible.
     ModelPicker,
+    /// Quit/switch picker overlay is visible.
+    QuitPicker,
 }
 
 /// Spinner animation state — only affected by main-thread (prefix=None) events.
@@ -66,13 +69,18 @@ pub struct SessionChanged {
     pub total_tokens_used: usize,
 }
 
+enum QuitPickerAction {
+    Quit,
+    SwitchSession(Option<String>),
+}
+
 pub async fn run<R>(
     input_tx: mpsc::UnboundedSender<String>,
     mut display_rx: mpsc::UnboundedReceiver<DisplayEvent<R>>,
     mut model_name: String,
     mut context_window: usize,
     initial_sessions: std::collections::HashMap<String, infinity_protocol::SessionInfo>,
-    load_session_tx: mpsc::UnboundedSender<Option<String>>,
+    load_session_tx: mpsc::UnboundedSender<(Option<String>, bool)>,
     model_switch_tx: mpsc::UnboundedSender<usize>,
     available_models: Vec<crate::model_picker::ModelEntry>,
     initial_message: Option<String>,
@@ -80,7 +88,7 @@ pub async fn run<R>(
     mut sessions_updated_rx: mpsc::UnboundedReceiver<
         std::collections::HashMap<String, infinity_protocol::SessionInfo>,
     >,
-) -> Result<(), BoxError>
+) -> Result<bool, BoxError>
 where
     R: GetTokenUsage,
 {
@@ -118,6 +126,8 @@ where
     let mut ui_mode = UiMode::Normal;
     let mut session_picker: Option<SessionPicker> = None;
     let mut model_picker: Option<ModelPicker> = None;
+    let mut quit_picker: Option<QuitPicker> = None;
+    let mut quit_picker_action: Option<QuitPickerAction> = None;
     let mut sessions = initial_sessions;
     let mut mid_stream = false;
     let mut stream_start = true;
@@ -135,6 +145,7 @@ where
         &input,
         &session_picker,
         &model_picker,
+        &quit_picker,
         &ui_mode,
         spinner_state,
         &thinking_start,
@@ -402,7 +413,7 @@ where
                         ]))?;
                     }
                 }
-                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete)?;
+                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete)?;
             }
 
             _ = poll_crossterm_event() => {
@@ -439,12 +450,22 @@ where
                                         if let Some(result) = picker.take_result() {
                                             match result {
                                                 SessionPickerResult::Selected(session_id) => {
-                                                    let _ = load_session_tx.send(Some(session_id));
+                                                    if thread_id.is_some() {
+                                                        quit_picker = Some(QuitPicker::new());
+                                                        quit_picker_action = Some(QuitPickerAction::SwitchSession(Some(session_id)));
+                                                        ui_mode = UiMode::QuitPicker;
+                                                    } else {
+                                                        let _ = load_session_tx.send((Some(session_id), false));
+                                                    }
                                                 }
-                                                SessionPickerResult::Cancelled => {}
+                                                SessionPickerResult::Cancelled => {
+                                                    ui_mode = UiMode::Normal;
+                                                }
                                             }
                                             session_picker = None;
-                                            ui_mode = UiMode::Normal;
+                                            if ui_mode == UiMode::SessionPicker {
+                                                ui_mode = UiMode::Normal;
+                                            }
                                         }
                                     }
                                 }
@@ -470,6 +491,70 @@ where
                                             }
                                             model_picker = None;
                                             ui_mode = UiMode::Normal;
+                                        }
+                                    }
+                                }
+                                UiMode::QuitPicker => {
+                                    if let Some(ref mut picker) = quit_picker {
+                                        picker.handle_keystroke(key);
+                                        if let Some(result) = picker.take_result() {
+                                            let action = quit_picker_action.take();
+                                            quit_picker = None;
+                                            match result {
+                                                QuitPickerResult::ShutDown => {
+                                                    match action {
+                                                        Some(QuitPickerAction::Quit) => {
+                                                            cleanup()?;
+                                                            return Ok(false);
+                                                        }
+                                                        Some(QuitPickerAction::SwitchSession(target)) => {
+                                                            let _ = load_session_tx.send((target.clone(), true));
+                                                            if target.is_none() {
+                                                                viewport.print_line_above(Line::from(vec![
+                                                                    Span::styled(
+                                                                        "✦ Lazily creating a new session",
+                                                                        Style::default().fg(Color::Yellow),
+                                                                    ),
+                                                                ]))?;
+                                                            }
+                                                            total_tokens_used = 0;
+                                                            thread_buffers.clear();
+                                                            thread_id = None;
+                                                            spinner_state = None;
+                                                            ui_mode = UiMode::Normal;
+                                                        }
+                                                        None => { ui_mode = UiMode::Normal; }
+                                                    }
+                                                }
+                                                QuitPickerResult::KeepRunning => {
+                                                    match action {
+                                                        Some(QuitPickerAction::Quit) => {
+                                                            cleanup()?;
+                                                            return Ok(true);
+                                                        }
+                                                        Some(QuitPickerAction::SwitchSession(target)) => {
+                                                            let _ = load_session_tx.send((target.clone(), false));
+                                                            if target.is_none() {
+                                                                viewport.print_line_above(Line::from(vec![
+                                                                    Span::styled(
+                                                                        "✦ Lazily creating a new session",
+                                                                        Style::default().fg(Color::Yellow),
+                                                                    ),
+                                                                ]))?;
+                                                            }
+                                                            total_tokens_used = 0;
+                                                            thread_buffers.clear();
+                                                            thread_id = None;
+                                                            spinner_state = None;
+                                                            ui_mode = UiMode::Normal;
+                                                        }
+                                                        None => { ui_mode = UiMode::Normal; }
+                                                    }
+                                                }
+                                                QuitPickerResult::Cancelled => {
+                                                    ui_mode = UiMode::Normal;
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -527,21 +612,33 @@ where
                                                 show_help(&mut viewport)?;
                                             }
                                             Some("/quit") => {
-                                                cleanup()?;
-                                                return Ok(());
+                                                if thread_id.is_some() {
+                                                    quit_picker = Some(QuitPicker::new());
+                                                    quit_picker_action = Some(QuitPickerAction::Quit);
+                                                    ui_mode = UiMode::QuitPicker;
+                                                } else {
+                                                    cleanup()?;
+                                                    return Ok(true);
+                                                }
                                             }
                                             Some("/new") => {
-                                                let _ = load_session_tx.send(None);
-                                                viewport.print_line_above(Line::from(vec![
-                                                    Span::styled(
-                                                        "✦ Lazily creating a new session",
-                                                        Style::default().fg(Color::Yellow),
-                                                    ),
-                                                ]))?;
-                                                total_tokens_used = 0;
-                                                thread_buffers.clear();
-                                                thread_id = None;
-                                                spinner_state = None;
+                                                if thread_id.is_some() {
+                                                    quit_picker = Some(QuitPicker::new());
+                                                    quit_picker_action = Some(QuitPickerAction::SwitchSession(None));
+                                                    ui_mode = UiMode::QuitPicker;
+                                                } else {
+                                                    let _ = load_session_tx.send((None, false));
+                                                    viewport.print_line_above(Line::from(vec![
+                                                        Span::styled(
+                                                            "✦ Lazily creating a new session",
+                                                            Style::default().fg(Color::Yellow),
+                                                        ),
+                                                    ]))?;
+                                                    total_tokens_used = 0;
+                                                    thread_buffers.clear();
+                                                    thread_id = None;
+                                                    spinner_state = None;
+                                                }
                                             }
                                             Some("/load") => {
                                                 let mut other_sessions: Vec<(String, infinity_protocol::SessionInfo)> = sessions.iter()
@@ -582,7 +679,7 @@ where
                 }
 
                 if got_resize || any_change || spinner_state.is_some() || ui_mode == UiMode::SessionPicker {
-                    draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete)?;
+                    draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete)?;
                 }
             }
         }
@@ -677,6 +774,7 @@ fn draw_viewport(
     input: &TextInput,
     session_picker: &Option<SessionPicker>,
     model_picker: &Option<ModelPicker>,
+    quit_picker: &Option<QuitPicker>,
     ui_mode: &UiMode,
     spinner_state: Option<SpinnerState>,
     thinking_start: &Instant,
@@ -699,7 +797,7 @@ fn draw_viewport(
     };
     let status_right = format!("{:.0}% context used", pct);
     let status_left = match ui_mode {
-        UiMode::SessionPicker | UiMode::ModelPicker => {
+        UiMode::SessionPicker | UiMode::ModelPicker | UiMode::QuitPicker => {
             "↑↓ navigate  enter select  esc cancel".to_string()
         }
         UiMode::Normal => format!("{} (/help for commands)", model_name),
@@ -733,6 +831,13 @@ fn draw_viewport(
         }
         UiMode::ModelPicker => {
             let picker_height = model_picker
+                .as_ref()
+                .map(|p| p.preferred_height())
+                .unwrap_or(1);
+            (picker_height, true)
+        }
+        UiMode::QuitPicker => {
+            let picker_height = quit_picker
                 .as_ref()
                 .map(|p| p.preferred_height())
                 .unwrap_or(1);
@@ -871,12 +976,14 @@ fn draw_viewport(
             // blank line is the last row of ac_area, left empty
         }
 
-        // Content area — either session picker, model picker, or input
+        // Content area — either session picker, model picker, quit picker, or input
         if is_picker {
             if let Some(picker) = session_picker {
                 frame.render_widget(SessionPickerWidget::new(picker), areas[idx]);
             } else if let Some(picker) = model_picker {
                 frame.render_widget(ModelPickerWidget::new(picker), areas[idx]);
+            } else if let Some(picker) = quit_picker {
+                frame.render_widget(QuitPickerWidget::new(picker), areas[idx]);
             }
             // No cursor in picker mode
         } else {

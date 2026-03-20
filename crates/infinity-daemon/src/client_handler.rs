@@ -29,7 +29,9 @@ pub async fn handle_client(stream: UnixStream, session_manager: Arc<Mutex<Sessio
                 let bytes = Bytes::from(bincode::serialize(&msg).unwrap());
                 if framed.send(bytes).await.is_err() { break; }
             }
-            _ = &mut handler => {}
+            _ = &mut handler => {
+                return;
+            }
             frame = framed.next() => {
                 let Some(Ok(bytes)) = frame else { break };
                 let Ok(msg) = bincode::deserialize::<ClientMessage>(&bytes) else { continue };
@@ -37,6 +39,10 @@ pub async fn handle_client(stream: UnixStream, session_manager: Arc<Mutex<Sessio
             }
         }
     }
+
+    drop(client_msg_tx);
+
+    handler.await;
 }
 
 /// Handle a client over raw mpsc channels (for in-memory mode, no serialization).
@@ -113,6 +119,11 @@ pub async fn handle_client_channels(
                         mgr.detach_client(&session_id);
                         attached_session_id = None;
                     }
+                    ClientMessage::ShutdownSession { session_id } => {
+                        let mut mgr = session_manager.lock().await;
+                        mgr.cleanup_session(&session_id).await;
+                        attached_session_id = None;
+                    }
                     ClientMessage::LoadSession { target_session_id } => {
                         let mut mgr = session_manager.lock().await;
                         let mut emit = async |msg: DaemonMessage| {
@@ -134,8 +145,10 @@ pub async fn handle_client_channels(
         }
     }
 
+    tracing::trace!("Shutting down client handler");
     if let Some(sid) = attached_session_id {
+        tracing::trace!("Cleaning up active session");
         let mut mgr = session_manager.lock().await;
-        mgr.detach_client(&sid);
+        mgr.cleanup_session(&sid).await;
     }
 }

@@ -44,6 +44,9 @@ pub enum ClientMessage {
     Disconnect {
         session_id: String,
     },
+    ShutdownSession {
+        session_id: String,
+    },
     LoadSession {
         target_session_id: String,
     },
