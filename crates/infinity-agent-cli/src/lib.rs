@@ -3,6 +3,7 @@ pub mod inline_viewport;
 pub mod install;
 pub mod model_picker;
 pub mod modifier_diff;
+pub mod quit_picker;
 pub mod session_picker;
 pub mod terminal;
 pub mod text_input;
