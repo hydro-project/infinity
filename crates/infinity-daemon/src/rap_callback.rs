@@ -41,6 +41,10 @@ struct RapCallback {
     associative: Option<bool>,
     #[serde(default)]
     subscription: Option<bool>,
+    /// When true, this is the final subscription event — the runtime should
+    /// remove the subscription from active tracking.
+    #[serde(default)]
+    r#final: Option<bool>,
 }
 
 struct CallbackState {
@@ -141,6 +145,7 @@ async fn handle(req: Request<Incoming>, state: Arc<CallbackState>) -> Response<F
         "subscription_event" => {
             let tool_call_id = cb.tool_call_id.unwrap_or_default();
             let associative = cb.associative.unwrap_or(false);
+            let is_final = cb.r#final.unwrap_or(false);
             InputMessage {
                 content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                     id: tool_call_id.clone(),
@@ -155,6 +160,7 @@ async fn handle(req: Request<Incoming>, state: Arc<CallbackState>) -> Response<F
                     TaggedSyntheticKind::SubscriptionEvent {
                         tool_call_id,
                         associative,
+                        r#final: is_final,
                     },
                 )),
                 display_as: None,

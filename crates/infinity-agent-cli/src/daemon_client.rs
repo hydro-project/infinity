@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use infinity_agent_cli::model_picker::ModelEntry;
-use infinity_agent_cli::terminal::SessionChanged;
+use infinity_agent_cli::terminal::{SessionChanged, SoftDetachAction};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -74,7 +74,8 @@ fn daemon_msg_to_display(msg: DaemonMessage) -> Option<DisplayEvent<DaemonTokenU
         DaemonMessage::Connected { .. }
         | DaemonMessage::Welcome { .. }
         | DaemonMessage::Replay(_)
-        | DaemonMessage::SessionsUpdated { .. } => return None,
+        | DaemonMessage::SessionsUpdated { .. }
+        | DaemonMessage::DisconnectNotIdle => return None,
     })
 }
 
@@ -118,16 +119,37 @@ pub async fn run_with_daemon(initial_message: Option<String>) -> Result<(), BoxE
     loop {
         tokio::select! {
             msg = to_daemon_rx.recv() => {
-                let bytes = Bytes::from(bincode::serialize(&msg.unwrap()).unwrap());
-                framed.send(bytes).await.unwrap()
+                let Some(msg) = msg else {
+                    drop(from_daemon_tx);
+                    return client_fut.await;
+                };
+                let bytes = Bytes::from(bincode::serialize(&msg).unwrap());
+                if framed.send(bytes).await.is_err() {
+                    drop(from_daemon_tx);
+                    return client_fut.await;
+                }
             }
             client_res = &mut client_fut => {
+                // TODO(shadaj): maybe use join to simplify the state management?
+                // Drain any remaining messages (e.g. Disconnect) before closing the socket.
+                while let Some(msg) = to_daemon_rx.recv().await {
+                    let bytes = Bytes::from(bincode::serialize(&msg).unwrap());
+                    let _ = framed.send(bytes).await;
+                }
                 return client_res;
             }
             frame = framed.next() => {
-                if let Some(maybe_bytes) = frame {
-                    let msg = bincode::deserialize::<DaemonMessage>(&maybe_bytes.unwrap()).unwrap();
-                    from_daemon_tx.send(msg).unwrap()
+                match frame {
+                    Some(Ok(bytes)) => {
+                        let msg = bincode::deserialize::<DaemonMessage>(&bytes).unwrap();
+                        let _ = from_daemon_tx.send(msg);
+                    }
+                    _ => {
+                        // Daemon closed the socket — drop from_daemon_tx so
+                        // run_client sees the channel close.
+                        drop(from_daemon_tx);
+                        return client_fut.await;
+                    }
                 }
             }
         }
@@ -191,6 +213,9 @@ async fn run_client(
     let (session_tx, session_rx) = mpsc::unbounded_channel::<SessionChanged>();
     let (sessions_updated_tx, sessions_updated_rx) =
         mpsc::unbounded_channel::<HashMap<String, SessionInfo>>();
+    let (soft_detach_tx, mut soft_detach_rx) = mpsc::unbounded_channel::<SoftDetachAction>();
+    let (disconnect_not_idle_tx, disconnect_not_idle_rx) =
+        mpsc::unbounded_channel::<SoftDetachAction>();
 
     if let Some(info) = startup_info {
         let _ = display_tx.send(DisplayEvent::Info(info));
@@ -214,18 +239,29 @@ async fn run_client(
         initial_message,
         session_rx,
         sessions_updated_rx,
+        soft_detach_tx,
+        disconnect_not_idle_rx,
     ));
 
     let mut active_session: Option<String> = None;
     let mut pending_input: Vec<String> = Vec::new();
     let mut terminal_result: Option<Result<Result<bool, BoxError>, tokio::task::JoinError>> = None;
+    let mut pending_soft_detach_action: Option<SoftDetachAction> = None;
 
     loop {
         tokio::select! {
             biased;
 
             msg = from_daemon.recv() => {
-                let Some(msg) = msg else { break };
+                let Some(msg) = msg else {
+                    // Daemon closed the channel — soft detach succeeded (agent was idle)
+                    if pending_soft_detach_action.is_some() {
+                        // Drop display_tx so terminal sees None and exits
+                        drop(display_tx);
+                        break;
+                    }
+                    break;
+                };
                 match msg {
                     DaemonMessage::Connected { session_id, title, total_tokens_used, .. } => {
                         active_session = Some(session_id.clone());
@@ -246,11 +282,24 @@ async fn run_client(
                     DaemonMessage::SessionsUpdated { sessions } => {
                         let _ = sessions_updated_tx.send(sessions);
                     }
+                    DaemonMessage::DisconnectNotIdle => {
+                        if let Some(action) = pending_soft_detach_action.take() {
+                            let _ = disconnect_not_idle_tx.send(action);
+                        }
+                    }
                     msg => {
                         if let Some(evt) = daemon_msg_to_display(msg) {
                             let _ = display_tx.send(evt);
                         }
                     }
+                }
+            }
+
+            action = soft_detach_rx.recv() => {
+                let Some(action) = action else { break };
+                if let Some(ref sid) = active_session {
+                    pending_soft_detach_action = Some(action);
+                    let _ = to_daemon.send(ClientMessage::SoftDetach { session_id: sid.clone() });
                 }
             }
 
@@ -301,6 +350,11 @@ async fn run_client(
         None => terminal_handle.await,
     };
     let keep_running = matches!(result, Ok(Ok(true)));
+
+    // If soft detach succeeded, the session is already detached by the daemon
+    if pending_soft_detach_action.is_some() {
+        return Ok(());
+    }
 
     if let Some(sid) = active_session {
         if keep_running {

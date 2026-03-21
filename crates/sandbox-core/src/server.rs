@@ -810,6 +810,7 @@ async fn handle_execute_command_streaming_inner<
                     invocation,
                     &accumulated,
                     true,
+                    true,
                 )
                 .await;
                 if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
@@ -824,6 +825,7 @@ async fn handle_execute_command_streaming_inner<
                         invocation,
                         &accumulated,
                         true,
+                        false,
                     )
                     .await;
                     accumulated.clear();
@@ -854,6 +856,7 @@ async fn handle_execute_command_streaming_inner<
                             invocation,
                             &accumulated,
                             true,
+                            true,
                         )
                         .await;
                         if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
@@ -875,6 +878,7 @@ async fn handle_execute_command_streaming_inner<
                                 &state.callback_client,
                                 invocation,
                                 &accumulated,
+                                true,
                                 true,
                             )
                             .await;
