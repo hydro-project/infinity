@@ -109,8 +109,8 @@ pub async fn handle_client_channels(
                         }
                     }
                     ClientMessage::UserInput { session_id, text } => {
-                        let mgr = session_manager.lock().await;
-                        if !mgr.send_input(&session_id, text) {
+                        let mut mgr = session_manager.lock().await;
+                        if !mgr.send_input(&session_id, text, client_tx.clone()).await {
                             let _ = daemon_tx.send(DaemonMessage::Error(format!("session {} not found", session_id)));
                         }
                     }
@@ -118,6 +118,17 @@ pub async fn handle_client_channels(
                         let mut mgr = session_manager.lock().await;
                         mgr.detach_client(&session_id);
                         attached_session_id = None;
+                    }
+                    ClientMessage::SoftDetach { session_id } => {
+                        let mut mgr = session_manager.lock().await;
+                        if mgr.is_session_idle(&session_id) {
+                            mgr.detach_client(&session_id);
+                            attached_session_id = None;
+                            // Break out — the daemon_tx drop signals the client
+                            break;
+                        } else {
+                            let _ = daemon_tx.send(DaemonMessage::DisconnectNotIdle);
+                        }
                     }
                     ClientMessage::ShutdownSession { session_id } => {
                         let mut mgr = session_manager.lock().await;

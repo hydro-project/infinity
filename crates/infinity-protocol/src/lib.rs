@@ -41,9 +41,18 @@ pub enum ClientMessage {
         session_id: String,
         text: String,
     },
+    /// Disconnect from the session while letting the agent continue to run in the background.
     Disconnect {
         session_id: String,
     },
+    /// Immediately attempt to detach. If the agent is idle, the daemon shuts
+    /// down the session (closing the display channel). If not idle, the daemon
+    /// responds with `DisconnectNotIdle` so the client can show a picker.
+    SoftDetach {
+        session_id: String,
+    },
+    /// Disconnects from the session and shuts down the agent so that it can only be woken bu
+    /// new user inputs.
     ShutdownSession {
         session_id: String,
     },
@@ -124,6 +133,8 @@ pub enum DaemonMessage {
     SessionsUpdated {
         sessions: HashMap<String, SessionInfo>,
     },
+    /// The agent is not idle — the client should show the full quit picker UI.
+    DisconnectNotIdle,
 }
 
 // ── Supporting types ────────────────────────────────────────────────────────

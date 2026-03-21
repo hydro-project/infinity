@@ -36,6 +36,10 @@ pub enum TaggedSyntheticKind {
         tool_call_id: String,
         #[serde(default)]
         associative: bool,
+        /// When true, this is the final event — the runtime removes the
+        /// subscription from active tracking.
+        #[serde(default)]
+        r#final: bool,
     },
     #[serde(rename = "thread_report")]
     ThreadReport {
@@ -95,6 +99,15 @@ impl SyntheticKind {
                 associative: true,
                 ..
             })
+        )
+    }
+
+    /// When true, this is the final subscription event — the runtime should
+    /// remove the subscription from active tracking.
+    pub fn is_final(&self) -> bool {
+        matches!(
+            self,
+            SyntheticKind::Tagged(TaggedSyntheticKind::SubscriptionEvent { r#final: true, .. })
         )
     }
 }
