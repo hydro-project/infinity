@@ -11,6 +11,10 @@ pub struct SessionEntry {
     #[serde(default)]
     pub title: Option<String>,
     pub cwd: PathBuf,
+    /// When true, only user text input should re-awaken the agent.
+    /// Set on explicit shutdown; cleared on next user input.
+    #[serde(default)]
+    pub shut_down: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -56,6 +60,7 @@ impl SessionStore {
                                     last_updated: e.last_updated,
                                     title: e.title,
                                     cwd: std::env::current_dir().unwrap(),
+                                    shut_down: false,
                                 },
                             )
                         })
@@ -104,6 +109,7 @@ impl SessionStore {
                 last_updated: Utc::now().to_rfc3339(),
                 title: None,
                 cwd,
+                shut_down: false,
             },
         );
     }
@@ -123,5 +129,24 @@ impl SessionStore {
 
     pub fn get_title(&self, session_id: &str) -> Option<String> {
         self.sessions.get(session_id).and_then(|e| e.title.clone())
+    }
+
+    pub fn mark_shut_down(&mut self, session_id: &str) {
+        if let Some(entry) = self.sessions.get_mut(session_id) {
+            entry.shut_down = true;
+        }
+    }
+
+    pub fn clear_shut_down(&mut self, session_id: &str) {
+        if let Some(entry) = self.sessions.get_mut(session_id) {
+            entry.shut_down = false;
+        }
+    }
+
+    pub fn is_shut_down(&self, session_id: &str) -> bool {
+        self.sessions
+            .get(session_id)
+            .map(|e| e.shut_down)
+            .unwrap_or(false)
     }
 }

@@ -34,6 +34,10 @@ pub struct RapSubscriptionEvent {
     pub tool_call_id: String,
     pub text: String,
     pub associative: bool,
+    /// When `true`, this is the final event for this subscription. The runtime
+    /// SHOULD remove the subscription from its active tracking.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#final: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -133,6 +137,7 @@ pub async fn send_subscription_event<C: CallbackClient>(
     invocation: &RapInvocation,
     text: &str,
     associative: bool,
+    r#final: bool,
 ) {
     let event = RapSubscriptionEvent {
         r#type: "subscription_event".to_string(),
@@ -140,6 +145,7 @@ pub async fn send_subscription_event<C: CallbackClient>(
         tool_call_id: invocation.id.clone(),
         text: text.to_string(),
         associative,
+        r#final: if r#final { Some(true) } else { None },
     };
     let body = serde_json::to_string(&event).unwrap();
     if let Err(e) = client.post_json(&invocation.callback_url, &body).await {

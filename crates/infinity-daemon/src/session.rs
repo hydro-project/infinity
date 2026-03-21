@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -27,13 +27,16 @@ use crate::rap_tools;
 use crate::session_store;
 use crate::set_title_tool;
 use crate::sleep_tools::{SleepTool, SleepUntilTool};
-use infinity_agent_core::traits::ConversationStore;
+use infinity_agent_core::traits::{ConversationStore, StateStore};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Shared handle to the currently-attached client sender for a session.
 /// The display bridge reads from this; attach/detach_client writes to it.
 pub type ClientTxHandle = Arc<std::sync::Mutex<Option<mpsc::UnboundedSender<DaemonMessage>>>>;
+
+/// Tracks which thread group_ids have a running worker task.
+pub type ActiveWorkers = Arc<std::sync::Mutex<HashSet<String>>>;
 
 /// A single agent session managed by the daemon.
 /// The session_id doubles as the root thread_id.
@@ -47,6 +50,10 @@ pub struct Session {
     pub total_tokens_used: usize,
     pub model_name: String,
     pub context_window: usize,
+    /// Set of group_ids with running thread workers. Empty means idle.
+    pub active_workers: ActiveWorkers,
+    /// Receives a notification whenever all thread workers have exited (session becomes idle).
+    pub idle_rx: mpsc::UnboundedReceiver<()>,
 }
 
 pub type SessionStoreHandle = Arc<tokio::sync::Mutex<session_store::SessionStore>>;
@@ -174,6 +181,9 @@ impl SessionManager {
     }
 
     /// Resume a persisted session, recovering its cwd from the session store.
+    /// If the session was previously shut down, this only sends the Connected
+    /// message and replays history — the agent loop is NOT started until user
+    /// input arrives via `send_input`.
     pub async fn resume_session(
         &mut self,
         session_id: &str,
@@ -183,10 +193,31 @@ impl SessionManager {
         emit(self.build_connected(session_id).await).await;
         if self.sessions.contains_key(session_id) {
             Ok(())
+        } else if self.session_store.lock().await.is_shut_down(session_id) {
+            // Session was shut down — send replay but don't start agent loop.
+            self.send_replay(session_id, &client_tx).await;
+            Ok(())
         } else {
             let cwd = self.session_store.lock().await.get_cwd(session_id).clone();
             self.start_session(session_id.to_string(), &cwd, client_tx, emit)
                 .await
+        }
+    }
+
+    /// Send history replay to a client without requiring a running Session.
+    async fn send_replay(&self, session_id: &str, tx: &mpsc::UnboundedSender<DaemonMessage>) {
+        if let Ok((history, _)) = self
+            .conversation_store
+            .load_history_with_ancestors(session_id)
+            .await
+        {
+            let msgs: Vec<DaemonMessage> = history
+                .iter()
+                .filter_map(|m| history_message_to_daemon(m, session_id, &self.conversation_store))
+                .collect();
+            if !msgs.is_empty() {
+                let _ = tx.send(DaemonMessage::Replay(msgs));
+            }
         }
     }
 
@@ -346,7 +377,10 @@ impl SessionManager {
 
         let state_store = InMemoryStateStore::new();
 
-        let (model_name, context_window) = self
+        let active_workers: ActiveWorkers = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let (idle_tx, idle_rx) = mpsc::unbounded_channel();
+
+        let (model_name, context_window, agent_handle) = self
             .start_agent_loop(
                 session_id.clone(),
                 input_rx,
@@ -358,6 +392,8 @@ impl SessionManager {
                 urls,
                 extra_system_prompt,
                 client_tx_handle.clone(),
+                active_workers.clone(),
+                idle_tx,
             )
             .await?;
 
@@ -367,10 +403,12 @@ impl SessionManager {
             client_tx_handle,
             input_tx,
             spawned_servers,
-            agent_task: None,
+            agent_task: Some(agent_handle),
             total_tokens_used: 0,
             model_name,
             context_window,
+            active_workers,
+            idle_rx,
         };
         self.sessions.insert(session_id.clone(), session);
         Ok(())
@@ -413,7 +451,34 @@ impl SessionManager {
     }
 
     /// Send user input text to a session's agent loop.
-    pub fn send_input(&self, session_id: &str, text: String) -> bool {
+    /// If the session was shut down and no agent loop is running, this
+    /// clears the shut_down flag and starts a new agent loop first.
+    pub async fn send_input(
+        &mut self,
+        session_id: &str,
+        text: String,
+        client_tx: mpsc::UnboundedSender<DaemonMessage>,
+    ) -> bool {
+        // If session isn't running but was shut down, restart it on user input.
+        if !self.sessions.contains_key(session_id)
+            && self.session_store.lock().await.is_shut_down(session_id)
+        {
+            {
+                let mut store = self.session_store.lock().await;
+                store.clear_shut_down(session_id);
+                let _ = store.save();
+            }
+            let cwd = self.session_store.lock().await.get_cwd(session_id).clone();
+            let mut emit = async |_msg: DaemonMessage| {};
+            if let Err(e) = self
+                .start_session(session_id.to_string(), &cwd, client_tx, &mut emit)
+                .await
+            {
+                tracing::error!("failed to restart shut-down session: {e}");
+                return false;
+            }
+        }
+
         if let Some(session) = self.sessions.get(session_id) {
             let msg = InputMessage {
                 content: InputMessageContent::User(UserContent::text(&text)),
@@ -461,6 +526,12 @@ impl SessionManager {
 
     /// Clean up a session: kill RAP servers, abort agent task.
     pub async fn cleanup_session(&mut self, session_id: &str) {
+        // Mark as shut down so stale tool results don't re-awaken the agent.
+        {
+            let mut store = self.session_store.lock().await;
+            store.mark_shut_down(session_id);
+            let _ = store.save();
+        }
         if let Some(mut session) = self.sessions.remove(session_id) {
             if let Some(ref route_map) = self.route_map {
                 route_map.lock().unwrap().remove(&session.session_id);
@@ -486,6 +557,14 @@ impl SessionManager {
         }
     }
 
+    /// Returns true if the session has no running thread workers.
+    pub fn is_session_idle(&self, session_id: &str) -> bool {
+        match self.sessions.get(session_id) {
+            Some(session) => session.active_workers.lock().unwrap().is_empty(),
+            None => true,
+        }
+    }
+
     /// Start the agent loop for a session. Returns (model_name, context_window).
     async fn start_agent_loop(
         &self,
@@ -499,30 +578,36 @@ impl SessionManager {
         tool_server_urls: Vec<String>,
         extra_system_prompt: Option<String>,
         client_tx_handle: ClientTxHandle,
-    ) -> Result<(String, usize), BoxError> {
+        active_workers: ActiveWorkers,
+        idle_tx: mpsc::UnboundedSender<()>,
+    ) -> Result<(String, usize, JoinHandle<()>), BoxError> {
         let default = &self.available_models[0]; // already validated in new()
         let model_name = default.display_name.clone();
         let context_window = default.context_window;
 
-        let client = rig_bedrock::client::Client::from_env();
-        let model = client.completion_model(&default.model_id);
+        let handle = {
+            let client = rig_bedrock::client::Client::from_env();
+            let model = client.completion_model(&default.model_id);
 
-        spawn_agent_loop(
-            session_id,
-            self.session_store.clone(),
-            input_rx,
-            model,
-            conversation_store,
-            state_store,
-            sender,
-            callback_url,
-            rap_tools,
-            tool_server_urls,
-            extra_system_prompt,
-            default.additional_request_params.clone(),
-            client_tx_handle,
-        );
-        Ok((model_name, context_window))
+            spawn_agent_loop(
+                session_id,
+                self.session_store.clone(),
+                input_rx,
+                model,
+                conversation_store,
+                state_store,
+                sender,
+                callback_url,
+                rap_tools,
+                tool_server_urls,
+                extra_system_prompt,
+                default.additional_request_params.clone(),
+                client_tx_handle,
+                active_workers,
+                idle_tx,
+            )
+        };
+        Ok((model_name, context_window, handle))
     }
 }
 
@@ -541,9 +626,11 @@ fn spawn_agent_loop<Mdl>(
     tool_server_urls: Vec<String>,
     extra_system_prompt: Option<String>,
     additional_params: Option<serde_json::Value>,
-    inject_conversation_id: bool,
     client_tx_handle: ClientTxHandle,
-) where
+    active_workers: ActiveWorkers,
+    idle_tx: mpsc::UnboundedSender<()>,
+) -> JoinHandle<()>
+where
     Mdl: CompletionModel + 'static,
 {
     let additional_request_params = Arc::new(std::sync::RwLock::new(additional_params));
@@ -598,7 +685,7 @@ fn spawn_agent_loop<Mdl>(
     let model = Arc::new(model);
     let extra_system_prompt = Arc::new(extra_system_prompt);
 
-    tokio::task::spawn_local(agent_loop(
+    let handle = tokio::task::spawn_local(agent_loop(
         session_id,
         session_store,
         input_rx,
@@ -612,9 +699,11 @@ fn spawn_agent_loop<Mdl>(
         rap_notifier,
         additional_request_params,
         active_model_id,
-        inject_conversation_id,
         client_tx_handle,
+        active_workers,
+        idle_tx,
     ));
+    handle
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -634,8 +723,9 @@ async fn agent_loop<Mdl>(
     >,
     additional_request_params: Arc<std::sync::RwLock<Option<serde_json::Value>>>,
     active_model_id: Arc<std::sync::RwLock<Option<String>>>,
-    inject_conversation_id: bool,
     client_tx_handle: ClientTxHandle,
+    active_workers: ActiveWorkers,
+    idle_tx: mpsc::UnboundedSender<()>,
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
@@ -673,28 +763,38 @@ async fn agent_loop<Mdl>(
     while let Some((input_msg, message_id)) = rx.recv().await {
         let group_id = input_msg.group_id.clone();
 
-        let thread_tx = thread_txs.entry(group_id.clone()).or_insert_with(|| {
-            let (tx, rx) = mpsc::unbounded_channel();
-            tokio::task::spawn_local(thread_worker(
-                group_id,
-                rx,
-                display_tx.clone(),
-                model.clone(),
-                conversation_store.clone(),
-                state_store.clone(),
-                sender.clone(),
-                callback_url.clone(),
-                tool_impls.clone(),
-                extra_system_prompt.as_ref().clone(),
-                rap_notifier.clone(),
-                additional_request_params.clone(),
-                active_model_id.clone(),
-                inject_conversation_id,
-            ));
-            tx
-        });
+        // Try to send to existing worker; if channel is closed (worker returned),
+        // remove the stale entry so a new worker is spawned below.
+        if let Some(tx) = thread_txs.get(&group_id) {
+            if tx.send((input_msg.clone(), message_id.clone())).is_ok() {
+                continue;
+            }
+            thread_txs.remove(&group_id);
+        }
 
-        let _ = thread_tx.send((input_msg, message_id));
+        let (tx, worker_rx) = mpsc::unbounded_channel();
+        let aw = active_workers.clone();
+        let gid = group_id.clone();
+        let itx = idle_tx.clone();
+        tokio::task::spawn_local(thread_worker(
+            gid,
+            worker_rx,
+            display_tx.clone(),
+            model.clone(),
+            conversation_store.clone(),
+            state_store.clone(),
+            sender.clone(),
+            callback_url.clone(),
+            tool_impls.clone(),
+            extra_system_prompt.as_ref().clone(),
+            rap_notifier.clone(),
+            additional_request_params.clone(),
+            active_model_id.clone(),
+            aw,
+            itx,
+        ));
+        let _ = tx.send((input_msg, message_id));
+        thread_txs.insert(group_id, tx);
     }
 }
 
@@ -723,10 +823,22 @@ async fn thread_worker<Mdl>(
     >,
     additional_request_params: Arc<std::sync::RwLock<Option<serde_json::Value>>>,
     active_model_id: Arc<std::sync::RwLock<Option<String>>>,
-    inject_conversation_id: bool,
+    active_workers: ActiveWorkers,
+    idle_tx: mpsc::UnboundedSender<()>,
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
+    active_workers
+        .lock()
+        .unwrap()
+        .insert(active_group_id.clone());
+
+    let _guard = WorkerGuard {
+        active_workers: active_workers.clone(),
+        group_id: active_group_id.clone(),
+        idle_tx,
+    };
+
     let current_history = std::cell::RefCell::new(
         match event_processor::HistoryManager::new_with_history(
             conversation_store.clone(),
@@ -794,12 +906,41 @@ async fn thread_worker<Mdl>(
                 }
             }
         } else {
+            // No completion running — check for idle before blocking.
             let mut b = vec![];
             if pending.is_empty() {
-                let Some(f) = rx.recv().await else {
-                    return;
-                };
-                b.push(f);
+                match rx.try_recv() {
+                    Ok(first) => b.push(first),
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                        // Check idle conditions: last message is not a tool call
+                        // and no active subscriptions.
+                        let last_is_tool_call = {
+                            let hist = current_history.borrow();
+                            hist.history.last().is_some_and(|msg| matches!(
+                                msg,
+                                rig::message::Message::Assistant { content, .. }
+                                    if matches!(content.first(), rig::message::AssistantContent::ToolCall(_))
+                            ))
+                        };
+                        let has_subs = state_store
+                            .get_active_subscriptions(&active_group_id)
+                            .await
+                            .map(|s| !s.is_empty())
+                            .unwrap_or(false);
+
+                        if !last_is_tool_call && !has_subs {
+                            // Idle — return so the worker can be respawned later.
+                            return;
+                        }
+
+                        // Not idle — block until next message.
+                        let Some(f) = rx.recv().await else {
+                            return;
+                        };
+                        b.push(f);
+                    }
+                }
             }
             while let Ok(i) = rx.try_recv() {
                 b.push(i);
@@ -833,7 +974,6 @@ async fn thread_worker<Mdl>(
             &extra_system_prompt,
             params,
             mid,
-            inject_conversation_id,
             rap_notifier.as_ref(),
         )
         .await;
@@ -841,6 +981,24 @@ async fn thread_worker<Mdl>(
         if let Some((fut, ct)) = result {
             cancel_tx = Some(ct);
             completion_fut = Some(fut);
+        }
+    }
+}
+
+/// RAII guard that removes the group_id from active_workers on drop.
+/// When the set becomes empty, sends a notification on idle_tx.
+struct WorkerGuard {
+    active_workers: ActiveWorkers,
+    group_id: String,
+    idle_tx: mpsc::UnboundedSender<()>,
+}
+
+impl Drop for WorkerGuard {
+    fn drop(&mut self) {
+        let mut set = self.active_workers.lock().unwrap();
+        set.remove(&self.group_id);
+        if set.is_empty() {
+            let _ = self.idle_tx.send(());
         }
     }
 }

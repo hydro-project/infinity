@@ -436,6 +436,23 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             .await
             .map_err(|e| Box::new(e) as BoxError)
     }
+
+    /// Remove a subscription from the current thread's active tracking.
+    pub async fn remove_subscription(&mut self, tool_call_id: &str) -> Result<(), BoxError> {
+        self.state_store
+            .remove_active_subscription(&self.thread_id, tool_call_id)
+            .await
+            .map_err(|e| Box::new(e) as BoxError)
+    }
+
+    /// Check if this thread has any active subscriptions.
+    pub async fn has_active_subscriptions(&self) -> bool {
+        self.state_store
+            .get_active_subscriptions(&self.thread_id)
+            .await
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -583,6 +600,7 @@ where
     // Handle synthetic tool results (subscription events / thread reports)
     let content = if let Some(synthetic_kind) = input_msg.synthetic {
         let original_tool_call_id = synthetic_kind.tool_call_id().to_string();
+        let is_final_subscription = synthetic_kind.is_final();
         tracing::info!(
             "Processing synthetic tool result for tool call: {}",
             original_tool_call_id
@@ -644,6 +662,13 @@ where
                     )
                     .await?;
                 tool_result.id = new_tool_call_id;
+                // Remove subscription if this is the final event
+                if is_final_subscription {
+                    current_history
+                        .remove_subscription(&original_tool_call_id)
+                        .await
+                        .ok();
+                }
                 UserContent::ToolResult(tool_result)
             } else {
                 return Err("Synthetic message is not a tool result".into());
@@ -747,6 +772,14 @@ where
                 .send_to_input_queue(child_msg, &sub_thread_id, &event_call_id)
                 .await
                 .map_err(|e| Box::new(e) as BoxError)?;
+
+            // Remove subscription if this is the final event
+            if is_final_subscription {
+                current_history
+                    .remove_subscription(&original_tool_call_id)
+                    .await
+                    .ok();
+            }
 
             return Ok(PrepareResult::Handled);
         }
@@ -1678,6 +1711,7 @@ mod tests {
                 TaggedSyntheticKind::SubscriptionEvent {
                     tool_call_id: "tc-sub".to_string(),
                     associative: false,
+                    r#final: false,
                 },
             )),
         );
@@ -1714,6 +1748,7 @@ mod tests {
                 TaggedSyntheticKind::SubscriptionEvent {
                     tool_call_id: "tc-sub".to_string(),
                     associative: false,
+                    r#final: false,
                 },
             )),
         );
@@ -1740,6 +1775,7 @@ mod tests {
                 TaggedSyntheticKind::SubscriptionEvent {
                     tool_call_id: "nonexistent-tc".to_string(),
                     associative: false,
+                    r#final: false,
                 },
             )),
         );
@@ -1808,6 +1844,7 @@ mod tests {
                 TaggedSyntheticKind::SubscriptionEvent {
                     tool_call_id: "tc-cmd".to_string(),
                     associative: true,
+                    r#final: false,
                 },
             )),
         );
@@ -1850,6 +1887,7 @@ mod tests {
                 TaggedSyntheticKind::SubscriptionEvent {
                     tool_call_id: "tc-cmd".to_string(),
                     associative: true,
+                    r#final: false,
                 },
             )),
         );
