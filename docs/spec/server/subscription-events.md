@@ -63,7 +63,8 @@ Content-Type: application/json
   "group_id": "thread_xyz",
   "tool_call_id": "call_abc123",
   "text": "build output line 1\nbuild output line 2\n[exit code: 0]",
-  "associative": true
+  "associative": true,
+  "final": true
 }
 ```
 
@@ -76,6 +77,9 @@ Content-Type: application/json
 | `tool_call_id` | `string` | Yes | The tool call `id` from the original invocation that created the subscription. |
 | `text` | `string` | Yes | Event payload. SHOULD be JSON-encoded for structured event data. |
 | `associative` | `boolean` | No | When `true`, the runtime SHOULD inject the event inline into the subscribing thread's history rather than spawning a child thread. Defaults to `false`. See [Processing Strategies](#processing-strategies). |
+| `final` | `boolean` | No | When `true`, this is the final event for this subscription. The runtime SHOULD remove the subscription from its active tracking automatically. Defaults to `false`. |
+
+When a subscription event includes `"final": true`, the runtime MUST automatically remove the subscription from the thread's active tracking. This allows tools to signal completion of a subscription (e.g., when a long-running command exits) without requiring the agent to explicitly call `cancel_subscription`. The tool MUST NOT send further events after sending a final event.
 
 :::note
 Subscription events use `tool_call_id` (referencing the original subscription call), while [tool results](/spec/basic/tool-result) use `id`. This distinction tells the runtime that the message is a new event from an ongoing subscription, not the final result of a one-off call.
