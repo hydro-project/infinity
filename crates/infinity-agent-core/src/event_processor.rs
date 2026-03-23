@@ -522,7 +522,32 @@ where
             input_msg.group_id
         );
 
-        // Write spawn tool call + result directly to child's store
+        // Write spawn tool call + result directly to child's store.
+        // If the parent's history ends with an unanswered tool call, prepend
+        // a synthetic "interrupted" result so the child doesn't have two
+        // consecutive assistant tool calls without a tool_result in between.
+        let mut child_messages: Vec<(Message, String)> = Vec::new();
+        if let Some(Message::Assistant { content, .. }) = current_history.history.last()
+            && let AssistantContent::ToolCall(pending_call) = content.first()
+            && !current_history
+                .processed_tool_calls
+                .contains(pending_call.id.as_str())
+        {
+            let interrupted_result = Message::User {
+                content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+                    id: pending_call.id.clone(),
+                    call_id: pending_call.call_id.clone(),
+                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                        text: "Tool call interrupted by compaction".to_string(),
+                    })),
+                })),
+            };
+            child_messages.push((
+                interrupted_result,
+                format!("{}-interrupted", pending_call.id),
+            ));
+        }
+
         let spawn_tool_call = Message::Assistant {
             id: None,
             content: OneOrMany::one(AssistantContent::ToolCall(rig::message::ToolCall {
@@ -536,14 +561,12 @@ where
                 signature: None,
             })),
         };
+        child_messages.push((
+            spawn_tool_call,
+            format!("{}-compaction-call", spawn_call_id),
+        ));
         conversation_store
-            .append_messages(
-                &sub_thread_id,
-                vec![(
-                    spawn_tool_call,
-                    format!("{}-compaction-call", spawn_call_id),
-                )],
-            )
+            .append_messages(&sub_thread_id, child_messages)
             .await
             .map_err(|e| Box::new(e) as BoxError)?;
 
@@ -702,6 +725,34 @@ where
                 return Err("Synthetic subscription event is not a tool result".into());
             };
 
+            // If the parent's history ends with an unanswered tool call (e.g.
+            // sleep_until_event_or_input), the child will inherit that via
+            // load_history_with_ancestors. We must prepend a synthetic
+            // "interrupted" result so the child's conversation doesn't have
+            // two consecutive assistant tool calls without a tool_result in
+            // between, which would cause a 400 Bad Request from the API.
+            let mut child_messages: Vec<(Message, String)> = Vec::new();
+            if let Some(Message::Assistant { content, .. }) = current_history.history.last()
+                && let AssistantContent::ToolCall(pending_call) = content.first()
+                && !current_history
+                    .processed_tool_calls
+                    .contains(pending_call.id.as_str())
+            {
+                let interrupted_result = Message::User {
+                    content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+                        id: pending_call.id.clone(),
+                        call_id: pending_call.call_id.clone(),
+                        content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                            text: "Tool call interrupted by subscription event".to_string(),
+                        })),
+                    })),
+                };
+                child_messages.push((
+                    interrupted_result,
+                    format!("{}-interrupted", pending_call.id),
+                ));
+            }
+
             // Write event + spawn tool calls directly to child's store
             let event_tool_call = Message::Assistant {
                 id: None,
@@ -720,9 +771,6 @@ where
                     signature: None,
                 })),
             };
-            let event_result = Message::User {
-                content: OneOrMany::one(UserContent::ToolResult(event_content)),
-            };
             let spawn_tool_call = Message::Assistant {
                 id: None,
                 content: OneOrMany::one(AssistantContent::ToolCall(rig::message::ToolCall {
@@ -731,37 +779,38 @@ where
                     function: rig::message::ToolFunction {
                         name: "spawn_thread".to_string(),
                         arguments: serde_json::json!({
-                            "instructions": "Process the single subscription event above, report to the parent if appropriate, then close the thread after processing this event. Only your report will be visible to the parent."
+                            "instructions": "Spawning thread to process incoming event."
                         }),
                     },
                     additional_params: None,
                     signature: None,
                 })),
             };
+            let spawn_tool_result = Message::User {
+                content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+                    id: spawn_call_id.clone(),
+                    call_id: None,
+                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                        text: format!(
+                            "You are now INSIDE the thread for processing the single event above. Your thread ID is {}, the parent which is still subscribing is {}. Process the single subscription event above, report to the parent if appropriate, then close the thread after processing this event. Your outputs are NOT VISIBLE to the user, if you want to show them something, send a report to your parent.",
+                            sub_thread_id, input_msg.group_id
+                        ),
+                    })),
+                })),
+            };
+            child_messages.extend(vec![
+                (spawn_tool_call, format!("{}-spawn-call", spawn_call_id)),
+                (spawn_tool_result, format!("{}-spawn-result", spawn_call_id)),
+                (event_tool_call, format!("{}-event-call", event_call_id)),
+            ]);
             conversation_store
-                .append_messages(
-                    &sub_thread_id,
-                    vec![
-                        (event_tool_call, format!("{}-event-call", event_call_id)),
-                        (event_result, format!("{}-event-result", event_call_id)),
-                        (spawn_tool_call, format!("{}-spawn-call", spawn_call_id)),
-                    ],
-                )
+                .append_messages(&sub_thread_id, child_messages)
                 .await
                 .map_err(|e| Box::new(e) as BoxError)?;
 
             // Send child its instructions via message sender
             let child_msg = InputMessage {
-                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                    id: spawn_call_id,
-                    call_id: None,
-                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                        text: format!(
-                            "You are now INSIDE the thread for processing the single event above. Your thread ID is {}, the parent which is still subscribing is {}.",
-                            sub_thread_id, input_msg.group_id
-                        ),
-                    })),
-                })),
+                content: InputMessageContent::User(UserContent::ToolResult(event_content)),
                 group_id: sub_thread_id.clone(),
                 metadata: None,
                 synthetic: None,
