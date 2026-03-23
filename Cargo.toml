@@ -8,6 +8,7 @@ members = [
     "crates/sandbox-remote",
     "crates/rap-protocol",
     "crates/rap-steering-server",
+    "crates/rap-github-event-poller",
     "crates/infinity-protocol",
     "crates/infinity-daemon",
 ]
