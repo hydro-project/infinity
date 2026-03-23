@@ -124,8 +124,7 @@ pub async fn handle_client_channels(
                         if mgr.is_session_idle(&session_id) {
                             mgr.detach_client(&session_id);
                             attached_session_id = None;
-                            // Break out — the daemon_tx drop signals the client
-                            break;
+                            let _ = daemon_tx.send(DaemonMessage::DetachedIdle);
                         } else {
                             let _ = daemon_tx.send(DaemonMessage::DisconnectNotIdle);
                         }

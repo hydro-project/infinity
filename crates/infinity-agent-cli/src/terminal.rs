@@ -69,11 +69,15 @@ pub struct SessionChanged {
     pub total_tokens_used: usize,
 }
 
-/// Action the terminal requests when the user triggers quit/switch/new.
-/// Sent to daemon_client which issues a SoftDetach. If the agent is idle
-/// the display channel closes; if not, the action is bounced back via
-/// `disconnect_not_idle_rx` so the terminal can show the quit picker.
-pub enum SoftDetachAction {
+/// Result of a SoftDetach attempt, sent back from daemon_client to terminal.
+pub enum DetachResult {
+    /// Agent was idle — session already detached, proceed directly.
+    Idle,
+    /// Agent is not idle — show the quit picker.
+    NotIdle,
+}
+
+enum SoftDetachAction {
     Quit,
     SwitchSession(Option<String>),
 }
@@ -97,8 +101,8 @@ pub async fn run<R>(
     mut sessions_updated_rx: mpsc::UnboundedReceiver<
         std::collections::HashMap<String, infinity_protocol::SessionInfo>,
     >,
-    soft_detach_tx: mpsc::UnboundedSender<SoftDetachAction>,
-    mut disconnect_not_idle_rx: mpsc::UnboundedReceiver<SoftDetachAction>,
+    soft_detach_tx: mpsc::UnboundedSender<()>,
+    mut detach_result_rx: mpsc::UnboundedReceiver<DetachResult>,
 ) -> Result<bool, BoxError>
 where
     R: GetTokenUsage,
@@ -150,7 +154,7 @@ where
     let mut thinking_text_buffer = String::new();
     // Tab-completion state: (prefix that was typed, current selection index)
     let mut tab_complete: Option<(String, usize)> = None;
-    let mut pending_soft_detach = false;
+    let mut pending_soft_detach: Option<SoftDetachAction> = None;
 
     draw_viewport(
         &mut viewport,
@@ -225,22 +229,46 @@ where
                 }
             }
 
-            action = disconnect_not_idle_rx.recv() => {
-                if let Some(action) = action {
-                    pending_soft_detach = false;
-                    quit_picker = Some(QuitPicker::new());
-                    quit_picker_action = Some(match action {
-                        SoftDetachAction::Quit => QuitPickerAction::Quit,
-                        SoftDetachAction::SwitchSession(target) => QuitPickerAction::SwitchSession(target),
-                    });
-                    ui_mode = UiMode::QuitPicker;
+            result = detach_result_rx.recv() => {
+                if let Some(result) = result {
+                    let action = pending_soft_detach.take();
+                    match (result, action) {
+                        (DetachResult::Idle, Some(SoftDetachAction::Quit)) => {
+                            cleanup()?;
+                            return Ok(true);
+                        }
+                        (DetachResult::Idle, Some(SoftDetachAction::SwitchSession(target))) => {
+                            let _ = load_session_tx.send((target.clone(), false));
+                            if target.is_none() {
+                                viewport.print_line_above(Line::from(vec![
+                                    Span::styled(
+                                        "✦ Lazily creating a new session",
+                                        Style::default().fg(Color::Yellow),
+                                    ),
+                                ]))?;
+                            }
+                            total_tokens_used = 0;
+                            thread_buffers.clear();
+                            thread_id = None;
+                            spinner_state = None;
+                        }
+                        (DetachResult::NotIdle, Some(action)) => {
+                            quit_picker = Some(QuitPicker::new());
+                            quit_picker_action = Some(match action {
+                                SoftDetachAction::Quit => QuitPickerAction::Quit,
+                                SoftDetachAction::SwitchSession(target) => QuitPickerAction::SwitchSession(target),
+                            });
+                            ui_mode = UiMode::QuitPicker;
+                        }
+                        _ => {}
+                    }
                     draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete)?;
                 }
             }
 
             evt = display_rx.recv() => {
                 let Some(evt) = evt else {
-                    if pending_soft_detach {
+                    if pending_soft_detach.is_some() {
                         cleanup()?;
                         return Ok(true);
                     }
@@ -482,8 +510,8 @@ where
                                             match result {
                                                 SessionPickerResult::Selected(session_id) => {
                                                     if thread_id.is_some() {
-                                                        let _ = soft_detach_tx.send(SoftDetachAction::SwitchSession(Some(session_id)));
-                                                        pending_soft_detach = true;
+                                                        pending_soft_detach = Some(SoftDetachAction::SwitchSession(Some(session_id)));
+                                                        let _ = soft_detach_tx.send(());
                                                     } else {
                                                         let _ = load_session_tx.send((Some(session_id), false));
                                                     }
@@ -643,8 +671,8 @@ where
                                             }
                                             Some("/quit") => {
                                                 if thread_id.is_some() {
-                                                    let _ = soft_detach_tx.send(SoftDetachAction::Quit);
-                                                    pending_soft_detach = true;
+                                                    pending_soft_detach = Some(SoftDetachAction::Quit);
+                                                    let _ = soft_detach_tx.send(());
                                                 } else {
                                                     cleanup()?;
                                                     return Ok(true);
@@ -652,8 +680,8 @@ where
                                             }
                                             Some("/new") => {
                                                 if thread_id.is_some() {
-                                                    let _ = soft_detach_tx.send(SoftDetachAction::SwitchSession(None));
-                                                    pending_soft_detach = true;
+                                                    pending_soft_detach = Some(SoftDetachAction::SwitchSession(None));
+                                                    let _ = soft_detach_tx.send(());
                                                 } else {
                                                     let _ = load_session_tx.send((None, false));
                                                     viewport.print_line_above(Line::from(vec![
