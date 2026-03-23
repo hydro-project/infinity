@@ -135,6 +135,9 @@ pub enum DaemonMessage {
     },
     /// The agent is not idle — the client should show the full quit picker UI.
     DisconnectNotIdle,
+    /// The agent was idle and has been detached — the client can proceed with
+    /// its pending action (quit, switch, new session) without showing a picker.
+    DetachedIdle,
 }
 
 // ── Supporting types ────────────────────────────────────────────────────────

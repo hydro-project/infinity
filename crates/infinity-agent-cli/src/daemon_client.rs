@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use infinity_agent_cli::model_picker::ModelEntry;
-use infinity_agent_cli::terminal::{SessionChanged, SoftDetachAction};
+use infinity_agent_cli::terminal::{DetachResult, SessionChanged};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -75,7 +75,8 @@ fn daemon_msg_to_display(msg: DaemonMessage) -> Option<DisplayEvent<DaemonTokenU
         | DaemonMessage::Welcome { .. }
         | DaemonMessage::Replay(_)
         | DaemonMessage::SessionsUpdated { .. }
-        | DaemonMessage::DisconnectNotIdle => return None,
+        | DaemonMessage::DisconnectNotIdle
+        | DaemonMessage::DetachedIdle => return None,
     })
 }
 
@@ -214,9 +215,9 @@ async fn run_client(
     let (session_tx, session_rx) = mpsc::unbounded_channel::<SessionChanged>();
     let (sessions_updated_tx, sessions_updated_rx) =
         mpsc::unbounded_channel::<HashMap<String, SessionInfo>>();
-    let (soft_detach_tx, mut soft_detach_rx) = mpsc::unbounded_channel::<SoftDetachAction>();
-    let (disconnect_not_idle_tx, disconnect_not_idle_rx) =
-        mpsc::unbounded_channel::<SoftDetachAction>();
+    let (soft_detach_tx, mut soft_detach_rx) = mpsc::unbounded_channel::<()>();
+    let (detach_result_tx, detach_result_rx) =
+        mpsc::unbounded_channel::<DetachResult>();
 
     if let Some(info) = startup_info {
         let _ = display_tx.send(DisplayEvent::Info(info));
@@ -241,13 +242,13 @@ async fn run_client(
         session_rx,
         sessions_updated_rx,
         soft_detach_tx,
-        disconnect_not_idle_rx,
+        detach_result_rx,
     ));
 
     let mut active_session: Option<String> = None;
     let mut pending_input: Vec<String> = Vec::new();
     let mut terminal_result: Option<Result<Result<bool, BoxError>, tokio::task::JoinError>> = None;
-    let mut pending_soft_detach_action: Option<SoftDetachAction> = None;
+    let mut pending_soft_detach = false;
 
     loop {
         tokio::select! {
@@ -255,12 +256,6 @@ async fn run_client(
 
             msg = from_daemon.recv() => {
                 let Some(msg) = msg else {
-                    // Daemon closed the channel — soft detach succeeded (agent was idle)
-                    if pending_soft_detach_action.is_some() {
-                        // Drop display_tx so terminal sees None and exits
-                        drop(display_tx);
-                        break;
-                    }
                     break;
                 };
                 match msg {
@@ -284,8 +279,16 @@ async fn run_client(
                         let _ = sessions_updated_tx.send(sessions);
                     }
                     DaemonMessage::DisconnectNotIdle => {
-                        if let Some(action) = pending_soft_detach_action.take() {
-                            let _ = disconnect_not_idle_tx.send(action);
+                        if pending_soft_detach {
+                            pending_soft_detach = false;
+                            let _ = detach_result_tx.send(DetachResult::NotIdle);
+                        }
+                    }
+                    DaemonMessage::DetachedIdle => {
+                        if pending_soft_detach {
+                            pending_soft_detach = false;
+                            active_session = None;
+                            let _ = detach_result_tx.send(DetachResult::Idle);
                         }
                     }
                     msg => {
@@ -296,10 +299,10 @@ async fn run_client(
                 }
             }
 
-            action = soft_detach_rx.recv() => {
-                let Some(action) = action else { break };
+            msg = soft_detach_rx.recv() => {
+                let Some(()) = msg else { break };
                 if let Some(ref sid) = active_session {
-                    pending_soft_detach_action = Some(action);
+                    pending_soft_detach = true;
                     let _ = to_daemon.send(ClientMessage::SoftDetach { session_id: sid.clone() });
                 }
             }
@@ -351,11 +354,6 @@ async fn run_client(
         None => terminal_handle.await,
     };
     let keep_running = matches!(result, Ok(Ok(true)));
-
-    // If soft detach succeeded, the session is already detached by the daemon
-    if pending_soft_detach_action.is_some() {
-        return Ok(());
-    }
 
     if let Some(sid) = active_session {
         if keep_running {
