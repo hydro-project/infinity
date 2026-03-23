@@ -216,8 +216,7 @@ async fn run_client(
     let (sessions_updated_tx, sessions_updated_rx) =
         mpsc::unbounded_channel::<HashMap<String, SessionInfo>>();
     let (soft_detach_tx, mut soft_detach_rx) = mpsc::unbounded_channel::<()>();
-    let (detach_result_tx, detach_result_rx) =
-        mpsc::unbounded_channel::<DetachResult>();
+    let (detach_result_tx, detach_result_rx) = mpsc::unbounded_channel::<DetachResult>();
 
     if let Some(info) = startup_info {
         let _ = display_tx.send(DisplayEvent::Info(info));
