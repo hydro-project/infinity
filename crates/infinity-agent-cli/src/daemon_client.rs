@@ -130,6 +130,7 @@ pub async fn run_with_daemon(initial_message: Option<String>) -> Result<(), BoxE
                 }
             }
             client_res = &mut client_fut => {
+                drop(client_fut);
                 // TODO(shadaj): maybe use join to simplify the state management?
                 // Drain any remaining messages (e.g. Disconnect) before closing the socket.
                 while let Some(msg) = to_daemon_rx.recv().await {
