@@ -122,7 +122,6 @@ pub async fn handle_client_channels(
                     ClientMessage::SoftDetach { session_id } => {
                         let mut mgr = session_manager.lock().await;
                         if mgr.is_session_idle(&session_id) {
-                            mgr.detach_client(&session_id);
                             mgr.cleanup_session(&session_id).await;
                             attached_session_id = None;
                             let _ = daemon_tx.send(DaemonMessage::DetachedIdle);
