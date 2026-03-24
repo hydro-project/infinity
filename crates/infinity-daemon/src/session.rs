@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -22,7 +23,6 @@ use crate::config;
 use crate::mcp_proxy;
 use crate::memory_store::{InMemoryConversationStore, InMemoryMessageSender, InMemoryStateStore};
 use crate::model_picker::{self, ModelProvider};
-use crate::rap_callback;
 use crate::rap_tools;
 use crate::session_store;
 use crate::set_title_tool;
@@ -45,15 +45,14 @@ pub struct Session {
     pub cwd: PathBuf,
     pub client_tx_handle: ClientTxHandle,
     pub input_tx: mpsc::UnboundedSender<(InputMessage, String)>,
-    pub spawned_servers: Vec<tokio::process::Child>,
-    pub agent_task: Option<JoinHandle<()>>,
+    pub agent_task: JoinHandle<()>,
     pub total_tokens_used: usize,
     pub model_name: String,
     pub context_window: usize,
     /// Set of group_ids with running thread workers. Empty means idle.
     pub active_workers: ActiveWorkers,
-    /// Receives a notification whenever all thread workers have exited (session becomes idle).
-    pub idle_rx: mpsc::UnboundedReceiver<()>,
+    /// Send to signal the agent loop to shut down.
+    pub shutdown_tx: Option<oneshot::Sender<()>>,
 }
 
 pub type SessionStoreHandle = Arc<tokio::sync::Mutex<session_store::SessionStore>>;
@@ -65,7 +64,6 @@ pub type SessionWorkersMap = Arc<std::sync::Mutex<HashMap<String, ActiveWorkers>
 pub struct SessionManager {
     pub sessions: HashMap<String, Session>,
     callback_url: String,
-    route_map: Option<RouteMap>,
     session_store: SessionStoreHandle,
     conversation_store: InMemoryConversationStore,
     state_store: InMemoryStateStore,
@@ -74,8 +72,6 @@ pub struct SessionManager {
     pub available_models: Vec<model_picker::ModelEntry>,
     /// Connected clients that receive broadcast updates.
     broadcast_clients: Arc<std::sync::Mutex<Vec<mpsc::UnboundedSender<DaemonMessage>>>>,
-    /// Shared map for broadcast task to determine session status.
-    session_workers: SessionWorkersMap,
 }
 
 /// Shared routing table for callback messages.
@@ -83,7 +79,10 @@ pub type RouteMap =
     Arc<std::sync::Mutex<HashMap<String, mpsc::UnboundedSender<(InputMessage, String)>>>>;
 
 impl SessionManager {
-    pub async fn new(state_dir: std::path::PathBuf) -> Result<Self, BoxError> {
+    pub async fn new(
+        state_dir: std::path::PathBuf,
+        callback_url: String,
+    ) -> Result<Self, BoxError> {
         std::fs::create_dir_all(&state_dir).ok();
         let sessions_path = state_dir.join("sessions.json");
         let (change_tx, mut change_rx) = mpsc::unbounded_channel::<String>();
@@ -93,12 +92,10 @@ impl SessionManager {
         )));
         let broadcast_clients: Arc<std::sync::Mutex<Vec<mpsc::UnboundedSender<DaemonMessage>>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
-        let session_workers: SessionWorkersMap = Arc::new(std::sync::Mutex::new(HashMap::new()));
 
         // Task: listen for session store changes and broadcast to clients
         let bc = broadcast_clients.clone();
         let ss = session_store.clone();
-        let sw = session_workers.clone();
         tokio::task::spawn_local(async move {
             while let Some(session_id) = change_rx.recv().await {
                 let store = ss.lock().await;
@@ -107,7 +104,7 @@ impl SessionManager {
                         title: e.title.clone(),
                         last_updated: e.last_updated.clone(),
                         total_tokens_used: e.total_tokens_used,
-                        status: session_status(&sw, &session_id, e.shut_down),
+                        status: e.status(),
                     },
                     None => continue,
                 };
@@ -124,30 +121,6 @@ impl SessionManager {
         let conversation_store = InMemoryConversationStore::new_with_dir(&threads_dir);
         let state_store = InMemoryStateStore::new(state_dir.join("state"));
 
-        // Start shared callback server
-        let (input_tx, mut input_rx) = mpsc::unbounded_channel::<(InputMessage, String)>();
-        let callback_url = rap_callback::start_callback_server(input_tx.clone())
-            .await
-            .map_err(|e| format!("Failed to start callback server: {e}"))?;
-        tracing::info!("shared callback server started");
-
-        // Router task
-        let routes: RouteMap = Arc::new(std::sync::Mutex::new(HashMap::new()));
-        let routes_clone = routes.clone();
-        tokio::task::spawn_local(async move {
-            while let Some((msg, dedup)) = input_rx.recv().await {
-                let group_id = msg.group_id.clone();
-                let routes = routes_clone.lock().unwrap();
-                if let Some(tx) = routes.get(&group_id) {
-                    let _ = tx.send((msg, dedup));
-                } else {
-                    for tx in routes.values() {
-                        let _ = tx.send((msg.clone(), dedup.clone()));
-                    }
-                }
-            }
-        });
-
         // Detect model provider
         let provider = model_picker::BedrockProvider;
         let models = provider.available_models();
@@ -161,7 +134,6 @@ impl SessionManager {
         Ok(Self {
             sessions: HashMap::new(),
             callback_url,
-            route_map: Some(routes),
             session_store,
             conversation_store,
             state_store,
@@ -169,7 +141,6 @@ impl SessionManager {
             default_context_window,
             available_models,
             broadcast_clients,
-            session_workers,
         })
     }
 
@@ -203,10 +174,22 @@ impl SessionManager {
         emit: &mut impl AsyncFnMut(DaemonMessage),
     ) -> Result<(), BoxError> {
         emit(self.build_connected(session_id).await).await;
-        if self.sessions.contains_key(session_id) {
-            Ok(())
-        } else if self.session_store.lock().await.is_shut_down(session_id) {
-            // Session was shut down — send replay but don't start agent loop.
+
+        // Check if session is alive (in map with running task).
+        let is_alive = self
+            .sessions
+            .get(session_id)
+            .is_some_and(|s| !s.agent_task.is_finished());
+
+        if is_alive {
+            return Ok(());
+        }
+
+        // Session not alive — check if shut down or idle-cleaned.
+        let store = self.session_store.lock().await;
+        let is_stopped = store.is_shut_down(session_id) || store.is_idle_cleaned(session_id);
+        drop(store);
+        if is_stopped {
             self.send_replay(session_id, &client_tx).await;
             Ok(())
         } else {
@@ -262,13 +245,6 @@ impl SessionManager {
 
         let (input_tx, input_rx) = mpsc::unbounded_channel::<(InputMessage, String)>();
         let sender = InMemoryMessageSender::new(input_tx.clone());
-
-        if let Some(ref route_map) = self.route_map {
-            route_map
-                .lock()
-                .unwrap()
-                .insert(session_id.clone(), input_tx.clone());
-        }
 
         // Load RAP config
         let cwd_rap = Path::new(&cwd).join(".infinity").join("rap.json");
@@ -391,6 +367,7 @@ impl SessionManager {
 
         let active_workers: ActiveWorkers = Arc::new(std::sync::Mutex::new(HashSet::new()));
         let (idle_tx, idle_rx) = mpsc::unbounded_channel();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
         let (model_name, context_window, agent_handle) = self
             .start_agent_loop(
@@ -406,6 +383,9 @@ impl SessionManager {
                 client_tx_handle.clone(),
                 active_workers.clone(),
                 idle_tx,
+                idle_rx,
+                shutdown_rx,
+                spawned_servers,
             )
             .await?;
 
@@ -414,18 +394,13 @@ impl SessionManager {
             cwd: cwd.to_path_buf(),
             client_tx_handle,
             input_tx,
-            spawned_servers,
-            agent_task: Some(agent_handle),
+            agent_task: agent_handle,
             total_tokens_used: 0,
             model_name,
             context_window,
             active_workers: active_workers.clone(),
-            idle_rx,
+            shutdown_tx: Some(shutdown_tx),
         };
-        self.session_workers
-            .lock()
-            .unwrap()
-            .insert(session_id.clone(), active_workers);
         self.sessions.insert(session_id.clone(), session);
         Ok(())
     }
@@ -472,13 +447,22 @@ impl SessionManager {
     pub async fn send_input(
         &mut self,
         session_id: &str,
-        text: String,
-        client_tx: mpsc::UnboundedSender<DaemonMessage>,
+        msg: (InputMessage, Option<String>),
+        client_tx: Option<mpsc::UnboundedSender<DaemonMessage>>,
     ) -> bool {
-        // If session isn't running but was shut down, restart it on user input.
-        if !self.sessions.contains_key(session_id)
-            && self.session_store.lock().await.is_shut_down(session_id)
-        {
+        // If session task finished (idle-cleaned) or was never started, check if we need to restart.
+        let needs_restart = if let Some(session) = self.sessions.get(session_id) {
+            session.agent_task.is_finished()
+        } else {
+            let store = self.session_store.lock().await;
+            store.is_shut_down(session_id) || store.is_idle_cleaned(session_id)
+        };
+
+        // if client_tx is None, that means this is for a RAP callback, but if the agent was shut down or idled,
+        // we should ignore the callback (the agent will not idle if any tool calls or subscriptions are active)
+        if needs_restart && client_tx.is_some() {
+            // Remove stale session if present.
+            self.sessions.remove(session_id);
             {
                 let mut store = self.session_store.lock().await;
                 store.clear_shut_down(session_id);
@@ -487,26 +471,21 @@ impl SessionManager {
             let cwd = self.session_store.lock().await.get_cwd(session_id).clone();
             let mut emit = async |_msg: DaemonMessage| {};
             if let Err(e) = self
-                .start_session(session_id.to_string(), &cwd, client_tx, &mut emit)
+                .start_session(session_id.to_string(), &cwd, client_tx.unwrap(), &mut emit)
                 .await
             {
-                tracing::error!("failed to restart shut-down session: {e}");
+                tracing::error!("failed to restart session: {e}");
                 return false;
             }
         }
 
         if let Some(session) = self.sessions.get(session_id) {
-            let msg = InputMessage {
-                content: InputMessageContent::User(UserContent::text(&text)),
-                group_id: session.session_id.clone(),
-                metadata: None,
-                synthetic: None,
-                display_as: None,
-                subscription: false,
-            };
             session
                 .input_tx
-                .send((msg, uuid::Uuid::new_v4().to_string()))
+                .send((
+                    msg.0,
+                    msg.1.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                ))
                 .is_ok()
         } else {
             false
@@ -533,7 +512,7 @@ impl SessionManager {
                     title: entry.title.clone(),
                     last_updated: entry.last_updated.clone(),
                     total_tokens_used: entry.total_tokens_used,
-                    status: session_status(&self.session_workers, id, entry.shut_down),
+                    status: entry.status(),
                 },
             );
         }
@@ -541,36 +520,20 @@ impl SessionManager {
         result
     }
 
-    /// Clean up a session: kill RAP servers, abort agent task.
+    /// Clean up a session: signal shutdown, wait for agent task to finish
+    /// (which handles RAP server cleanup and marking the session store).
     pub async fn cleanup_session(&mut self, session_id: &str) {
-        // Mark as shut down so stale tool results don't re-awaken the agent.
-        {
-            let mut store = self.session_store.lock().await;
-            store.mark_shut_down(session_id);
-            let _ = store.save();
-        }
         if let Some(mut session) = self.sessions.remove(session_id) {
-            self.session_workers.lock().unwrap().remove(session_id);
-            if let Some(ref route_map) = self.route_map {
-                route_map.lock().unwrap().remove(&session.session_id);
+            // Signal shutdown; the spawned future will kill servers and mark shut_down.
+            if let Some(tx) = session.shutdown_tx.take() {
+                let _ = tx.send(());
             }
-            for mut child in session.spawned_servers.drain(..) {
-                #[cfg(unix)]
-                {
-                    use nix::sys::signal::{self, Signal};
-                    use nix::unistd::Pid;
-                    if let Some(id) = child.id() {
-                        let _ = signal::kill(Pid::from_raw(id as i32), Signal::SIGINT);
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    let _ = child.start_kill();
-                }
-                let _ = child.wait().await;
-            }
-            if let Some(task) = session.agent_task.take() {
-                task.abort();
+            let _ = session.agent_task.await;
+            // Ensure shut_down is set (task may have already finished as idle_cleaned).
+            let mut store = self.session_store.lock().await;
+            if !store.is_shut_down(session_id) {
+                store.mark_shut_down(session_id);
+                let _ = store.save();
             }
         }
     }
@@ -578,7 +541,10 @@ impl SessionManager {
     /// Returns true if the session has no running thread workers.
     pub fn is_session_idle(&self, session_id: &str) -> bool {
         match self.sessions.get(session_id) {
-            Some(session) => session.active_workers.lock().unwrap().is_empty(),
+            Some(session) => {
+                session.agent_task.is_finished()
+                    || session.active_workers.lock().unwrap().is_empty()
+            }
             None => true,
         }
     }
@@ -598,6 +564,9 @@ impl SessionManager {
         client_tx_handle: ClientTxHandle,
         active_workers: ActiveWorkers,
         idle_tx: mpsc::UnboundedSender<()>,
+        idle_rx: mpsc::UnboundedReceiver<()>,
+        shutdown_rx: oneshot::Receiver<()>,
+        spawned_servers: Vec<tokio::process::Child>,
     ) -> Result<(String, usize, JoinHandle<()>), BoxError> {
         let default = &self.available_models[0]; // already validated in new()
         let model_name = default.display_name.clone();
@@ -623,6 +592,9 @@ impl SessionManager {
                 client_tx_handle,
                 active_workers,
                 idle_tx,
+                idle_rx,
+                shutdown_rx,
+                spawned_servers,
             )
         };
         Ok((model_name, context_window, handle))
@@ -647,6 +619,9 @@ fn spawn_agent_loop<Mdl>(
     client_tx_handle: ClientTxHandle,
     active_workers: ActiveWorkers,
     idle_tx: mpsc::UnboundedSender<()>,
+    idle_rx: mpsc::UnboundedReceiver<()>,
+    shutdown_rx: oneshot::Receiver<()>,
+    spawned_servers: Vec<tokio::process::Child>,
 ) -> JoinHandle<()>
 where
     Mdl: CompletionModel + 'static,
@@ -654,12 +629,6 @@ where
     let additional_request_params = Arc::new(std::sync::RwLock::new(additional_params));
     let active_model_id: Arc<std::sync::RwLock<Option<String>>> =
         Arc::new(std::sync::RwLock::new(None));
-
-    // The display_tx here is a dummy — we don't have a terminal.
-    // Instead we use a channel that a bridge task reads from.
-    // For now, the display events are just logged. The bridge is set up
-    // when a client attaches via the Session's client_tx.
-    // TODO: wire display bridge per-session
 
     let rap_notifier = if tool_server_urls.is_empty() {
         None
@@ -703,9 +672,9 @@ where
     let model = Arc::new(model);
     let extra_system_prompt = Arc::new(extra_system_prompt);
 
-    let handle = tokio::task::spawn_local(agent_loop(
-        session_id,
-        session_store,
+    let agent_fut = agent_loop(
+        session_id.clone(),
+        session_store.clone(),
         input_rx,
         model,
         conversation_store,
@@ -717,11 +686,89 @@ where
         rap_notifier,
         additional_request_params,
         active_model_id,
-        client_tx_handle,
+        client_tx_handle.clone(),
         active_workers,
         idle_tx,
+    );
+
+    let handle = tokio::task::spawn_local(session_wrapper(
+        agent_fut,
+        session_id,
+        session_store,
+        client_tx_handle,
+        idle_rx,
+        shutdown_rx,
+        spawned_servers,
     ));
     handle
+}
+
+/// Wrapper that owns the RAP servers and handles cleanup.
+/// Runs agent_loop, selects on shutdown signal and idle notifications.
+/// When done, gracefully kills servers and marks the session store.
+#[expect(clippy::too_many_arguments)]
+async fn session_wrapper(
+    agent_fut: impl Future<Output = ()>,
+    session_id: String,
+    session_store: SessionStoreHandle,
+    client_tx_handle: ClientTxHandle,
+    mut idle_rx: mpsc::UnboundedReceiver<()>,
+    mut shutdown_rx: oneshot::Receiver<()>,
+    mut spawned_servers: Vec<tokio::process::Child>,
+) {
+    // Determine why we exited: idle (no client) vs explicit shutdown.
+    let idle_exited;
+    tokio::pin!(agent_fut);
+    loop {
+        tokio::select! {
+            _ = &mut agent_fut => {
+                // agent_loop returned (rx closed). Wait for workers to drain.
+                while idle_rx.recv().await.is_some() {
+                    break;
+                }
+                idle_exited = client_tx_handle.lock().unwrap().is_none();
+                break;
+            }
+            _ = &mut shutdown_rx => {
+                idle_exited = false;
+                break;
+            }
+            _ = idle_rx.recv() => {
+                // All workers idle. If no client attached, exit.
+                if client_tx_handle.lock().unwrap().is_none() {
+                    idle_exited = true;
+                    break;
+                }
+                // Client still attached — keep running.
+            }
+        }
+    }
+
+    // Gracefully kill RAP servers.
+    for child in spawned_servers.iter_mut() {
+        #[cfg(unix)]
+        {
+            use nix::sys::signal::{self, Signal};
+            use nix::unistd::Pid;
+            if let Some(id) = child.id() {
+                let _ = signal::kill(Pid::from_raw(id as i32), Signal::SIGINT);
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = child.start_kill();
+        }
+        let _ = child.wait().await;
+    }
+
+    // Mark session store.
+    let mut store = session_store.lock().await;
+    if idle_exited {
+        store.mark_idle_cleaned(&session_id);
+    } else {
+        store.mark_shut_down(&session_id);
+    }
+    let _ = store.save();
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -1105,20 +1152,6 @@ fn display_event_to_daemon<R: GetTokenUsage>(evt: DisplayEvent<R>) -> Option<Dae
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-
-fn session_status(
-    workers_map: &SessionWorkersMap,
-    session_id: &str,
-    shut_down: bool,
-) -> infinity_protocol::SessionStatus {
-    use infinity_protocol::SessionStatus;
-    match workers_map.lock().unwrap().get(session_id) {
-        Some(aw) if !aw.lock().unwrap().is_empty() => SessionStatus::Running,
-        Some(_) => SessionStatus::Idle,
-        None if shut_down => SessionStatus::Stopped,
-        None => SessionStatus::Stopped,
-    }
-}
 
 async fn spawn_rap_server(
     command: &str,
