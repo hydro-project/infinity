@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -13,7 +13,7 @@ use tracing;
 
 use rap_protocol::{
     CallbackClient, RapInvocation, RapToolResult, ToolDef, ToolsetManifest,
-    send_subscription_event, send_tool_result,
+    send_subscription_event, send_tool_result, send_user_choice,
 };
 
 use crate::error::SandboxError;
@@ -64,6 +64,13 @@ struct AppState<B: SandboxBackend, M: MetadataStore, C: CallbackClient> {
     callback_client: C,
     pending_tasks: PendingTasks,
     in_flight: InFlightMap,
+    /// Pending user choice responses, keyed by tool call ID.
+    /// The sender delivers the user's selected index.
+    pending_choices: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<usize>>>>,
+    /// Granted write-orig permissions, keyed by root group_id.
+    write_orig_grants: Arc<Mutex<HashSet<String>>>,
+    /// Server base URL, set from the first request's Host header.
+    server_base_url: std::sync::OnceLock<String>,
 }
 
 /// Shared handle to pending background tasks and in-flight commands.
@@ -120,6 +127,9 @@ where
         callback_client,
         pending_tasks: tracker.pending_tasks.clone(),
         in_flight,
+        pending_choices: Arc::new(Mutex::new(HashMap::new())),
+        write_orig_grants: Arc::new(Mutex::new(HashSet::new())),
+        server_base_url: std::sync::OnceLock::new(),
     });
 
     let router = Router::new()
@@ -129,6 +139,10 @@ where
         .route(
             "/cancel_tool_call",
             post(cancel_tool_call_handler::<B, M, C>),
+        )
+        .route(
+            "/user_choice_response",
+            post(user_choice_response_handler::<B, M, C>),
         )
         .with_state(state);
 
@@ -141,7 +155,7 @@ async fn toolset_handler<
     C: CallbackClient + 'static,
 >(
     headers: HeaderMap,
-    State(_state): State<Arc<AppState<B, M, C>>>,
+    State(state): State<Arc<AppState<B, M, C>>>,
 ) -> Json<ToolsetManifest> {
     let host = headers
         .get("host")
@@ -152,6 +166,8 @@ async fn toolset_handler<
     } else {
         "https"
     };
+    let base_url = format!("{scheme}://{host}");
+    let _ = state.server_base_url.set(base_url);
     let endpoint = format!("{scheme}://{host}/invoke");
     Json(build_manifest(&endpoint))
 }
@@ -319,6 +335,37 @@ async fn cancel_tool_call_handler<
             tool_call_id = %request.tool_call_id,
             "no in-flight command found for tool call (may have already completed)"
         );
+    }
+
+    StatusCode::OK
+}
+
+/// Request payload for the `/user_choice_response` endpoint.
+#[derive(Debug, Deserialize)]
+struct UserChoiceResponse {
+    id: String,
+    selected: usize,
+}
+
+/// Endpoint that receives the user's choice selection from the runtime.
+async fn user_choice_response_handler<
+    B: SandboxBackend + 'static,
+    M: MetadataStore + 'static,
+    C: CallbackClient + 'static,
+>(
+    State(state): State<Arc<AppState<B, M, C>>>,
+    Json(response): Json<UserChoiceResponse>,
+) -> StatusCode {
+    tracing::info!(
+        id = %response.id,
+        selected = response.selected,
+        "received user_choice_response"
+    );
+
+    let sender = state.pending_choices.lock().await.remove(&response.id);
+
+    if let Some(sender) = sender {
+        let _ = sender.send(response.selected);
     }
 
     StatusCode::OK
@@ -580,6 +627,82 @@ async fn handle_execute_command_streaming_inner<
     let args: ExecuteCommandArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
+    // Check if write-orig permission is requested
+    let needs_write_orig = args
+        .additional_permissions
+        .as_ref()
+        .is_some_and(|p| p.iter().any(|s| s == "write-orig"));
+
+    if needs_write_orig {
+        let grants = state.write_orig_grants.lock().await;
+        let already_granted = grants.contains(&invocation.group_id);
+        drop(grants);
+
+        if !already_granted {
+            // Request user approval via user_choice protocol
+            let base_url = state
+                .server_base_url
+                .get()
+                .cloned()
+                .unwrap_or_else(|| "http://localhost".to_string());
+            let response_url = format!("{base_url}/user_choice_response");
+
+            let (choice_tx, choice_rx) = tokio::sync::oneshot::channel();
+            state
+                .pending_choices
+                .lock()
+                .await
+                .insert(invocation.id.clone(), choice_tx);
+
+            send_user_choice(
+                &state.callback_client,
+                invocation,
+                "Allow writing to the original repository directory?",
+                vec![
+                    "Yes for session".to_string(),
+                    "Yes once".to_string(),
+                    "No".to_string(),
+                ],
+                2, // default: No
+                &response_url,
+            )
+            .await;
+
+            // Wait for the user's response
+            let selected = match choice_rx.await {
+                Ok(idx) => idx,
+                Err(_) => 2, // default to No if channel dropped
+            };
+
+            match selected {
+                0 => {
+                    // Yes for session — persist grant
+                    state
+                        .write_orig_grants
+                        .lock()
+                        .await
+                        .insert(invocation.group_id.clone());
+                }
+                1 => {
+                    // Yes once — no persistence, just proceed
+                }
+                _ => {
+                    // No — deny and return error
+                    state.in_flight.lock().await.remove(&invocation.id);
+                    send_tool_result(
+                        &state.callback_client,
+                        invocation,
+                        "Error: write-orig permission denied by user.",
+                        None,
+                        false,
+                    )
+                    .await;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     // Set up sandbox
     let repo_state = state
         .metadata
@@ -590,10 +713,12 @@ async fn handle_execute_command_streaming_inner<
     // Reject commands that `cd` to the original repo directory — this escapes
     // the sandbox and can hang on file locks (e.g. cargo build competing for
     // the same target directory).
-    if let Some(error_msg) = detect_cd_to_original_repo(&args.command, &repo_state.remote_uri) {
-        state.in_flight.lock().await.remove(&invocation.id);
-        send_tool_result(&state.callback_client, invocation, &error_msg, None, false).await;
-        return Ok(());
+    if !needs_write_orig {
+        if let Some(error_msg) = detect_cd_to_original_repo(&args.command, &repo_state.remote_uri) {
+            state.in_flight.lock().await.remove(&invocation.id);
+            send_tool_result(&state.callback_client, invocation, &error_msg, None, false).await;
+            return Ok(());
+        }
     }
 
     let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;
@@ -622,9 +747,19 @@ async fn handle_execute_command_streaming_inner<
     }
 
     // Spawn the process
+    let orig_path = std::path::PathBuf::from(&repo_state.remote_uri);
+    let extra_writable: Vec<&std::path::Path> = if needs_write_orig {
+        vec![orig_path.as_path()]
+    } else {
+        vec![]
+    };
     let mut spawned = match state
         .backend
-        .spawn_command(&sandbox_dir, &["bash", "-c", &args.command])
+        .spawn_command(
+            &sandbox_dir,
+            &["bash", "-c", &args.command],
+            &extra_writable,
+        )
         .await
     {
         Ok(s) => s,
@@ -1258,6 +1393,11 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                         "command": {
                             "type": "string",
                             "description": "The bash command to execute in the sandbox"
+                        },
+                        "additional_permissions": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Optional additional permissions. Supported: \"write-orig\" (allow writing to the original repo directory, e.g. for git push). Requires user approval."
                         }
                     },
                     "required": ["command"]

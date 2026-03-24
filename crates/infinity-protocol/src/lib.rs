@@ -63,6 +63,12 @@ pub enum ClientMessage {
         session_id: String,
         model_id: String,
     },
+    /// Notify the daemon that a user choice was answered so it can be
+    /// removed from the pending replay list.
+    UserChoiceAnswered {
+        choice_id: String,
+        selected: usize,
+    },
 }
 
 // ── Daemon → Client ─────────────────────────────────────────────────────────
@@ -108,6 +114,12 @@ pub enum DaemonMessage {
     OAuthRequired {
         auth_url: String,
     },
+    UserChoiceRequired {
+        id: String,
+        prompt: String,
+        choices: Vec<String>,
+        default: usize,
+    },
     ThinkingStart {
         prefix: Option<String>,
     },
@@ -120,7 +132,10 @@ pub enum DaemonMessage {
     },
     Error(String),
     /// Batch replay of history messages, sent on connect/load.
-    Replay(Vec<DaemonMessage>),
+    Replay {
+        history: Vec<DaemonMessage>,
+        pending_choices: Vec<DaemonMessage>,
+    },
     /// Sent immediately on socket connection with session list and default model info.
     Welcome {
         sessions: HashMap<String, SessionInfo>,
@@ -147,6 +162,7 @@ pub enum SessionStatus {
     Running,
     Idle,
     Stopped,
+    WaitingForChoice,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

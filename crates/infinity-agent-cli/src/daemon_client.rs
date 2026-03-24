@@ -65,6 +65,18 @@ fn daemon_msg_to_display(msg: DaemonMessage) -> Option<DisplayEvent<DaemonTokenU
             DisplayEvent::SubscriptionEvent { name, text, prefix }
         }
         DaemonMessage::OAuthRequired { auth_url } => DisplayEvent::OAuthRequired { auth_url },
+        DaemonMessage::UserChoiceRequired {
+            id,
+            prompt,
+            choices,
+            default,
+        } => DisplayEvent::UserChoiceRequired {
+            id,
+            prompt,
+            choices,
+            default,
+            response_url: String::new(),
+        },
         DaemonMessage::ThinkingStart { prefix } => DisplayEvent::ThinkingStart { prefix },
         DaemonMessage::ThinkingEnd { prefix } => DisplayEvent::ThinkingEnd { prefix },
         DaemonMessage::ThinkingChunk { prefix, chunk } => {
@@ -73,7 +85,7 @@ fn daemon_msg_to_display(msg: DaemonMessage) -> Option<DisplayEvent<DaemonTokenU
         DaemonMessage::Error(e) => DisplayEvent::Info(format!("Error: {e}")),
         DaemonMessage::Connected { .. }
         | DaemonMessage::Welcome { .. }
-        | DaemonMessage::Replay(_)
+        | DaemonMessage::Replay { .. }
         | DaemonMessage::SessionsUpdated { .. }
         | DaemonMessage::DisconnectNotIdle
         | DaemonMessage::DetachedIdle => return None,
@@ -217,6 +229,7 @@ async fn run_client(
         mpsc::unbounded_channel::<HashMap<String, SessionInfo>>();
     let (soft_detach_tx, mut soft_detach_rx) = mpsc::unbounded_channel::<()>();
     let (detach_result_tx, detach_result_rx) = mpsc::unbounded_channel::<DetachResult>();
+    let (choice_answered_tx, mut choice_answered_rx) = mpsc::unbounded_channel::<(String, usize)>();
 
     if let Some(info) = startup_info {
         let _ = display_tx.send(DisplayEvent::Info(info));
@@ -242,6 +255,7 @@ async fn run_client(
         sessions_updated_rx,
         soft_detach_tx,
         detach_result_rx,
+        choice_answered_tx,
     ));
 
     let mut active_session: Option<String> = None;
@@ -266,13 +280,18 @@ async fn run_client(
                             let _ = to_daemon.send(ClientMessage::UserInput { session_id: sid, text });
                         }
                     }
-                    DaemonMessage::Replay(msgs) => {
-                        for m in msgs {
+                    DaemonMessage::Replay { history, pending_choices } => {
+                        for m in history {
                             if let Some(evt) = daemon_msg_to_display(m) {
                                 let _ = display_tx.send(evt);
                             }
                         }
                         let _ = display_tx.send(DisplayEvent::ResponseDone(None, Some(DaemonTokenUsage(None))));
+                        for m in pending_choices {
+                            if let Some(evt) = daemon_msg_to_display(m) {
+                                let _ = display_tx.send(evt);
+                            }
+                        }
                     }
                     DaemonMessage::SessionsUpdated { sessions } => {
                         let _ = sessions_updated_tx.send(sessions);
@@ -328,6 +347,12 @@ async fn run_client(
                     let _ = to_daemon.send(ClientMessage::SwitchModel {
                         session_id: sid.clone(), model_id: entry.model_id.clone(),
                     });
+                }
+            }
+
+            answered = choice_answered_rx.recv() => {
+                if let Some((choice_id, selected)) = answered {
+                    let _ = to_daemon.send(ClientMessage::UserChoiceAnswered { choice_id, selected });
                 }
             }
 

@@ -50,10 +50,14 @@ pub trait SandboxBackend: Send + Sync {
     ///
     /// `argv` is the raw argument vector: `argv[0]` is the program name and
     /// `argv[1..]` are its arguments.  No shell wrapping is performed.
+    ///
+    /// `extra_writable` grants write access to additional paths beyond the
+    /// sandbox directory (e.g. the original repo for `git push`).
     async fn spawn_command(
         &self,
         sandbox_dir: &Path,
         argv: &[&str],
+        extra_writable: &[&Path],
     ) -> Result<SpawnedCommand, SandboxError>;
 
     /// Push the updated working copy from the sandbox back to the remote.

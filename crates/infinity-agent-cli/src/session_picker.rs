@@ -82,14 +82,15 @@ impl SessionPicker {
         let end = (self.scroll_offset + visible).min(self.sessions.len());
 
         // Compute dynamic name column width from available area
-        // Fixed parts: 1 (leading space) + 1 (gap) + 8 (status) + 1 (gap) + 10 (tokens) + 2 (gap) = 23, plus time
+        // Fixed parts: 1 (leading space) + 1 (gap) + (status) + 1 (gap) + 10 (tokens) + 2 (gap) = 15 + (status), plus time
+        let fixed_parts = 15 + "waiting for choice".len();
         let max_time_len = self.sessions[self.scroll_offset..end]
             .iter()
             .map(|(_, info)| info.last_updated.len())
             .max()
             .unwrap_or(0);
         let name_width = (area.width as usize)
-            .saturating_sub(23 + max_time_len)
+            .saturating_sub(fixed_parts + max_time_len)
             .max(8);
 
         for (i, (id, info)) in self.sessions[self.scroll_offset..end].iter().enumerate() {
@@ -121,19 +122,22 @@ impl SessionPicker {
                 SessionStatus::Running => "running",
                 SessionStatus::Idle => "idle",
                 SessionStatus::Stopped => "stopped",
+                SessionStatus::WaitingForChoice => "waiting for choice",
             };
             let status_fg = match info.status {
                 SessionStatus::Running => Color::Green,
                 SessionStatus::Idle => Color::Yellow,
                 SessionStatus::Stopped => Color::DarkGray,
+                SessionStatus::WaitingForChoice => Color::Magenta,
             };
             let time_str = &info.last_updated;
             let tokens_str = format!("{}tok", info.total_tokens_used);
             let status_start = 1 + name_width + 1;
-            let status_end = status_start + 8;
+            let status_width = "waiting for choice".len();
+            let status_end = status_start + status_width;
             let line = format!(
-                " {:<name_width$} {:>8} {:>10}  {}",
-                name, status_str, tokens_str, time_str
+                " {:<name_width$} {:>status_width$} {:>10}  {}",
+                name, status_str, tokens_str, time_str,
             );
 
             for x in area.x..area.right() {
