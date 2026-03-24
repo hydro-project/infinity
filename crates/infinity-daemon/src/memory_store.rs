@@ -245,6 +245,7 @@ impl ConversationStore for InMemoryConversationStore {
         messages: Vec<(Message, String)>,
     ) -> Result<(), MemoryError> {
         self.ensure_thread_loaded(session_id);
+        tracing::trace!("Appending messages {:?} to store", &messages);
         {
             let mut store = self.messages.lock().unwrap();
             let entry = store.entry(session_id.to_string()).or_default();
