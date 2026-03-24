@@ -12,9 +12,10 @@ pub mod sleep_tools;
 
 use std::sync::Arc;
 
+use infinity_agent_core::message::InputMessage;
 use infinity_protocol::socket_path;
 use tokio::net::UnixListener;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use tracing_subscriber::EnvFilter;
 
 pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -39,9 +40,29 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>
     let pid_path = infinity_protocol::pid_path();
     std::fs::write(&pid_path, std::process::id().to_string())?;
 
+    // Start shared callback server
+    let (callback_tx, mut callback_rx) = mpsc::unbounded_channel::<(InputMessage, String)>();
+    let callback_url = rap_callback::start_callback_server(callback_tx)
+        .await
+        .map_err(|e| format!("Failed to start callback server: {e}"))?;
+    tracing::info!("shared callback server started");
+
     let session_manager = Arc::new(Mutex::new(
-        session::SessionManager::new(infinity_protocol::state_dir()).await?,
+        session::SessionManager::new(infinity_protocol::state_dir(), callback_url).await?,
     ));
+
+    // callback router
+    let callback_session_manager = session_manager.clone();
+    tokio::task::spawn_local(async move {
+        while let Some((msg, dedup)) = callback_rx.recv().await {
+            let group_id = msg.group_id.clone();
+            callback_session_manager
+                .lock()
+                .await
+                .send_input(&group_id, (msg, Some(dedup)), None)
+                .await;
+        }
+    });
 
     let shutdown = async {
         let mut sigint =
