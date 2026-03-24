@@ -88,7 +88,7 @@ pub enum CompletionEvent<R> {
 
 // ── HistoryManager (unchanged from before) ──
 
-struct PendingItem {
+pub struct PendingItem {
     message: Message,
     message_id: String,
 }

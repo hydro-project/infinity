@@ -199,6 +199,11 @@ where
     let mut last_message_id = String::new();
 
     for (input_msg, message_id) in inputs {
+        tracing::trace!(
+            "Processing input {:?} in thread {}",
+            &input_msg,
+            active_group_id
+        );
         if let Some(mid) = process_input_item(
             input_msg,
             message_id,
