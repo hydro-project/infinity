@@ -1,5 +1,5 @@
 use crate::component::{Component, KeyResult};
-use infinity_protocol::SessionInfo;
+use infinity_protocol::{SessionInfo, SessionStatus};
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{KeyCode, KeyEvent},
@@ -106,9 +106,26 @@ impl SessionPicker {
                 id.clone()
             };
 
+            let status_str = match info.status {
+                SessionStatus::Running => "running",
+                SessionStatus::Idle => "idle",
+                SessionStatus::Stopped => "stopped",
+            };
+            let status_fg = match info.status {
+                SessionStatus::Running => Color::Green,
+                SessionStatus::Idle => Color::Yellow,
+                SessionStatus::Stopped => Color::DarkGray,
+            };
             let time_str = &info.last_updated;
             let tokens_str = format!("{}tok", info.total_tokens_used);
-            let line = format!(" {:<26} {:>10}  {}", name, tokens_str, time_str);
+            // " {name:<26} {status:>8} {tokens:>10}  {time}"
+            // status starts at col 28, length 8
+            let status_start = 28usize;
+            let status_end = status_start + 8;
+            let line = format!(
+                " {:<26} {:>8} {:>10}  {}",
+                name, status_str, tokens_str, time_str
+            );
 
             for x in area.x..area.right() {
                 buf[(x, y)].set_char(' ').set_bg(bg);
@@ -118,9 +135,14 @@ impl SessionPicker {
                 if x >= area.right() {
                     break;
                 }
+                let char_fg = if col >= status_start && col < status_end {
+                    status_fg
+                } else {
+                    fg
+                };
                 buf[(x, y)]
                     .set_char(ch)
-                    .set_fg(fg)
+                    .set_fg(char_fg)
                     .set_bg(bg)
                     .set_style(Style::default().add_modifier(modifier));
             }

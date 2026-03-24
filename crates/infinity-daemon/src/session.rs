@@ -58,6 +58,9 @@ pub struct Session {
 
 pub type SessionStoreHandle = Arc<tokio::sync::Mutex<session_store::SessionStore>>;
 
+/// Shared map of session_id → ActiveWorkers for determining session status.
+pub type SessionWorkersMap = Arc<std::sync::Mutex<HashMap<String, ActiveWorkers>>>;
+
 /// Manages all active sessions.
 pub struct SessionManager {
     pub sessions: HashMap<String, Session>,
@@ -71,6 +74,8 @@ pub struct SessionManager {
     pub available_models: Vec<model_picker::ModelEntry>,
     /// Connected clients that receive broadcast updates.
     broadcast_clients: Arc<std::sync::Mutex<Vec<mpsc::UnboundedSender<DaemonMessage>>>>,
+    /// Shared map for broadcast task to determine session status.
+    session_workers: SessionWorkersMap,
 }
 
 /// Shared routing table for callback messages.
@@ -88,10 +93,12 @@ impl SessionManager {
         )));
         let broadcast_clients: Arc<std::sync::Mutex<Vec<mpsc::UnboundedSender<DaemonMessage>>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
+        let session_workers: SessionWorkersMap = Arc::new(std::sync::Mutex::new(HashMap::new()));
 
         // Task: listen for session store changes and broadcast to clients
         let bc = broadcast_clients.clone();
         let ss = session_store.clone();
+        let sw = session_workers.clone();
         tokio::task::spawn_local(async move {
             while let Some(session_id) = change_rx.recv().await {
                 let store = ss.lock().await;
@@ -100,6 +107,7 @@ impl SessionManager {
                         title: e.title.clone(),
                         last_updated: e.last_updated.clone(),
                         total_tokens_used: e.total_tokens_used,
+                        status: session_status(&sw, &session_id, e.shut_down),
                     },
                     None => continue,
                 };
@@ -161,6 +169,7 @@ impl SessionManager {
             default_context_window,
             available_models,
             broadcast_clients,
+            session_workers,
         })
     }
 
@@ -410,9 +419,13 @@ impl SessionManager {
             total_tokens_used: 0,
             model_name,
             context_window,
-            active_workers,
+            active_workers: active_workers.clone(),
             idle_rx,
         };
+        self.session_workers
+            .lock()
+            .unwrap()
+            .insert(session_id.clone(), active_workers);
         self.sessions.insert(session_id.clone(), session);
         Ok(())
     }
@@ -520,6 +533,7 @@ impl SessionManager {
                     title: entry.title.clone(),
                     last_updated: entry.last_updated.clone(),
                     total_tokens_used: entry.total_tokens_used,
+                    status: session_status(&self.session_workers, id, entry.shut_down),
                 },
             );
         }
@@ -536,6 +550,7 @@ impl SessionManager {
             let _ = store.save();
         }
         if let Some(mut session) = self.sessions.remove(session_id) {
+            self.session_workers.lock().unwrap().remove(session_id);
             if let Some(ref route_map) = self.route_map {
                 route_map.lock().unwrap().remove(&session.session_id);
             }
@@ -1090,6 +1105,20 @@ fn display_event_to_daemon<R: GetTokenUsage>(evt: DisplayEvent<R>) -> Option<Dae
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+fn session_status(
+    workers_map: &SessionWorkersMap,
+    session_id: &str,
+    shut_down: bool,
+) -> infinity_protocol::SessionStatus {
+    use infinity_protocol::SessionStatus;
+    match workers_map.lock().unwrap().get(session_id) {
+        Some(aw) if !aw.lock().unwrap().is_empty() => SessionStatus::Running,
+        Some(_) => SessionStatus::Idle,
+        None if shut_down => SessionStatus::Stopped,
+        None => SessionStatus::Stopped,
+    }
+}
 
 async fn spawn_rap_server(
     command: &str,

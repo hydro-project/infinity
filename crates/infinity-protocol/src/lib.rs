@@ -143,10 +143,18 @@ pub enum DaemonMessage {
 // ── Supporting types ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SessionStatus {
+    Running,
+    Idle,
+    Stopped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub title: Option<String>,
     pub last_updated: String,
     pub total_tokens_used: usize,
+    pub status: SessionStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
