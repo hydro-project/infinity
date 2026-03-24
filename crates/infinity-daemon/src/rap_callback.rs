@@ -10,6 +10,7 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use infinity_agent_core::message::{
     InputMessage, InputMessageContent, OAuthRequired, SyntheticKind, TaggedSyntheticKind,
+    UserChoiceRequired,
 };
 use rig::message::{ToolResult, ToolResultContent, UserContent};
 use serde::Deserialize;
@@ -35,6 +36,14 @@ struct RapCallback {
     tool_call_id: Option<String>,
     #[serde(default)]
     auth_url: Option<String>,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    choices: Option<Vec<String>>,
+    #[serde(default)]
+    default: Option<usize>,
+    #[serde(default)]
+    response_url: Option<String>,
     #[serde(default)]
     display_as: Option<String>,
     #[serde(default)]
@@ -173,6 +182,22 @@ async fn handle(req: Request<Incoming>, state: Arc<CallbackState>) -> Response<F
                 id: cb.id.unwrap_or_default(),
                 call_id: cb.call_id,
                 auth_url: cb.auth_url.unwrap_or_default(),
+            }),
+            group_id: cb.group_id,
+            metadata: None,
+            synthetic: None,
+            display_as: None,
+            subscription: false,
+        },
+        "user_choice" => InputMessage {
+            content: InputMessageContent::UserChoice(UserChoiceRequired {
+                content_type: "user_choice_required".to_string(),
+                id: cb.id.unwrap_or_default(),
+                call_id: cb.call_id,
+                prompt: cb.prompt.unwrap_or_default(),
+                choices: cb.choices.unwrap_or_default(),
+                default: cb.default.unwrap_or(0),
+                response_url: cb.response_url.unwrap_or_default(),
             }),
             group_id: cb.group_id,
             metadata: None,

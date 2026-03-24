@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[serde(untagged)]
 pub enum InputMessageContent {
     OAuth(OAuthRequired),
+    UserChoice(UserChoiceRequired),
     User(UserContent),
 }
 
@@ -15,6 +16,18 @@ pub struct OAuthRequired {
     pub id: String,
     pub call_id: Option<String>,
     pub auth_url: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct UserChoiceRequired {
+    #[serde(rename = "type")]
+    pub content_type: String,
+    pub id: String,
+    pub call_id: Option<String>,
+    pub prompt: String,
+    pub choices: Vec<String>,
+    pub default: usize,
+    pub response_url: String,
 }
 
 /// Distinguishes subscription events (which spawn a subthread) from thread reports

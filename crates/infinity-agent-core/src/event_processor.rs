@@ -44,6 +44,14 @@ pub enum PrepareResult {
     Handled,
     /// An OAuth challenge must be forwarded to the user.
     OAuthRequired { auth_url: String },
+    /// A user choice prompt must be surfaced to the user.
+    UserChoiceRequired {
+        id: String,
+        prompt: String,
+        choices: Vec<String>,
+        default: usize,
+        response_url: String,
+    },
     /// Compaction was applied to the in-memory history.
     CompactionApplied,
 }
@@ -613,11 +621,26 @@ where
         });
     }
 
+    // Handle user choice required messages — return to caller, don't add to history
+    if let InputMessageContent::UserChoice(choice) = &input_msg.content {
+        assert!(choice.content_type == "user_choice_required");
+        tracing::info!("Received user choice required message, returning to caller");
+        return Ok(PrepareResult::UserChoiceRequired {
+            id: choice.id.clone(),
+            prompt: choice.prompt.clone(),
+            choices: choice.choices.clone(),
+            default: choice.default,
+            response_url: choice.response_url.clone(),
+        });
+    }
+
     let is_subscription = input_msg.subscription;
 
     let user_content = match input_msg.content {
         InputMessageContent::User(content) => content,
-        InputMessageContent::OAuth(_) => return Ok(PrepareResult::Handled),
+        InputMessageContent::OAuth(_) | InputMessageContent::UserChoice(_) => {
+            return Ok(PrepareResult::Handled);
+        }
     };
 
     // Handle synthetic tool results (subscription events / thread reports)

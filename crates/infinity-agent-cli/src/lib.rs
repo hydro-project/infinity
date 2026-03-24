@@ -1,3 +1,4 @@
+pub mod choice_picker;
 pub mod component;
 pub mod inline_viewport;
 pub mod install;

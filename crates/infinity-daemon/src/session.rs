@@ -64,7 +64,7 @@ pub type SessionWorkersMap = Arc<std::sync::Mutex<HashMap<String, ActiveWorkers>
 pub struct SessionManager {
     pub sessions: HashMap<String, Session>,
     callback_url: String,
-    session_store: SessionStoreHandle,
+    pub session_store: SessionStoreHandle,
     conversation_store: InMemoryConversationStore,
     state_store: InMemoryStateStore,
     pub default_model_name: String,
@@ -199,19 +199,34 @@ impl SessionManager {
         }
     }
 
-    /// Send history replay to a client without requiring a running Session.
+    /// Send history replay to a client, including any pending choices from the store.
     async fn send_replay(&self, session_id: &str, tx: &mpsc::UnboundedSender<DaemonMessage>) {
         if let Ok((history, _)) = self
             .conversation_store
             .load_history_with_ancestors(session_id)
             .await
         {
-            let msgs: Vec<DaemonMessage> = history
+            let history: Vec<DaemonMessage> = history
                 .iter()
                 .filter_map(|m| history_message_to_daemon(m, session_id, &self.conversation_store))
                 .collect();
-            if !msgs.is_empty() {
-                let _ = tx.send(DaemonMessage::Replay(msgs));
+            let store = self.session_store.lock().await;
+            let choices: Vec<DaemonMessage> = store
+                .sessions
+                .get(session_id)
+                .map(|e| {
+                    e.pending_choices
+                        .iter()
+                        .map(|c| c.message.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            drop(store);
+            if !history.is_empty() || !choices.is_empty() {
+                let _ = tx.send(DaemonMessage::Replay {
+                    history,
+                    pending_choices: choices,
+                });
             }
         }
     }
@@ -411,27 +426,14 @@ impl SessionManager {
         session_id: &str,
         tx: mpsc::UnboundedSender<DaemonMessage>,
     ) -> bool {
-        if let Some(session) = self.sessions.get_mut(session_id) {
-            if let Ok((history, _)) = self
-                .conversation_store
-                .load_history_with_ancestors(&session.session_id)
-                .await
-            {
-                let msgs: Vec<DaemonMessage> = history
-                    .iter()
-                    .filter_map(|m| {
-                        history_message_to_daemon(m, session_id, &self.conversation_store)
-                    })
-                    .collect();
-                if !msgs.is_empty() {
-                    let _ = tx.send(DaemonMessage::Replay(msgs));
-                }
-            }
-            *session.client_tx_handle.lock().unwrap() = Some(tx);
-            true
-        } else {
-            false
+        if !self.sessions.contains_key(session_id) {
+            return false;
         }
+        self.send_replay(session_id, &tx).await;
+        if let Some(session) = self.sessions.get_mut(session_id) {
+            *session.client_tx_handle.lock().unwrap() = Some(tx);
+        }
+        true
     }
 
     /// Detach the client from a session (session keeps running headless).
@@ -730,6 +732,9 @@ async fn session_wrapper(
                 break;
             }
             _ = &mut shutdown_rx => {
+                if let Some(entry) = session_store.lock().await.sessions.get_mut(&session_id) {
+                    entry.pending_choices.clear();
+                }
                 idle_exited = false;
                 break;
             }
@@ -811,6 +816,34 @@ async fn agent_loop<Mdl>(
                 let mut store = bridge_session_store.lock().await;
                 store.update(&bridge_session_id, tokens, None);
                 let _ = store.save();
+            }
+
+            // Extract and store pending user choices before conversion
+            if let DisplayEvent::UserChoiceRequired {
+                ref id,
+                ref prompt,
+                ref choices,
+                ref default,
+                ref response_url,
+            } = evt
+            {
+                let dm = DaemonMessage::UserChoiceRequired {
+                    id: id.clone(),
+                    prompt: prompt.clone(),
+                    choices: choices.clone(),
+                    default: *default,
+                };
+                let mut store = bridge_session_store.lock().await;
+                if let Some(entry) = store.sessions.get_mut(&bridge_session_id) {
+                    entry
+                        .pending_choices
+                        .push(crate::session_store::PendingChoice {
+                            id: id.clone(),
+                            message: dm,
+                            response_url: response_url.clone(),
+                        });
+                    store.notify(&session_id);
+                }
             }
 
             if let Some(dm) = display_event_to_daemon(evt) {
@@ -1143,6 +1176,18 @@ fn display_event_to_daemon<R: GetTokenUsage>(evt: DisplayEvent<R>) -> Option<Dae
             DaemonMessage::SubscriptionEvent { name, text, prefix }
         }
         DisplayEvent::OAuthRequired { auth_url } => DaemonMessage::OAuthRequired { auth_url },
+        DisplayEvent::UserChoiceRequired {
+            id,
+            prompt,
+            choices,
+            default,
+            response_url: _,
+        } => DaemonMessage::UserChoiceRequired {
+            id,
+            prompt,
+            choices,
+            default,
+        },
         DisplayEvent::ThinkingStart { prefix } => DaemonMessage::ThinkingStart { prefix },
         DisplayEvent::ThinkingEnd { prefix } => DaemonMessage::ThinkingEnd { prefix },
         DisplayEvent::ThinkingChunk { prefix, chunk } => {

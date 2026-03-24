@@ -55,6 +55,13 @@ pub enum DisplayEvent<R> {
     OAuthRequired {
         auth_url: String,
     },
+    UserChoiceRequired {
+        id: String,
+        prompt: String,
+        choices: Vec<String>,
+        default: usize,
+        response_url: String,
+    },
     ThinkingStart {
         prefix: Option<String>,
     },
@@ -99,6 +106,22 @@ where
         }
         Ok(event_processor::PrepareResult::OAuthRequired { auth_url }) => {
             let _ = display_tx.send(DisplayEvent::OAuthRequired { auth_url });
+            None
+        }
+        Ok(event_processor::PrepareResult::UserChoiceRequired {
+            id,
+            prompt,
+            choices,
+            default,
+            response_url,
+        }) => {
+            let _ = display_tx.send(DisplayEvent::UserChoiceRequired {
+                id,
+                prompt,
+                choices,
+                default,
+                response_url,
+            });
             None
         }
         Err(e) => {

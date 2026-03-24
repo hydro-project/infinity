@@ -1,4 +1,5 @@
 use crate::{
+    choice_picker::{ChoicePicker, ChoicePickerResult, ChoicePickerWidget},
     component::{Component, KeyResult},
     inline_viewport::{InlineViewport, ResetScrollRegion},
     model_picker::{ModelPicker, ModelPickerResult, ModelPickerWidget},
@@ -20,7 +21,7 @@ use ratatui::{
     widgets::{Block, Borders},
 };
 use rig::completion::GetTokenUsage;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::io::{self, Write};
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -36,6 +37,8 @@ enum UiMode {
     ModelPicker,
     /// Quit/switch picker overlay is visible.
     QuitPicker,
+    /// User choice picker overlay is visible.
+    ChoicePicker,
 }
 
 /// Spinner animation state — only affected by main-thread (prefix=None) events.
@@ -82,6 +85,14 @@ enum SoftDetachAction {
     SwitchSession(Option<String>),
 }
 
+/// A queued user choice request waiting to be shown in the TUI.
+struct PendingChoice {
+    id: String,
+    prompt: String,
+    choices: Vec<String>,
+    default: usize,
+}
+
 enum QuitPickerAction {
     Quit,
     SwitchSession(Option<String>),
@@ -103,6 +114,7 @@ pub async fn run<R>(
     >,
     soft_detach_tx: mpsc::UnboundedSender<()>,
     mut detach_result_rx: mpsc::UnboundedReceiver<DetachResult>,
+    choice_answered_tx: mpsc::UnboundedSender<(String, usize)>,
 ) -> Result<bool, BoxError>
 where
     R: GetTokenUsage,
@@ -143,6 +155,8 @@ where
     let mut model_picker: Option<ModelPicker> = None;
     let mut quit_picker: Option<QuitPicker> = None;
     let mut quit_picker_action: Option<QuitPickerAction> = None;
+    let mut choice_picker: Option<ChoicePicker> = None;
+    let mut choice_queue: VecDeque<PendingChoice> = VecDeque::new();
     let mut sessions = initial_sessions;
     let mut mid_stream = false;
     let mut stream_start = true;
@@ -162,6 +176,7 @@ where
         &session_picker,
         &model_picker,
         &quit_picker,
+        &choice_picker,
         &ui_mode,
         spinner_state,
         &thinking_start,
@@ -262,7 +277,7 @@ where
                         }
                         _ => {}
                     }
-                    draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete)?;
+                    draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete)?;
                 }
             }
 
@@ -471,8 +486,18 @@ where
                             ),
                         ]))?;
                     }
+                    DisplayEvent::UserChoiceRequired { id, prompt, choices, default, .. } => {
+                        choice_queue.push_back(PendingChoice { id, prompt, choices, default });
+                        // Show the first queued choice if no picker is active
+                        if choice_picker.is_none() && ui_mode != UiMode::ChoicePicker {
+                            if let Some(pending) = choice_queue.front() {
+                                choice_picker = Some(ChoicePicker::new(pending.prompt.clone(), pending.choices.clone(), pending.default));
+                                ui_mode = UiMode::ChoicePicker;
+                            }
+                        }
+                    }
                 }
-                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete)?;
+                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete)?;
             }
 
             _ = poll_crossterm_event() => {
@@ -616,6 +641,24 @@ where
                                         }
                                     }
                                 }
+                                UiMode::ChoicePicker => {
+                                    if let Some(ref mut picker) = choice_picker {
+                                        picker.handle_keystroke(key);
+                                        if let Some(result) = picker.take_result() {
+                                            let ChoicePickerResult::Selected(idx) = result;
+                                            if let Some(pending) = choice_queue.pop_front() {
+                                                let _ = choice_answered_tx.send((pending.id, idx));
+                                            }
+                                            choice_picker = None;
+                                            // Show next queued choice, or return to normal
+                                            if let Some(next) = choice_queue.front() {
+                                                choice_picker = Some(ChoicePicker::new(next.prompt.clone(), next.choices.clone(), next.default));
+                                            } else {
+                                                ui_mode = UiMode::Normal;
+                                            }
+                                        }
+                                    }
+                                }
                                 UiMode::Normal => {
                                     // Handle Tab for autocomplete cycling.
                                     if key.code == KeyCode::Tab {
@@ -735,7 +778,7 @@ where
                 }
 
                 if got_resize || any_change || spinner_state.is_some() || ui_mode == UiMode::SessionPicker {
-                    draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete)?;
+                    draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete)?;
                 }
             }
         }
@@ -831,6 +874,7 @@ fn draw_viewport(
     session_picker: &Option<SessionPicker>,
     model_picker: &Option<ModelPicker>,
     quit_picker: &Option<QuitPicker>,
+    choice_picker: &Option<ChoicePicker>,
     ui_mode: &UiMode,
     spinner_state: Option<SpinnerState>,
     thinking_start: &Instant,
@@ -853,7 +897,7 @@ fn draw_viewport(
     };
     let status_right = format!("{:.0}% context used", pct);
     let status_left = match ui_mode {
-        UiMode::SessionPicker | UiMode::ModelPicker | UiMode::QuitPicker => {
+        UiMode::SessionPicker | UiMode::ModelPicker | UiMode::QuitPicker | UiMode::ChoicePicker => {
             "↑↓ navigate  enter select  esc cancel".to_string()
         }
         UiMode::Normal => format!("{} (/help for commands)", model_name),
@@ -894,6 +938,13 @@ fn draw_viewport(
         }
         UiMode::QuitPicker => {
             let picker_height = quit_picker
+                .as_ref()
+                .map(|p| p.preferred_height())
+                .unwrap_or(1);
+            (picker_height, true)
+        }
+        UiMode::ChoicePicker => {
+            let picker_height = choice_picker
                 .as_ref()
                 .map(|p| p.preferred_height())
                 .unwrap_or(1);
@@ -1032,7 +1083,7 @@ fn draw_viewport(
             // blank line is the last row of ac_area, left empty
         }
 
-        // Content area — either session picker, model picker, quit picker, or input
+        // Content area — either session picker, model picker, quit picker, choice picker, or input
         if is_picker {
             if let Some(picker) = session_picker {
                 frame.render_widget(SessionPickerWidget::new(picker), areas[idx]);
@@ -1040,6 +1091,8 @@ fn draw_viewport(
                 frame.render_widget(ModelPickerWidget::new(picker), areas[idx]);
             } else if let Some(picker) = quit_picker {
                 frame.render_widget(QuitPickerWidget::new(picker), areas[idx]);
+            } else if let Some(picker) = choice_picker {
+                frame.render_widget(ChoicePickerWidget::new(picker), areas[idx]);
             }
             // No cursor in picker mode
         } else {
