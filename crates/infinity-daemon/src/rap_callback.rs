@@ -186,7 +186,8 @@ async fn handle(req: Request<Incoming>, state: Arc<CallbackState>) -> Response<F
     };
 
     let dedup = uuid::Uuid::new_v4().to_string();
-    let _ = state.input_tx.send((input_msg, dedup));
+    let res = state.input_tx.send((input_msg, dedup));
+    tracing::debug!("Got result {:?}", res);
 
     ok_response(StatusCode::OK, "OK")
 }
