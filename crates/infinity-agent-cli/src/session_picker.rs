@@ -81,6 +81,17 @@ impl SessionPicker {
         let visible = self.visible_rows() as usize;
         let end = (self.scroll_offset + visible).min(self.sessions.len());
 
+        // Compute dynamic name column width from available area
+        // Fixed parts: 1 (leading space) + 1 (gap) + 8 (status) + 1 (gap) + 10 (tokens) + 2 (gap) = 23, plus time
+        let max_time_len = self.sessions[self.scroll_offset..end]
+            .iter()
+            .map(|(_, info)| info.last_updated.len())
+            .max()
+            .unwrap_or(0);
+        let name_width = (area.width as usize)
+            .saturating_sub(23 + max_time_len)
+            .max(8);
+
         for (i, (id, info)) in self.sessions[self.scroll_offset..end].iter().enumerate() {
             let y = area.y + i as u16;
             if y >= area.bottom() {
@@ -95,13 +106,13 @@ impl SessionPicker {
             };
 
             let name = if let Some(ref title) = info.title {
-                if title.len() > 24 {
-                    format!("{}…", &title[..23])
+                if title.len() > name_width {
+                    format!("{}…", &title[..name_width - 1])
                 } else {
                     title.clone()
                 }
-            } else if id.len() > 16 {
-                format!("{}…", &id[..15])
+            } else if id.len() > name_width {
+                format!("{}…", &id[..name_width - 1])
             } else {
                 id.clone()
             };
@@ -118,12 +129,10 @@ impl SessionPicker {
             };
             let time_str = &info.last_updated;
             let tokens_str = format!("{}tok", info.total_tokens_used);
-            // " {name:<26} {status:>8} {tokens:>10}  {time}"
-            // status starts at col 28, length 8
-            let status_start = 28usize;
+            let status_start = 1 + name_width + 1;
             let status_end = status_start + 8;
             let line = format!(
-                " {:<26} {:>8} {:>10}  {}",
+                " {:<name_width$} {:>8} {:>10}  {}",
                 name, status_str, tokens_str, time_str
             );
 
