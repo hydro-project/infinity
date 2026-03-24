@@ -741,8 +741,11 @@ async fn session_wrapper(
             _ = idle_rx.recv() => {
                 // All workers idle. If no client attached, exit.
                 if client_tx_handle.lock().unwrap().is_none() {
+                    tracing::info!("Exiting agent {} due to idle", session_id);
                     idle_exited = true;
                     break;
+                } else {
+                    tracing::info!("Agent {} is idle but client is still connected", session_id);
                 }
                 // Client still attached — keep running.
             }
@@ -1040,7 +1043,7 @@ async fn thread_worker<Mdl>(
                         hist.history.last().is_some_and(|msg| matches!(
                             msg,
                             rig::message::Message::Assistant { content, .. }
-                                if matches!(content.first(), rig::message::AssistantContent::ToolCall(_))
+                                if matches!(content.first(), rig::message::AssistantContent::ToolCall(c) if c.function.name != "close_thread")
                         ))
                     };
                     let has_subs = state_store
