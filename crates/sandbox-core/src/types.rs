@@ -45,6 +45,10 @@ pub struct CloneRepoArgs {
 pub struct ExecuteCommandArgs {
     /// The bash command to execute in the sandbox.
     pub command: String,
+    /// Optional additional permissions for this command.
+    /// Supported values: `"write-orig"` (allow writing to the original repo directory).
+    #[serde(default)]
+    pub additional_permissions: Option<Vec<String>>,
 }
 
 /// Input for the read_file tool.

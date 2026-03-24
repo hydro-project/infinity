@@ -168,6 +168,7 @@ impl SandboxBackend for EfsBackend {
         &self,
         sandbox_dir: &Path,
         argv: &[&str],
+        _extra_writable: &[&Path],
     ) -> Result<SpawnedCommand, SandboxError> {
         let child = tokio::process::Command::new(argv[0])
             .args(&argv[1..])

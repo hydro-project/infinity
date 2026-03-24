@@ -63,6 +63,7 @@ The protocol defines two roles that communicate through the HTTP message contrac
 - **Tool results**: Asynchronous responses delivered to the callback URL when an operation completes. See [Tool Result](/spec/basic/tool-result).
 - **Subscription events**: Ongoing event notifications from active subscriptions, delivered to the callback URL each time a matching external event occurs. See [Subscription Events](/spec/server/subscription-events).
 - **OAuth requests**: Authorization flow initiation when a tool requires user consent to access an external service. See [OAuth](/spec/server/oauth).
+- **User choice requests**: Confirmation flow initiation when a tool requires the user to select among several options before proceeding. See [User Choice](/spec/server/user-choice).
 
 ### Message Types
 
@@ -74,6 +75,7 @@ The protocol defines four message types that cover the full range of communicati
 | [Tool Result](/spec/basic/tool-result) | Tool → Runtime | Return the result of a completed operation. Contains the result text and the identifiers needed to match it to the original invocation. |
 | [Subscription Event](/spec/server/subscription-events) | Tool → Runtime | Deliver an event from an active subscription. References the original subscription tool call so the runtime can associate the event with the correct context. |
 | [OAuth](/spec/server/oauth) | Tool → Runtime | Initiate a user authorization flow. Contains an authorization URL that the runtime surfaces to the user. The tool retries the original operation after authorization completes. |
+| [User Choice](/spec/server/user-choice) | Tool → Runtime | Request a choice from the user among several options. Contains a prompt, choices array, and response URL. The tool acts on the selection and returns a normal tool result. |
 
 ### Toolset Definition
 
@@ -122,3 +124,4 @@ Explore the detailed specification for each protocol component:
 - **Server Features**
   - [Subscription Events](/spec/server/subscription-events) — Event-driven subscriptions
   - [OAuth](/spec/server/oauth) — User authorization flows
+  - [User Choice](/spec/server/user-choice) — User confirmation flows

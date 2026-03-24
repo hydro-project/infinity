@@ -28,6 +28,19 @@ pub struct RapToolResult {
 }
 
 #[derive(Debug, Serialize)]
+pub struct RapUserChoice {
+    pub r#type: String,
+    pub group_id: String,
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    pub prompt: String,
+    pub choices: Vec<String>,
+    pub default: usize,
+    pub response_url: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct RapSubscriptionEvent {
     pub r#type: String,
     pub group_id: String,
@@ -128,6 +141,31 @@ pub async fn send_tool_result<C: CallbackClient>(
     let body = serde_json::to_string(&result).unwrap();
     if let Err(e) = client.post_json(&invocation.callback_url, &body).await {
         tracing::error!("failed to send tool result: {e}");
+    }
+}
+
+/// Send a `user_choice` callback requesting user confirmation.
+pub async fn send_user_choice<C: CallbackClient>(
+    client: &C,
+    invocation: &RapInvocation,
+    prompt: &str,
+    choices: Vec<String>,
+    default: usize,
+    response_url: &str,
+) {
+    let msg = RapUserChoice {
+        r#type: "user_choice".to_string(),
+        group_id: invocation.group_id.clone(),
+        id: invocation.id.clone(),
+        call_id: invocation.call_id.clone(),
+        prompt: prompt.to_string(),
+        choices,
+        default,
+        response_url: response_url.to_string(),
+    };
+    let body = serde_json::to_string(&msg).unwrap();
+    if let Err(e) = client.post_json(&invocation.callback_url, &body).await {
+        tracing::error!("failed to send user_choice: {e}");
     }
 }
 

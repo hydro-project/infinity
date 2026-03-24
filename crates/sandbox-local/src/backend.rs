@@ -402,6 +402,7 @@ impl SandboxBackend for LocalBackend {
         &self,
         sandbox_dir: &Path,
         argv: &[&str],
+        extra_writable: &[&Path],
     ) -> Result<SpawnedCommand, SandboxError> {
         let (program, args) = argv
             .split_first()
@@ -422,7 +423,14 @@ impl SandboxBackend for LocalBackend {
             let tmp = Self::make_scratch_tempdir(sandbox_dir).map_err(SandboxError::Io)?;
             let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
 
-            let writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
+            let mut writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
+            for p in extra_writable {
+                if let Ok(resolved) = p.canonicalize() {
+                    writable.push(resolved);
+                } else {
+                    writable.push(p.to_path_buf());
+                }
+            }
             let subpath_rules: String = std::iter::once(sandbox_dir_str.to_string())
                 .chain(writable.iter().map(|p| p.to_string_lossy().to_string()))
                 .map(|p| format!("\n       (subpath \"{p}\")"))
@@ -461,7 +469,14 @@ impl SandboxBackend for LocalBackend {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
-            let writable = extra_writable_paths(sandbox_dir, None);
+            let mut writable = extra_writable_paths(sandbox_dir, None);
+            for p in extra_writable {
+                if let Ok(resolved) = p.canonicalize() {
+                    writable.push(resolved);
+                } else {
+                    writable.push(p.to_path_buf());
+                }
+            }
             let mut bwrap_args = vec![
                 "--ro-bind",
                 "/",
