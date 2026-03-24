@@ -159,6 +159,30 @@ pub async fn handle_client_channels(
                     ClientMessage::SwitchModel { .. } => {
                         let _ = daemon_tx.send(DaemonMessage::Info("Model switching not yet implemented".to_string()));
                     }
+                    ClientMessage::UserChoiceAnswered { choice_id, selected } => {
+                        if let Some(ref sid) = attached_session_id {
+                            let mgr = session_manager.lock().await;
+                            let mut store = mgr.session_store.lock().await;
+                            if let Some(entry) = store.sessions.get_mut(sid) {
+                                if let Some(pos) = entry.pending_choices.iter().position(|c| c.id == choice_id) {
+                                    let pending = entry.pending_choices.remove(pos);
+                                    let url = pending.response_url;
+                                    let id = pending.id;
+                                    tokio::spawn(async move {
+                                        let client = reqwest::Client::new();
+                                        let _ = client
+                                            .post(&url)
+                                            .json(&serde_json::json!({
+                                                "id": id,
+                                                "selected": selected
+                                            }))
+                                            .send()
+                                            .await;
+                                    });
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

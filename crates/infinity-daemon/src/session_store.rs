@@ -1,8 +1,17 @@
 use std::{collections::HashMap, path::PathBuf};
 
 use chrono::Utc;
+use infinity_protocol::DaemonMessage;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+
+/// A pending user choice request awaiting user response.
+#[derive(Clone, Debug)]
+pub struct PendingChoice {
+    pub id: String,
+    pub message: DaemonMessage,
+    pub response_url: String,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SessionEntry {
@@ -19,11 +28,16 @@ pub struct SessionEntry {
     /// Shows as "Idle" in session list instead of "Stopped".
     #[serde(default)]
     pub idle_cleaned: bool,
+    /// Pending user choice requests (transient, not persisted).
+    #[serde(skip)]
+    pub pending_choices: Vec<PendingChoice>,
 }
 
 impl SessionEntry {
     pub fn status(&self) -> infinity_protocol::SessionStatus {
-        if self.shut_down {
+        if !self.pending_choices.is_empty() {
+            infinity_protocol::SessionStatus::WaitingForChoice
+        } else if self.shut_down {
             infinity_protocol::SessionStatus::Stopped
         } else if self.idle_cleaned {
             infinity_protocol::SessionStatus::Idle
@@ -78,6 +92,7 @@ impl SessionStore {
                                     cwd: std::env::current_dir().unwrap(),
                                     shut_down: false,
                                     idle_cleaned: false,
+                                    pending_choices: Vec::new(),
                                 },
                             )
                         })
@@ -101,7 +116,7 @@ impl SessionStore {
         Ok(())
     }
 
-    fn notify(&self, session_id: &str) {
+    pub fn notify(&self, session_id: &str) {
         if let Some(ref tx) = self.change_tx {
             let _ = tx.send(session_id.to_string());
         }
@@ -128,6 +143,7 @@ impl SessionStore {
                 cwd,
                 shut_down: false,
                 idle_cleaned: false,
+                pending_choices: Vec::new(),
             },
         );
     }
