@@ -186,6 +186,16 @@ impl InMemoryConversationStore {
         map.get(thread_id)
             .and_then(|inner| inner.get(tool_result_id).cloned())
     }
+
+    /// Resolve a thread ID to its root thread ID (i.e. the session ID).
+    pub fn get_root_thread_id(&self, thread_id: &str) -> String {
+        self.ensure_thread_loaded(thread_id);
+        let threads = self.threads.lock().unwrap();
+        threads
+            .get(thread_id)
+            .map(|t| t.root_thread_id.clone())
+            .unwrap_or_else(|| thread_id.to_string())
+    }
 }
 
 #[async_trait]

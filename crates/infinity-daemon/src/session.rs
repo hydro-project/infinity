@@ -452,6 +452,10 @@ impl SessionManager {
         msg: (InputMessage, Option<String>),
         client_tx: Option<mpsc::UnboundedSender<DaemonMessage>>,
     ) -> bool {
+        // Resolve thread ID to root session ID in case a child thread ID was provided.
+        let session_id = self.conversation_store.get_root_thread_id(session_id);
+        let session_id = session_id.as_str();
+
         // If session task finished (idle-cleaned) or was never started, check if we need to restart.
         let needs_restart = if let Some(session) = self.sessions.get(session_id) {
             session.agent_task.is_finished()
