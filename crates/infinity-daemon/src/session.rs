@@ -880,76 +880,109 @@ async fn thread_worker<Mdl>(
             .map(|t| (t.name().to_string(), t.as_ref()))
             .collect();
 
-    let mut pending = vec![];
+    let mut pending_non_interrupt_items = vec![];
     let mut completion_fut = None;
-    let mut cancel_tx: Option<oneshot::Sender<()>> = None;
+    let mut completion_cancel_tx: Option<oneshot::Sender<()>> = None;
 
     loop {
-        let batch = if let Some(fut) = completion_fut.as_mut() {
+        let inputs_before_pending = if let Some(mut_fut) = completion_fut.as_mut() {
             tokio::select! {
-                _ = fut => { let _ = completion_fut.take(); continue; },
+                _ = mut_fut => {
+                    // if the LLM completed first, simply loop back and collect a batch in the else branch
+                    let _ = completion_fut.take().unwrap();
+                    continue;
+                },
                 first = rx.recv() => {
-                    let Some(first) = first else { return; };
-                    let mut b = vec![first];
-                    while let Ok(i) = rx.try_recv() { b.push(i); }
-                    if b.iter().any(|(m, _)| is_user_text_input(m)) {
-                        let _ = cancel_tx.take().unwrap().send(());
-                        completion_fut.take().unwrap().await;
-                        let (mut ui, rest): (Vec<_>, Vec<_>) =
-                            b.into_iter().partition(|(m, _)| is_user_text_input(m));
-                        if let InputMessageContent::User(UserContent::Text(t)) = &mut ui[0].0.content {
-                            t.text = format!("<interrupt>{}", t.text);
-                        }
-                        pending.extend(rest);
-                        ui
-                    } else { pending.extend(b); continue; }
-                }
-            }
-        } else {
-            // No completion running — check for idle before blocking.
-            let mut b = vec![];
-            if pending.is_empty() {
-                match rx.try_recv() {
-                    Ok(first) => b.push(first),
-                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return,
-                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                        // Check idle conditions: last message is not a tool call
-                        // and no active subscriptions.
-                        let last_is_tool_call = {
-                            let hist = current_history.borrow();
-                            hist.history.last().is_some_and(|msg| matches!(
-                                msg,
-                                rig::message::Message::Assistant { content, .. }
-                                    if matches!(content.first(), rig::message::AssistantContent::ToolCall(_))
-                            ))
-                        };
-                        let has_subs = state_store
-                            .get_active_subscriptions(&active_group_id)
-                            .await
-                            .map(|s| !s.is_empty())
-                            .unwrap_or(false);
+                    let Some(first) = first else {
+                        return;
+                    };
+                    // Drain all immediately-available events before running the LLM.
+                    let mut batch = vec![first];
+                    while let Ok(item) = rx.try_recv() {
+                        batch.push(item);
+                    }
 
-                        if !last_is_tool_call && !has_subs {
-                            // Idle — return so the worker can be respawned later.
-                            return;
+                    if batch.iter().any(|(msg, _)| is_user_text_input(msg))
+                    {
+                        let _ = completion_cancel_tx.take().unwrap().send(());
+                        let completion_fut_taken = completion_fut.take().unwrap();
+                        completion_fut_taken.await;
+
+                        let (mut user_inputs, non_user_inputs): (Vec<_>, Vec<_>) = batch
+                            .into_iter()
+                            .partition(|(msg, _)| is_user_text_input(msg));
+
+                        if let InputMessageContent::User(UserContent::Text(text)) = &mut user_inputs[0].0.content {
+                            text.text = format!("<interrupt>{}", text.text);
+                        } else {
+                            panic!("user_inputs should only have user text");
                         }
 
-                        // Not idle — block until next message.
-                        let Some(f) = rx.recv().await else {
-                            return;
-                        };
-                        b.push(f);
+                        pending_non_interrupt_items.extend(non_user_inputs);
+                        user_inputs
+                    } else {
+                        pending_non_interrupt_items.extend(batch);
+                        // if nothing is an interrupt-causing event, simply loop back and continue waiting
+                        // for a real interrupt or the LLM to complete naturally
+                        continue;
                     }
                 }
             }
-            while let Ok(i) = rx.try_recv() {
-                b.push(i);
+        } else {
+            let mut batch = vec![];
+
+            if pending_non_interrupt_items.is_empty() {
+                let first_res = rx.try_recv();
+                let mut first = if let Ok(first_res) = first_res {
+                    Some(first_res)
+                } else {
+                    let last_is_tool_call = {
+                        let hist = current_history.borrow();
+
+                        hist.history.last().is_some_and(|msg| matches!(
+                            msg,
+                            rig::message::Message::Assistant { content, .. }
+                                if matches!(content.first(), rig::message::AssistantContent::ToolCall(_))
+                        ))
+                    };
+                    let has_subs = state_store
+                        .get_active_subscriptions(&active_group_id)
+                        .await
+                        .map(|s| !s.is_empty())
+                        .unwrap_or(false);
+
+                    if !last_is_tool_call && !has_subs {
+                        // Idle — return so the worker can be respawned later.
+                        tracing::info!("Thread {} going to idle", &active_group_id);
+                        return;
+                    } else {
+                        None
+                    }
+                };
+
+                // only block if there are no pending items
+                if first.is_none() {
+                    first = rx.recv().await;
+                }
+                let Some(first) = first else {
+                    return;
+                };
+                batch.push(first);
             }
-            b
+
+            while let Ok(item) = rx.try_recv() {
+                batch.push(item);
+            }
+
+            batch
         };
 
-        let all: Vec<_> = batch.into_iter().chain(pending.drain(..)).collect();
-        for (m, _) in &all {
+        let all_inputs: Vec<_> = inputs_before_pending
+            .into_iter()
+            .chain(pending_non_interrupt_items.drain(..))
+            .collect();
+
+        for (m, _) in &all_inputs {
             if let (Some(da), InputMessageContent::User(UserContent::ToolResult(res))) =
                 (&m.display_as, &m.content)
             {
@@ -961,7 +994,7 @@ async fn thread_worker<Mdl>(
         let mid = active_model_id.read().unwrap().clone();
 
         let result = infinity_agent_core::batch_processor::process_batch(
-            all.into_iter(),
+            all_inputs.into_iter(),
             &current_history,
             &conversation_store,
             &display_tx,
@@ -979,7 +1012,7 @@ async fn thread_worker<Mdl>(
         .await;
 
         if let Some((fut, ct)) = result {
-            cancel_tx = Some(ct);
+            completion_cancel_tx = Some(ct);
             completion_fut = Some(fut);
         }
     }
