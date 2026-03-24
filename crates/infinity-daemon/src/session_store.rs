@@ -15,6 +15,22 @@ pub struct SessionEntry {
     /// Set on explicit shutdown; cleared on next user input.
     #[serde(default)]
     pub shut_down: bool,
+    /// When true, the session was cleaned up because it went idle (not explicit shutdown).
+    /// Shows as "Idle" in session list instead of "Stopped".
+    #[serde(default)]
+    pub idle_cleaned: bool,
+}
+
+impl SessionEntry {
+    pub fn status(&self) -> infinity_protocol::SessionStatus {
+        if self.shut_down {
+            infinity_protocol::SessionStatus::Stopped
+        } else if self.idle_cleaned {
+            infinity_protocol::SessionStatus::Idle
+        } else {
+            infinity_protocol::SessionStatus::Running
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -61,6 +77,7 @@ impl SessionStore {
                                     title: e.title,
                                     cwd: std::env::current_dir().unwrap(),
                                     shut_down: false,
+                                    idle_cleaned: false,
                                 },
                             )
                         })
@@ -110,6 +127,7 @@ impl SessionStore {
                 title: None,
                 cwd,
                 shut_down: false,
+                idle_cleaned: false,
             },
         );
     }
@@ -140,7 +158,21 @@ impl SessionStore {
     pub fn clear_shut_down(&mut self, session_id: &str) {
         if let Some(entry) = self.sessions.get_mut(session_id) {
             entry.shut_down = false;
+            entry.idle_cleaned = false;
         }
+    }
+
+    pub fn mark_idle_cleaned(&mut self, session_id: &str) {
+        if let Some(entry) = self.sessions.get_mut(session_id) {
+            entry.idle_cleaned = true;
+        }
+    }
+
+    pub fn is_idle_cleaned(&self, session_id: &str) -> bool {
+        self.sessions
+            .get(session_id)
+            .map(|e| e.idle_cleaned)
+            .unwrap_or(false)
     }
 
     pub fn is_shut_down(&self, session_id: &str) -> bool {

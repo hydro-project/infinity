@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
+use infinity_agent_core::message::{InputMessage, InputMessageContent};
 use infinity_protocol::{ClientMessage, DaemonMessage};
+use rig::message::UserContent;
 use tokio::net::UnixStream;
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
@@ -110,7 +112,14 @@ pub async fn handle_client_channels(
                     }
                     ClientMessage::UserInput { session_id, text } => {
                         let mut mgr = session_manager.lock().await;
-                        if !mgr.send_input(&session_id, text, client_tx.clone()).await {
+                        if !mgr.send_input(&session_id, (InputMessage {
+                            content: InputMessageContent::User(UserContent::text(&text)),
+                            group_id: session_id.clone(),
+                            metadata: None,
+                            synthetic: None,
+                            display_as: None,
+                            subscription: false,
+                        }, None), Some(client_tx.clone())).await {
                             let _ = daemon_tx.send(DaemonMessage::Error(format!("session {} not found", session_id)));
                         }
                     }
