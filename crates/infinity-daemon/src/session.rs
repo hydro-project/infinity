@@ -65,6 +65,7 @@ pub struct SessionManager {
     route_map: Option<RouteMap>,
     session_store: SessionStoreHandle,
     conversation_store: InMemoryConversationStore,
+    state_store: InMemoryStateStore,
     pub default_model_name: String,
     pub default_context_window: usize,
     pub available_models: Vec<model_picker::ModelEntry>,
@@ -113,6 +114,7 @@ impl SessionManager {
         let threads_dir = state_dir.join("threads");
         std::fs::create_dir_all(&threads_dir).ok();
         let conversation_store = InMemoryConversationStore::new_with_dir(&threads_dir);
+        let state_store = InMemoryStateStore::new(state_dir.join("state"));
 
         // Start shared callback server
         let (input_tx, mut input_rx) = mpsc::unbounded_channel::<(InputMessage, String)>();
@@ -154,6 +156,7 @@ impl SessionManager {
             route_map: Some(routes),
             session_store,
             conversation_store,
+            state_store,
             default_model_name,
             default_context_window,
             available_models,
@@ -375,7 +378,7 @@ impl SessionManager {
              for minor follow-ups within the same task."
         ));
 
-        let state_store = InMemoryStateStore::new();
+        let state_store = self.state_store.clone();
 
         let active_workers: ActiveWorkers = Arc::new(std::sync::Mutex::new(HashSet::new()));
         let (idle_tx, idle_rx) = mpsc::unbounded_channel();

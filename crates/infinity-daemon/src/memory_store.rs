@@ -441,7 +441,20 @@ impl ConversationStore for InMemoryConversationStore {
     }
 }
 
-// ── In-memory state store ──
+// ── In-memory state store with per-thread file persistence ──
+
+/// Per-thread snapshot written to `{dir}/{thread_id}.state.json`.
+#[derive(Serialize, Deserialize)]
+struct StateThreadSnapshot {
+    #[serde(default)]
+    processed_message_ids: HashSet<String>,
+    #[serde(default)]
+    processed_tool_call_ids: HashSet<String>,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    subscriptions: HashSet<String>,
+}
 
 #[derive(Clone)]
 pub struct InMemoryStateStore {
@@ -450,21 +463,80 @@ pub struct InMemoryStateStore {
     metadata: Arc<Mutex<HashMap<String, serde_json::Value>>>,
     /// Per-thread active subscriptions: thread_id → set of tool_call_ids.
     subscriptions: Arc<Mutex<HashMap<String, HashSet<String>>>>,
-}
-
-impl Default for InMemoryStateStore {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// Directory where per-thread state JSON files are stored.
+    dir: PathBuf,
+    /// Tracks which keys have already been loaded (or attempted) from disk.
+    loaded: Arc<Mutex<HashSet<String>>>,
 }
 
 impl InMemoryStateStore {
-    pub fn new() -> Self {
+    pub fn new(dir: impl AsRef<Path>) -> Self {
+        let dir = dir.as_ref().to_path_buf();
+        std::fs::create_dir_all(&dir).ok();
         Self {
             processed_ids: Arc::new(Mutex::new(HashMap::new())),
             metadata: Arc::new(Mutex::new(HashMap::new())),
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            dir,
+            loaded: Arc::new(Mutex::new(HashSet::new())),
         }
+    }
+
+    /// Write a single key's state data to `{dir}/{key}.state.json`.
+    fn save_key(&self, key: &str) {
+        let processed_ids = self.processed_ids.lock().unwrap();
+        let metadata = self.metadata.lock().unwrap();
+        let subscriptions = self.subscriptions.lock().unwrap();
+
+        let (msg_ids, tc_ids) = processed_ids
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| (HashSet::new(), HashSet::new()));
+
+        let snapshot = StateThreadSnapshot {
+            processed_message_ids: msg_ids,
+            processed_tool_call_ids: tc_ids,
+            metadata: metadata.get(key).cloned(),
+            subscriptions: subscriptions.get(key).cloned().unwrap_or_default(),
+        };
+
+        let path = self.dir.join(format!("{}.state.json", key));
+        if let Ok(json) = serde_json::to_string_pretty(&snapshot) {
+            std::fs::write(path, json).ok();
+        }
+    }
+
+    /// Ensure a key's data is loaded from disk into the in-memory caches.
+    fn ensure_loaded(&self, key: &str) {
+        let mut loaded = self.loaded.lock().unwrap();
+        if loaded.contains(key) {
+            return;
+        }
+
+        let path = self.dir.join(format!("{}.state.json", key));
+        if let Ok(json) = std::fs::read_to_string(&path)
+            && let Ok(snapshot) = serde_json::from_str::<StateThreadSnapshot>(&json)
+        {
+            let mut processed_ids = self.processed_ids.lock().unwrap();
+            let mut metadata = self.metadata.lock().unwrap();
+            let mut subscriptions = self.subscriptions.lock().unwrap();
+
+            processed_ids.insert(
+                key.to_string(),
+                (
+                    snapshot.processed_message_ids,
+                    snapshot.processed_tool_call_ids,
+                ),
+            );
+            if let Some(meta) = snapshot.metadata {
+                metadata.insert(key.to_string(), meta);
+            }
+            if !snapshot.subscriptions.is_empty() {
+                subscriptions.insert(key.to_string(), snapshot.subscriptions);
+            }
+        }
+
+        loaded.insert(key.to_string());
     }
 }
 
@@ -476,6 +548,7 @@ impl StateStore for InMemoryStateStore {
         &self,
         thread_id: &str,
     ) -> Result<(HashSet<String>, HashSet<String>), MemoryError> {
+        self.ensure_loaded(thread_id);
         let store = self.processed_ids.lock().unwrap();
         Ok(store
             .get(thread_id)
@@ -488,11 +561,15 @@ impl StateStore for InMemoryStateStore {
         thread_id: &str,
         message_ids: Vec<String>,
     ) -> Result<(), MemoryError> {
-        let mut store = self.processed_ids.lock().unwrap();
-        let entry = store
-            .entry(thread_id.to_string())
-            .or_insert_with(|| (HashSet::new(), HashSet::new()));
-        entry.0.extend(message_ids);
+        self.ensure_loaded(thread_id);
+        {
+            let mut store = self.processed_ids.lock().unwrap();
+            let entry = store
+                .entry(thread_id.to_string())
+                .or_insert_with(|| (HashSet::new(), HashSet::new()));
+            entry.0.extend(message_ids);
+        }
+        self.save_key(thread_id);
         Ok(())
     }
 
@@ -501,11 +578,15 @@ impl StateStore for InMemoryStateStore {
         thread_id: &str,
         tool_call_ids: Vec<String>,
     ) -> Result<(), MemoryError> {
-        let mut store = self.processed_ids.lock().unwrap();
-        let entry = store
-            .entry(thread_id.to_string())
-            .or_insert_with(|| (HashSet::new(), HashSet::new()));
-        entry.1.extend(tool_call_ids);
+        self.ensure_loaded(thread_id);
+        {
+            let mut store = self.processed_ids.lock().unwrap();
+            let entry = store
+                .entry(thread_id.to_string())
+                .or_insert_with(|| (HashSet::new(), HashSet::new()));
+            entry.1.extend(tool_call_ids);
+        }
+        self.save_key(thread_id);
         Ok(())
     }
 
@@ -513,6 +594,7 @@ impl StateStore for InMemoryStateStore {
         &self,
         root_thread_id: &str,
     ) -> Result<Option<serde_json::Value>, MemoryError> {
+        self.ensure_loaded(root_thread_id);
         let store = self.metadata.lock().unwrap();
         Ok(store.get(root_thread_id).cloned())
     }
@@ -522,12 +604,17 @@ impl StateStore for InMemoryStateStore {
         root_thread_id: &str,
         metadata: serde_json::Value,
     ) -> Result<(), MemoryError> {
-        let mut store = self.metadata.lock().unwrap();
-        store.insert(root_thread_id.to_string(), metadata);
+        self.ensure_loaded(root_thread_id);
+        {
+            let mut store = self.metadata.lock().unwrap();
+            store.insert(root_thread_id.to_string(), metadata);
+        }
+        self.save_key(root_thread_id);
         Ok(())
     }
 
     async fn get_active_subscriptions(&self, thread_id: &str) -> Result<Vec<String>, MemoryError> {
+        self.ensure_loaded(thread_id);
         let store = self.subscriptions.lock().unwrap();
         Ok(store
             .get(thread_id)
@@ -540,11 +627,15 @@ impl StateStore for InMemoryStateStore {
         thread_id: &str,
         tool_call_id: &str,
     ) -> Result<(), MemoryError> {
-        let mut store = self.subscriptions.lock().unwrap();
-        store
-            .entry(thread_id.to_string())
-            .or_default()
-            .insert(tool_call_id.to_string());
+        self.ensure_loaded(thread_id);
+        {
+            let mut store = self.subscriptions.lock().unwrap();
+            store
+                .entry(thread_id.to_string())
+                .or_default()
+                .insert(tool_call_id.to_string());
+        }
+        self.save_key(thread_id);
         Ok(())
     }
 
@@ -553,10 +644,14 @@ impl StateStore for InMemoryStateStore {
         thread_id: &str,
         tool_call_id: &str,
     ) -> Result<(), MemoryError> {
-        let mut store = self.subscriptions.lock().unwrap();
-        if let Some(subs) = store.get_mut(thread_id) {
-            subs.remove(tool_call_id);
+        self.ensure_loaded(thread_id);
+        {
+            let mut store = self.subscriptions.lock().unwrap();
+            if let Some(subs) = store.get_mut(thread_id) {
+                subs.remove(tool_call_id);
+            }
         }
+        self.save_key(thread_id);
         Ok(())
     }
 }
