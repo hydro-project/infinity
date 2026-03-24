@@ -146,6 +146,8 @@ impl SessionStore {
                 pending_choices: Vec::new(),
             },
         );
+
+        self.notify(session_id);
     }
 
     pub fn get_cwd(&self, session_id: &str) -> &PathBuf {
@@ -155,10 +157,10 @@ impl SessionStore {
     pub fn set_title(&mut self, session_id: &str, title: &str) {
         if let Some(entry) = self.sessions.get_mut(session_id) {
             entry.title = Some(title.to_string());
-            self.notify(session_id);
         } else {
             self.update(session_id, 0, Some(title.to_string()));
         }
+        self.notify(session_id);
     }
 
     pub fn get_title(&self, session_id: &str) -> Option<String> {
@@ -168,19 +170,23 @@ impl SessionStore {
     pub fn mark_shut_down(&mut self, session_id: &str) {
         if let Some(entry) = self.sessions.get_mut(session_id) {
             entry.shut_down = true;
+            self.notify(session_id);
         }
     }
 
     pub fn clear_shut_down(&mut self, session_id: &str) {
+        tracing::trace!("Clearing shut down status for {}", session_id);
         if let Some(entry) = self.sessions.get_mut(session_id) {
             entry.shut_down = false;
             entry.idle_cleaned = false;
+            self.notify(session_id);
         }
     }
 
     pub fn mark_idle_cleaned(&mut self, session_id: &str) {
         if let Some(entry) = self.sessions.get_mut(session_id) {
             entry.idle_cleaned = true;
+            self.notify(session_id);
         }
     }
 
