@@ -436,6 +436,14 @@ where
                         end_stream(&mut viewport, &mut mid_stream)?;
                         viewport.print_line_above(Line::from(text))?;
                     }
+                    DisplayEvent::CompactionApplied { prefix } => {
+                        if prefix.is_none() {
+                            end_stream(&mut viewport, &mut mid_stream)?;
+                            viewport.print_line_above(Line::from(vec![
+                                Span::styled("✦ Compaction applied", Style::default().fg(Color::Magenta)),
+                            ]))?;
+                        }
+                    }
                     DisplayEvent::UserInput(text) => {
                         let sanitized = text.replace('\n', "\r\n");
                         end_stream(&mut viewport, &mut mid_stream)?;

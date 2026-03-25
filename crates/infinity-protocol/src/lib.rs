@@ -69,6 +69,10 @@ pub enum ClientMessage {
         choice_id: String,
         selected: usize,
     },
+    /// Trigger compaction for the given session.
+    TriggerCompaction {
+        session_id: String,
+    },
 }
 
 // ── Daemon → Client ─────────────────────────────────────────────────────────
@@ -129,6 +133,9 @@ pub enum DaemonMessage {
     ThinkingChunk {
         prefix: Option<String>,
         chunk: String,
+    },
+    CompactionApplied {
+        prefix: Option<String>,
     },
     Error(String),
     /// Batch replay of history messages, sent on connect/load.

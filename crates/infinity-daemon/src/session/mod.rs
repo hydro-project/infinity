@@ -650,6 +650,7 @@ impl SessionManager {
                 idle_rx,
                 shutdown_rx,
                 spawned_servers,
+                context_window,
             )
         };
         Ok((model_name, context_window, handle))
@@ -677,6 +678,7 @@ fn spawn_agent_loop<Mdl>(
     idle_rx: mpsc::UnboundedReceiver<()>,
     shutdown_rx: oneshot::Receiver<()>,
     spawned_servers: Vec<tokio::process::Child>,
+    context_window: usize,
 ) -> JoinHandle<()>
 where
     Mdl: CompletionModel + 'static,
@@ -744,6 +746,7 @@ where
         client_tx_handle.clone(),
         active_workers,
         idle_tx,
+        context_window,
     );
 
     tokio::task::spawn_local(session_wrapper(
