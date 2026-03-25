@@ -26,6 +26,7 @@ Content-Type: application/json
   "call_id": null,
   "callback_url": "https://agent.example.com/callback",
   "group_id": "thread_xyz",
+  "thread_ancestors": ["thread_root", "thread_parent"],
   "user_id": "user_42"
 }
 ```
@@ -40,6 +41,7 @@ Content-Type: application/json
 | `call_id` | `string \| null` | No | Optional secondary call identifier for model-specific tracking. If provided, MUST be echoed in the tool result. |
 | `callback_url` | `string` | Yes | The URL where the tool MUST POST results. See [Transport](/spec/basic/transport) for callback URL requirements. |
 | `group_id` | `string` | Yes | Conversation thread identifier. MUST be included in all callback messages to route them to the correct conversation. |
+| `thread_ancestors` | `string[] \| null` | No | Ordered list of ancestor thread group IDs, from root to the parent of the current thread. Tools MAY use this to inherit state (e.g. permission grants) from parent threads. Omitted when the current thread is the root. |
 | `user_id` | `string \| null` | No | End-user identity. Tools MAY use this for authorization, personalization, or audit logging. |
 
 ## Response
@@ -66,7 +68,7 @@ If the tool encounters an error during processing, it MUST still send a [tool re
 
 ### Runtime Validation
 
-Before dispatching an invocation, the runtime MUST verify that the `operation` field matches a known tool definition from a loaded [toolset](/spec/basic/toolsets). The runtime SHOULD validate the `arguments` object against the tool's `inputSchema` to catch malformed input before it reaches the tool. The runtime MUST generate a unique `id` for the tool call (or use the one provided by the LLM), MUST provide a valid `callback_url` where the tool can deliver results, and MUST include the `group_id` of the current conversation thread.
+Before dispatching an invocation, the runtime MUST verify that the `operation` field matches a known tool definition from a loaded [toolset](/spec/basic/toolsets). The runtime SHOULD validate the `arguments` object against the tool's `inputSchema` to catch malformed input before it reaches the tool. The runtime MUST generate a unique `id` for the tool call (or use the one provided by the LLM), MUST provide a valid `callback_url` where the tool can deliver results, and MUST include the `group_id` of the current conversation thread. When the current thread has ancestor threads, the runtime SHOULD include `thread_ancestors` with the ordered list of ancestor group IDs from root to parent.
 
 ### Tool Validation
 

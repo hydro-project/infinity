@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -67,10 +67,6 @@ struct AppState<B: SandboxBackend, M: MetadataStore, C: CallbackClient> {
     /// Pending user choice responses, keyed by tool call ID.
     /// The sender delivers the user's selected index.
     pending_choices: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<usize>>>>,
-    /// Granted write-orig permissions, keyed by root group_id.
-    write_orig_grants: Arc<Mutex<HashSet<String>>>,
-    /// Granted direct-mode file write permissions, keyed by root group_id.
-    direct_write_grants: Arc<Mutex<HashSet<String>>>,
     /// Server base URL, set from the first request's Host header.
     server_base_url: std::sync::OnceLock<String>,
 }
@@ -130,8 +126,6 @@ where
         pending_tasks: tracker.pending_tasks.clone(),
         in_flight,
         pending_choices: Arc::new(Mutex::new(HashMap::new())),
-        write_orig_grants: Arc::new(Mutex::new(HashSet::new())),
-        direct_write_grants: Arc::new(Mutex::new(HashSet::new())),
         server_base_url: std::sync::OnceLock::new(),
     });
 
@@ -376,6 +370,56 @@ async fn user_choice_response_handler<
     StatusCode::OK
 }
 
+/// Build the full thread chain: ancestors (if any) + current group_id.
+fn thread_chain(invocation: &RapInvocation) -> Vec<String> {
+    let mut chain: Vec<String> = invocation
+        .thread_ancestors
+        .as_deref()
+        .unwrap_or_default()
+        .to_vec();
+    chain.push(invocation.group_id.clone());
+    chain
+}
+
+/// Check if write-orig is granted on any thread in the chain.
+async fn is_write_orig_granted<M: MetadataStore>(metadata: &M, chain: &[String]) -> bool {
+    for id in chain {
+        if let Ok(Some(s)) = metadata.get(id).await {
+            if s.write_orig_granted {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Return the set of paths already granted across the thread chain.
+async fn granted_write_paths<M: MetadataStore>(
+    metadata: &M,
+    chain: &[String],
+) -> std::collections::HashSet<String> {
+    let mut granted = std::collections::HashSet::new();
+    for id in chain {
+        if let Ok(Some(s)) = metadata.get(id).await {
+            granted.extend(s.write_path_grants.iter().cloned());
+        }
+    }
+    granted
+}
+
+/// Build per-thread-level "Yes" choices from root to current thread.
+/// Returns `(choices, thread_ids)` where `choices[i]` is the label and
+/// `thread_ids[i]` is the group_id to persist the grant on.
+fn build_grant_choices(chain: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut choices = Vec::new();
+    let mut ids = Vec::new();
+    for id in chain {
+        choices.push(format!("Yes ({id} and all children)"));
+        ids.push(id.clone());
+    }
+    (choices, ids)
+}
+
 async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
@@ -428,6 +472,8 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
             bookmark: bookmark.clone(),
             mode: SandboxMode::Jj { base_revision },
             sandbox_path: None,
+            write_orig_granted: false,
+            write_path_grants: Default::default(),
         };
         let msg = match rev_to_resolve {
             Some(rev) => format!("Repository initialized on top of {rev}."),
@@ -460,6 +506,8 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
             bookmark: bookmark.clone(),
             mode: SandboxMode::Git { base_revision },
             sandbox_path: None,
+            write_orig_granted: false,
+            write_path_grants: Default::default(),
         };
         let msg = match rev_to_resolve {
             Some(rev) => format!("Repository initialized on top of {rev}."),
@@ -492,6 +540,8 @@ async fn handle_open_sandbox_direct<B: SandboxBackend, M: MetadataStore, C: Call
         bookmark: format!("sandbox-{}", invocation.group_id),
         mode: SandboxMode::Direct,
         sandbox_path: None,
+        write_orig_granted: false,
+        write_path_grants: Default::default(),
     };
 
     state.metadata.put(&repo_state).await?;
@@ -671,90 +721,124 @@ async fn handle_execute_command_streaming_inner<
     let args: ExecuteCommandArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
-    // Check if write-orig permission is requested
-    let needs_write_orig = args
-        .additional_permissions
-        .as_ref()
-        .is_some_and(|p| p.iter().any(|s| s == "write-orig"));
-
-    if needs_write_orig {
-        let grants = state.write_orig_grants.lock().await;
-        let already_granted = grants.contains(&invocation.group_id);
-        drop(grants);
-
-        if !already_granted {
-            // Request user approval via user_choice protocol
-            let base_url = state
-                .server_base_url
-                .get()
-                .cloned()
-                .unwrap_or_else(|| "http://localhost".to_string());
-            let response_url = format!("{base_url}/user_choice_response");
-
-            let (choice_tx, choice_rx) = tokio::sync::oneshot::channel();
-            state
-                .pending_choices
-                .lock()
-                .await
-                .insert(invocation.id.clone(), choice_tx);
-
-            send_user_choice(
-                &state.callback_client,
-                invocation,
-                "Allow writing to the original repository directory?",
-                vec![
-                    "Yes for session".to_string(),
-                    "Yes once".to_string(),
-                    "No".to_string(),
-                ],
-                2, // default: No
-                &response_url,
-            )
-            .await;
-
-            // Wait for the user's response
-            let selected = choice_rx.await.unwrap_or(2);
-
-            match selected {
-                0 => {
-                    // Yes for session — persist grant
-                    state
-                        .write_orig_grants
-                        .lock()
-                        .await
-                        .insert(invocation.group_id.clone());
-                }
-                1 => {
-                    // Yes once — no persistence, just proceed
-                }
-                _ => {
-                    // No — deny and return error
-                    state.in_flight.lock().await.remove(&invocation.id);
-                    send_tool_result(
-                        &state.callback_client,
-                        invocation,
-                        "Error: write-orig permission denied by user.",
-                        None,
-                        false,
-                    )
-                    .await;
-                    return Ok(());
-                }
-            }
-        }
-    }
-
-    // Set up sandbox
     let repo_state = state
         .metadata
         .get(&invocation.group_id)
         .await?
         .ok_or_else(|| SandboxError::RepoNotFound(invocation.group_id.clone()))?;
 
+    let chain = thread_chain(invocation);
+
+    // Check if write-orig permission is requested
+    let needs_write_orig = args
+        .additional_permissions
+        .as_ref()
+        .is_some_and(|p| p.iter().any(|s| s == "write-orig"));
+
+    // Collect write:/path permissions
+    let write_paths: Vec<String> = args
+        .additional_permissions
+        .as_ref()
+        .map(|perms| {
+            perms
+                .iter()
+                .filter_map(|s| s.strip_prefix("write:").map(|p| p.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Check grants across the full ancestor chain
+    let needs_write_orig_approval =
+        needs_write_orig && !is_write_orig_granted(&state.metadata, &chain).await;
+    let already_granted_paths = granted_write_paths(&state.metadata, &chain).await;
+    let unapproved_paths: Vec<String> = write_paths
+        .iter()
+        .filter(|p| !already_granted_paths.contains(*p))
+        .cloned()
+        .collect();
+
+    if needs_write_orig_approval || !unapproved_paths.is_empty() {
+        // Build a single batch prompt for all unapproved permissions
+        let mut prompt_parts = Vec::new();
+        if needs_write_orig_approval {
+            prompt_parts.push("the original repository directory".to_string());
+        }
+        for p in &unapproved_paths {
+            prompt_parts.push(format!("{p}"));
+        }
+        let prompt = format!("Allow writing to {}?", prompt_parts.join(", "));
+
+        // Build per-thread-level choices
+        let (mut choices, grant_ids) = build_grant_choices(&chain);
+        let yes_once_idx = choices.len();
+        let no_idx = yes_once_idx + 1;
+        choices.push("Yes once".to_string());
+        choices.push("No".to_string());
+
+        let base_url = state
+            .server_base_url
+            .get()
+            .cloned()
+            .unwrap_or_else(|| "http://localhost".to_string());
+        let response_url = format!("{base_url}/user_choice_response");
+
+        let (choice_tx, choice_rx) = tokio::sync::oneshot::channel();
+        state
+            .pending_choices
+            .lock()
+            .await
+            .insert(invocation.id.clone(), choice_tx);
+
+        send_user_choice(
+            &state.callback_client,
+            invocation,
+            &prompt,
+            choices,
+            no_idx,
+            &response_url,
+        )
+        .await;
+
+        let selected = choice_rx.await.unwrap_or(no_idx);
+
+        if selected < grant_ids.len() {
+            // Persist grant on the chosen thread
+            let target_id = &grant_ids[selected];
+            let mut target = state
+                .metadata
+                .get(target_id)
+                .await?
+                .unwrap_or_else(|| repo_state.clone());
+            if needs_write_orig_approval {
+                target.write_orig_granted = true;
+            }
+            for p in &unapproved_paths {
+                target.write_path_grants.insert(p.clone());
+            }
+            if let Err(e) = state.metadata.put(&target).await {
+                tracing::warn!("failed to persist grants: {e}");
+            }
+        } else if selected == yes_once_idx {
+            // Yes once — no persistence
+        } else {
+            state.in_flight.lock().await.remove(&invocation.id);
+            send_tool_result(
+                &state.callback_client,
+                invocation,
+                "Error: write permission denied by user.",
+                None,
+                false,
+            )
+            .await;
+            return Ok(());
+        }
+    }
+
     // Reject commands that `cd` to the original repo directory — this escapes
     // the sandbox and can hang on file locks (e.g. cargo build competing for
     // the same target directory).
     if !needs_write_orig
+        && write_paths.is_empty()
         && let Some(error_msg) = detect_cd_to_original_repo(&args.command, &repo_state.remote_uri)
     {
         state.in_flight.lock().await.remove(&invocation.id);
@@ -790,11 +874,16 @@ async fn handle_execute_command_streaming_inner<
     // Spawn the process
     let is_direct = matches!(repo_state.mode, SandboxMode::Direct);
     let orig_path = std::path::PathBuf::from(&repo_state.remote_uri);
-    let extra_writable: Vec<&std::path::Path> = if needs_write_orig {
+    let write_path_bufs: Vec<std::path::PathBuf> =
+        write_paths.iter().map(std::path::PathBuf::from).collect();
+    let mut extra_writable: Vec<&std::path::Path> = if needs_write_orig {
         vec![orig_path.as_path()]
     } else {
         vec![]
     };
+    for p in &write_path_bufs {
+        extra_writable.push(p.as_path());
+    }
     let mut spawned = match state
         .backend
         .spawn_command(
@@ -985,7 +1074,9 @@ async fn handle_execute_command_streaming_inner<
                 .await;
                 send_subscription_event(
                     &state.callback_client,
-                    invocation,
+                    &invocation.callback_url,
+                    invocation.group_id.clone(),
+                    invocation.id.clone(),
                     &accumulated,
                     true,
                     true,
@@ -1000,7 +1091,9 @@ async fn handle_execute_command_streaming_inner<
                 if !accumulated.is_empty() {
                     send_subscription_event(
                         &state.callback_client,
-                        invocation,
+                        &invocation.callback_url,
+                    invocation.group_id.clone(),
+                    invocation.id.clone(),
                         &accumulated,
                         true,
                         false,
@@ -1031,7 +1124,9 @@ async fn handle_execute_command_streaming_inner<
                         .await;
                         send_subscription_event(
                             &state.callback_client,
-                            invocation,
+                            &invocation.callback_url,
+                    invocation.group_id.clone(),
+                    invocation.id.clone(),
                             &accumulated,
                             true,
                             true,
@@ -1054,7 +1149,9 @@ async fn handle_execute_command_streaming_inner<
                         if !accumulated.is_empty() {
                             send_subscription_event(
                                 &state.callback_client,
-                                invocation,
+                                &invocation.callback_url,
+                    invocation.group_id.clone(),
+                    invocation.id.clone(),
                                 &accumulated,
                                 true,
                                 true,
@@ -1128,15 +1225,17 @@ async fn request_direct_write_approval<B: SandboxBackend, M: MetadataStore, C: C
     invocation: &RapInvocation,
     path: &str,
 ) -> bool {
-    // Check if already granted for this session
-    if state
-        .direct_write_grants
-        .lock()
-        .await
-        .contains(&invocation.group_id)
-    {
+    let chain = thread_chain(invocation);
+
+    if is_write_orig_granted(&state.metadata, &chain).await {
         return true;
     }
+
+    let (mut choices, grant_ids) = build_grant_choices(&chain);
+    let yes_once_idx = choices.len();
+    let no_idx = yes_once_idx + 1;
+    choices.push("Yes once".to_string());
+    choices.push("No".to_string());
 
     let base_url = state
         .server_base_url
@@ -1156,27 +1255,27 @@ async fn request_direct_write_approval<B: SandboxBackend, M: MetadataStore, C: C
         &state.callback_client,
         invocation,
         &format!("Direct mode: allow writing to {path}?"),
-        vec![
-            "Yes for session".to_string(),
-            "Yes once".to_string(),
-            "No".to_string(),
-        ],
-        2, // default: No
+        choices,
+        no_idx,
         &response_url,
     )
     .await;
 
-    match choice_rx.await {
-        Ok(0) => {
-            state
-                .direct_write_grants
-                .lock()
-                .await
-                .insert(invocation.group_id.clone());
-            true
+    let selected = choice_rx.await.unwrap_or(no_idx);
+
+    if selected < grant_ids.len() {
+        let target_id = &grant_ids[selected];
+        if let Ok(Some(mut target)) = state.metadata.get(target_id).await {
+            target.write_orig_granted = true;
+            if let Err(e) = state.metadata.put(&target).await {
+                tracing::warn!("failed to persist grants: {e}");
+            }
         }
-        Ok(1) => true,
-        _ => false,
+        true
+    } else if selected == yes_once_idx {
+        true
+    } else {
+        false
     }
 }
 
@@ -1541,7 +1640,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                         "additional_permissions": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Optional additional permissions. Supported: \"write-orig\" (allow writing to the original repo directory, e.g. for git push). Requires user approval."
+                            "description": "Optional additional permissions. Supported: \"write-orig\" (allow writing to the original repo directory, e.g. for git push), \"write:/path\" (allow writing to a specific path). Requires user approval."
                         }
                     },
                     "required": ["command"]

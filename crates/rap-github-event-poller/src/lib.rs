@@ -333,18 +333,11 @@ impl<C: CallbackClient> Poller<C> {
                     }))
                     .unwrap_or_default();
 
-                    let inv = RapInvocation {
-                        operation: String::new(),
-                        arguments: serde_json::Value::Null,
-                        id: sub.tool_call_id.clone(),
-                        call_id: sub.call_id.clone(),
-                        callback_url: sub.callback_url.clone(),
-                        group_id: sub.group_id.clone(),
-                        user_id: None,
-                    };
                     send_subscription_event(
                         self.callback_client.as_ref(),
-                        &inv,
+                        &sub.callback_url,
+                        sub.group_id.clone(),
+                        sub.tool_call_id.clone(),
                         &text,
                         false,
                         false,
