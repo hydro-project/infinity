@@ -82,6 +82,7 @@ fn daemon_msg_to_display(msg: DaemonMessage) -> Option<DisplayEvent<DaemonTokenU
         DaemonMessage::ThinkingChunk { prefix, chunk } => {
             DisplayEvent::ThinkingChunk { prefix, chunk }
         }
+        DaemonMessage::CompactionApplied { prefix } => DisplayEvent::CompactionApplied { prefix },
         DaemonMessage::Error(e) => DisplayEvent::Info(format!("Error: {e}")),
         DaemonMessage::Connected { .. }
         | DaemonMessage::Welcome { .. }
@@ -365,7 +366,11 @@ async fn run_client(
             text = input_rx.recv() => {
                 let Some(text) = text else { break };
                 if let Some(ref sid) = active_session {
-                    let _ = to_daemon.send(ClientMessage::UserInput { session_id: sid.clone(), text });
+                    if text == "__compact__" {
+                        let _ = to_daemon.send(ClientMessage::TriggerCompaction { session_id: sid.clone() });
+                    } else {
+                        let _ = to_daemon.send(ClientMessage::UserInput { session_id: sid.clone(), text });
+                    }
                 } else {
                     pending_input.push(text);
                     let _ = to_daemon.send(ClientMessage::CreateSession { cwd: cwd.clone() });

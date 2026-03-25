@@ -40,6 +40,7 @@ pub async fn thread_worker<Mdl>(
     active_model_id: Arc<std::sync::RwLock<Option<String>>>,
     active_workers: ActiveWorkers,
     idle_tx: mpsc::UnboundedSender<()>,
+    context_window: usize,
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
@@ -95,6 +96,8 @@ pub async fn thread_worker<Mdl>(
             .map(|t| (t.name().to_string(), t.as_ref()))
             .collect();
 
+    let input_tokens_cell = std::cell::Cell::new(0u64);
+    let mut compaction_triggered = false;
     let mut pending_non_interrupt_items = vec![];
     let mut completion_fut = None;
     let mut completion_cancel_tx: Option<oneshot::Sender<()>> = None;
@@ -105,6 +108,30 @@ pub async fn thread_worker<Mdl>(
                 _ = mut_fut => {
                     #[expect(clippy::let_underscore_future, reason = "dropping completed future")]
                     let _ = completion_fut.take().unwrap();
+
+                    // Background compaction: trigger if input tokens > 75% of context window
+                    let input_tokens = input_tokens_cell.get() as usize;
+                    if !compaction_triggered && context_window > 0 && input_tokens > context_window * 3 / 4 {
+                        compaction_triggered = true;
+                        tracing::info!(
+                            "Auto-compaction for thread {}: {} input tokens > 75% of {} context window",
+                            &active_group_id, input_tokens, context_window
+                        );
+                        let _ = display_tx.send(DisplayEvent::Info(
+                            "✦ Auto-compaction triggered (context > 75%)".to_string(),
+                        ));
+                        pending_non_interrupt_items.push((InputMessage {
+                            content: InputMessageContent::User(UserContent::text("")),
+                            group_id: active_group_id.clone(),
+                            metadata: None,
+                            synthetic: Some(infinity_agent_core::message::SyntheticKind::Tagged(
+                                infinity_agent_core::message::TaggedSyntheticKind::Compaction,
+                            )),
+                            display_as: None,
+                            subscription: false,
+                        }, uuid::Uuid::new_v4().to_string()));
+                    }
+
                     continue;
                 },
                 first = rx.recv() => {
@@ -198,6 +225,16 @@ pub async fn thread_worker<Mdl>(
             {
                 conversation_store.save_display_as(&active_group_id, &res.id, da);
             }
+            if m.synthetic.as_ref().is_some_and(|s| {
+                matches!(
+                    s,
+                    infinity_agent_core::message::SyntheticKind::Tagged(
+                        infinity_agent_core::message::TaggedSyntheticKind::CompactionComplete
+                    )
+                )
+            }) {
+                compaction_triggered = false;
+            }
         }
 
         let params = additional_request_params.read().unwrap().clone();
@@ -218,6 +255,7 @@ pub async fn thread_worker<Mdl>(
             params,
             mid,
             rap_notifier.as_ref(),
+            Some(&input_tokens_cell),
         )
         .await;
 
@@ -332,6 +370,7 @@ mod tests {
             Arc::new(std::sync::RwLock::new(None)),
             active_workers.clone(),
             idle_tx,
+            0,
         ));
         (input_tx, display_rx, idle_rx, active_workers)
     }
