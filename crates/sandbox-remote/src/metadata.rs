@@ -57,6 +57,8 @@ impl MetadataStore for DynamoMetadataStore {
             bookmark,
             mode: SandboxMode::Jj { base_revision },
             sandbox_path: None,
+            write_orig_granted: false,
+            write_path_grants: Default::default(),
         }))
     }
 

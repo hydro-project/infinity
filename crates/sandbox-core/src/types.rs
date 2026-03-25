@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 /// The version-control mode used by a sandbox.
@@ -32,6 +34,12 @@ pub struct RepoState {
     /// Path to the created sandbox workspace.
     #[serde(default)]
     pub sandbox_path: Option<String>,
+    /// Whether write-orig permission has been granted for the session.
+    #[serde(default, alias = "direct_write_granted")]
+    pub write_orig_granted: bool,
+    /// Absolute paths granted write permission via `write:/path`.
+    #[serde(default)]
+    pub write_path_grants: HashSet<String>,
 }
 
 /// Input for the clone_repo tool.
@@ -56,7 +64,8 @@ pub struct ExecuteCommandArgs {
     /// The bash command to execute in the sandbox.
     pub command: String,
     /// Optional additional permissions for this command.
-    /// Supported values: `"write-orig"` (allow writing to the original repo directory).
+    /// Supported values: `"write-orig"` (allow writing to the original repo directory),
+    /// `"write:/path"` (allow writing to a specific path).
     #[serde(default)]
     pub additional_permissions: Option<Vec<String>>,
 }
