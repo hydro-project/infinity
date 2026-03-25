@@ -5,13 +5,13 @@
 //! completion future the caller can store (CLI) or immediately `.await`
 //! (Lambda).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 
 use futures_util::StreamExt;
-use rig::completion::{CompletionModel, ToolDefinition};
+use rig::completion::{CompletionModel, GetTokenUsage, ToolDefinition};
 use rig::message::{AssistantContent, Message, ToolResultContent, UserContent};
 use tokio::sync::{mpsc, oneshot};
 
@@ -72,6 +72,9 @@ pub enum DisplayEvent<R> {
         prefix: Option<String>,
         chunk: String,
     },
+    CompactionApplied {
+        prefix: Option<String>,
+    },
 }
 
 /// Process a single input message: run prepare_input and emit display events.
@@ -101,7 +104,9 @@ where
     match prepare_result {
         Ok(event_processor::PrepareResult::Handled) => None,
         Ok(event_processor::PrepareResult::CompactionApplied) => {
-            let _ = display_tx.send(DisplayEvent::Info("✦ Compaction applied".to_string()));
+            let _ = display_tx.send(DisplayEvent::CompactionApplied {
+                prefix: current_history.get_thread_nesting_prefix(),
+            });
             None
         }
         Ok(event_processor::PrepareResult::OAuthRequired { auth_url }) => {
@@ -210,6 +215,7 @@ pub async fn process_batch<'a, Mdl, C, S, M, H>(
     additional_request_params: Option<serde_json::Value>,
     model_id_override: Option<String>,
     rap_notifier: Option<&'a RapNotifier<H>>,
+    input_tokens_out: Option<&'a Cell<u64>>,
 ) -> Option<(Pin<Box<dyn Future<Output = ()> + 'a>>, oneshot::Sender<()>)>
 where
     Mdl: CompletionModel,
@@ -333,6 +339,11 @@ where
                     }
                     Ok(event_processor::CompletionEvent::Action(CompletionAction::Done(r))) => {
                         // there may be multiple `Done` if the agent synchronously loops back
+                        if let Some(input_tokens_out) = input_tokens_out {
+                            if let Some(usage) = r.token_usage() {
+                                input_tokens_out.set(usage.input_tokens);
+                            }
+                        }
                         resp = Some(r);
                     }
                     Ok(event_processor::CompletionEvent::SyncToolCall {
@@ -625,6 +636,7 @@ mod tests {
             None,
             None,
             NONE_NOTIFIER,
+            None,
         )
         .await;
         assert!(r.is_none());
@@ -674,6 +686,7 @@ mod tests {
             None,
             None,
             NONE_NOTIFIER,
+            None,
         )
         .await;
         assert!(r.is_none());
@@ -727,6 +740,7 @@ mod tests {
             None,
             None,
             NONE_NOTIFIER,
+            None,
         )
         .await;
         assert!(r.is_none());
@@ -761,6 +775,7 @@ mod tests {
             None,
             None,
             NONE_NOTIFIER,
+            None,
         )
         .await;
         assert!(r.is_some(), "Should return Some for actionable input");
@@ -833,6 +848,7 @@ mod tests {
             None,
             None,
             NONE_NOTIFIER,
+            None,
         )
         .await;
         assert!(r.is_some());
@@ -884,6 +900,7 @@ mod tests {
             None,
             None,
             NONE_NOTIFIER,
+            None,
         )
         .await;
         // Second call with same message_id — should be handled (duplicate)
@@ -913,6 +930,7 @@ mod tests {
             None,
             None,
             NONE_NOTIFIER,
+            None,
         )
         .await;
         assert!(r.is_none(), "Duplicate message should return None");
@@ -964,6 +982,7 @@ mod tests {
             None,
             None,
             NONE_NOTIFIER,
+            None,
         )
         .await;
         // Should return Some because the text input is actionable
