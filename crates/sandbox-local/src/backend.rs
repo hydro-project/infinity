@@ -179,6 +179,7 @@ impl Drop for LocalBackend {
                             .status();
                     }
                 }
+                SandboxMode::Direct => {}
             }
         }
     }
@@ -224,13 +225,14 @@ impl SandboxBackend for LocalBackend {
                     SandboxMode::Jj { .. } => {
                         run_jj(&dir, &["workspace", "update-stale"]).await?;
                     }
-                    SandboxMode::Git { .. } => {}
+                    SandboxMode::Git { .. } | SandboxMode::Direct => {}
                 }
                 return Ok(dir);
             }
         }
 
         let sandbox_dir = match &state.mode {
+            SandboxMode::Direct => PathBuf::from(&state.remote_uri),
             SandboxMode::Jj { base_revision } => {
                 let tmp = Self::make_tempdir(&state.remote_uri).map_err(SandboxError::Io)?;
                 let sandbox_dir = tmp.keep();
@@ -403,6 +405,7 @@ impl SandboxBackend for LocalBackend {
         sandbox_dir: &Path,
         argv: &[&str],
         extra_writable: &[&Path],
+        sandbox_writable: bool,
     ) -> Result<SpawnedCommand, SandboxError> {
         let (program, args) = argv
             .split_first()
@@ -431,21 +434,40 @@ impl SandboxBackend for LocalBackend {
                     writable.push(p.to_path_buf());
                 }
             }
-            let subpath_rules: String = std::iter::once(sandbox_dir_str.to_string())
-                .chain(writable.iter().map(|p| p.to_string_lossy().to_string()))
+            let writable_iter: Box<dyn Iterator<Item = String>> = if sandbox_writable {
+                Box::new(
+                    std::iter::once(sandbox_dir_str.to_string())
+                        .chain(writable.iter().map(|p| p.to_string_lossy().to_string())),
+                )
+            } else {
+                Box::new(writable.iter().map(|p| p.to_string_lossy().to_string()))
+            };
+            let subpath_rules: String = writable_iter
                 .map(|p| format!("\n       (subpath \"{p}\")"))
                 .collect();
-            let profile = format!(
+            let profile = if subpath_rules.is_empty() {
                 "(version 1)\n\
                  (debug deny)\n\
                  (allow default)\n\
                  (deny file-write*)\n\
-                 (allow file-write*{subpath_rules})\n\
                  (allow file-write-data\n\
                      (require-all\n\
                          (path \"/dev/null\")\n\
                          (vnode-type CHARACTER-DEVICE)))"
-            );
+                    .to_string()
+            } else {
+                format!(
+                    "(version 1)\n\
+                     (debug deny)\n\
+                     (allow default)\n\
+                     (deny file-write*)\n\
+                     (allow file-write*{subpath_rules})\n\
+                     (allow file-write-data\n\
+                         (require-all\n\
+                             (path \"/dev/null\")\n\
+                             (vnode-type CHARACTER-DEVICE)))"
+                )
+            };
             let child = tokio::process::Command::new("sandbox-exec")
                 .args(["-p", &profile])
                 .arg(&current_exe)
@@ -482,9 +504,6 @@ impl SandboxBackend for LocalBackend {
                 "/",
                 "/",
                 "--bind",
-                &sandbox_dir_str,
-                &sandbox_dir_str,
-                "--bind",
                 "/tmp",
                 "/tmp",
                 "--dev",
@@ -492,6 +511,9 @@ impl SandboxBackend for LocalBackend {
                 "--proc",
                 "/proc",
             ];
+            if sandbox_writable {
+                bwrap_args.extend(["--bind", &sandbox_dir_str, &sandbox_dir_str]);
+            }
             let writable_strs: Vec<String> = writable
                 .iter()
                 .map(|p| p.to_string_lossy().to_string())
@@ -550,11 +572,15 @@ impl SandboxBackend for LocalBackend {
             cache.get(group_id).map(|e| e.state.clone())
         };
         match state.as_ref().map(|s| &s.mode) {
+            Some(SandboxMode::Direct) => Ok(()),
             Some(SandboxMode::Git { .. }) => git::git_amend_all(sandbox_dir, description).await,
-            Some(SandboxMode::Jj { .. }) | None => {
+            Some(SandboxMode::Jj { .. }) => {
                 let bookmark = format!("sandbox-{group_id}");
                 jj::jj_push_working_copy(sandbox_dir, &bookmark).await
             }
+            None => Err(SandboxError::Other(format!(
+                "no cached sandbox state for group_id: {group_id}"
+            ))),
         }
     }
 
@@ -599,6 +625,9 @@ impl SandboxBackend for LocalBackend {
                 if empty {
                     let _ = git::git_delete_branch(&original_repo, &branch).await;
                 }
+            }
+            SandboxMode::Direct => {
+                tracing::info!(group_id = %group_id, "direct mode — nothing to clean up");
             }
         }
 
