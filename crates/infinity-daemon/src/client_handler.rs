@@ -48,6 +48,7 @@ pub async fn handle_client(stream: UnixStream, session_manager: Arc<Mutex<Sessio
 }
 
 /// Handle a client over raw mpsc channels (for in-memory mode, no serialization).
+#[tracing::instrument(skip_all)]
 pub async fn handle_client_channels(
     mut client_rx: mpsc::UnboundedReceiver<ClientMessage>,
     daemon_tx: mpsc::UnboundedSender<DaemonMessage>,
@@ -86,6 +87,7 @@ pub async fn handle_client_channels(
             // Handle client messages
             msg = client_rx.recv() => {
                 let Some(msg) = msg else { break };
+                tracing::info!(?msg, "Received client message");
                 match msg {
                     ClientMessage::CreateSession { cwd } => {
                         let mut mgr = session_manager.lock().await;
@@ -130,7 +132,9 @@ pub async fn handle_client_channels(
                     }
                     ClientMessage::SoftDetach { session_id } => {
                         let mut mgr = session_manager.lock().await;
-                        if mgr.is_session_idle(&session_id) {
+                        let do_cleanup = mgr.is_session_idle(&session_id);
+                        tracing::debug!(do_cleanup, "Handling SoftDetach");
+                        if do_cleanup {
                             mgr.cleanup_session(&session_id).await;
                             attached_session_id = None;
                             let _ = daemon_tx.send(DaemonMessage::DetachedIdle);
