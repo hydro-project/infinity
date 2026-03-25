@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use infinity_agent_core::message::{InputMessage, InputMessageContent};
+use infinity_agent_core::message::{
+    InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind,
+};
 use infinity_protocol::{ClientMessage, DaemonMessage};
 use rig::message::UserContent;
 use tokio::net::UnixStream;
@@ -159,6 +161,17 @@ pub async fn handle_client_channels(
                             }
                             Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error(format!("failed to resume session: {e}"))); }
                         }
+                    }
+                    ClientMessage::TriggerCompaction { session_id } => {
+                        let mut mgr = session_manager.lock().await;
+                        mgr.send_input(&session_id, (InputMessage {
+                            content: InputMessageContent::User(UserContent::text("")),
+                            group_id: session_id.clone(),
+                            metadata: None,
+                            synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::Compaction)),
+                            display_as: None,
+                            subscription: false,
+                        }, None), Some(client_tx.clone())).await;
                     }
                     ClientMessage::SwitchModel { .. } => {
                         let _ = daemon_tx.send(DaemonMessage::Info("Model switching not yet implemented".to_string()));

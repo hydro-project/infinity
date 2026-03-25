@@ -35,6 +35,7 @@ pub async fn agent_loop<Mdl>(
     client_tx_handle: ClientTxHandle,
     active_workers: ActiveWorkers,
     idle_tx: mpsc::UnboundedSender<()>,
+    context_window: usize,
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
@@ -123,6 +124,7 @@ pub async fn agent_loop<Mdl>(
             active_model_id.clone(),
             aw,
             itx,
+            context_window,
         ));
         let _ = tx.send((input_msg, message_id));
         thread_txs.insert(group_id, tx);
@@ -203,6 +205,7 @@ mod tests {
             client_tx_handle,
             aw,
             idle_tx,
+            0,
         ));
 
         (input_tx, idle_rx, active_workers)

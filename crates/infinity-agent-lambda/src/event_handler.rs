@@ -249,6 +249,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             None,
             None,
             rap_notifier.as_ref(),
+            None,
         )
         .await;
 

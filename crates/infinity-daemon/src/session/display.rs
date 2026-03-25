@@ -64,6 +64,7 @@ pub(crate) fn display_event_to_daemon<R: GetTokenUsage>(
         DisplayEvent::ThinkingChunk { prefix, chunk } => {
             DaemonMessage::ThinkingChunk { prefix, chunk }
         }
+        DisplayEvent::CompactionApplied { prefix } => DaemonMessage::CompactionApplied { prefix },
     })
 }
 
