@@ -23,7 +23,7 @@ use crate::metadata::MetadataStore;
 use crate::sandbox::SandboxBackend;
 use crate::types::{
     CloneRepoArgs, CreateFileArgs, DescribeOverallChangesArgs, EditFileArgs, ExecuteCommandArgs,
-    GrepArgs, ReadFileArgs, RepoState, SandboxMode, SquashSandboxArgs,
+    GrepArgs, OpenSandboxDirectArgs, ReadFileArgs, RepoState, SandboxMode, SquashSandboxArgs,
 };
 
 /// Events produced by the stdout/stderr readers and process exit waiter.
@@ -69,6 +69,8 @@ struct AppState<B: SandboxBackend, M: MetadataStore, C: CallbackClient> {
     pending_choices: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<usize>>>>,
     /// Granted write-orig permissions, keyed by root group_id.
     write_orig_grants: Arc<Mutex<HashSet<String>>>,
+    /// Granted direct-mode file write permissions, keyed by root group_id.
+    direct_write_grants: Arc<Mutex<HashSet<String>>>,
     /// Server base URL, set from the first request's Host header.
     server_base_url: std::sync::OnceLock<String>,
 }
@@ -129,6 +131,7 @@ where
         in_flight,
         pending_choices: Arc::new(Mutex::new(HashMap::new())),
         write_orig_grants: Arc::new(Mutex::new(HashSet::new())),
+        direct_write_grants: Arc::new(Mutex::new(HashSet::new())),
         server_base_url: std::sync::OnceLock::new(),
     });
 
@@ -203,6 +206,9 @@ async fn invoke_handler<
     let handle = tokio::spawn(async move {
         let result_text = match invocation.operation.as_str() {
             "clone_repo" => handle_clone_repo(&state_clone, &invocation)
+                .await
+                .map(|t| (t, None)),
+            "open_sandbox_direct" => handle_open_sandbox_direct(&state_clone, &invocation)
                 .await
                 .map(|t| (t, None)),
             "read_file" => handle_read_file(&state_clone, &invocation).await,
@@ -395,7 +401,19 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
             .as_ref()
             .map(|id| format!("sandbox-{}", id));
         let base_revision =
-            crate::jj::jj_resolve_revision(&path, rev_to_resolve.as_deref().unwrap_or("@")).await?;
+            match crate::jj::jj_resolve_revision(&path, rev_to_resolve.as_deref().unwrap_or("@"))
+                .await
+            {
+                Ok(rev) => rev,
+                Err(_) => {
+                    return Err(SandboxError::Other(
+                        "Failed to resolve the base revision. This can happen when the repository \
+                         has no commits yet. Use the `open_sandbox_direct` tool instead, which \
+                         operates directly on the repository without requiring an existing commit."
+                            .to_string(),
+                    ));
+                }
+            };
 
         let rs = RepoState {
             group_id: invocation.group_id.clone(),
@@ -416,7 +434,17 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
             .as_ref()
             .map(|id| format!("sandbox-{}", id));
         let rev = rev_to_resolve.as_deref().unwrap_or("HEAD");
-        let output = crate::git::run_git(&path, &["rev-parse", rev]).await?;
+        let output = match crate::git::run_git(&path, &["rev-parse", rev]).await {
+            Ok(o) => o,
+            Err(_) => {
+                return Err(SandboxError::Other(
+                    "Failed to resolve the HEAD commit. This can happen when the repository \
+                     has no commits yet. Use the `open_sandbox_direct` tool instead, which \
+                     operates directly on the repository without requiring an existing commit."
+                        .to_string(),
+                ));
+            }
+        };
         let base_revision = output.trim().to_string();
 
         let rs = RepoState {
@@ -437,6 +465,32 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
 
     tracing::info!(group_id = %invocation.group_id, remote = %remote_uri, "repo cloned");
     Ok(msg)
+}
+
+async fn handle_open_sandbox_direct<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
+    state: &AppState<B, M, C>,
+    invocation: &RapInvocation,
+) -> Result<String, SandboxError> {
+    let args: OpenSandboxDirectArgs = serde_json::from_value(invocation.arguments.clone())
+        .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
+
+    let remote_uri = state
+        .backend
+        .init_repo(&args.repo, &invocation.group_id)
+        .await?;
+
+    let repo_state = RepoState {
+        group_id: invocation.group_id.clone(),
+        remote_uri: remote_uri.clone(),
+        bookmark: format!("sandbox-{}", invocation.group_id),
+        mode: SandboxMode::Direct,
+        sandbox_path: None,
+    };
+
+    state.metadata.put(&repo_state).await?;
+
+    tracing::info!(group_id = %invocation.group_id, remote = %remote_uri, "opened direct sandbox");
+    Ok("Repository initialized (Direct mode — file edits require approval, commands run without file write access unless write-orig is granted).".to_string())
 }
 
 /// Run an action inside a sandbox: create → action → push → cleanup.
@@ -727,6 +781,7 @@ async fn handle_execute_command_streaming_inner<
     }
 
     // Spawn the process
+    let is_direct = matches!(repo_state.mode, SandboxMode::Direct);
     let orig_path = std::path::PathBuf::from(&repo_state.remote_uri);
     let extra_writable: Vec<&std::path::Path> = if needs_write_orig {
         vec![orig_path.as_path()]
@@ -739,6 +794,7 @@ async fn handle_execute_command_streaming_inner<
             &sandbox_dir,
             &["bash", "-c", &args.command],
             &extra_writable,
+            !is_direct,
         )
         .await
     {
@@ -1058,12 +1114,82 @@ async fn handle_read_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
     .await
 }
 
+/// Request user approval for a Direct-mode file write.
+/// Returns `true` if the user approved, `false` otherwise.
+async fn request_direct_write_approval<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
+    state: &AppState<B, M, C>,
+    invocation: &RapInvocation,
+    path: &str,
+) -> bool {
+    // Check if already granted for this session
+    if state
+        .direct_write_grants
+        .lock()
+        .await
+        .contains(&invocation.group_id)
+    {
+        return true;
+    }
+
+    let base_url = state
+        .server_base_url
+        .get()
+        .cloned()
+        .unwrap_or_else(|| "http://localhost".to_string());
+    let response_url = format!("{base_url}/user_choice_response");
+
+    let (choice_tx, choice_rx) = tokio::sync::oneshot::channel();
+    state
+        .pending_choices
+        .lock()
+        .await
+        .insert(invocation.id.clone(), choice_tx);
+
+    send_user_choice(
+        &state.callback_client,
+        invocation,
+        &format!("Direct mode: allow writing to {path}?"),
+        vec![
+            "Yes for session".to_string(),
+            "Yes once".to_string(),
+            "No".to_string(),
+        ],
+        2, // default: No
+        &response_url,
+    )
+    .await;
+
+    match choice_rx.await {
+        Ok(0) => {
+            state
+                .direct_write_grants
+                .lock()
+                .await
+                .insert(invocation.group_id.clone());
+            true
+        }
+        Ok(1) => true,
+        _ => false,
+    }
+}
+
 async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
 ) -> Result<(String, Option<String>), SandboxError> {
     let args: EditFileArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
+
+    // In Direct mode, request user approval before writing
+    let repo_state = state.metadata.get(&invocation.group_id).await?;
+    if matches!(
+        repo_state.as_ref().map(|s| &s.mode),
+        Some(SandboxMode::Direct)
+    ) {
+        if !request_direct_write_approval(state, invocation, &args.path).await {
+            return Ok(("Error: file write denied by user.".to_string(), None));
+        }
+    }
 
     with_sandbox(
         state,
@@ -1111,6 +1237,17 @@ async fn handle_create_file<B: SandboxBackend, M: MetadataStore, C: CallbackClie
 ) -> Result<(String, Option<String>), SandboxError> {
     let args: CreateFileArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
+
+    // In Direct mode, request user approval before writing
+    let repo_state = state.metadata.get(&invocation.group_id).await?;
+    if matches!(
+        repo_state.as_ref().map(|s| &s.mode),
+        Some(SandboxMode::Direct)
+    ) {
+        if !request_direct_write_approval(state, invocation, &args.path).await {
+            return Ok(("Error: file write denied by user.".to_string(), None));
+        }
+    }
 
     with_sandbox(
         state,
@@ -1310,6 +1447,9 @@ async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackC
             )
             .await
         }
+        SandboxMode::Direct => Err(SandboxError::Other(
+            "squash_sandbox is not supported in Direct mode".to_string(),
+        )),
     }
 }
 
@@ -1358,6 +1498,21 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                         "base_thread_id": {
                             "type": "string",
                             "description": "Optional thread ID to base this sandbox on top of. The new sandbox will be rebased onto that thread's bookmark."
+                        }
+                    },
+                    "required": ["repo"]
+                }),
+                display_script: None,
+            },
+            ToolDef {
+                name: "open_sandbox_direct".to_string(),
+                description: "Open a repository in Direct mode (regular clone_repo is always preferred). Direct mode operates on the original directory with no worktrees — file edits and creation require user approval, and commands run without file write access unless write-orig is granted. Use this only when clone_repo fails (e.g. the repository has no commits yet).".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "repo": {
+                            "type": "string",
+                            "description": "Local path to a git repository"
                         }
                     },
                     "required": ["repo"]
