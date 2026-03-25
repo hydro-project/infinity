@@ -8,6 +8,6 @@ pub fn user_config_path() -> Result<PathBuf, BoxError> {
     Ok(home.join(".infinity").join("rap.json"))
 }
 
-pub fn load_config(path: &std::path::Path) -> ToolsConfig {
-    ToolsConfig::from_file(&path.to_string_lossy()).unwrap_or_else(|_| ToolsConfig::empty())
+pub fn load_config(path: &std::path::Path) -> Result<ToolsConfig, BoxError> {
+    ToolsConfig::from_file(path)
 }

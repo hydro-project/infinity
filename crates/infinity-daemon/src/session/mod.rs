@@ -268,21 +268,58 @@ impl SessionManager {
 
         // Load RAP config
         let cwd_rap = Path::new(&cwd).join(".infinity").join("rap.json");
-        let mut config = if cwd_rap.exists() {
-            config::load_config(&cwd_rap)
-        } else {
-            ToolsConfig::empty()
+        let local_config = cwd_rap
+            .exists()
+            .then(|| config::load_config(&cwd_rap))
+            .transpose();
+        let user_config = config::user_config_path().and_then(|user_path| {
+            user_path
+                .exists()
+                .then(|| config::load_config(&user_path))
+                .transpose()
+        });
+        tracing::debug!(?local_config, ?user_config);
+
+        let local_config = match local_config {
+            Ok(config) => config,
+            Err(e) => {
+                emit(DaemonMessage::Error(format!(
+                    "Failed to load local RAP config {}: {e}",
+                    cwd_rap.display(),
+                )))
+                .await;
+                None
+            }
         };
-        if let Ok(user_path) = config::user_config_path()
-            && user_path.exists()
-        {
-            config.merge(config::load_config(&user_path));
-            emit(DaemonMessage::Info(format!(
-                "Merged user config from {}",
-                user_path.display()
-            )))
-            .await;
-        }
+        let user_config = match user_config {
+            Ok(config) => config,
+            Err(e) => {
+                emit(DaemonMessage::Error(format!(
+                    "Failed to load user RAP config {:?}: {e}",
+                    config::user_config_path()
+                )))
+                .await;
+                None
+            }
+        };
+
+        let (config, msg) = match (local_config, user_config) {
+            (None, None) => (
+                ToolsConfig::empty(),
+                "Neither local nor user RAP configs exist, using empty config",
+            ),
+            (None, Some(user_config)) => (user_config, "Using user config"),
+            (Some(local_config), None) => (local_config, "Using local config"),
+            (Some(mut local_config), Some(user_config)) => {
+                local_config.merge(user_config);
+                (
+                    local_config,
+                    "Both local and user RAP configs exist, merging",
+                )
+            }
+        };
+        // Notify user about configuration discovery.
+        emit(DaemonMessage::Info(msg.to_string())).await;
 
         // Spawn servers and load tools
         let mut spawned_servers = Vec::new();
@@ -533,19 +570,26 @@ impl SessionManager {
 
     /// Clean up a session: signal shutdown, wait for agent task to finish
     /// (which handles RAP server cleanup and marking the session store).
+    #[tracing::instrument(skip(self))]
     pub async fn cleanup_session(&mut self, session_id: &str) {
         if let Some(mut session) = self.sessions.remove(session_id) {
             // Signal shutdown; the spawned future will kill servers and mark shut_down.
+            tracing::debug!("Session found, sending `shutdown_tx`");
             if let Some(tx) = session.shutdown_tx.take() {
                 let _ = tx.send(());
             }
             let _ = session.agent_task.await;
+
             // Ensure shut_down is set (task may have already finished as idle_cleaned).
+            tracing::debug!("Setting `shut_down`");
             let mut store = self.session_store.lock().await;
             if !store.is_shut_down(session_id) {
                 store.mark_shut_down(session_id);
                 let _ = store.save();
             }
+            tracing::info!("Cleanup complete");
+        } else {
+            tracing::warn!("Session not found");
         }
     }
 
@@ -716,6 +760,8 @@ where
 /// Wrapper that owns the RAP servers and handles cleanup.
 /// Runs agent_loop, selects on shutdown signal and idle notifications.
 /// When done, gracefully kills servers and marks the session store.
+#[expect(clippy::too_many_arguments)]
+#[tracing::instrument(skip_all, fields(session_id))]
 async fn session_wrapper(
     agent_fut: impl Future<Output = ()>,
     session_id: String,
@@ -739,6 +785,7 @@ async fn session_wrapper(
                 break;
             }
             _ = &mut shutdown_rx => {
+                tracing::info!("Received `shutdown_rx`.");
                 if let Some(entry) = session_store.lock().await.sessions.get_mut(&session_id) {
                     entry.pending_choices.clear();
                 }
@@ -758,6 +805,7 @@ async fn session_wrapper(
             }
         }
     }
+    tracing::info!("Idle loop exited, cleaning up RAP servers");
 
     // Gracefully kill RAP servers.
     for child in spawned_servers.iter_mut() {
@@ -765,15 +813,21 @@ async fn session_wrapper(
         {
             use nix::sys::signal::{self, Signal};
             use nix::unistd::Pid;
-            if let Some(id) = child.id() {
-                let _ = signal::kill(Pid::from_raw(id as i32), Signal::SIGINT);
+
+            let child_id = child.id();
+            tracing::trace!(child_id, "Killing RAP server, sending SIGINT");
+            if let Some(id) = child_id {
+                // Negative ID kills the entire process group.
+                let _ = signal::kill(Pid::from_raw(-(id as i32)), Signal::SIGINT);
             }
         }
         #[cfg(not(unix))]
         {
+            tracing::trace!("Killing RAP server");
             let _ = child.start_kill();
         }
         let _ = child.wait().await;
+        tracing::trace!("Child exited");
     }
 
     // Mark session store.
@@ -784,6 +838,8 @@ async fn session_wrapper(
         store.mark_shut_down(&session_id);
     }
     let _ = store.save();
+
+    tracing::info!("Done");
 }
 
 async fn spawn_rap_server(
@@ -801,6 +857,9 @@ async fn spawn_rap_server(
         .args(["-c", command])
         .env("RAP_EMBEDDED", "1")
         .current_dir(&working_dir)
+        // Ensure all children are in the the same process group. We will send SIGINT to the entire
+        // group during shutdown.
+        .process_group(0)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
