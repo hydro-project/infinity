@@ -13,6 +13,9 @@ pub enum SandboxMode {
         /// Absolute git commit hash the worktree is based on.
         base_revision: String,
     },
+    /// Direct mode: operates on the original repo directory with no worktrees.
+    /// File edits require user approval; commands run without file write access unless write-orig is granted.
+    Direct,
 }
 
 /// Metadata stored per group_id tracking the repo state.
@@ -38,6 +41,13 @@ pub struct CloneRepoArgs {
     pub repo: String,
     /// Optional thread ID to base this sandbox on top of.
     pub base_thread_id: Option<String>,
+}
+
+/// Input for the open_sandbox_direct tool.
+#[derive(Debug, Deserialize)]
+pub struct OpenSandboxDirectArgs {
+    /// Local path to a git repo.
+    pub repo: String,
 }
 
 /// Input for the execute_command tool.
