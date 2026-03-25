@@ -570,23 +570,6 @@ fn format_exec_output(stdout: &str, stderr: &str, exit_code: i32) -> String {
     result
 }
 
-/// Format output collected before a cancellation.
-// fn format_cancel_output(stdout: &str, stderr: &str) -> String {
-//     let mut text = String::from("Command cancelled.");
-//     if !stdout.is_empty() || !stderr.is_empty() {
-//         text.push_str("\nOutput before cancellation:\n");
-//         text.push_str(stdout);
-//         if !stderr.is_empty() {
-//             if !stdout.is_empty() {
-//                 text.push('\n');
-//             }
-//             text.push_str("[stderr]\n");
-//             text.push_str(stderr);
-//         }
-//     }
-//     text
-// }
-
 /// Top-level streaming handler for execute_command. Manages its own callbacks.
 async fn handle_execute_command_streaming<
     B: SandboxBackend + 'static,
@@ -669,10 +652,7 @@ async fn handle_execute_command_streaming_inner<
             .await;
 
             // Wait for the user's response
-            let selected = match choice_rx.await {
-                Ok(idx) => idx,
-                Err(_) => 2, // default to No if channel dropped
-            };
+            let selected = choice_rx.await.unwrap_or(2);
 
             match selected {
                 0 => {
@@ -713,12 +693,12 @@ async fn handle_execute_command_streaming_inner<
     // Reject commands that `cd` to the original repo directory — this escapes
     // the sandbox and can hang on file locks (e.g. cargo build competing for
     // the same target directory).
-    if !needs_write_orig {
-        if let Some(error_msg) = detect_cd_to_original_repo(&args.command, &repo_state.remote_uri) {
-            state.in_flight.lock().await.remove(&invocation.id);
-            send_tool_result(&state.callback_client, invocation, &error_msg, None, false).await;
-            return Ok(());
-        }
+    if !needs_write_orig
+        && let Some(error_msg) = detect_cd_to_original_repo(&args.command, &repo_state.remote_uri)
+    {
+        state.in_flight.lock().await.remove(&invocation.id);
+        send_tool_result(&state.callback_client, invocation, &error_msg, None, false).await;
+        return Ok(());
     }
 
     let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;

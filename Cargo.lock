@@ -1974,6 +1974,7 @@ dependencies = [
  "futures-util",
  "insta",
  "rig-core",
+ "rig-mock",
  "serde",
  "serde_json",
  "tokio",
@@ -2034,8 +2035,10 @@ dependencies = [
  "reqwest",
  "rig-bedrock",
  "rig-core",
+ "rig-mock",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
@@ -3218,6 +3221,18 @@ dependencies = [
  "quote",
  "serde_json",
  "syn",
+]
+
+[[package]]
+name = "rig-mock"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "futures-util",
+ "rig-core",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

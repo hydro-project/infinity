@@ -5,11 +5,11 @@ use ratatui::{
     style::Modifier,
 };
 
-/// Clone of private API from ratatui
-
 /// The `ModifierDiff` struct is used to calculate the difference between two `Modifier`
 /// values. This is useful when updating the terminal display, as it allows for more
 /// efficient updates by only sending the necessary changes.
+///
+/// Clone of private API from ratatui
 pub struct ModifierDiff {
     pub from: Modifier,
     pub to: Modifier,

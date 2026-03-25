@@ -695,3 +695,273 @@ impl InputSender for InMemoryMessageSender {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use infinity_agent_core::traits::ConversationStore;
+    use rig::OneOrMany;
+    use rig::message::{AssistantContent, Message, UserContent};
+
+    fn user_msg(text: &str) -> Message {
+        Message::User {
+            content: OneOrMany::one(UserContent::text(text)),
+        }
+    }
+    fn asst_msg(text: &str) -> Message {
+        Message::Assistant {
+            id: None,
+            content: OneOrMany::one(AssistantContent::text(text)),
+        }
+    }
+
+    /// Parent has messages, child spawned at index 2. load_history_with_ancestors
+    /// should return parent[0..2] + child messages.
+    #[tokio::test]
+    async fn ancestors_basic_cutoff() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = InMemoryConversationStore::new_with_dir(dir.path());
+        store.ensure_root_thread("root").await.unwrap();
+        store
+            .append_messages(
+                "root",
+                vec![(user_msg("p1"), "m1".into()), (asst_msg("p2"), "m2".into())],
+            )
+            .await
+            .unwrap();
+
+        let child = store.spawn_thread("root", "tc-1", false).await.unwrap();
+
+        store
+            .append_messages(
+                "root",
+                vec![(user_msg("p3"), "m3".into()), (asst_msg("p4"), "m4".into())],
+            )
+            .await
+            .unwrap();
+
+        store
+            .append_messages(&child, vec![(user_msg("c1"), "m5".into())])
+            .await
+            .unwrap();
+
+        let (history, _) = store.load_history_with_ancestors(&child).await.unwrap();
+        assert_eq!(history.len(), 3);
+        if let Message::User { content } = &history[0] {
+            assert!(matches!(content.first(), UserContent::Text(t) if t.text == "p1"));
+        }
+        if let Message::User { content } = &history[2] {
+            assert!(matches!(content.first(), UserContent::Text(t) if t.text == "c1"));
+        }
+    }
+
+    /// Three-level chain: root → child → grandchild.
+    #[tokio::test]
+    async fn ancestors_three_levels() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = InMemoryConversationStore::new_with_dir(dir.path());
+        store.ensure_root_thread("root").await.unwrap();
+        store
+            .append_messages("root", vec![(user_msg("r1"), "m1".into())])
+            .await
+            .unwrap();
+
+        let child = store.spawn_thread("root", "tc-1", false).await.unwrap();
+        store
+            .append_messages(
+                &child,
+                vec![(user_msg("c1"), "m2".into()), (asst_msg("c2"), "m3".into())],
+            )
+            .await
+            .unwrap();
+
+        let grandchild = store.spawn_thread(&child, "tc-2", false).await.unwrap();
+        store
+            .append_messages(&grandchild, vec![(user_msg("g1"), "m4".into())])
+            .await
+            .unwrap();
+
+        let (history, _) = store
+            .load_history_with_ancestors(&grandchild)
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 4);
+    }
+
+    /// Compaction on root: should return [summary] + messages after compaction point.
+    #[tokio::test]
+    async fn ancestors_with_compaction_on_self() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = InMemoryConversationStore::new_with_dir(dir.path());
+        store.ensure_root_thread("root").await.unwrap();
+        store
+            .append_messages(
+                "root",
+                vec![
+                    (user_msg("old1"), "m1".into()),
+                    (asst_msg("old2"), "m2".into()),
+                    (user_msg("new1"), "m3".into()),
+                    (asst_msg("new2"), "m4".into()),
+                ],
+            )
+            .await
+            .unwrap();
+
+        store
+            .save_compaction_summary("root", "summary of old stuff", 2)
+            .await
+            .unwrap();
+
+        let (history, compacted_up_to) = store.load_history_with_ancestors("root").await.unwrap();
+        assert_eq!(history.len(), 3);
+        assert_eq!(compacted_up_to, Some(2));
+        if let Message::Assistant { content, .. } = &history[0] {
+            if let AssistantContent::Text(t) = content.first() {
+                assert!(t.text.contains("summary of old stuff"));
+            }
+        }
+    }
+
+    /// Compaction on parent: child should use parent's compaction summary.
+    #[tokio::test]
+    async fn ancestors_with_compaction_on_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = InMemoryConversationStore::new_with_dir(dir.path());
+        store.ensure_root_thread("root").await.unwrap();
+        store
+            .append_messages(
+                "root",
+                vec![
+                    (user_msg("old1"), "m1".into()),
+                    (asst_msg("old2"), "m2".into()),
+                    (user_msg("recent"), "m3".into()),
+                ],
+            )
+            .await
+            .unwrap();
+
+        store
+            .save_compaction_summary("root", "compacted root", 2)
+            .await
+            .unwrap();
+
+        let child = store.spawn_thread("root", "tc-1", false).await.unwrap();
+        store
+            .append_messages(&child, vec![(user_msg("c1"), "m4".into())])
+            .await
+            .unwrap();
+
+        let (history, _) = store.load_history_with_ancestors(&child).await.unwrap();
+        assert_eq!(history.len(), 3);
+        if let Message::Assistant { content, .. } = &history[0] {
+            if let AssistantContent::Text(t) = content.first() {
+                assert!(t.text.contains("compacted root"));
+            }
+        }
+    }
+
+    /// Two compactions on root — should pick the latest that fits within cutoff.
+    #[tokio::test]
+    async fn ancestors_multiple_compactions_picks_latest() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = InMemoryConversationStore::new_with_dir(dir.path());
+        store.ensure_root_thread("root").await.unwrap();
+        store
+            .append_messages(
+                "root",
+                vec![
+                    (user_msg("a"), "m1".into()),
+                    (asst_msg("b"), "m2".into()),
+                    (user_msg("c"), "m3".into()),
+                    (asst_msg("d"), "m4".into()),
+                    (user_msg("e"), "m5".into()),
+                ],
+            )
+            .await
+            .unwrap();
+
+        store
+            .save_compaction_summary("root", "early summary", 2)
+            .await
+            .unwrap();
+        store
+            .save_compaction_summary("root", "later summary", 4)
+            .await
+            .unwrap();
+
+        let child = store.spawn_thread("root", "tc-1", false).await.unwrap();
+        store
+            .append_messages(&child, vec![(user_msg("c1"), "m6".into())])
+            .await
+            .unwrap();
+
+        let (history, _) = store.load_history_with_ancestors(&child).await.unwrap();
+        assert_eq!(history.len(), 3);
+        if let Message::Assistant { content, .. } = &history[0] {
+            if let AssistantContent::Text(t) = content.first() {
+                assert!(t.text.contains("later summary"));
+            }
+        }
+    }
+
+    /// Both parent and leaf have compactions. The leaf's compaction should be
+    /// used exclusively — ancestors are skipped entirely.
+    #[tokio::test]
+    async fn leaf_compaction_takes_priority_over_ancestor() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = InMemoryConversationStore::new_with_dir(dir.path());
+        store.ensure_root_thread("root").await.unwrap();
+        store
+            .append_messages(
+                "root",
+                vec![(user_msg("r1"), "m1".into()), (asst_msg("r2"), "m2".into())],
+            )
+            .await
+            .unwrap();
+        store
+            .save_compaction_summary("root", "root compaction", 2)
+            .await
+            .unwrap();
+
+        let child = store.spawn_thread("root", "tc-1", false).await.unwrap();
+        store
+            .append_messages(
+                &child,
+                vec![
+                    (user_msg("c1"), "m3".into()),
+                    (asst_msg("c2"), "m4".into()),
+                    (user_msg("c3"), "m5".into()),
+                    (asst_msg("c4"), "m6".into()),
+                ],
+            )
+            .await
+            .unwrap();
+        store
+            .save_compaction_summary(&child, "child compaction", 2)
+            .await
+            .unwrap();
+
+        let (history, compacted_up_to) = store.load_history_with_ancestors(&child).await.unwrap();
+        // Should be: [child compaction summary] + c3 + c4 = 3
+        // No ancestor messages at all — leaf compaction short-circuits.
+        assert_eq!(history.len(), 3);
+        assert_eq!(compacted_up_to, Some(2));
+        if let Message::Assistant { content, .. } = &history[0] {
+            if let AssistantContent::Text(t) = content.first() {
+                assert!(
+                    t.text.contains("child compaction"),
+                    "should use child's compaction, got: {}",
+                    t.text
+                );
+                assert!(
+                    !t.text.contains("root compaction"),
+                    "should NOT contain root compaction"
+                );
+            }
+        }
+        // The remaining messages should be the child's post-compaction messages
+        if let Message::User { content } = &history[1] {
+            assert!(matches!(content.first(), UserContent::Text(t) if t.text == "c3"));
+        }
+    }
+}
