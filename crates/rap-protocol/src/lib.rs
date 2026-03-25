@@ -14,6 +14,9 @@ pub struct RapInvocation {
     pub group_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
+    /// Ordered ancestor thread group IDs, from root to the parent of the current thread.
+    #[serde(default)]
+    pub thread_ancestors: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,7 +98,11 @@ pub struct ToolDef {
     pub input_schema: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotations: Option<serde_json::Value>,
-    #[serde(default, rename = "displayScript", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "displayScript",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub display_script: Option<String>,
 }
 
@@ -198,20 +205,22 @@ pub async fn send_user_choice<C: CallbackClient>(
 /// Send a `subscription_event` callback.
 pub async fn send_subscription_event<C: CallbackClient>(
     client: &C,
-    invocation: &RapInvocation,
+    callback_url: &str,
+    group_id: String,
+    tool_call_id: String,
     text: &str,
     associative: bool,
     r#final: bool,
 ) {
     let event = RapCallback::SubscriptionEvent(RapSubscriptionEvent {
-        group_id: invocation.group_id.clone(),
-        tool_call_id: invocation.id.clone(),
+        group_id,
+        tool_call_id,
         text: text.to_string(),
         associative,
         r#final: if r#final { Some(true) } else { None },
     });
     let body = serde_json::to_string(&event).unwrap();
-    if let Err(e) = client.post_json(&invocation.callback_url, &body).await {
+    if let Err(e) = client.post_json(callback_url, &body).await {
         tracing::error!("failed to send subscription event: {e}");
     }
 }
