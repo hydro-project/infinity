@@ -129,7 +129,9 @@ impl ToolsConfig {
         Ok(config)
     }
 
-    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_file(
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let content = std::fs::read_to_string(path)?;
         let config = serde_json::from_str(&content)?;
         Ok(config)

@@ -164,6 +164,7 @@ async fn async_main() -> Result<(), BoxError> {
     run_direct(cli.message, daemon_err).await
 }
 
+#[tracing::instrument]
 async fn run_direct(
     initial_message: Option<String>,
     daemon_err: Option<String>,

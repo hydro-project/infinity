@@ -150,7 +150,7 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut config = load_config(&config_path);
+    let mut config = load_config(&config_path)?;
 
     // Remove existing entry with same id, then re-add with source info
     let had_existing = config
@@ -195,7 +195,7 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
 /// Update RAP tools, printing progress into an existing viewport. Returns names of failures.
 async fn update_rap_tools(viewport: &mut InlineViewport) -> Result<Vec<String>, BoxError> {
     let config_path = user_config_path()?;
-    let config = load_config(&config_path);
+    let config = load_config(&config_path)?;
     let installable = config.installable_commands();
 
     if installable.is_empty() {
