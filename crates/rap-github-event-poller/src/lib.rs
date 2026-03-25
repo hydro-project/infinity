@@ -445,43 +445,42 @@ fn extract_event_data(event: &GitHubEvent) -> EventData {
 }
 
 fn matches_filters(filters: &Filters, data: &EventData) -> bool {
-    if let Some(ref et) = filters.event_type {
-        if data.event_type.as_deref() != Some(et) {
-            return false;
-        }
+    if let Some(ref et) = filters.event_type
+        && data.event_type.as_deref() != Some(et)
+    {
+        return false;
     }
-    if let Some(ref sha) = filters.sha {
-        if data.sha.as_deref() != Some(sha) {
-            return false;
-        }
+    if let Some(ref sha) = filters.sha
+        && data.sha.as_deref() != Some(sha)
+    {
+        return false;
     }
-    if let Some(pr) = filters.pr_number {
-        if data.pr_number != Some(pr) {
-            return false;
-        }
+    if let Some(pr) = filters.pr_number
+        && data.pr_number != Some(pr)
+    {
+        return false;
     }
-    if let Some(issue) = filters.issue_number {
-        if data.issue_number != Some(issue) {
-            return false;
-        }
+    if let Some(issue) = filters.issue_number
+        && data.issue_number != Some(issue)
+    {
+        return false;
     }
-    if let Some(ref action) = filters.action {
-        if data.action.as_deref() != Some(action) {
-            return false;
-        }
+    if let Some(ref action) = filters.action
+        && data.action.as_deref() != Some(action)
+    {
+        return false;
     }
-    if let Some(ref actor) = filters.actor {
-        if data.actor.as_deref() != Some(actor) {
-            return false;
-        }
+    if let Some(ref actor) = filters.actor
+        && data.actor.as_deref() != Some(actor)
+    {
+        return false;
     }
-    if let Some(ref branch) = filters.branch {
-        if data.branch.as_deref() != Some(branch)
-            && data.head_branch.as_deref() != Some(branch)
-            && data.base_branch.as_deref() != Some(branch)
-        {
-            return false;
-        }
+    if let Some(ref branch) = filters.branch
+        && data.branch.as_deref() != Some(branch)
+        && data.head_branch.as_deref() != Some(branch)
+        && data.base_branch.as_deref() != Some(branch)
+    {
+        return false;
     }
     true
 }

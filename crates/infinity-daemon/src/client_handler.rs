@@ -163,8 +163,8 @@ pub async fn handle_client_channels(
                         if let Some(ref sid) = attached_session_id {
                             let mgr = session_manager.lock().await;
                             let mut store = mgr.session_store.lock().await;
-                            if let Some(entry) = store.sessions.get_mut(sid) {
-                                if let Some(pos) = entry.pending_choices.iter().position(|c| c.id == choice_id) {
+                            if let Some(entry) = store.sessions.get_mut(sid)
+                                && let Some(pos) = entry.pending_choices.iter().position(|c| c.id == choice_id) {
                                     let pending = entry.pending_choices.remove(pos);
                                     let url = pending.response_url;
                                     let id = pending.id;
@@ -180,7 +180,6 @@ pub async fn handle_client_channels(
                                             .await;
                                     });
                                 }
-                            }
                         }
                     }
                 }

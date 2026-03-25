@@ -90,7 +90,7 @@ impl<M: InputSender + 'static, S: StateStore + 'static, H: HttpClient + 'static>
                 return Some(error_result(
                     id,
                     call_id,
-                    &"Error: failed to read thread subscriptions".to_string(),
+                    "Error: failed to read thread subscriptions",
                 ));
             }
         };
