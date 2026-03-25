@@ -47,6 +47,12 @@ impl<H: HttpClient + 'static, M: InputSender + 'static> Tool<M> for RapTool<H> {
         call_id: Option<String>,
         context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let thread_ancestors = if context.thread_stack.len() > 1 {
+            Some(context.thread_stack[..context.thread_stack.len() - 1].to_vec())
+        } else {
+            None
+        };
+
         let invocation = RapInvocation {
             operation: self.name.clone(),
             arguments: args,
@@ -55,6 +61,7 @@ impl<H: HttpClient + 'static, M: InputSender + 'static> Tool<M> for RapTool<H> {
             callback_url: context.callback_url.clone(),
             group_id: context.group_id.clone(),
             user_id: context.user_id.clone(),
+            thread_ancestors,
         };
 
         let body = serde_json::to_string(&invocation)?;
