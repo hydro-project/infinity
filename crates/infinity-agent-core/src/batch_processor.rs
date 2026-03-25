@@ -395,3 +395,582 @@ where
 
     Some((fut, cancel_tx))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::collections::{HashMap, HashSet};
+
+    use super::DisplayEvent;
+    use crate::event_processor::HistoryManager;
+    use crate::message::{InputMessage, InputMessageContent, OAuthRequired, UserChoiceRequired};
+    use crate::tools::{Tool, ToolContext};
+    use crate::traits::{ConversationStore, HttpClient, InputSender, StateStore};
+    use async_trait::async_trait;
+    use rig::OneOrMany;
+    use rig::completion::ToolDefinition;
+    use rig::message::{Message, ToolResult, ToolResultContent, UserContent};
+    use rig_mock::{MockStreamingResponse, mock_model};
+    use tokio::sync::mpsc;
+
+    #[derive(Debug)]
+    struct E;
+    impl std::fmt::Display for E {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "stub")
+        }
+    }
+    impl std::error::Error for E {}
+
+    #[derive(Clone)]
+    struct StubSender;
+    #[async_trait]
+    impl InputSender for StubSender {
+        type Error = E;
+        async fn send_to_input_queue(&self, _: InputMessage, _: &str, _: &str) -> Result<(), E> {
+            Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct StubConvo {
+        closed: HashSet<String>,
+    }
+    impl StubConvo {
+        fn new() -> Self {
+            Self {
+                closed: HashSet::new(),
+            }
+        }
+    }
+    #[async_trait]
+    impl ConversationStore for StubConvo {
+        type Error = E;
+        async fn ensure_root_thread(&self, _: &str) -> Result<(), E> {
+            Ok(())
+        }
+        async fn load_history_up_to(
+            &self,
+            _: &str,
+            _: Option<i64>,
+            _: Option<i64>,
+        ) -> Result<Vec<Message>, E> {
+            Ok(vec![])
+        }
+        async fn append_messages(&self, _: &str, _: Vec<(Message, String)>) -> Result<(), E> {
+            Ok(())
+        }
+        async fn spawn_thread(&self, _: &str, _: &str, _: bool) -> Result<String, E> {
+            Ok("child".into())
+        }
+        async fn is_thread_closed(&self, id: &str) -> Result<bool, E> {
+            Ok(self.closed.contains(id))
+        }
+        async fn close_thread(&self, _: &str) -> Result<(), E> {
+            Ok(())
+        }
+        async fn is_subscription_event_thread(&self, _: &str) -> Result<bool, E> {
+            Ok(false)
+        }
+        async fn get_thread_parent_info(&self, _: &str) -> Result<Option<(String, String)>, E> {
+            Ok(None)
+        }
+        async fn get_ancestor_chain(&self, _: &str) -> Result<Vec<(String, i64)>, E> {
+            Ok(vec![])
+        }
+        async fn mark_thread_as_compaction(&self, _: &str) -> Result<(), E> {
+            Ok(())
+        }
+        async fn is_compaction_thread(&self, _: &str) -> Result<bool, E> {
+            Ok(false)
+        }
+        async fn get_thread_spawn_order(&self, _: &str) -> Result<Option<i64>, E> {
+            Ok(None)
+        }
+        async fn save_compaction_summary(&self, _: &str, _: &str, _: i64) -> Result<(), E> {
+            Ok(())
+        }
+        async fn load_latest_compaction_summary_up_to(
+            &self,
+            _: &str,
+            _: Option<i64>,
+        ) -> Result<Option<(String, i64)>, E> {
+            Ok(None)
+        }
+    }
+
+    #[derive(Clone)]
+    struct StubState;
+    #[async_trait]
+    impl StateStore for StubState {
+        type Error = E;
+        async fn get_processed_ids(
+            &self,
+            _: &str,
+        ) -> Result<(HashSet<String>, HashSet<String>), E> {
+            Ok((HashSet::new(), HashSet::new()))
+        }
+        async fn add_processed_message_ids(&self, _: &str, _: Vec<String>) -> Result<(), E> {
+            Ok(())
+        }
+        async fn add_processed_tool_calls(&self, _: &str, _: Vec<String>) -> Result<(), E> {
+            Ok(())
+        }
+        async fn get_metadata(&self, _: &str) -> Result<Option<serde_json::Value>, E> {
+            Ok(None)
+        }
+        async fn set_metadata(&self, _: &str, _: serde_json::Value) -> Result<(), E> {
+            Ok(())
+        }
+        async fn get_active_subscriptions(&self, _: &str) -> Result<Vec<String>, E> {
+            Ok(vec![])
+        }
+        async fn add_active_subscription(&self, _: &str, _: &str) -> Result<(), E> {
+            Ok(())
+        }
+        async fn remove_active_subscription(&self, _: &str, _: &str) -> Result<(), E> {
+            Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct StubHttp;
+    #[async_trait]
+    impl HttpClient for StubHttp {
+        type Error = E;
+        async fn post(&self, _: &str, _: &str) -> Result<u16, E> {
+            Ok(200)
+        }
+        async fn get(&self, _: &str) -> Result<(u16, Vec<u8>), E> {
+            Ok((200, vec![]))
+        }
+    }
+
+    fn ctx() -> ToolContext<StubSender> {
+        ToolContext {
+            message_sender: StubSender,
+            group_id: "t1".into(),
+            input_queue_arn: String::new(),
+            callback_url: String::new(),
+            user_id: None,
+            thread_stack: vec!["t1".into()],
+        }
+    }
+
+    fn user_input(text: &str) -> (InputMessage, String) {
+        (
+            InputMessage {
+                content: InputMessageContent::User(UserContent::text(text)),
+                group_id: "t1".into(),
+                metadata: None,
+                synthetic: None,
+                display_as: None,
+                subscription: false,
+            },
+            uuid::Uuid::new_v4().to_string(),
+        )
+    }
+
+    fn drain(rx: &mut mpsc::UnboundedReceiver<DisplayEvent<MockStreamingResponse>>) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            out.push(match ev {
+                DisplayEvent::StartOutput { .. } => "StartOutput".into(),
+                DisplayEvent::TextChunk { chunk, .. } => format!("Text:{chunk}"),
+                DisplayEvent::ToolCall { name, .. } => format!("ToolCall:{name}"),
+                DisplayEvent::ToolResult { text, .. } => {
+                    format!("ToolResult:{}", &text[..text.len().min(40)])
+                }
+                DisplayEvent::Info(s) => format!("Info:{}", &s[..s.len().min(40)]),
+                DisplayEvent::ResponseDone(_, _) => "Done".into(),
+                DisplayEvent::UserInput(s) => format!("UserInput:{s}"),
+                DisplayEvent::OAuthRequired { auth_url } => format!("OAuth:{auth_url}"),
+                DisplayEvent::UserChoiceRequired { id, .. } => format!("Choice:{id}"),
+                DisplayEvent::SubscriptionEvent { name, .. } => format!("SubEvent:{name}"),
+                _ => "Other".into(),
+            });
+        }
+        out
+    }
+
+    const NONE_NOTIFIER: Option<&'static crate::rap_notifier::RapNotifier<StubHttp>> = None;
+
+    #[tokio::test]
+    async fn closed_thread_returns_none() {
+        let s = StubConvo {
+            closed: HashSet::from(["t1".into()]),
+        };
+        let hm = RefCell::new(
+            HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
+                .await
+                .unwrap(),
+        );
+        let (m, _) = mock_model();
+        let (dtx, _) = mpsc::unbounded_channel();
+        let tn = HashSet::new();
+        let td: Vec<ToolDefinition> = vec![];
+        let tr: HashMap<String, &dyn Tool<StubSender>> = HashMap::new();
+        let r = super::process_batch(
+            vec![user_input("hi")].into_iter(),
+            &hm,
+            &s,
+            &dtx,
+            "t1",
+            &m,
+            &tn,
+            &td,
+            &tr,
+            ctx(),
+            &None,
+            None,
+            None,
+            NONE_NOTIFIER,
+        )
+        .await;
+        assert!(r.is_none());
+    }
+
+    #[tokio::test]
+    async fn oauth_returns_none_emits_event() {
+        let s = StubConvo::new();
+        let hm = RefCell::new(
+            HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
+                .await
+                .unwrap(),
+        );
+        let (m, _) = mock_model();
+        let (dtx, mut drx) = mpsc::unbounded_channel();
+        let tn = HashSet::new();
+        let td: Vec<ToolDefinition> = vec![];
+        let tr: HashMap<String, &dyn Tool<StubSender>> = HashMap::new();
+        let input = (
+            InputMessage {
+                content: InputMessageContent::OAuth(OAuthRequired {
+                    content_type: "oauth_required".into(),
+                    id: "o1".into(),
+                    call_id: None,
+                    auth_url: "https://a.com".into(),
+                }),
+                group_id: "t1".into(),
+                metadata: None,
+                synthetic: None,
+                display_as: None,
+                subscription: false,
+            },
+            "m1".into(),
+        );
+        let r = super::process_batch(
+            vec![input].into_iter(),
+            &hm,
+            &s,
+            &dtx,
+            "t1",
+            &m,
+            &tn,
+            &td,
+            &tr,
+            ctx(),
+            &None,
+            None,
+            None,
+            NONE_NOTIFIER,
+        )
+        .await;
+        assert!(r.is_none());
+        assert!(drain(&mut drx).iter().any(|e| e.starts_with("OAuth:")));
+    }
+
+    #[tokio::test]
+    async fn user_choice_returns_none_emits_event() {
+        let s = StubConvo::new();
+        let hm = RefCell::new(
+            HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
+                .await
+                .unwrap(),
+        );
+        let (m, _) = mock_model();
+        let (dtx, mut drx) = mpsc::unbounded_channel();
+        let tn = HashSet::new();
+        let td: Vec<ToolDefinition> = vec![];
+        let tr: HashMap<String, &dyn Tool<StubSender>> = HashMap::new();
+        let input = (
+            InputMessage {
+                content: InputMessageContent::UserChoice(UserChoiceRequired {
+                    content_type: "user_choice_required".into(),
+                    id: "c1".into(),
+                    call_id: None,
+                    prompt: "P".into(),
+                    choices: vec!["A".into()],
+                    default: 0,
+                    response_url: "http://x".into(),
+                }),
+                group_id: "t1".into(),
+                metadata: None,
+                synthetic: None,
+                display_as: None,
+                subscription: false,
+            },
+            "m1".into(),
+        );
+        let r = super::process_batch(
+            vec![input].into_iter(),
+            &hm,
+            &s,
+            &dtx,
+            "t1",
+            &m,
+            &tn,
+            &td,
+            &tr,
+            ctx(),
+            &None,
+            None,
+            None,
+            NONE_NOTIFIER,
+        )
+        .await;
+        assert!(r.is_none());
+        assert!(drain(&mut drx).iter().any(|e| e == "Choice:c1"));
+    }
+
+    #[tokio::test]
+    async fn ready_input_returns_some() {
+        let s = StubConvo::new();
+        let hm = RefCell::new(
+            HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
+                .await
+                .unwrap(),
+        );
+        let (m, _) = mock_model();
+        let (dtx, mut drx) = mpsc::unbounded_channel();
+        let tn = HashSet::new();
+        let td: Vec<ToolDefinition> = vec![];
+        let tr: HashMap<String, &dyn Tool<StubSender>> = HashMap::new();
+        let r = super::process_batch(
+            vec![user_input("hi")].into_iter(),
+            &hm,
+            &s,
+            &dtx,
+            "t1",
+            &m,
+            &tn,
+            &td,
+            &tr,
+            ctx(),
+            &None,
+            None,
+            None,
+            NONE_NOTIFIER,
+        )
+        .await;
+        assert!(r.is_some(), "Should return Some for actionable input");
+        // Verify UserInput echo was emitted during input processing
+        assert!(drain(&mut drx).contains(&"UserInput:hi".into()));
+    }
+
+    #[tokio::test]
+    async fn tool_result_echoed_in_display() {
+        let s = StubConvo::new();
+        let hm = RefCell::new(
+            HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
+                .await
+                .unwrap(),
+        );
+        hm.borrow_mut().history = vec![
+            Message::User {
+                content: OneOrMany::one(UserContent::text("go")),
+            },
+            Message::Assistant {
+                id: None,
+                content: OneOrMany::one(rig::message::AssistantContent::ToolCall(
+                    rig::message::ToolCall {
+                        id: "tc-1".into(),
+                        call_id: None,
+                        function: rig::message::ToolFunction {
+                            name: "t".into(),
+                            arguments: serde_json::json!({}),
+                        },
+                        additional_params: None,
+                        signature: None,
+                    },
+                )),
+            },
+        ];
+        let (m, _) = mock_model();
+        let (dtx, mut drx) = mpsc::unbounded_channel();
+        let tn = HashSet::new();
+        let td: Vec<ToolDefinition> = vec![];
+        let tr: HashMap<String, &dyn Tool<StubSender>> = HashMap::new();
+        let input = (
+            InputMessage {
+                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                    id: "tc-1".into(),
+                    call_id: None,
+                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                        text: "tool output".into(),
+                    })),
+                })),
+                group_id: "t1".into(),
+                metadata: None,
+                synthetic: None,
+                display_as: None,
+                subscription: false,
+            },
+            "m2".into(),
+        );
+        let r = super::process_batch(
+            vec![input].into_iter(),
+            &hm,
+            &s,
+            &dtx,
+            "t1",
+            &m,
+            &tn,
+            &td,
+            &tr,
+            ctx(),
+            &None,
+            None,
+            None,
+            NONE_NOTIFIER,
+        )
+        .await;
+        assert!(r.is_some());
+        assert!(
+            drain(&mut drx)
+                .iter()
+                .any(|e| e.starts_with("ToolResult:tool output"))
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_input_returns_none() {
+        let s = StubConvo::new();
+        let hm = RefCell::new(
+            HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
+                .await
+                .unwrap(),
+        );
+        let (m, _) = mock_model();
+        let (dtx, _) = mpsc::unbounded_channel();
+        let tn = HashSet::new();
+        let td: Vec<ToolDefinition> = vec![];
+        let tr: HashMap<String, &dyn Tool<StubSender>> = HashMap::new();
+        // First call — actionable
+        let msg_id = "same-id".to_string();
+        let input1 = (
+            InputMessage {
+                content: InputMessageContent::User(UserContent::text("hi")),
+                group_id: "t1".into(),
+                metadata: None,
+                synthetic: None,
+                display_as: None,
+                subscription: false,
+            },
+            msg_id.clone(),
+        );
+        let _ = super::process_batch(
+            vec![input1].into_iter(),
+            &hm,
+            &s,
+            &dtx,
+            "t1",
+            &m,
+            &tn,
+            &td,
+            &tr,
+            ctx(),
+            &None,
+            None,
+            None,
+            NONE_NOTIFIER,
+        )
+        .await;
+        // Second call with same message_id — should be handled (duplicate)
+        let input2 = (
+            InputMessage {
+                content: InputMessageContent::User(UserContent::text("hi")),
+                group_id: "t1".into(),
+                metadata: None,
+                synthetic: None,
+                display_as: None,
+                subscription: false,
+            },
+            msg_id,
+        );
+        let r = super::process_batch(
+            vec![input2].into_iter(),
+            &hm,
+            &s,
+            &dtx,
+            "t1",
+            &m,
+            &tn,
+            &td,
+            &tr,
+            ctx(),
+            &None,
+            None,
+            None,
+            NONE_NOTIFIER,
+        )
+        .await;
+        assert!(r.is_none(), "Duplicate message should return None");
+    }
+
+    #[tokio::test]
+    async fn mixed_batch_only_actionable_triggers_completion() {
+        let s = StubConvo::new();
+        let hm = RefCell::new(
+            HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
+                .await
+                .unwrap(),
+        );
+        let (m, _) = mock_model();
+        let (dtx, mut drx) = mpsc::unbounded_channel();
+        let tn = HashSet::new();
+        let td: Vec<ToolDefinition> = vec![];
+        let tr: HashMap<String, &dyn Tool<StubSender>> = HashMap::new();
+        // Mix: OAuth (handled) + user text (actionable)
+        let oauth = (
+            InputMessage {
+                content: InputMessageContent::OAuth(OAuthRequired {
+                    content_type: "oauth_required".into(),
+                    id: "o1".into(),
+                    call_id: None,
+                    auth_url: "https://a.com".into(),
+                }),
+                group_id: "t1".into(),
+                metadata: None,
+                synthetic: None,
+                display_as: None,
+                subscription: false,
+            },
+            "m1".into(),
+        );
+        let text = user_input("hello");
+        let r = super::process_batch(
+            vec![oauth, text].into_iter(),
+            &hm,
+            &s,
+            &dtx,
+            "t1",
+            &m,
+            &tn,
+            &td,
+            &tr,
+            ctx(),
+            &None,
+            None,
+            None,
+            NONE_NOTIFIER,
+        )
+        .await;
+        // Should return Some because the text input is actionable
+        assert!(r.is_some());
+        let ev = drain(&mut drx);
+        // Both events should be emitted
+        assert!(ev.iter().any(|e| e.starts_with("OAuth:")));
+        assert!(ev.iter().any(|e| e == "UserInput:hello"));
+    }
+}

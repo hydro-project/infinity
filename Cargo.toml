@@ -11,6 +11,7 @@ members = [
     "crates/rap-github-event-poller",
     "crates/infinity-protocol",
     "crates/infinity-daemon",
+    "crates/rig-mock",
 ]
 resolver = "2"
 

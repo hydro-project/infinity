@@ -94,7 +94,7 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>
     }
 
     let _ = std::fs::remove_file(&sock_path);
-    let _ = std::fs::remove_file(&infinity_protocol::pid_path());
+    let _ = std::fs::remove_file(infinity_protocol::pid_path());
 
     let mut mgr = session_manager.lock().await;
     let session_ids: Vec<String> = mgr.sessions.keys().cloned().collect();
