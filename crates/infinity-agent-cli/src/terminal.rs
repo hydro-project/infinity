@@ -1334,6 +1334,7 @@ pub(crate) fn cleanup() -> Result<(), BoxError> {
     cterm::disable_raw_mode()?;
     let rows = cterm::size()?.1;
     queue!(stdout, cursor::MoveTo(0, rows))?;
+    queue!(stdout, cursor::Show)?;
     writeln!(stdout)?;
     stdout.flush()?;
     Ok(())
