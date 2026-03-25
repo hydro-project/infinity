@@ -53,11 +53,15 @@ pub trait SandboxBackend: Send + Sync {
     ///
     /// `extra_writable` grants write access to additional paths beyond the
     /// sandbox directory (e.g. the original repo for `git push`).
+    ///
+    /// `sandbox_writable` controls whether the sandbox directory itself is
+    /// writable. Set to `false` for Direct mode where no file writes are allowed.
     async fn spawn_command(
         &self,
         sandbox_dir: &Path,
         argv: &[&str],
         extra_writable: &[&Path],
+        sandbox_writable: bool,
     ) -> Result<SpawnedCommand, SandboxError>;
 
     /// Push the updated working copy from the sandbox back to the remote.
