@@ -217,13 +217,11 @@ where
             updates = sessions_updated_rx.recv() => {
                 if let Some(updates) = updates {
                     // Update terminal title if the current session's title changed
-                    if let Some(ref tid) = thread_id {
-                        if let Some(info) = updates.get(tid) {
-                            if let Some(ref title) = info.title {
+                    if let Some(ref tid) = thread_id
+                        && let Some(info) = updates.get(tid)
+                            && let Some(ref title) = info.title {
                                 set_terminal_title(title);
                             }
-                        }
-                    }
 
                     sessions.extend(updates);
 
@@ -489,12 +487,11 @@ where
                     DisplayEvent::UserChoiceRequired { id, prompt, choices, default, .. } => {
                         choice_queue.push_back(PendingChoice { id, prompt, choices, default });
                         // Show the first queued choice if no picker is active
-                        if choice_picker.is_none() && ui_mode != UiMode::ChoicePicker {
-                            if let Some(pending) = choice_queue.front() {
+                        if choice_picker.is_none() && ui_mode != UiMode::ChoicePicker
+                            && let Some(pending) = choice_queue.front() {
                                 choice_picker = Some(ChoicePicker::new(pending.prompt.clone(), pending.choices.clone(), pending.default));
                                 ui_mode = UiMode::ChoicePicker;
                             }
-                        }
                     }
                 }
                 draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete)?;

@@ -19,3 +19,6 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 insta = { version = "1", features = ["json", "redactions"] }
+rig-mock = { path = "../rig-mock" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+futures-util = { workspace = true, features = ["sink"] }

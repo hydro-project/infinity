@@ -3,19 +3,16 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use infinity_agent_core::batch_processor::DisplayEvent;
-use infinity_agent_core::event_processor;
-use infinity_agent_core::message::{InputMessage, InputMessageContent};
+use infinity_agent_core::message::InputMessage;
+use infinity_agent_core::tools::Tool;
 use infinity_agent_core::tools::config::ToolsConfig;
 use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
 use infinity_agent_core::tools::thread::{
     CloseThreadTool, ReportToParentTool, SendMessageToChildTool, SpawnThreadTool,
 };
-use infinity_agent_core::tools::{Tool, ToolContext};
-use infinity_protocol::{DaemonMessage, SessionInfo, TokenUsage};
+use infinity_protocol::{DaemonMessage, SessionInfo};
 use rig::client::{CompletionClient, ProviderClient};
-use rig::completion::{CompletionModel, GetTokenUsage};
-use rig::message::{ToolResultContent, UserContent};
+use rig::completion::CompletionModel;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -27,7 +24,15 @@ use crate::rap_tools;
 use crate::session_store;
 use crate::set_title_tool;
 use crate::sleep_tools::{SleepTool, SleepUntilTool};
-use infinity_agent_core::traits::{ConversationStore, StateStore};
+use infinity_agent_core::traits::ConversationStore;
+
+pub mod agent_loop;
+pub mod display;
+pub mod thread_worker;
+
+pub use agent_loop::agent_loop;
+use display::history_message_to_daemon;
+pub use thread_worker::thread_worker;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -697,7 +702,7 @@ where
         idle_tx,
     );
 
-    let handle = tokio::task::spawn_local(session_wrapper(
+    tokio::task::spawn_local(session_wrapper(
         agent_fut,
         session_id,
         session_store,
@@ -705,14 +710,12 @@ where
         idle_rx,
         shutdown_rx,
         spawned_servers,
-    ));
-    handle
+    ))
 }
 
 /// Wrapper that owns the RAP servers and handles cleanup.
 /// Runs agent_loop, selects on shutdown signal and idle notifications.
 /// When done, gracefully kills servers and marks the session store.
-#[expect(clippy::too_many_arguments)]
 async fn session_wrapper(
     agent_fut: impl Future<Output = ()>,
     session_id: String,
@@ -783,428 +786,6 @@ async fn session_wrapper(
     let _ = store.save();
 }
 
-#[expect(clippy::too_many_arguments)]
-async fn agent_loop<Mdl>(
-    session_id: String,
-    session_store: SessionStoreHandle,
-    mut rx: mpsc::UnboundedReceiver<(InputMessage, String)>,
-    model: Arc<Mdl>,
-    conversation_store: InMemoryConversationStore,
-    state_store: InMemoryStateStore,
-    sender: InMemoryMessageSender,
-    callback_url: String,
-    tool_impls: Arc<Vec<Box<dyn Tool<InMemoryMessageSender>>>>,
-    extra_system_prompt: Arc<Option<String>>,
-    rap_notifier: Option<
-        infinity_agent_core::rap_notifier::RapNotifier<rap_tools::SimpleHttpClient>,
-    >,
-    additional_request_params: Arc<std::sync::RwLock<Option<serde_json::Value>>>,
-    active_model_id: Arc<std::sync::RwLock<Option<String>>>,
-    client_tx_handle: ClientTxHandle,
-    active_workers: ActiveWorkers,
-    idle_tx: mpsc::UnboundedSender<()>,
-) where
-    Mdl: CompletionModel + Send + Sync + 'static,
-{
-    let (display_tx, mut display_rx) =
-        mpsc::unbounded_channel::<DisplayEvent<Mdl::StreamingResponse>>();
-
-    // Display bridge: convert DisplayEvent → DaemonMessage, forward to client, persist session
-    let bridge_handle = client_tx_handle.clone();
-    let bridge_session_id = session_id.clone();
-    let bridge_session_store = session_store.clone();
-    tokio::task::spawn_local(async move {
-        while let Some(evt) = display_rx.recv().await {
-            if let DisplayEvent::ResponseDone(ref prefix, ref r) = evt
-                && prefix.is_none()
-                && let Some(r) = r
-            {
-                let tokens = r.token_usage().map_or(0, |u| u.total_tokens as usize);
-                let mut store = bridge_session_store.lock().await;
-                store.update(&bridge_session_id, tokens, None);
-                let _ = store.save();
-            }
-
-            // Extract and store pending user choices before conversion
-            if let DisplayEvent::UserChoiceRequired {
-                ref id,
-                ref prompt,
-                ref choices,
-                ref default,
-                ref response_url,
-            } = evt
-            {
-                let dm = DaemonMessage::UserChoiceRequired {
-                    id: id.clone(),
-                    prompt: prompt.clone(),
-                    choices: choices.clone(),
-                    default: *default,
-                };
-                let mut store = bridge_session_store.lock().await;
-                if let Some(entry) = store.sessions.get_mut(&bridge_session_id) {
-                    entry
-                        .pending_choices
-                        .push(crate::session_store::PendingChoice {
-                            id: id.clone(),
-                            message: dm,
-                            response_url: response_url.clone(),
-                        });
-                    store.notify(&session_id);
-                }
-            }
-
-            if let Some(dm) = display_event_to_daemon(evt) {
-                let guard = bridge_handle.lock().unwrap();
-                if let Some(ref tx) = *guard {
-                    let _ = tx.send(dm);
-                }
-            }
-        }
-    });
-
-    let mut thread_txs: HashMap<String, mpsc::UnboundedSender<(InputMessage, String)>> =
-        HashMap::new();
-
-    while let Some((input_msg, message_id)) = rx.recv().await {
-        let group_id = input_msg.group_id.clone();
-
-        // Try to send to existing worker; if channel is closed (worker returned),
-        // remove the stale entry so a new worker is spawned below.
-        if let Some(tx) = thread_txs.get(&group_id) {
-            if tx.send((input_msg.clone(), message_id.clone())).is_ok() {
-                continue;
-            }
-            thread_txs.remove(&group_id);
-        }
-
-        let (tx, worker_rx) = mpsc::unbounded_channel();
-        let aw = active_workers.clone();
-        let gid = group_id.clone();
-        let itx = idle_tx.clone();
-        tokio::task::spawn_local(thread_worker(
-            gid,
-            worker_rx,
-            display_tx.clone(),
-            model.clone(),
-            conversation_store.clone(),
-            state_store.clone(),
-            sender.clone(),
-            callback_url.clone(),
-            tool_impls.clone(),
-            extra_system_prompt.as_ref().clone(),
-            rap_notifier.clone(),
-            additional_request_params.clone(),
-            active_model_id.clone(),
-            aw,
-            itx,
-        ));
-        let _ = tx.send((input_msg, message_id));
-        thread_txs.insert(group_id, tx);
-    }
-}
-
-fn is_user_text_input(msg: &InputMessage) -> bool {
-    msg.synthetic.is_none()
-        && matches!(
-            &msg.content,
-            InputMessageContent::User(UserContent::Text(_))
-        )
-}
-
-#[expect(clippy::too_many_arguments)]
-async fn thread_worker<Mdl>(
-    active_group_id: String,
-    mut rx: mpsc::UnboundedReceiver<(InputMessage, String)>,
-    display_tx: mpsc::UnboundedSender<DisplayEvent<Mdl::StreamingResponse>>,
-    model: Arc<Mdl>,
-    conversation_store: InMemoryConversationStore,
-    state_store: InMemoryStateStore,
-    sender: InMemoryMessageSender,
-    callback_url: String,
-    tool_impls: Arc<Vec<Box<dyn Tool<InMemoryMessageSender>>>>,
-    extra_system_prompt: Option<String>,
-    rap_notifier: Option<
-        infinity_agent_core::rap_notifier::RapNotifier<rap_tools::SimpleHttpClient>,
-    >,
-    additional_request_params: Arc<std::sync::RwLock<Option<serde_json::Value>>>,
-    active_model_id: Arc<std::sync::RwLock<Option<String>>>,
-    active_workers: ActiveWorkers,
-    idle_tx: mpsc::UnboundedSender<()>,
-) where
-    Mdl: CompletionModel + Send + Sync + 'static,
-{
-    active_workers
-        .lock()
-        .unwrap()
-        .insert(active_group_id.clone());
-
-    let _guard = WorkerGuard {
-        active_workers: active_workers.clone(),
-        group_id: active_group_id.clone(),
-        idle_tx,
-    };
-
-    let current_history = std::cell::RefCell::new(
-        match event_processor::HistoryManager::new_with_history(
-            conversation_store.clone(),
-            state_store.clone(),
-            active_group_id.clone(),
-        )
-        .await
-        {
-            Ok(h) => h,
-            Err(e) => {
-                let _ = display_tx.send(DisplayEvent::Info(format!("Error: {e}")));
-                return;
-            }
-        },
-    );
-
-    let tool_names: std::collections::HashSet<String> =
-        tool_impls.iter().map(|t| t.name().to_string()).collect();
-    let tool_defs: Vec<rig::completion::ToolDefinition> = tool_impls
-        .iter()
-        .map(|t| rig::completion::ToolDefinition {
-            name: t.name().to_string(),
-            description: t.description().to_string(),
-            parameters: t.parameters(),
-        })
-        .collect();
-
-    let tool_context = ToolContext {
-        message_sender: sender.clone(),
-        group_id: active_group_id.clone(),
-        input_queue_arn: String::new(),
-        callback_url,
-        user_id: None,
-        thread_stack: current_history.borrow().get_thread_stack(),
-    };
-    let tool_registry: std::collections::HashMap<String, &dyn Tool<InMemoryMessageSender>> =
-        tool_impls
-            .iter()
-            .map(|t| (t.name().to_string(), t.as_ref()))
-            .collect();
-
-    let mut pending_non_interrupt_items = vec![];
-    let mut completion_fut = None;
-    let mut completion_cancel_tx: Option<oneshot::Sender<()>> = None;
-
-    loop {
-        let inputs_before_pending = if let Some(mut_fut) = completion_fut.as_mut() {
-            tokio::select! {
-                _ = mut_fut => {
-                    // if the LLM completed first, simply loop back and collect a batch in the else branch
-                    let _ = completion_fut.take().unwrap();
-                    continue;
-                },
-                first = rx.recv() => {
-                    let Some(first) = first else {
-                        return;
-                    };
-                    // Drain all immediately-available events before running the LLM.
-                    let mut batch = vec![first];
-                    while let Ok(item) = rx.try_recv() {
-                        batch.push(item);
-                    }
-
-                    if batch.iter().any(|(msg, _)| is_user_text_input(msg))
-                    {
-                        let _ = completion_cancel_tx.take().unwrap().send(());
-                        let completion_fut_taken = completion_fut.take().unwrap();
-                        completion_fut_taken.await;
-
-                        let (mut user_inputs, non_user_inputs): (Vec<_>, Vec<_>) = batch
-                            .into_iter()
-                            .partition(|(msg, _)| is_user_text_input(msg));
-
-                        if let InputMessageContent::User(UserContent::Text(text)) = &mut user_inputs[0].0.content {
-                            text.text = format!("<interrupt>{}", text.text);
-                        } else {
-                            panic!("user_inputs should only have user text");
-                        }
-
-                        pending_non_interrupt_items.extend(non_user_inputs);
-                        user_inputs
-                    } else {
-                        pending_non_interrupt_items.extend(batch);
-                        // if nothing is an interrupt-causing event, simply loop back and continue waiting
-                        // for a real interrupt or the LLM to complete naturally
-                        continue;
-                    }
-                }
-            }
-        } else {
-            let mut batch = vec![];
-
-            if pending_non_interrupt_items.is_empty() {
-                let first_res = rx.try_recv();
-                let mut first = if let Ok(first_res) = first_res {
-                    Some(first_res)
-                } else {
-                    let last_is_tool_call = {
-                        let hist = current_history.borrow();
-
-                        hist.history.last().is_some_and(|msg| matches!(
-                            msg,
-                            rig::message::Message::Assistant { content, .. }
-                                if matches!(content.first(), rig::message::AssistantContent::ToolCall(c) if c.function.name != "close_thread")
-                        ))
-                    };
-                    let has_subs = state_store
-                        .get_active_subscriptions(&active_group_id)
-                        .await
-                        .map(|s| !s.is_empty())
-                        .unwrap_or(false);
-
-                    if !last_is_tool_call && !has_subs {
-                        // Idle — return so the worker can be respawned later.
-                        tracing::info!("Thread {} going to idle", &active_group_id);
-                        return;
-                    } else {
-                        None
-                    }
-                };
-
-                // only block if there are no pending items
-                if first.is_none() {
-                    first = rx.recv().await;
-                }
-                let Some(first) = first else {
-                    return;
-                };
-                batch.push(first);
-            }
-
-            while let Ok(item) = rx.try_recv() {
-                batch.push(item);
-            }
-
-            batch
-        };
-
-        let all_inputs: Vec<_> = inputs_before_pending
-            .into_iter()
-            .chain(pending_non_interrupt_items.drain(..))
-            .collect();
-
-        for (m, _) in &all_inputs {
-            if let (Some(da), InputMessageContent::User(UserContent::ToolResult(res))) =
-                (&m.display_as, &m.content)
-            {
-                conversation_store.save_display_as(&active_group_id, &res.id, da);
-            }
-        }
-
-        let params = additional_request_params.read().unwrap().clone();
-        let mid = active_model_id.read().unwrap().clone();
-
-        let result = infinity_agent_core::batch_processor::process_batch(
-            all_inputs.into_iter(),
-            &current_history,
-            &conversation_store,
-            &display_tx,
-            &active_group_id,
-            model.as_ref(),
-            &tool_names,
-            &tool_defs,
-            &tool_registry,
-            tool_context.clone(),
-            &extra_system_prompt,
-            params,
-            mid,
-            rap_notifier.as_ref(),
-        )
-        .await;
-
-        if let Some((fut, ct)) = result {
-            completion_cancel_tx = Some(ct);
-            completion_fut = Some(fut);
-        }
-    }
-}
-
-/// RAII guard that removes the group_id from active_workers on drop.
-/// When the set becomes empty, sends a notification on idle_tx.
-struct WorkerGuard {
-    active_workers: ActiveWorkers,
-    group_id: String,
-    idle_tx: mpsc::UnboundedSender<()>,
-}
-
-impl Drop for WorkerGuard {
-    fn drop(&mut self) {
-        let mut set = self.active_workers.lock().unwrap();
-        set.remove(&self.group_id);
-        if set.is_empty() {
-            let _ = self.idle_tx.send(());
-        }
-    }
-}
-
-// ── Display bridge ──────────────────────────────────────────────────────────
-
-fn display_event_to_daemon<R: GetTokenUsage>(evt: DisplayEvent<R>) -> Option<DaemonMessage> {
-    Some(match evt {
-        DisplayEvent::StartOutput { prefix } => DaemonMessage::StartOutput { prefix },
-        DisplayEvent::TextChunk { prefix, chunk } => DaemonMessage::TextChunk { prefix, chunk },
-        DisplayEvent::ToolCall {
-            name,
-            args,
-            prefix,
-            display_script,
-        } => DaemonMessage::ToolCall {
-            name,
-            args: args.to_string(),
-            prefix,
-            display_script,
-        },
-        DisplayEvent::ToolResult {
-            text,
-            display_as,
-            prefix,
-        } => DaemonMessage::ToolResult {
-            text,
-            display_as,
-            prefix,
-        },
-        DisplayEvent::Info(s) => DaemonMessage::Info(s),
-        DisplayEvent::ResponseDone(thread_id, r) => {
-            let token_usage = r.and_then(|r| r.token_usage()).map(|u| TokenUsage {
-                input_tokens: Some(u.input_tokens),
-                output_tokens: Some(u.output_tokens),
-            });
-            DaemonMessage::ResponseDone {
-                thread_id,
-                token_usage,
-            }
-        }
-        DisplayEvent::UserInput(s) => DaemonMessage::UserInputEcho(s),
-        DisplayEvent::SubscriptionEvent { name, text, prefix } => {
-            DaemonMessage::SubscriptionEvent { name, text, prefix }
-        }
-        DisplayEvent::OAuthRequired { auth_url } => DaemonMessage::OAuthRequired { auth_url },
-        DisplayEvent::UserChoiceRequired {
-            id,
-            prompt,
-            choices,
-            default,
-            response_url: _,
-        } => DaemonMessage::UserChoiceRequired {
-            id,
-            prompt,
-            choices,
-            default,
-        },
-        DisplayEvent::ThinkingStart { prefix } => DaemonMessage::ThinkingStart { prefix },
-        DisplayEvent::ThinkingEnd { prefix } => DaemonMessage::ThinkingEnd { prefix },
-        DisplayEvent::ThinkingChunk { prefix, chunk } => {
-            DaemonMessage::ThinkingChunk { prefix, chunk }
-        }
-    })
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
 async fn spawn_rap_server(
     command: &str,
     cwd: &Path,
@@ -1241,43 +822,4 @@ async fn spawn_rap_server(
     let ready: CommandServerReady = serde_json::from_str(line.trim())
         .map_err(|e| format!("invalid startup JSON: {e} (got: {line})"))?;
     Ok((child, ready.port))
-}
-
-fn history_message_to_daemon(
-    msg: &rig::message::Message,
-    tid: &str,
-    store: &InMemoryConversationStore,
-) -> Option<DaemonMessage> {
-    use rig::message::{AssistantContent, Message};
-    match msg {
-        Message::User { content } => match content.first() {
-            UserContent::Text(text) => Some(DaemonMessage::UserInputEcho(text.text.clone())),
-            UserContent::ToolResult(res) => {
-                if let ToolResultContent::Text(t) = res.content.first() {
-                    let display_as = store.get_display_as(tid, &res.id);
-                    Some(DaemonMessage::ToolResult {
-                        text: t.to_string(),
-                        display_as,
-                        prefix: None,
-                    })
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        },
-        Message::Assistant { content, .. } => match content.first() {
-            AssistantContent::Text(text) => Some(DaemonMessage::TextChunk {
-                prefix: None,
-                chunk: text.text.clone(),
-            }),
-            AssistantContent::ToolCall(call) => Some(DaemonMessage::ToolCall {
-                name: call.function.name.clone(),
-                args: call.function.arguments.to_string(),
-                prefix: None,
-                display_script: None,
-            }),
-            _ => None,
-        },
-    }
 }

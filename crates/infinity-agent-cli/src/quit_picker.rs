@@ -20,6 +20,12 @@ pub struct QuitPicker {
     result: Option<QuitPickerResult>,
 }
 
+impl Default for QuitPicker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QuitPicker {
     pub fn new() -> Self {
         Self {
