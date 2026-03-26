@@ -204,7 +204,11 @@ async fn update_rap_tools(viewport: &mut InlineViewport) -> Result<Vec<String>, 
     let config = if config_path.exists() {
         load_config(&config_path)?
     } else {
-        ToolsConfig::empty() // init if empty
+        viewport.print_line_above(Line::from(Span::styled(
+            "No user-level RAP configuration found",
+            Style::default().fg(Color::DarkGray),
+        )))?;
+        return Ok(vec![]);
     };
     let installable = config.installable_commands();
 
