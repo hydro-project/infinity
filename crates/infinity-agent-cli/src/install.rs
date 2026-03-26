@@ -2,6 +2,7 @@
 
 use crate::inline_viewport::InlineViewport;
 use crate::terminal;
+use infinity_agent_core::tools::config::ToolsConfig;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::{
     crossterm::{
@@ -150,7 +151,12 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut config = load_config(&config_path)?;
+
+    let mut config = if config_path.exists() {
+        load_config(&config_path)?
+    } else {
+        ToolsConfig::empty() // init if empty
+    };
 
     // Remove existing entry with same id, then re-add with source info
     let had_existing = config
