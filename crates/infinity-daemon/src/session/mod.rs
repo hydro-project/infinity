@@ -508,7 +508,7 @@ impl SessionManager {
 
         // if client_tx is None, that means this is for a RAP callback, but if the agent was shut down or idled,
         // we should ignore the callback (the agent will not idle if any tool calls or subscriptions are active)
-        if needs_restart && client_tx.is_some() {
+        if needs_restart && let Some(client_tx) = client_tx {
             // Remove stale session if present.
             self.sessions.remove(session_id);
             {
@@ -517,9 +517,11 @@ impl SessionManager {
                 let _ = store.save();
             }
             let cwd = self.session_store.lock().await.get_cwd(session_id).clone();
-            let mut emit = async |_msg: DaemonMessage| {};
+            let mut emit = async |msg: DaemonMessage| {
+                let _ = client_tx.send(msg);
+            };
             if let Err(e) = self
-                .start_session(session_id.to_string(), &cwd, client_tx.unwrap(), &mut emit)
+                .start_session(session_id.to_string(), &cwd, client_tx.clone(), &mut emit)
                 .await
             {
                 tracing::error!("failed to restart session: {e}");
