@@ -186,6 +186,7 @@ where
         &thread_buffers,
         &thinking_text_buffer,
         &tab_complete,
+        &thread_id,
     )?;
 
     // Send the initial message if provided via --message/-m.
@@ -275,7 +276,7 @@ where
                         }
                         _ => {}
                     }
-                    draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete)?;
+                    draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
                 }
             }
 
@@ -502,7 +503,7 @@ where
                             }
                     }
                 }
-                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete)?;
+                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
             }
 
             _ = poll_crossterm_event() => {
@@ -783,7 +784,7 @@ where
                 }
 
                 if got_resize || any_change || spinner_state.is_some() || ui_mode == UiMode::SessionPicker {
-                    draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete)?;
+                    draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
                 }
             }
         }
@@ -889,6 +890,7 @@ fn draw_viewport(
     thread_buffers: &BTreeMap<String, String>,
     thinking_text: &str,
     tab_complete: &Option<(String, usize)>,
+    thread_id: &Option<String>,
 ) -> Result<(), BoxError> {
     let max_context = context_window;
     let current_width = viewport.area().width;
@@ -900,7 +902,16 @@ fn draw_viewport(
     } else {
         0.0
     };
-    let status_right = format!("{:.0}% context used", pct);
+    let status_right = if let Some(tid) = thread_id {
+        let short_id = if tid.len() > 8 {
+            &tid[..8]
+        } else {
+            tid.as_str()
+        };
+        format!("{} | {:.0}% context used", short_id, pct)
+    } else {
+        format!("{:.0}% context used", pct)
+    };
     let status_left = match ui_mode {
         UiMode::SessionPicker | UiMode::ModelPicker | UiMode::QuitPicker | UiMode::ChoicePicker => {
             "↑↓ navigate  enter select  esc cancel".to_string()
