@@ -28,10 +28,22 @@ const sidebars: SidebarsConfig = {
       label: 'Infinity Runtime',
       items: [
         'infinity-runtime/overview',
-        'infinity-runtime/local-cli',
         'infinity-runtime/cloud-deployment',
         'infinity-runtime/built-in-tools',
         'infinity-runtime/threading',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Infinity Code',
+      items: [
+        'infinity-code/quickstart',
+        'infinity-code/coding-with-jj',
+        'infinity-code/coding-with-git',
+
+        'infinity-code/background-agents',
+        'infinity-code/configuring-mcp',
+        'infinity-code/rap-servers',
       ],
     },
   ],
