@@ -3,14 +3,16 @@ use serde::{Deserialize, Serialize};
 
 // ── RAP protocol types ──
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RapInvocation {
     pub operation: String,
+    #[serde(default)]
     pub arguments: serde_json::Value,
     pub id: String,
     pub call_id: Option<String>,
     pub callback_url: String,
     pub group_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
 }
 

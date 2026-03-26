@@ -9,6 +9,7 @@ use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
+use rap_protocol::RapInvocation;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -42,19 +43,6 @@ struct JsonRpcResponse {
 #[derive(Deserialize)]
 struct JsonRpcError {
     message: String,
-}
-
-// ── RAP invocation body ──
-
-#[derive(Deserialize)]
-struct RapInvocation {
-    operation: String,
-    #[serde(default)]
-    arguments: serde_json::Value,
-    id: String,
-    call_id: Option<String>,
-    callback_url: String,
-    group_id: String,
 }
 
 // ── Lazy stdio MCP client ──

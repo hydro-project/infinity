@@ -4,23 +4,11 @@
 //! Auth is handled by the `HttpClient` implementation (SigV4 for Lambda, plain for CLI).
 
 use async_trait::async_trait;
-use serde::Serialize;
+use rap_protocol::RapInvocation;
 use tracing;
 
 use super::{Tool, ToolContext};
 use crate::traits::{HttpClient, InputSender};
-
-#[derive(Debug, Serialize)]
-struct RapInvocation {
-    operation: String,
-    arguments: serde_json::Value,
-    id: String,
-    call_id: Option<String>,
-    callback_url: String,
-    group_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    user_id: Option<String>,
-}
 
 /// A RAP tool that invokes a remote tool server endpoint via HTTP.
 /// Generic over the HTTP client (SigV4-signed for Lambda, plain for CLI)
