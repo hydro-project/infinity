@@ -410,8 +410,8 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
         {
             let report_text = if is_subscription {
                 report.map(|report_text| format!(
-                        "An event from your subscription {} was processed by a child thread. The subscription remains active. Report from the child:\n{}",
-                        spawn_tool_call_id, report_text
+                        "An event from your subscription {} was processed by a child thread {}. The subscription remains active. Report from the child:\n{}",
+                        spawn_tool_call_id, thread_id, report_text
                     ))
             } else if let Some(report_text) = report {
                 Some(format!(
