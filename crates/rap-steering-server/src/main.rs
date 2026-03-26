@@ -29,7 +29,7 @@ struct AppState {
 fn build_manifest(endpoint: &str) -> ToolsetManifest {
     ToolsetManifest {
         name: "steering-tools".to_string(),
-        description: "Discover and load project steering files (CLAUDE.md, AGENTS.md, .kiro/steering/, etc.)".to_string(),
+        description: Some("Discover and load project steering files (CLAUDE.md, AGENTS.md, .kiro/steering/, etc.)".to_string()),
         endpoint: endpoint.to_string(),
         tools: vec![
             ToolDef {
@@ -45,6 +45,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     },
                     "required": ["root"]
                 }),
+                annotations: None,
                 display_script: None,
             },
             ToolDef {
@@ -64,6 +65,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     },
                     "required": ["root", "path"]
                 }),
+                annotations: None,
                 display_script: Some(r#""Load " + args.path"#.to_string()),
             },
         ],
