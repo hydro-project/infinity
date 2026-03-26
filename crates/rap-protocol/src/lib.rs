@@ -16,60 +16,86 @@ pub struct RapInvocation {
     pub user_id: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RapToolResult {
-    pub r#type: String,
     pub group_id: String,
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
     pub text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_as: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription: Option<bool>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RapUserChoice {
-    pub r#type: String,
     pub group_id: String,
     pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
     pub prompt: String,
     pub choices: Vec<String>,
+    #[serde(default)]
     pub default: usize,
     pub response_url: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RapSubscriptionEvent {
-    pub r#type: String,
     pub group_id: String,
     pub tool_call_id: String,
     pub text: String,
+    #[serde(default)]
     pub associative: bool,
     /// When `true`, this is the final event for this subscription. The runtime
     /// SHOULD remove the subscription from its active tracking.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#final: Option<bool>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RapOAuth {
+    pub group_id: String,
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    pub auth_url: String,
+}
+
+/// Tagged enum for all RAP callback message types.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum RapCallback {
+    #[serde(rename = "tool_result")]
+    ToolResult(RapToolResult),
+    #[serde(rename = "subscription_event")]
+    SubscriptionEvent(RapSubscriptionEvent),
+    #[serde(rename = "oauth")]
+    OAuth(RapOAuth),
+    #[serde(rename = "user_choice")]
+    UserChoice(RapUserChoice),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolsetManifest {
     pub name: String,
-    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub endpoint: String,
     pub tools: Vec<ToolDef>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDef {
     pub name: String,
     pub description: String,
     #[serde(rename = "inputSchema")]
     pub input_schema: serde_json::Value,
-    #[serde(rename = "displayScript", skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<serde_json::Value>,
+    #[serde(default, rename = "displayScript", skip_serializing_if = "Option::is_none")]
     pub display_script: Option<String>,
 }
 
@@ -131,15 +157,14 @@ pub async fn send_tool_result<C: CallbackClient>(
     display_as: Option<String>,
     subscription: bool,
 ) {
-    let result = RapToolResult {
-        r#type: "tool_result".to_string(),
+    let result = RapCallback::ToolResult(RapToolResult {
         group_id: invocation.group_id.clone(),
         id: invocation.id.clone(),
         call_id: invocation.call_id.clone(),
         text: text.to_string(),
         display_as,
         subscription: if subscription { Some(true) } else { None },
-    };
+    });
     let body = serde_json::to_string(&result).unwrap();
     if let Err(e) = client.post_json(&invocation.callback_url, &body).await {
         tracing::error!("failed to send tool result: {e}");
@@ -155,8 +180,7 @@ pub async fn send_user_choice<C: CallbackClient>(
     default: usize,
     response_url: &str,
 ) {
-    let msg = RapUserChoice {
-        r#type: "user_choice".to_string(),
+    let msg = RapCallback::UserChoice(RapUserChoice {
         group_id: invocation.group_id.clone(),
         id: invocation.id.clone(),
         call_id: invocation.call_id.clone(),
@@ -164,7 +188,7 @@ pub async fn send_user_choice<C: CallbackClient>(
         choices,
         default,
         response_url: response_url.to_string(),
-    };
+    });
     let body = serde_json::to_string(&msg).unwrap();
     if let Err(e) = client.post_json(&invocation.callback_url, &body).await {
         tracing::error!("failed to send user_choice: {e}");
@@ -179,14 +203,13 @@ pub async fn send_subscription_event<C: CallbackClient>(
     associative: bool,
     r#final: bool,
 ) {
-    let event = RapSubscriptionEvent {
-        r#type: "subscription_event".to_string(),
+    let event = RapCallback::SubscriptionEvent(RapSubscriptionEvent {
         group_id: invocation.group_id.clone(),
         tool_call_id: invocation.id.clone(),
         text: text.to_string(),
         associative,
         r#final: if r#final { Some(true) } else { None },
-    };
+    });
     let body = serde_json::to_string(&event).unwrap();
     if let Err(e) = client.post_json(&invocation.callback_url, &body).await {
         tracing::error!("failed to send subscription event: {e}");
