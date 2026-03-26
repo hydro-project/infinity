@@ -1,38 +1,15 @@
-use serde::{Deserialize, Serialize};
+use rap_protocol::ToolsetManifest;
 use tracing;
 
 use crate::traits::{HttpClient, ToolsetCache};
 
-/// A single tool definition within a RAP toolset manifest.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct RapToolDef {
-    pub name: String,
-    pub description: String,
-    #[serde(rename = "inputSchema")]
-    pub input_schema: serde_json::Value,
-    #[serde(default)]
-    pub annotations: Option<serde_json::Value>,
-    #[serde(default, rename = "displayScript")]
-    pub display_script: Option<String>,
-}
-
-/// A RAP toolset manifest as returned by `/.well-known/rap-toolset`.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct RapToolset {
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    pub endpoint: String,
-    pub tools: Vec<RapToolDef>,
-}
-
 /// A loaded toolset ready to be converted into Tool trait objects.
 pub struct LoadedToolset {
-    pub manifest: RapToolset,
+    pub manifest: ToolsetManifest,
 }
 
 impl LoadedToolset {
-    pub fn from_manifest(manifest: RapToolset) -> Self {
+    pub fn from_manifest(manifest: ToolsetManifest) -> Self {
         Self { manifest }
     }
 }
@@ -77,7 +54,7 @@ impl<H: HttpClient, C: ToolsetCache> ToolsetLoader<H, C> {
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
         {
-            let cached: RapToolset = serde_json::from_str(&cached_json)?;
+            let cached: ToolsetManifest = serde_json::from_str(&cached_json)?;
             tracing::info!(
                 "Using cached toolset '{}' for session {}",
                 cached.name,
@@ -102,7 +79,7 @@ impl<H: HttpClient, C: ToolsetCache> ToolsetLoader<H, C> {
     async fn fetch_from_well_known(
         &self,
         server_url: &str,
-    ) -> Result<RapToolset, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<ToolsetManifest, Box<dyn std::error::Error + Send + Sync>> {
         let well_known_url = format!(
             "{}/.well-known/rap-toolset",
             server_url.trim_end_matches('/')
@@ -124,7 +101,7 @@ impl<H: HttpClient, C: ToolsetCache> ToolsetLoader<H, C> {
             .into());
         }
 
-        let toolset: RapToolset = serde_json::from_slice(&body)?;
+        let toolset: ToolsetManifest = serde_json::from_slice(&body)?;
         Ok(toolset)
     }
 }

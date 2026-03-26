@@ -12,7 +12,7 @@ use tokio::task::JoinHandle;
 use tracing;
 
 use rap_protocol::{
-    CallbackClient, RapInvocation, RapToolResult, ToolDef, ToolsetManifest,
+    CallbackClient, RapCallback, RapInvocation, RapToolResult, ToolDef, ToolsetManifest,
     send_subscription_event, send_tool_result, send_user_choice,
 };
 
@@ -230,15 +230,14 @@ async fn invoke_handler<
             Err(e) => (format!("Error: {e}"), None),
         };
 
-        let tool_result = RapToolResult {
-            r#type: "tool_result".to_string(),
+        let tool_result = RapCallback::ToolResult(RapToolResult {
             group_id: invocation.group_id.clone(),
             id: invocation.id.clone(),
             call_id: invocation.call_id.clone(),
             text,
             display_as,
             subscription: None,
-        };
+        });
 
         let body = serde_json::to_string(&tool_result).unwrap();
         if let Err(e) = state_clone
@@ -1490,7 +1489,7 @@ fn build_edit_diff(path: &str, old_str: &str, new_str: &str) -> String {
 fn build_manifest(endpoint: &str) -> ToolsetManifest {
     ToolsetManifest {
         name: "sandbox-tools".to_string(),
-        description: "Sandboxed code editing and execution tools using jujutsu for filesystem versioning".to_string(),
+        description: Some("Sandboxed code editing and execution tools using jujutsu for filesystem versioning".to_string()),
         endpoint: endpoint.to_string(),
         tools: vec![
             ToolDef {
@@ -1510,6 +1509,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     },
                     "required": ["repo"]
                 }),
+                annotations: None,
                 display_script: None,
             },
             ToolDef {
@@ -1525,6 +1525,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     },
                     "required": ["repo"]
                 }),
+                annotations: None,
                 display_script: None,
             },
             ToolDef {
@@ -1545,6 +1546,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     },
                     "required": ["command"]
                 }),
+                annotations: None,
                 display_script: Some(r#""$ " + args.command"#.to_string()),
             },
             ToolDef {
@@ -1568,6 +1570,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     },
                     "required": ["path"]
                 }),
+                annotations: None,
                 display_script: Some(r#"let s = "Read " + args.path; if args.start_line != () { s += ":" + args.start_line; if args.end_line != () { s += "-" + args.end_line; } } s"#.to_string()),
             },
             ToolDef {
@@ -1591,6 +1594,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     },
                     "required": ["path", "old_str", "new_str"]
                 }),
+                annotations: None,
                 display_script: Some(r#"let n = args.new_str.split("\n").len(); "Edit " + args.path + " (" + n + " lines)""#.to_string()),
             },
             ToolDef {
@@ -1610,6 +1614,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     },
                     "required": ["path", "content"]
                 }),
+                annotations: None,
                 display_script: None,
             },
             ToolDef {
@@ -1637,6 +1642,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     },
                     "required": ["query"]
                 }),
+                annotations: None,
                 display_script: Some(r#"let s = "Grep: " + args.query; if args.includePattern != () { s += " in " + args.includePattern; } s"#.to_string()),
             },
             ToolDef {
@@ -1652,6 +1658,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     },
                     "required": ["message"]
                 }),
+                annotations: None,
                 display_script: None,
             },
             ToolDef {
@@ -1667,6 +1674,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     },
                     "required": ["from_thread_id"]
                 }),
+                annotations: None,
                 display_script: None,
             },
         ],

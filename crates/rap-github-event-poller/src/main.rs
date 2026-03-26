@@ -24,8 +24,8 @@ type AppState = Poller<PlainCallbackClient>;
 fn build_manifest(endpoint: &str) -> ToolsetManifest {
     ToolsetManifest {
         name: "github-events".to_string(),
-        description: "Subscribe to GitHub repository events via polling (no webhooks required)"
-            .to_string(),
+        description: Some("Subscribe to GitHub repository events via polling (no webhooks required)"
+            .to_string()),
         endpoint: endpoint.to_string(),
         tools: vec![ToolDef {
             name: "subscribe_github_events".to_string(),
@@ -74,6 +74,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                 },
                 "required": ["owner", "repo"]
             }),
+            annotations: None,
             display_script: None,
         }],
     }

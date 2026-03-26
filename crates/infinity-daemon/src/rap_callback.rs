@@ -12,49 +12,14 @@ use infinity_agent_core::message::{
     InputMessage, InputMessageContent, OAuthRequired, SyntheticKind, TaggedSyntheticKind,
     UserChoiceRequired,
 };
+use rap_protocol::RapCallback;
 use rig::message::{ToolResult, ToolResultContent, UserContent};
-use serde::Deserialize;
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
-
-#[derive(Debug, Deserialize)]
-struct RapCallback {
-    #[serde(rename = "type")]
-    msg_type: String,
-    group_id: String,
-    #[serde(default)]
-    id: Option<String>,
-    #[serde(default)]
-    call_id: Option<String>,
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    tool_call_id: Option<String>,
-    #[serde(default)]
-    auth_url: Option<String>,
-    #[serde(default)]
-    prompt: Option<String>,
-    #[serde(default)]
-    choices: Option<Vec<String>>,
-    #[serde(default)]
-    default: Option<usize>,
-    #[serde(default)]
-    response_url: Option<String>,
-    #[serde(default)]
-    display_as: Option<String>,
-    #[serde(default)]
-    associative: Option<bool>,
-    #[serde(default)]
-    subscription: Option<bool>,
-    /// When true, this is the final subscription event — the runtime should
-    /// remove the subscription from active tracking.
-    #[serde(default)]
-    r#final: Option<bool>,
-}
 
 struct CallbackState {
     input_tx: mpsc::UnboundedSender<(InputMessage, String)>,
@@ -126,49 +91,39 @@ async fn handle(req: Request<Incoming>, state: Arc<CallbackState>) -> Response<F
         }
     };
 
-    tracing::info!(
-        "RAP callback: type={}, group_id={}",
-        cb.msg_type,
-        cb.group_id
-    );
+    tracing::info!("RAP callback: {:?}", cb);
 
-    let input_msg = match cb.msg_type.as_str() {
-        "tool_result" => {
-            let display_as = cb.display_as;
-            let subscription = cb.subscription.unwrap_or(false);
-            InputMessage {
-                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                    id: cb.id.unwrap_or_default(),
-                    call_id: cb.call_id,
-                    content: rig::OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                        text: cb.text.unwrap_or_default(),
-                    })),
+    let input_msg = match cb {
+        RapCallback::ToolResult(tr) => InputMessage {
+            content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                id: tr.id,
+                call_id: tr.call_id,
+                content: rig::OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                    text: tr.text,
                 })),
-                group_id: cb.group_id,
-                metadata: None,
-                synthetic: None,
-                display_as,
-                subscription,
-            }
-        }
-        "subscription_event" => {
-            let tool_call_id = cb.tool_call_id.unwrap_or_default();
-            let associative = cb.associative.unwrap_or(false);
-            let is_final = cb.r#final.unwrap_or(false);
+            })),
+            group_id: tr.group_id,
+            metadata: None,
+            synthetic: None,
+            display_as: tr.display_as,
+            subscription: tr.subscription.unwrap_or(false),
+        },
+        RapCallback::SubscriptionEvent(se) => {
+            let is_final = se.r#final.unwrap_or(false);
             InputMessage {
                 content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                    id: tool_call_id.clone(),
+                    id: se.tool_call_id.clone(),
                     call_id: None,
                     content: rig::OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                        text: cb.text.unwrap_or_default(),
+                        text: se.text,
                     })),
                 })),
-                group_id: cb.group_id,
+                group_id: se.group_id,
                 metadata: None,
                 synthetic: Some(SyntheticKind::Tagged(
                     TaggedSyntheticKind::SubscriptionEvent {
-                        tool_call_id,
-                        associative,
+                        tool_call_id: se.tool_call_id,
+                        associative: se.associative,
                         r#final: is_final,
                     },
                 )),
@@ -176,38 +131,35 @@ async fn handle(req: Request<Incoming>, state: Arc<CallbackState>) -> Response<F
                 subscription: false,
             }
         }
-        "oauth" => InputMessage {
+        RapCallback::OAuth(oa) => InputMessage {
             content: InputMessageContent::OAuth(OAuthRequired {
                 content_type: "oauth_required".to_string(),
-                id: cb.id.unwrap_or_default(),
-                call_id: cb.call_id,
-                auth_url: cb.auth_url.unwrap_or_default(),
+                id: oa.id,
+                call_id: oa.call_id,
+                auth_url: oa.auth_url,
             }),
-            group_id: cb.group_id,
+            group_id: oa.group_id,
             metadata: None,
             synthetic: None,
             display_as: None,
             subscription: false,
         },
-        "user_choice" => InputMessage {
+        RapCallback::UserChoice(uc) => InputMessage {
             content: InputMessageContent::UserChoice(UserChoiceRequired {
                 content_type: "user_choice_required".to_string(),
-                id: cb.id.unwrap_or_default(),
-                call_id: cb.call_id,
-                prompt: cb.prompt.unwrap_or_default(),
-                choices: cb.choices.unwrap_or_default(),
-                default: cb.default.unwrap_or(0),
-                response_url: cb.response_url.unwrap_or_default(),
+                id: uc.id,
+                call_id: uc.call_id,
+                prompt: uc.prompt,
+                choices: uc.choices,
+                default: uc.default,
+                response_url: uc.response_url,
             }),
-            group_id: cb.group_id,
+            group_id: uc.group_id,
             metadata: None,
             synthetic: None,
             display_as: None,
             subscription: false,
         },
-        other => {
-            return ok_response(StatusCode::BAD_REQUEST, &format!("Unknown type: {}", other));
-        }
     };
 
     let dedup = uuid::Uuid::new_v4().to_string();
