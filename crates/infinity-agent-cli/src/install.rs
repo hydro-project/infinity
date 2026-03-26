@@ -201,7 +201,11 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
 /// Update RAP tools, printing progress into an existing viewport. Returns names of failures.
 async fn update_rap_tools(viewport: &mut InlineViewport) -> Result<Vec<String>, BoxError> {
     let config_path = user_config_path()?;
-    let config = load_config(&config_path)?;
+    let config = if config_path.exists() {
+        load_config(&config_path)?
+    } else {
+        ToolsConfig::empty() // init if empty
+    };
     let installable = config.installable_commands();
 
     if installable.is_empty() {
