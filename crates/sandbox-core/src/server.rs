@@ -400,20 +400,28 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
             .base_thread_id
             .as_ref()
             .map(|id| format!("sandbox-{}", id));
-        let base_revision =
-            match crate::jj::jj_resolve_revision(&path, rev_to_resolve.as_deref().unwrap_or("@"))
-                .await
-            {
-                Ok(rev) => rev,
-                Err(_) => {
-                    return Err(SandboxError::Other(
-                        "Failed to resolve the base revision. This can happen when the repository \
+        let default_rev =
+            if rev_to_resolve.is_none() && crate::jj::jj_bookmark_is_empty(&path, "@").await {
+                "@-"
+            } else {
+                "@"
+            };
+        let base_revision = match crate::jj::jj_resolve_revision(
+            &path,
+            rev_to_resolve.as_deref().unwrap_or(default_rev),
+        )
+        .await
+        {
+            Ok(rev) => rev,
+            Err(_) => {
+                return Err(SandboxError::Other(
+                    "Failed to resolve the base revision. This can happen when the repository \
                          has no commits yet. Use the `open_sandbox_direct` tool instead, which \
                          operates directly on the repository without requiring an existing commit."
-                            .to_string(),
-                    ));
-                }
-            };
+                        .to_string(),
+                ));
+            }
+        };
 
         let rs = RepoState {
             group_id: invocation.group_id.clone(),
