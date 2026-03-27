@@ -36,6 +36,7 @@ tokio-util = { version = "0.7", features = ["codec"] }
 bytes = "1"
 bincode = "1"
 dirs = "6"
+tokio-tungstenite = "0.26"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["signal"] }

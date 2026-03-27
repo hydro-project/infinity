@@ -1,0 +1,66 @@
+.bar {
+    width: 100%;
+}
+
+.inner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--glass-bg);
+    backdrop-filter: blur(24px) saturate(1.4);
+    -webkit-backdrop-filter: blur(24px) saturate(1.4);
+    box-sizing: border-box;
+    border: 1px solid var(--glass-border);
+    box-shadow:
+        0 8px 32px var(--glass-shadow),
+        inset 0 0.5px 0 rgba(255, 255, 255, 0.06);
+    border-radius: 16px;
+    padding: 10px 14px;
+    transition: border-color 0.15s;
+}
+
+.inner:focus-within {
+    border-color: var(--accent);
+}
+
+.textarea {
+    flex: 1;
+    background: none;
+    border: none;
+    outline: none;
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    resize: none;
+    min-height: 21px;
+    max-height: 200px;
+}
+
+.textarea::placeholder {
+    color: var(--text-muted);
+}
+
+.sendBtn {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    border: none;
+    background: var(--accent);
+    color: white;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 0.15s;
+}
+
+.sendBtn:disabled {
+    opacity: 0.3;
+    cursor: default;
+}
+
+.sendBtn:not(:disabled):hover {
+    opacity: 0.85;
+}

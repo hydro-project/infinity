@@ -1,0 +1,36 @@
+.container {
+    position: absolute;
+    inset: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+.inner {
+    max-width: var(--max-width);
+    margin: 0 auto;
+    padding: 64px 0 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.inputArea {
+    position: sticky;
+    bottom: 0;
+    max-width: var(--max-width);
+    margin: 0 auto;
+    padding: 8px 0 16px;
+}
+
+.toolBox {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 4px 12px;
+    margin: 4px 0;
+}
+
+.toolDivider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 0 -12px;
+}
