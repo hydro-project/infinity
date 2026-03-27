@@ -17,9 +17,10 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::event_processor::{self, CompletionAction, HistoryManager};
 use crate::message::{InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind};
-use crate::rap_notifier::RapNotifier;
 use crate::tools::{Tool, ToolContext};
-use crate::traits::{ConversationStore, HttpClient, InputSender, StateStore};
+use crate::traits::{ConversationStore, InputSender, StateStore};
+use rap_client::http::HttpClient;
+use rap_client::notifier::RapNotifier;
 
 /// Events emitted during batch processing and completion for display purposes.
 ///
@@ -416,8 +417,9 @@ mod tests {
     use crate::event_processor::HistoryManager;
     use crate::message::{InputMessage, InputMessageContent, OAuthRequired, UserChoiceRequired};
     use crate::tools::{Tool, ToolContext};
-    use crate::traits::{ConversationStore, HttpClient, InputSender, StateStore};
+    use crate::traits::{ConversationStore, InputSender, StateStore};
     use async_trait::async_trait;
+    use rap_client::http::HttpClient;
     use rig::OneOrMany;
     use rig::completion::ToolDefinition;
     use rig::message::{Message, ToolResult, ToolResultContent, UserContent};
@@ -604,7 +606,7 @@ mod tests {
         out
     }
 
-    const NONE_NOTIFIER: Option<&'static crate::rap_notifier::RapNotifier<StubHttp>> = None;
+    const NONE_NOTIFIER: Option<&'static rap_client::notifier::RapNotifier<StubHttp>> = None;
 
     #[tokio::test]
     async fn closed_thread_returns_none() {

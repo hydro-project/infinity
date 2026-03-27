@@ -8,8 +8,9 @@ use tracing;
 
 use super::{Tool, ToolContext};
 use crate::message::{InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind};
-use crate::rap_notifier::RapNotifier;
-use crate::traits::{ConversationStore, HttpClient, InputSender};
+use crate::traits::{ConversationStore, InputSender};
+use rap_client::http::HttpClient;
+use rap_client::notifier::RapNotifier;
 
 /// Tool that spawns a new child thread and returns its ID.
 pub struct SpawnThreadTool<C: ConversationStore> {

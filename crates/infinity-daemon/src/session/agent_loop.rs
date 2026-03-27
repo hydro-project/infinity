@@ -27,9 +27,7 @@ pub async fn agent_loop<Mdl>(
     callback_url: String,
     tool_impls: Arc<Vec<Box<dyn Tool<InMemoryMessageSender>>>>,
     extra_system_prompt: Arc<Option<String>>,
-    rap_notifier: Option<
-        infinity_agent_core::rap_notifier::RapNotifier<rap_tools::SimpleHttpClient>,
-    >,
+    rap_notifier: Option<rap_client::notifier::RapNotifier<rap_tools::SimpleHttpClient>>,
     additional_request_params: Arc<std::sync::RwLock<Option<serde_json::Value>>>,
     active_model_id: Arc<std::sync::RwLock<Option<String>>>,
     client_tx_handle: ClientTxHandle,
