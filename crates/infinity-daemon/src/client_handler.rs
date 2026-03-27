@@ -210,10 +210,10 @@ pub async fn handle_client_channels(
         }
     }
 
-    tracing::trace!("Shutting down client handler");
+    tracing::trace!("Client stream ended, detaching");
     if let Some(sid) = attached_session_id {
-        tracing::trace!("Cleaning up active session");
+        tracing::trace!("Detaching client from session, agent continues in background");
         let mut mgr = session_manager.lock().await;
-        mgr.cleanup_session(&sid).await;
+        mgr.detach_client(&sid);
     }
 }
