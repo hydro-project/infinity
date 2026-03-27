@@ -1,10 +1,7 @@
-use infinity_agent_core::message::InputMessage;
-use infinity_daemon::{rap_callback, session::SessionManager};
-use tokio::sync::mpsc;
+use infinity_daemon::rap_callback;
 use tracing_subscriber::EnvFilter;
 
 use clap::Parser;
-use std::sync::Arc;
 
 mod daemon_client;
 
@@ -170,28 +167,11 @@ async fn run_direct(
     daemon_err: Option<String>,
 ) -> Result<(), BoxError> {
     let state_dir = std::env::current_dir()?.join(".infinity");
-    let (callback_tx, mut callback_rx) = mpsc::unbounded_channel::<(InputMessage, String)>();
-    let callback_url = rap_callback::start_callback_server(callback_tx)
+
+    let mgr = rap_callback::start_callback_server(state_dir)
         .await
         .map_err(|e| format!("Failed to start callback server: {e}"))?;
     tracing::info!("Shared callback server started");
-
-    let mgr = Arc::new(tokio::sync::Mutex::new(
-        SessionManager::new(state_dir, callback_url).await?,
-    ));
-
-    // callback router
-    let callback_session_manager = mgr.clone();
-    tokio::task::spawn_local(async move {
-        while let Some((msg, dedup)) = callback_rx.recv().await {
-            let group_id = msg.group_id.clone();
-            callback_session_manager
-                .lock()
-                .await
-                .send_input(&group_id, (msg, Some(dedup)), None)
-                .await;
-        }
-    });
 
     // In-memory channels — no serialization
     let (to_daemon_tx, to_daemon_rx) = tokio::sync::mpsc::unbounded_channel();

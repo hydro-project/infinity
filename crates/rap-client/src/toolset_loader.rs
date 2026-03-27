@@ -1,14 +1,17 @@
+/// Toolset discovery via `/.well-known/rap-toolset` endpoints.
 use rap_protocol::ToolsetManifest;
 use tracing;
 
-use crate::traits::{HttpClient, ToolsetCache};
+use crate::http::{HttpClient, ToolsetCache};
 
 /// A loaded toolset ready to be converted into Tool trait objects.
 pub struct LoadedToolset {
+    /// The deserialized toolset manifest.
     pub manifest: ToolsetManifest,
 }
 
 impl LoadedToolset {
+    /// Wrap a manifest in a `LoadedToolset`.
     pub fn from_manifest(manifest: ToolsetManifest) -> Self {
         Self { manifest }
     }
@@ -23,6 +26,7 @@ pub struct ToolsetLoader<H: HttpClient, C: ToolsetCache> {
 }
 
 impl<H: HttpClient, C: ToolsetCache> ToolsetLoader<H, C> {
+    /// Create a new loader with the given HTTP client and cache.
     pub fn new(http_client: H, cache: C) -> Self {
         Self { http_client, cache }
     }

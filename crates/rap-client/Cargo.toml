@@ -1,0 +1,16 @@
+[package]
+name = "rap-client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rap-protocol = { path = "../rap-protocol" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"

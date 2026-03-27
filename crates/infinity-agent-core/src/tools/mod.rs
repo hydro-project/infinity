@@ -3,7 +3,6 @@ pub mod config;
 pub mod rap_tool;
 pub mod sleep;
 pub mod thread;
-pub mod toolset_loader;
 
 use crate::traits::InputSender;
 use async_trait::async_trait;
