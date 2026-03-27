@@ -6,7 +6,7 @@ use aws_sigv4::http_request::{
 };
 use aws_sigv4::sign::v4::SigningParams;
 use aws_smithy_runtime_api::client::identity::Identity;
-use infinity_agent_core::traits::HttpClient;
+use rap_client::http::HttpClient;
 use std::time::SystemTime;
 
 /// HTTP client for invoking Lambda Function URLs with SigV4 IAM auth.

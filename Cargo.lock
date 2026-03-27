@@ -1979,6 +1979,7 @@ dependencies = [
  "chrono-tz",
  "futures-util",
  "insta",
+ "rap-client",
  "rap-protocol",
  "rig-core",
  "rig-mock",
@@ -2010,6 +2011,7 @@ dependencies = [
  "futures-util",
  "infinity-agent-core",
  "lambda_runtime",
+ "rap-client",
  "reqwest",
  "rig-bedrock",
  "rig-core",
@@ -2039,6 +2041,7 @@ dependencies = [
  "infinity-agent-core",
  "infinity-protocol",
  "nix",
+ "rap-client",
  "rap-protocol",
  "reqwest",
  "rig-bedrock",
@@ -2961,6 +2964,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
 dependencies = [
  "getrandom 0.3.4",
+]
+
+[[package]]
+name = "rap-client"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "http-body-util",
+ "hyper 1.8.1",
+ "hyper-util",
+ "rap-protocol",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

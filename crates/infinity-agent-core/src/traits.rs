@@ -219,22 +219,3 @@ pub trait InputSender: Send + Sync + Clone {
         dedup_id: &str,
     ) -> Result<(), Self::Error>;
 }
-
-/// Abstraction over HTTP client for tool invocation.
-#[async_trait]
-pub trait HttpClient: Send + Sync + Clone {
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    async fn post(&self, url: &str, body: &str) -> Result<u16, Self::Error>;
-    async fn get(&self, url: &str) -> Result<(u16, Vec<u8>), Self::Error>;
-}
-
-/// Abstraction over toolset manifest caching.
-#[async_trait]
-pub trait ToolsetCache: Send + Sync {
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    async fn get_cached(&self, cache_key: &str) -> Result<Option<String>, Self::Error>;
-
-    async fn put_cache(&self, cache_key: &str, json: &str) -> Result<(), Self::Error>;
-}

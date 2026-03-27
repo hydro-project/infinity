@@ -7,8 +7,9 @@ use rig::{
 use tracing;
 
 use super::{Tool, ToolContext};
-use crate::rap_notifier::RapNotifier;
-use crate::traits::{HttpClient, InputSender, StateStore};
+use crate::traits::{InputSender, StateStore};
+use rap_client::http::HttpClient;
+use rap_client::notifier::RapNotifier;
 
 /// Built-in synchronous tool that cancels an active subscription.
 ///
