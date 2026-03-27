@@ -93,12 +93,12 @@ impl LocalBackend {
         tempfile::tempdir_in(&base)
     }
 
-    /// Create a scratch temporary directory alongside an existing sandbox dir.
-    /// Used for TMPDIR in sandboxed command execution.
-    fn make_scratch_tempdir(sandbox_dir: &Path) -> std::io::Result<tempfile::TempDir> {
-        let base = sandbox_dir.parent().unwrap_or(sandbox_dir);
-        std::fs::create_dir_all(base)?;
-        tempfile::tempdir_in(base)
+    /// Create a scratch temporary directory for TMPDIR in sandboxed command
+    /// execution. Uses the system temp dir so the scratch space lives outside
+    /// the repository tree, avoiding issues with tools (e.g. jj) that walk
+    /// up the directory tree and discover parent repos.
+    fn make_scratch_tempdir() -> std::io::Result<tempfile::TempDir> {
+        tempfile::tempdir()
     }
 }
 
@@ -296,7 +296,7 @@ impl SandboxBackend for LocalBackend {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
-            let tmp = Self::make_scratch_tempdir(sandbox_dir).map_err(SandboxError::Io)?;
+            let tmp = Self::make_scratch_tempdir().map_err(SandboxError::Io)?;
             let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
 
             let writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
@@ -315,7 +315,7 @@ impl SandboxBackend for LocalBackend {
                          (path \"/dev/null\")\n\
                          (vnode-type CHARACTER-DEVICE)))"
             );
-            let result = tokio::process::Command::new("sandbox-exec")
+            tokio::process::Command::new("sandbox-exec")
                 .args(["-p", &profile])
                 .arg(program)
                 .args(args)
@@ -326,16 +326,16 @@ impl SandboxBackend for LocalBackend {
                 .stderr(Stdio::piped())
                 .output()
                 .await
-                .map_err(|e| SandboxError::CommandError(format!("failed to run command: {e}")))?;
-
-            // Clean up the scratch tmpdir (best-effort).
-            drop(tmp);
-            result
+                .map_err(|e| SandboxError::CommandError(format!("failed to run command: {e}")))?
         } else if cfg!(target_os = "linux") && self.sandbox_enabled {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
-            let writable = extra_writable_paths(sandbox_dir, None);
+            let tmp = Self::make_scratch_tempdir().map_err(SandboxError::Io)?;
+            let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
+            let tmp_str = abs_tmp.to_string_lossy();
+
+            let writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
             let mut bwrap_args = vec![
                 "--ro-bind",
                 "/",
@@ -344,8 +344,8 @@ impl SandboxBackend for LocalBackend {
                 &sandbox_dir_str,
                 &sandbox_dir_str,
                 "--bind",
-                "/tmp",
-                "/tmp",
+                &tmp_str,
+                &tmp_str,
                 "--dev",
                 "/dev",
                 "--proc",
@@ -364,6 +364,7 @@ impl SandboxBackend for LocalBackend {
                 .args(&bwrap_args)
                 .arg(program)
                 .args(args)
+                .env("TMPDIR", abs_tmp.as_os_str())
                 .current_dir(sandbox_dir)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
@@ -423,7 +424,7 @@ impl SandboxBackend for LocalBackend {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
-            let tmp = Self::make_scratch_tempdir(sandbox_dir).map_err(SandboxError::Io)?;
+            let tmp = Self::make_scratch_tempdir().map_err(SandboxError::Io)?;
             let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
 
             let mut writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
@@ -491,7 +492,11 @@ impl SandboxBackend for LocalBackend {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
-            let mut writable = extra_writable_paths(sandbox_dir, None);
+            let tmp = Self::make_scratch_tempdir().map_err(SandboxError::Io)?;
+            let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
+            let tmp_str = abs_tmp.to_string_lossy();
+
+            let mut writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
             for p in extra_writable {
                 if let Ok(resolved) = p.canonicalize() {
                     writable.push(resolved);
@@ -504,8 +509,8 @@ impl SandboxBackend for LocalBackend {
                 "/",
                 "/",
                 "--bind",
-                "/tmp",
-                "/tmp",
+                &tmp_str,
+                &tmp_str,
                 "--dev",
                 "/dev",
                 "--proc",
@@ -529,6 +534,7 @@ impl SandboxBackend for LocalBackend {
                 .arg("--")
                 .arg(program)
                 .args(args)
+                .env("TMPDIR", abs_tmp.as_os_str())
                 .current_dir(sandbox_dir)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
@@ -538,7 +544,7 @@ impl SandboxBackend for LocalBackend {
 
             Ok(SpawnedCommand {
                 child,
-                _keepalive: None,
+                _keepalive: Some(Box::new(tmp)),
             })
         } else {
             let child = tokio::process::Command::new(&current_exe)

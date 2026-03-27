@@ -52,6 +52,7 @@ which = "8"
 thiserror = "2"
 tempfile = "3"
 axum = "0.8"
+insta = { version = "1", features = ["json", "redactions"] }
 
 [patch.crates-io]
 rig-bedrock = { path = "crates/rig-bedrock-patched" }
