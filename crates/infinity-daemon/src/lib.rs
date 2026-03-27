@@ -9,12 +9,13 @@ pub mod session;
 pub mod session_store;
 pub mod set_title_tool;
 pub mod sleep_tools;
+pub mod ws_handler;
 
 use std::sync::Arc;
 
 use infinity_agent_core::message::InputMessage;
 use infinity_protocol::socket_path;
-use tokio::net::UnixListener;
+use tokio::net::{TcpListener, UnixListener};
 use tokio::sync::{Mutex, mpsc};
 use tracing_subscriber::EnvFilter;
 
@@ -64,6 +65,29 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>
         }
     });
 
+    // Start WebSocket server
+    let ws_port: u16 = std::env::var("INFINITY_WS_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8080);
+    let ws_listener = TcpListener::bind(("127.0.0.1", ws_port)).await?;
+    tracing::info!("websocket server listening on 127.0.0.1:{ws_port}");
+
+    let ws_session_manager = session_manager.clone();
+    let ws_accept = async move {
+        loop {
+            match ws_listener.accept().await {
+                Ok((stream, _)) => {
+                    let mgr = ws_session_manager.clone();
+                    tokio::task::spawn_local(ws_handler::handle_ws_client(stream, mgr));
+                }
+                Err(e) => {
+                    tracing::warn!("ws accept error: {e}");
+                }
+            }
+        }
+    };
+
     let shutdown = async {
         let mut sigint =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap();
@@ -90,6 +114,7 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>
                 }
             }
         } => {}
+        _ = ws_accept => {}
         _ = shutdown => {}
     }
 
