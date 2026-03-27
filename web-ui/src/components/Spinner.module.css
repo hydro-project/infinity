@@ -1,0 +1,18 @@
+.wrapper {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+.canvas {
+  flex-shrink: 0;
+  height: 20px;
+  image-rendering: pixelated;
+}
+
+.label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
