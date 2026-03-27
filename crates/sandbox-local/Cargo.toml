@@ -16,3 +16,11 @@ tracing-subscriber = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 nix = { version = "0.31", features = ["process"] }
+
+[dev-dependencies]
+insta = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+rap-client = { path = "../rap-client" }
+rap-protocol = { path = "../rap-protocol" }
+reqwest = { workspace = true }
+regex = "1"
