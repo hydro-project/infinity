@@ -38,6 +38,9 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const [cwdPickerOpen, setCwdPickerOpen] = useState(false);
+  const [pendingChoices, setPendingChoices] = useState<
+    { id: string; prompt: string; choices: string[]; default: number }[]
+  >([]);
 
   const sessionRef = useRef<string | null>(null);
   const pendingInputRef = useRef<string[]>([]);
@@ -296,9 +299,18 @@ export function App() {
             for (const c of p.pending_choices) processOne(c);
             break;
           }
+          case "UserChoiceRequired": {
+            const p = msgPayload<{
+              id: string;
+              prompt: string;
+              choices: string[];
+              default: number;
+            }>(m);
+            setPendingChoices((prev) => [...prev, p]);
+            break;
+          }
           // Ignored for now
           case "OAuthRequired":
-          case "UserChoiceRequired":
           case "DisconnectNotIdle":
           case "DetachedIdle":
             break;
@@ -335,6 +347,7 @@ export function App() {
       sessionRef.current = null;
       setMessages([]);
       setSpinner(null);
+      setPendingChoices([]);
       streamingRef.current = false;
       send({ LoadSession: { target_session_id: id } });
     },
@@ -348,6 +361,7 @@ export function App() {
     sessionRef.current = null;
     setMessages([]);
     setSpinner(null);
+    setPendingChoices([]);
     streamingRef.current = false;
     setCwdPickerOpen(true);
   }, [send]);
@@ -364,6 +378,17 @@ export function App() {
     setCwdPickerOpen(false);
     pendingInputRef.current = [];
   }, []);
+
+  const handleChoiceSelect = useCallback(
+    (index: number) => {
+      setPendingChoices((prev) => {
+        if (prev.length === 0) return prev;
+        sendRef.current({ UserChoiceAnswered: { choice_id: prev[0].id, selected: index } });
+        return prev.slice(1);
+      });
+    },
+    [],
+  );
 
   const contextPct =
     contextWindow > 0 ? Math.min(100, (totalTokens / contextWindow) * 100) : 0;
@@ -402,7 +427,7 @@ export function App() {
           {theme === "dark" ? "\u2600" : "\u263E"}
         </button>
       </div>
-      <MessageList messages={messages} spinner={spinner} onSend={handleSend} inputDisabled={status !== "connected"} />
+      <MessageList messages={messages} spinner={spinner} onSend={handleSend} inputDisabled={status !== "connected"} pendingChoice={pendingChoices[0] ?? null} onChoiceSelect={handleChoiceSelect} />
       {cwdPickerOpen && (
         <CwdPicker onConfirm={handleCwdConfirm} onCancel={handleCwdCancel} />
       )}
