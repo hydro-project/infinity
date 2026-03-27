@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use aws_sdk_dynamodb::{Client as DynamoDbClient, types::AttributeValue};
-use infinity_agent_core::traits::ToolsetCache;
+use rap_client::http::ToolsetCache;
 
 pub struct DynamoDbToolsetCache {
     client: DynamoDbClient,

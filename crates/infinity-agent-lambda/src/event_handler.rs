@@ -15,8 +15,8 @@ use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
 use infinity_agent_core::tools::thread::{
     CloseThreadTool, ReportToParentTool, SendMessageToChildTool, SpawnThreadTool,
 };
-use infinity_agent_core::tools::toolset_loader::ToolsetLoader;
 use infinity_agent_core::tools::{Tool, ToolContext};
+use rap_client::toolset_loader::ToolsetLoader;
 
 use rig::client::{CompletionClient, ProviderClient};
 
@@ -89,7 +89,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     let rap_notifier = if toolset_server_urls.is_empty() {
         None
     } else {
-        Some(infinity_agent_core::rap_notifier::RapNotifier::new(
+        Some(rap_client::notifier::RapNotifier::new(
             toolset_server_urls.clone(),
             http_client.clone(),
         ))

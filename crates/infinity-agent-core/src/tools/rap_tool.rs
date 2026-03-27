@@ -8,7 +8,8 @@ use rap_protocol::RapInvocation;
 use tracing;
 
 use super::{Tool, ToolContext};
-use crate::traits::{HttpClient, InputSender};
+use crate::traits::InputSender;
+use rap_client::http::HttpClient;
 
 /// A RAP tool that invokes a remote tool server endpoint via HTTP.
 /// Generic over the HTTP client (SigV4-signed for Lambda, plain for CLI)
