@@ -2,20 +2,29 @@ import { useLayoutEffect, useRef, useCallback } from 'react';
 import type { MessageItem as MsgItem, SpinnerState } from '../types';
 import { MessageItem } from './MessageItem';
 import { InputBar } from './InputBar';
+import { ChoicePicker } from './ChoicePicker';
 import css from './MessageList.module.css';
+
+interface PendingChoice {
+  prompt: string;
+  choices: string[];
+  default: number;
+}
 
 interface Props {
   messages: MsgItem[];
   spinner: SpinnerState | null;
   onSend: (text: string) => void;
   inputDisabled: boolean;
+  pendingChoice: PendingChoice | null;
+  onChoiceSelect: (index: number) => void;
 }
 
 function isAtBottom(el: HTMLElement) {
   return el.scrollHeight - el.scrollTop - el.clientHeight < 40;
 }
 
-export function MessageList({ messages, spinner, onSend, inputDisabled }: Props) {
+export function MessageList({ messages, spinner, onSend, inputDisabled, pendingChoice, onChoiceSelect }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldStickRef = useRef(true);
 
@@ -27,7 +36,7 @@ export function MessageList({ messages, spinner, onSend, inputDisabled }: Props)
       const el = containerRef.current;
       if (el) el.scrollTop = el.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, pendingChoice]);
 
   const onScroll = useCallback(() => {
     const el = containerRef.current;
@@ -92,7 +101,16 @@ export function MessageList({ messages, spinner, onSend, inputDisabled }: Props)
         })}
       </div>
       <div className={css.inputArea}>
-        <InputBar onSend={handleSend} disabled={inputDisabled} spinner={spinner} />
+        {pendingChoice ? (
+          <ChoicePicker
+            prompt={pendingChoice.prompt}
+            choices={pendingChoice.choices}
+            defaultIndex={pendingChoice.default}
+            onSelect={onChoiceSelect}
+          />
+        ) : (
+          <InputBar onSend={handleSend} disabled={inputDisabled} spinner={spinner} />
+        )}
       </div>
     </div>
   );
