@@ -2972,7 +2972,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "http-body-util",
- "hyper 1.8.1",
+ "hyper",
  "hyper-util",
  "rap-protocol",
  "reqwest",
