@@ -116,6 +116,9 @@ pub async fn handle_client_channels(
                     }
                     ClientMessage::UserInput { session_id, text } => {
                         let mut mgr = session_manager.lock().await;
+                        let mut emit = async |msg: DaemonMessage| {
+                            let _ = daemon_tx.send(msg);
+                        };
                         if !mgr.send_input(&session_id, (InputMessage {
                             content: InputMessageContent::User(UserContent::text(&text)),
                             group_id: session_id.clone(),
@@ -123,7 +126,7 @@ pub async fn handle_client_channels(
                             synthetic: None,
                             display_as: None,
                             subscription: false,
-                        }, None), Some(client_tx.clone())).await {
+                        }, None), Some(client_tx.clone()), &mut emit).await {
                             let _ = daemon_tx.send(DaemonMessage::Error(format!("session {} not found", session_id)));
                         }
                     }
@@ -164,6 +167,9 @@ pub async fn handle_client_channels(
                     }
                     ClientMessage::TriggerCompaction { session_id } => {
                         let mut mgr = session_manager.lock().await;
+                        let mut emit = async |msg: DaemonMessage| {
+                            let _ = daemon_tx.send(msg);
+                        };
                         mgr.send_input(&session_id, (InputMessage {
                             content: InputMessageContent::User(UserContent::text("")),
                             group_id: session_id.clone(),
@@ -171,7 +177,7 @@ pub async fn handle_client_channels(
                             synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::Compaction)),
                             display_as: None,
                             subscription: false,
-                        }, None), Some(client_tx.clone())).await;
+                        }, None), Some(client_tx.clone()), &mut emit).await;
                     }
                     ClientMessage::SwitchModel { .. } => {
                         let _ = daemon_tx.send(DaemonMessage::Info("Model switching not yet implemented".to_string()));
