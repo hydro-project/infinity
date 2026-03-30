@@ -80,3 +80,33 @@ impl<M: InputSender> ToolSet<M> for VecToolSet<M> {
         self.tools
     }
 }
+
+/// Evaluate a Rhai display script with tool arguments as scope variables.
+/// Returns `Some(pretty_string)` on success, `None` if script is absent or fails.
+pub fn eval_display_script(script: Option<&str>, args: &serde_json::Value) -> Option<String> {
+    let script = script?;
+    let engine = rhai::Engine::new();
+    let mut scope = rhai::Scope::new();
+    let mut map = rhai::Map::new();
+    if let Some(obj) = args.as_object() {
+        for (k, v) in obj {
+            let val: rhai::Dynamic = match v {
+                serde_json::Value::String(s) => s.clone().into(),
+                serde_json::Value::Bool(b) => (*b).into(),
+                serde_json::Value::Number(n) => {
+                    if let Some(i) = n.as_i64() {
+                        i.into()
+                    } else if let Some(f) = n.as_f64() {
+                        f.into()
+                    } else {
+                        continue;
+                    }
+                }
+                other => other.to_string().into(),
+            };
+            map.insert(k.as_str().into(), val);
+        }
+    }
+    scope.push("args", map);
+    engine.eval_with_scope::<String>(&mut scope, script).ok()
+}

@@ -201,13 +201,13 @@ export function App() {
               name: string;
               args: string;
               prefix: string | null;
-              display_script: string | null;
+              display_as: string | null;
             }>(m);
             if (p.prefix === null) {
               finishAssistant();
               streamingRef.current = false;
               setSpinner("tool");
-              const displayText = `${p.name}(${p.args})`;
+              const displayText = p.display_as ?? `${p.name}(${p.args})`;
               appendMessage({ type: "tool_call", name: p.name, displayText });
             }
             break;
