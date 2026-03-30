@@ -229,13 +229,12 @@ where
                     if let Some(session_picker) = session_picker.as_mut() {
                         let last_picked_id = session_picker.sessions[session_picker.selected].0.clone();
 
-                        let mut other_sessions: Vec<(String, infinity_protocol::SessionInfo)> = sessions.iter()
-                            .filter(|(id, _)| thread_id.as_ref().is_none_or(|tid| tid != id.as_str()))
+                        let mut all_sessions: Vec<(String, infinity_protocol::SessionInfo)> = sessions.iter()
                             .map(|(id, info)| (id.clone(), info.clone()))
                             .collect();
-                        other_sessions.sort_by(|a, b| b.1.last_updated.cmp(&a.1.last_updated));
+                        all_sessions.sort_by(|a, b| b.1.last_updated.cmp(&a.1.last_updated));
 
-                        session_picker.sessions = other_sessions;
+                        session_picker.sessions = all_sessions;
                         if let Some(found) = session_picker.sessions.iter().position(|s| s.0 == last_picked_id) {
                             session_picker.selected = found;
                         }
@@ -746,12 +745,11 @@ where
                                                 }
                                             }
                                             Some("/load") => {
-                                                let mut other_sessions: Vec<(String, infinity_protocol::SessionInfo)> = sessions.iter()
-                                                    .filter(|(id, _)| thread_id.as_ref().is_none_or(|tid| tid != id.as_str()))
+                                                let mut all_sessions: Vec<(String, infinity_protocol::SessionInfo)> = sessions.iter()
                                                     .map(|(id, info)| (id.clone(), info.clone()))
                                                     .collect();
-                                                other_sessions.sort_by(|a, b| b.1.last_updated.cmp(&a.1.last_updated));
-                                                session_picker = Some(SessionPicker::new(other_sessions));
+                                                all_sessions.sort_by(|a, b| b.1.last_updated.cmp(&a.1.last_updated));
+                                                session_picker = Some(SessionPicker::new(all_sessions, thread_id.clone()));
                                                 ui_mode = UiMode::SessionPicker;
                                             }
                                             Some("/model") => {
