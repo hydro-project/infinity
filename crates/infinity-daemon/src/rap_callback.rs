@@ -38,9 +38,10 @@ pub async fn start_callback_server(
             let input_msg = convert_callback(cb);
             let group_id = input_msg.group_id.clone();
             let dedup = uuid::Uuid::new_v4().to_string();
+            let mut emit = async |_msg: infinity_protocol::DaemonMessage| {};
             sm.lock()
                 .await
-                .send_input(&group_id, (input_msg, Some(dedup)), None)
+                .send_input(&group_id, (input_msg, Some(dedup)), None, &mut emit)
                 .await;
         }
     });

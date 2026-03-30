@@ -494,6 +494,7 @@ impl SessionManager {
         session_id: &str,
         msg: (InputMessage, Option<String>),
         client_tx: Option<mpsc::UnboundedSender<DaemonMessage>>,
+        emit: &mut impl AsyncFnMut(DaemonMessage),
     ) -> bool {
         // Resolve thread ID to root session ID in case a child thread ID was provided.
         let session_id = self.conversation_store.get_root_thread_id(session_id);
@@ -518,12 +519,8 @@ impl SessionManager {
                 let _ = store.save();
             }
             let cwd = self.session_store.lock().await.get_cwd(session_id).clone();
-            let client_tx_clone = client_tx.clone();
-            let mut emit = async move |msg: DaemonMessage| {
-                let _ = client_tx.send(msg);
-            };
             if let Err(e) = self
-                .start_session(session_id.to_string(), &cwd, client_tx_clone, &mut emit)
+                .start_session(session_id.to_string(), &cwd, client_tx, emit)
                 .await
             {
                 tracing::error!("failed to restart session: {e}");
