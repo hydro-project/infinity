@@ -183,19 +183,23 @@
 }
 
 .thinkingBody {
+    display: grid;
+    grid-template-rows: 1fr;
+    transition: grid-template-rows 0.3s ease, opacity 0.3s ease;
+    opacity: 1;
+}
+
+.thinkingBodyInner {
     font-size: 12px;
     font-style: italic;
     color: var(--text-muted);
     white-space: pre-wrap;
     word-break: break-word;
     line-height: 1.5;
-    max-height: 1000px;
     overflow: hidden;
-    transition: max-height 0.3s ease, opacity 0.3s ease;
-    opacity: 1;
 }
 
 .thinkingCollapsed {
-    max-height: 0;
+    grid-template-rows: 0fr;
     opacity: 0;
 }

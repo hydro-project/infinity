@@ -115,7 +115,9 @@ function ThinkingBlock({ text, defaultCollapsed }: { text: string; defaultCollap
         <span className={css.thinkingLabel}>Thinking</span>
       </button>
       <div className={`${css.thinkingBody} ${collapsed ? css.thinkingCollapsed : ''}`}>
-        {text}
+        <div className={css.thinkingBodyInner}>
+          {text}
+        </div>
       </div>
     </div>
   );
