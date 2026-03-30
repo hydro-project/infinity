@@ -38,7 +38,7 @@ pub enum DisplayEvent<R> {
         name: String,
         args: serde_json::Value,
         prefix: Option<String>,
-        display_script: Option<String>,
+        display_as: Option<String>,
     },
     ToolResult {
         text: String,
@@ -354,11 +354,13 @@ where
                         let ds = tool_registry
                             .get(tool_name.as_str())
                             .and_then(|t| t.display_script().map(String::from));
+                        let display_as =
+                            crate::tools::eval_display_script(ds.as_deref(), tool_args);
                         let _ = display_tx.send(DisplayEvent::ToolCall {
                             name: tool_name.clone(),
                             args: tool_args.clone(),
                             prefix: thread_prefix.clone(),
-                            display_script: ds,
+                            display_as,
                         });
                     }
                     Ok(event_processor::CompletionEvent::Action(a)) => {
@@ -371,11 +373,13 @@ where
                             let ds = tool_registry
                                 .get(tool_name.as_str())
                                 .and_then(|t| t.display_script().map(String::from));
+                            let display_as =
+                                crate::tools::eval_display_script(ds.as_deref(), tool_args);
                             let _ = display_tx.send(DisplayEvent::ToolCall {
                                 name: tool_name.clone(),
                                 args: tool_args.clone(),
                                 prefix: thread_prefix.clone(),
-                                display_script: ds,
+                                display_as,
                             });
                         }
 

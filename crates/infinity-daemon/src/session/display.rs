@@ -15,12 +15,12 @@ pub(crate) fn display_event_to_daemon<R: GetTokenUsage>(
             name,
             args,
             prefix,
-            display_script,
+            display_as,
         } => DaemonMessage::ToolCall {
             name,
             args: args.to_string(),
             prefix,
-            display_script,
+            display_as,
         },
         DisplayEvent::ToolResult {
             text,
@@ -100,7 +100,7 @@ pub(crate) fn history_message_to_daemon(
                 name: call.function.name.clone(),
                 args: call.function.arguments.to_string(),
                 prefix: None,
-                display_script: None,
+                display_as: None,
             }),
             _ => None,
         },
