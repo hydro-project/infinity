@@ -21,15 +21,21 @@ pub struct SessionPicker {
     pub selected: usize,
     scroll_offset: usize,
     result: Option<SessionPickerResult>,
+    pub current_session_id: Option<String>,
 }
 
 impl SessionPicker {
-    pub fn new(sessions: Vec<(String, SessionInfo)>) -> Self {
+    pub fn new(sessions: Vec<(String, SessionInfo)>, current_session_id: Option<String>) -> Self {
+        let selected = current_session_id.as_ref()
+            .and_then(|cid| sessions.iter().position(|s| &s.0 == cid))
+            .unwrap_or(0);
+        let scroll_offset = selected.saturating_sub(MAX_VISIBLE_ROWS as usize - 1);
         Self {
             sessions,
-            selected: 0,
-            scroll_offset: 0,
+            selected,
+            scroll_offset,
             result: None,
+            current_session_id,
         }
     }
 
@@ -106,17 +112,27 @@ impl SessionPicker {
                 (Color::DarkGray, Color::Reset, Modifier::empty())
             };
 
+            let is_current = self.current_session_id.as_deref() == Some(id.as_str());
+            let current_suffix = if is_current { " (current)" } else { "" };
+            let suffix_len = current_suffix.len();
+
             let name = if let Some(ref title) = info.title {
-                if title.len() > name_width {
-                    format!("{}…", &title[..name_width - 1])
+                if title.len() + suffix_len > name_width {
+                    let trunc = name_width.saturating_sub(suffix_len + 1);
+                    format!("{}…{}", &title[..trunc], current_suffix)
                 } else {
-                    title.clone()
+                    format!("{}{}", title, current_suffix)
                 }
-            } else if id.len() > name_width {
-                format!("{}…", &id[..name_width - 1])
+            } else if id.len() + suffix_len > name_width {
+                let trunc = name_width.saturating_sub(suffix_len + 1);
+                format!("{}…{}", &id[..trunc], current_suffix)
             } else {
-                id.clone()
+                format!("{}{}", id, current_suffix)
             };
+            // Column range for the "(current)" suffix (1 for leading space)
+            let name_char_len = name.chars().count();
+            let current_label_start = 1 + name_char_len - suffix_len;
+            let current_label_end = 1 + name_char_len;
 
             let status_str = match info.status {
                 SessionStatus::Running => "running",
@@ -150,6 +166,8 @@ impl SessionPicker {
                 }
                 let char_fg = if col >= status_start && col < status_end {
                     status_fg
+                } else if is_current && !is_selected && col >= current_label_start && col < current_label_end {
+                    Color::Cyan
                 } else {
                     fg
                 };
