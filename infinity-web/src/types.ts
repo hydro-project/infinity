@@ -27,7 +27,7 @@ export type DaemonMessage =
   | { Connected: { session_id: string; model_name: string; context_window: number; title: string | null; total_tokens_used: number } }
   | { StartOutput: { prefix: string | null } }
   | { TextChunk: { prefix: string | null; chunk: string } }
-  | { ToolCall: { name: string; args: string; prefix: string | null; display_script: string | null } }
+  | { ToolCall: { name: string; args: string; prefix: string | null; display_as: string | null } }
   | { ToolResult: { text: string; display_as: string | null; prefix: string | null } }
   | { Info: string }
   | { ResponseDone: { thread_id: string | null; token_usage: TokenUsage | null } }

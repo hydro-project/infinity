@@ -97,7 +97,7 @@ pub enum DaemonMessage {
         name: String,
         args: String,
         prefix: Option<String>,
-        display_script: Option<String>,
+        display_as: Option<String>,
     },
     ToolResult {
         text: String,
