@@ -969,6 +969,11 @@ where
                 r = stream_result => {
                     Ok(r)
                 }
+                _ = &mut cancel_rx => {
+                    tracing::info!("Completion cancelled during request initiation");
+                    // there must be no trailing reasoning because we drop it when retrying post-initiation
+                    return;
+                }
                 _ = tokio::time::sleep(Duration::from_secs(30)) => {
                     if retry_count < 10 {
                         yield CompletionEvent::Info("Stream error (timeout initiating request), retrying...".to_string());
@@ -983,7 +988,7 @@ where
             let mut llm_stream = match stream_result {
                 Ok(s) => s,
                 Err(e) => {
-                    history.remove_trailing_reasoning();
+                    // there must be no trailing reasoning because we drop it when retrying post-initiation
                     let err_str = format!("{}", e);
                     tracing::error!(error = %e, "Completion stream initiation failed");
 
@@ -991,14 +996,26 @@ where
                         tracing::warn!("Stream error (rate limit), retrying...");
 
                         yield CompletionEvent::Info("Stream error (rate limit), retrying after 30 seconds...".to_string());
-                        tokio::time::sleep(Duration::from_secs(30)).await;
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_secs(30)) => {}
+                            _ = &mut cancel_rx => {
+                                tracing::info!("Completion cancelled during retry wait");
+                                return;
+                            }
+                        }
                         retry_count += 1;
                         continue 'outer;
                     } else if (err_str.contains("unexpected end of stream") || err_str.contains("unexpected error when processing the request")) && retry_count < 10 {
                         tracing::warn!("Stream error (unexpected end), retrying...");
 
                         yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_string());
-                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                            _ = &mut cancel_rx => {
+                                tracing::info!("Completion cancelled during retry wait");
+                                return;
+                            }
+                        }
                         retry_count += 1;
                         continue 'outer;
                     } else {
@@ -1025,6 +1042,10 @@ where
                             yield CompletionEvent::Info("Stream error (timeout), retrying...".to_string());
                             tracing::warn!("Stream ended unexpectedly, removing trailing reasoning and retrying...");
                             history.remove_trailing_reasoning();
+                            if is_thinking {
+                                is_thinking = false;
+                                yield CompletionEvent::ThinkingEnd;
+                            }
                             retry_count += 1;
                             continue 'outer;
                         } else {
@@ -1046,6 +1067,10 @@ where
                     Some(r) => r,
                     None => {
                         history.remove_trailing_reasoning();
+                        if is_thinking {
+                            is_thinking = false;
+                            yield CompletionEvent::ThinkingEnd;
+                        }
                         if retry_count < 10 {
                             yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_string());
                             tracing::warn!("Stream ended unexpectedly, removing trailing reasoning and retrying...");
@@ -1066,6 +1091,10 @@ where
                     },
                     Err(e) => {
                         history.remove_trailing_reasoning();
+                        if is_thinking {
+                            is_thinking = false;
+                            yield CompletionEvent::ThinkingEnd;
+                        }
                         let err_str = format!("{}", e);
                         if (err_str.contains("unexpected end of stream") || err_str.contains("unexpected error when processing the request")) && retry_count < 10 {
                             yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_string());
