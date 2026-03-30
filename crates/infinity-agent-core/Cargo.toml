@@ -18,6 +18,7 @@ chrono-tz = { workspace = true }
 uuid = { workspace = true }
 url = { workspace = true }
 tracing = { workspace = true }
+rhai = { workspace = true }
 
 [dev-dependencies]
 insta = { version = "1", features = ["json", "redactions"] }

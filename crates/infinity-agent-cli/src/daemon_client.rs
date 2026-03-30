@@ -39,12 +39,12 @@ fn daemon_msg_to_display(msg: DaemonMessage) -> Option<DisplayEvent<DaemonTokenU
             name,
             args,
             prefix,
-            display_script,
+            display_as,
         } => DisplayEvent::ToolCall {
             name,
             args: serde_json::from_str(&args).unwrap(),
             prefix,
-            display_script,
+            display_as,
         },
         DaemonMessage::ToolResult {
             text,
