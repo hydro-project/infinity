@@ -64,6 +64,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/load", "Load session"),
     ("/model", "Switch model"),
     ("/compact", "Trigger compaction"),
+    ("/stop", "Stop agent"),
 ];
 
 pub struct SessionChanged {
@@ -91,11 +92,6 @@ struct PendingChoice {
     prompt: String,
     choices: Vec<String>,
     default: usize,
-}
-
-enum QuitPickerAction {
-    Quit,
-    SwitchSession(Option<String>),
 }
 
 pub async fn run<R>(
@@ -154,7 +150,6 @@ where
     let mut session_picker: Option<SessionPicker> = None;
     let mut model_picker: Option<ModelPicker> = None;
     let mut quit_picker: Option<QuitPicker> = None;
-    let mut quit_picker_action: Option<QuitPickerAction> = None;
     let mut choice_picker: Option<ChoicePicker> = None;
     let mut choice_queue: VecDeque<PendingChoice> = VecDeque::new();
     let mut sessions = initial_sessions;
@@ -265,13 +260,25 @@ where
                             thread_id = None;
                             spinner_state = None;
                         }
-                        (DetachResult::NotIdle, Some(action)) => {
+                        (DetachResult::NotIdle, Some(SoftDetachAction::Quit)) => {
                             quit_picker = Some(QuitPicker::new());
-                            quit_picker_action = Some(match action {
-                                SoftDetachAction::Quit => QuitPickerAction::Quit,
-                                SoftDetachAction::SwitchSession(target) => QuitPickerAction::SwitchSession(target),
-                            });
                             ui_mode = UiMode::QuitPicker;
+                        }
+                        (DetachResult::NotIdle, Some(SoftDetachAction::SwitchSession(target))) => {
+                            let _ = load_session_tx.send((target.clone(), false));
+                            if target.is_none() {
+                                viewport.print_line_above(Line::from(vec![
+                                    Span::styled(
+                                        "✦ Lazily creating a new session",
+                                        Style::default().fg(Color::Yellow),
+                                    ),
+                                ]))?;
+                            }
+                            total_tokens_used = 0;
+                            thread_buffers.clear();
+                            thread_id = None;
+                            spinner_state = None;
+                            ui_mode = UiMode::Normal;
                         }
                         _ => {}
                     }
@@ -586,58 +593,15 @@ where
                                     if let Some(ref mut picker) = quit_picker {
                                         picker.handle_keystroke(key);
                                         if let Some(result) = picker.take_result() {
-                                            let action = quit_picker_action.take();
                                             quit_picker = None;
                                             match result {
                                                 QuitPickerResult::ShutDown => {
-                                                    match action {
-                                                        Some(QuitPickerAction::Quit) => {
-                                                            cleanup()?;
-                                                            return Ok(false);
-                                                        }
-                                                        Some(QuitPickerAction::SwitchSession(target)) => {
-                                                            let _ = load_session_tx.send((target.clone(), true));
-                                                            if target.is_none() {
-                                                                viewport.print_line_above(Line::from(vec![
-                                                                    Span::styled(
-                                                                        "✦ Lazily creating a new session",
-                                                                        Style::default().fg(Color::Yellow),
-                                                                    ),
-                                                                ]))?;
-                                                            }
-                                                            total_tokens_used = 0;
-                                                            thread_buffers.clear();
-                                                            thread_id = None;
-                                                            spinner_state = None;
-                                                            ui_mode = UiMode::Normal;
-                                                        }
-                                                        None => { ui_mode = UiMode::Normal; }
-                                                    }
+                                                    cleanup()?;
+                                                    return Ok(false);
                                                 }
                                                 QuitPickerResult::KeepRunning => {
-                                                    match action {
-                                                        Some(QuitPickerAction::Quit) => {
-                                                            cleanup()?;
-                                                            return Ok(true);
-                                                        }
-                                                        Some(QuitPickerAction::SwitchSession(target)) => {
-                                                            let _ = load_session_tx.send((target.clone(), false));
-                                                            if target.is_none() {
-                                                                viewport.print_line_above(Line::from(vec![
-                                                                    Span::styled(
-                                                                        "✦ Lazily creating a new session",
-                                                                        Style::default().fg(Color::Yellow),
-                                                                    ),
-                                                                ]))?;
-                                                            }
-                                                            total_tokens_used = 0;
-                                                            thread_buffers.clear();
-                                                            thread_id = None;
-                                                            spinner_state = None;
-                                                            ui_mode = UiMode::Normal;
-                                                        }
-                                                        None => { ui_mode = UiMode::Normal; }
-                                                    }
+                                                    cleanup()?;
+                                                    return Ok(true);
                                                 }
                                                 QuitPickerResult::Cancelled => {
                                                     ui_mode = UiMode::Normal;
@@ -697,6 +661,7 @@ where
                                             (KeyCode::Char('m'), m) if m.contains(KeyModifiers::CONTROL) => (Some("/model"), None),
                                             (KeyCode::Char('n'), m) if m.contains(KeyModifiers::CONTROL) => (Some("/new"), None),
                                             (KeyCode::Char('k'), m) if m.contains(KeyModifiers::CONTROL) => (Some("/compact"), None),
+                                            (KeyCode::Char('s'), m) if m.contains(KeyModifiers::CONTROL) => (Some("/stop"), None),
                                             (KeyCode::Enter, _) if !input.is_empty() => {
                                                 tab_complete = None;
                                                 let trimmed = input.take_text().trim().to_string();
@@ -707,6 +672,7 @@ where
                                                     "/load" | "/l" => (Some("/load"), None),
                                                     "/model" | "/m" => (Some("/model"), None),
                                                     "/compact" | "/k" => (Some("/compact"), None),
+                                                    "/stop" | "/s" => (Some("/stop"), None),
                                                     _ => (None, Some(trimmed)),
                                                 }
                                             }
@@ -761,6 +727,22 @@ where
                                                 viewport.print_line_above(Line::from(vec![
                                                     Span::styled("✦ Compaction triggered", Style::default().fg(Color::Yellow)),
                                                 ]))?;
+                                            }
+                                            Some("/stop") => {
+                                                if thread_id.is_some() {
+                                                    let _ = load_session_tx.send((None, true));
+                                                    viewport.print_line_above(Line::from(vec![
+                                                        Span::styled("✦ Agent stopped", Style::default().fg(Color::Yellow)),
+                                                    ]))?;
+                                                    total_tokens_used = 0;
+                                                    thread_buffers.clear();
+                                                    thread_id = None;
+                                                    spinner_state = None;
+                                                } else {
+                                                    viewport.print_line_above(Line::from(vec![
+                                                        Span::styled("No active session to stop", Style::default().fg(Color::DarkGray)),
+                                                    ]))?;
+                                                }
                                             }
                                             _ => {
                                                 if let Some(trimmed) = user_text {
@@ -836,12 +818,15 @@ fn show_help(viewport: &mut InlineViewport) -> Result<(), BoxError> {
         "    /load, /l          Load session",
         "    /model, /m         Switch model",
         "    /compact, /k       Trigger compaction",
+        "    /stop, /s          Stop agent",
         "",
         "  Keyboard Shortcuts",
         "    Ctrl+C / Ctrl+D    Exit",
         "    Ctrl+N             New session",
         "    Ctrl+L             Load session",
         "    Ctrl+M             Switch model",
+        "    Ctrl+K             Trigger compaction",
+        "    Ctrl+S             Stop agent",
         "    Ctrl+H             Show this help",
         "    Enter              Send message",
         "",
