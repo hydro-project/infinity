@@ -550,6 +550,13 @@ async fn handle_open_sandbox_direct<B: SandboxBackend, M: MetadataStore, C: Call
     Ok("Repository initialized (Direct mode — file edits require approval, commands run without file write access unless write-orig is granted).".to_string())
 }
 
+use crate::{DEFAULT_SANDBOX_EMAIL, DEFAULT_SANDBOX_NAME};
+
+/// Append a `Co-authored-by` trailer for the default sandbox identity.
+fn append_co_author_trailer(description: &str) -> String {
+    format!("{description}\n\nCo-authored-by: {DEFAULT_SANDBOX_NAME} <{DEFAULT_SANDBOX_EMAIL}>")
+}
+
 /// Run an action inside a sandbox: create → action → push → cleanup.
 ///
 /// The closure receives the sandbox directory path and returns `(text, display_as)`.
@@ -576,8 +583,11 @@ where
 
     let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;
 
-    if let Some(description) = jj_description
-        && matches!(&repo_state.mode, SandboxMode::Jj { .. })
+    let description_with_trailer = jj_description.map(|desc| append_co_author_trailer(desc));
+    let description_ref = description_with_trailer.as_deref();
+
+    if let Some(description) = description_ref
+        && let SandboxMode::Jj { .. } = &repo_state.mode
     {
         run_jj(&sandbox_dir, &["describe", "-m", description]).await?;
     }
@@ -586,7 +596,7 @@ where
 
     state
         .backend
-        .push_sandbox(&sandbox_dir, group_id, jj_description)
+        .push_sandbox(&sandbox_dir, group_id, description_ref)
         .await?;
 
     if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
