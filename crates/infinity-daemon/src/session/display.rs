@@ -6,47 +6,58 @@ use rig::message::{ToolResultContent, UserContent};
 use crate::memory_store::InMemoryConversationStore;
 
 pub(crate) fn display_event_to_daemon<R: GetTokenUsage>(
+    thread_id: &str,
     evt: DisplayEvent<R>,
 ) -> Option<DaemonMessage> {
+    let tid = Some(thread_id.to_string());
     Some(match evt {
-        DisplayEvent::StartOutput { prefix } => DaemonMessage::StartOutput { prefix },
-        DisplayEvent::TextChunk { prefix, chunk } => DaemonMessage::TextChunk { prefix, chunk },
+        DisplayEvent::StartOutput => DaemonMessage::StartOutput { thread_id: tid },
+        DisplayEvent::TextChunk { chunk } => DaemonMessage::TextChunk {
+            thread_id: tid,
+            chunk,
+        },
         DisplayEvent::ToolCall {
             name,
             args,
-            prefix,
             display_as,
         } => DaemonMessage::ToolCall {
             name,
             args: args.to_string(),
-            prefix,
+            thread_id: tid,
             display_as,
         },
-        DisplayEvent::ToolResult {
+        DisplayEvent::ToolResult { text, display_as } => DaemonMessage::ToolResult {
             text,
             display_as,
-            prefix,
-        } => DaemonMessage::ToolResult {
-            text,
-            display_as,
-            prefix,
+            thread_id: tid,
         },
-        DisplayEvent::Info(s) => DaemonMessage::Info(s),
-        DisplayEvent::ResponseDone(thread_id, r) => {
+        DisplayEvent::Info(s) => DaemonMessage::Info {
+            thread_id: tid,
+            text: s,
+        },
+        DisplayEvent::ResponseDone(r) => {
             let token_usage = r.and_then(|r| r.token_usage()).map(|u| TokenUsage {
                 input_tokens: Some(u.input_tokens),
                 output_tokens: Some(u.output_tokens),
             });
             DaemonMessage::ResponseDone {
-                thread_id,
+                thread_id: tid,
                 token_usage,
             }
         }
-        DisplayEvent::UserInput(s) => DaemonMessage::UserInputEcho(s),
-        DisplayEvent::SubscriptionEvent { name, text, prefix } => {
-            DaemonMessage::SubscriptionEvent { name, text, prefix }
-        }
-        DisplayEvent::OAuthRequired { auth_url } => DaemonMessage::OAuthRequired { auth_url },
+        DisplayEvent::UserInput(s) => DaemonMessage::UserInputEcho {
+            thread_id: tid,
+            text: s,
+        },
+        DisplayEvent::SubscriptionEvent { name, text } => DaemonMessage::SubscriptionEvent {
+            name,
+            text,
+            thread_id: tid,
+        },
+        DisplayEvent::OAuthRequired { auth_url } => DaemonMessage::OAuthRequired {
+            thread_id: tid,
+            auth_url,
+        },
         DisplayEvent::UserChoiceRequired {
             id,
             prompt,
@@ -54,17 +65,19 @@ pub(crate) fn display_event_to_daemon<R: GetTokenUsage>(
             default,
             response_url: _,
         } => DaemonMessage::UserChoiceRequired {
+            thread_id: tid,
             id,
             prompt,
             choices,
             default,
         },
-        DisplayEvent::ThinkingStart { prefix } => DaemonMessage::ThinkingStart { prefix },
-        DisplayEvent::ThinkingEnd { prefix } => DaemonMessage::ThinkingEnd { prefix },
-        DisplayEvent::ThinkingChunk { prefix, chunk } => {
-            DaemonMessage::ThinkingChunk { prefix, chunk }
-        }
-        DisplayEvent::CompactionApplied { prefix } => DaemonMessage::CompactionApplied { prefix },
+        DisplayEvent::ThinkingStart => DaemonMessage::ThinkingStart { thread_id: tid },
+        DisplayEvent::ThinkingEnd => DaemonMessage::ThinkingEnd { thread_id: tid },
+        DisplayEvent::ThinkingChunk { chunk } => DaemonMessage::ThinkingChunk {
+            thread_id: tid,
+            chunk,
+        },
+        DisplayEvent::CompactionApplied => DaemonMessage::CompactionApplied { thread_id: tid },
     })
 }
 
@@ -73,17 +86,21 @@ pub(crate) fn history_message_to_daemon(
     tid: &str,
     store: &InMemoryConversationStore,
 ) -> Option<DaemonMessage> {
+    let thread_id = Some(tid.to_string());
     use rig::message::{AssistantContent, Message};
     match msg {
         Message::User { content } => match content.first() {
-            UserContent::Text(text) => Some(DaemonMessage::UserInputEcho(text.text.clone())),
+            UserContent::Text(text) => Some(DaemonMessage::UserInputEcho {
+                thread_id,
+                text: text.text.clone(),
+            }),
             UserContent::ToolResult(res) => {
                 if let ToolResultContent::Text(t) = res.content.first() {
                     let display_as = store.get_display_as(tid, &res.id);
                     Some(DaemonMessage::ToolResult {
                         text: t.to_string(),
                         display_as,
-                        prefix: None,
+                        thread_id,
                     })
                 } else {
                     None
@@ -93,13 +110,13 @@ pub(crate) fn history_message_to_daemon(
         },
         Message::Assistant { content, .. } => match content.first() {
             AssistantContent::Text(text) => Some(DaemonMessage::TextChunk {
-                prefix: None,
+                thread_id,
                 chunk: text.text.clone(),
             }),
             AssistantContent::ToolCall(call) => Some(DaemonMessage::ToolCall {
                 name: call.function.name.clone(),
                 args: call.function.arguments.to_string(),
-                prefix: None,
+                thread_id,
                 display_as: None,
             }),
             _ => None,

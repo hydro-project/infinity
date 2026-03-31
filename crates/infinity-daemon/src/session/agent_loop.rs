@@ -1,25 +1,26 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use infinity_agent_core::batch_processor::DisplayEvent;
-use infinity_agent_core::message::InputMessage;
 use infinity_agent_core::tools::Tool;
-use infinity_protocol::DaemonMessage;
-use rig::completion::{CompletionModel, GetTokenUsage};
+use rig::completion::CompletionModel;
 use tokio::sync::mpsc;
 
-use super::display::display_event_to_daemon;
-use super::thread_worker::thread_worker;
-use super::{ActiveWorkers, ClientTxHandle, SessionStoreHandle};
+use super::thread_worker::{SubscribeRequest, thread_worker};
+use super::{AgentMessage, SessionStoreHandle, SubscriberMap};
 use crate::memory_store::{InMemoryConversationStore, InMemoryMessageSender, InMemoryStateStore};
 use crate::rap_tools;
-use crate::session_store;
+use crate::session::ActiveThreads;
+
+struct WorkerChannels {
+    input_tx: mpsc::UnboundedSender<(infinity_agent_core::message::InputMessage, String)>,
+    subscribe_tx: mpsc::UnboundedSender<SubscribeRequest>,
+}
 
 #[expect(clippy::too_many_arguments)]
 pub async fn agent_loop<Mdl>(
     session_id: String,
     session_store: SessionStoreHandle,
-    mut rx: mpsc::UnboundedReceiver<(InputMessage, String)>,
+    mut rx: mpsc::UnboundedReceiver<AgentMessage>,
     model: Arc<Mdl>,
     conversation_store: InMemoryConversationStore,
     state_store: InMemoryStateStore,
@@ -30,86 +31,66 @@ pub async fn agent_loop<Mdl>(
     rap_notifier: Option<rap_client::notifier::RapNotifier<rap_tools::SimpleHttpClient>>,
     additional_request_params: Arc<std::sync::RwLock<Option<serde_json::Value>>>,
     active_model_id: Arc<std::sync::RwLock<Option<String>>>,
-    client_tx_handle: ClientTxHandle,
-    active_workers: ActiveWorkers,
+    subscriber_map: SubscriberMap,
+    active_threads: ActiveThreads,
     idle_tx: mpsc::UnboundedSender<()>,
     context_window: usize,
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
-    let (display_tx, mut display_rx) =
-        mpsc::unbounded_channel::<DisplayEvent<Mdl::StreamingResponse>>();
+    let mut workers: HashMap<String, WorkerChannels> = HashMap::new();
 
-    let bridge_handle = client_tx_handle.clone();
-    let bridge_session_id = session_id.clone();
-    let bridge_session_store = session_store.clone();
-    tokio::task::spawn_local(async move {
-        while let Some(evt) = display_rx.recv().await {
-            if let DisplayEvent::ResponseDone(ref prefix, ref r) = evt
-                && prefix.is_none()
-                && let Some(r) = r
-            {
-                let tokens = r.token_usage().map_or(0, |u| u.total_tokens as usize);
-                let mut store = bridge_session_store.lock().await;
-                store.update(&bridge_session_id, tokens, None);
-                let _ = store.save();
-            }
+    while let Some(msg) = rx.recv().await {
+        let thread_id = match &msg {
+            AgentMessage::Input(input, _) => input.group_id.clone(),
+            AgentMessage::Subscribe { thread_id, .. } => thread_id.clone(),
+        };
 
-            if let DisplayEvent::UserChoiceRequired {
-                ref id,
-                ref prompt,
-                ref choices,
-                ref default,
-                ref response_url,
-            } = evt
-            {
-                let dm = DaemonMessage::UserChoiceRequired {
-                    id: id.clone(),
-                    prompt: prompt.clone(),
-                    choices: choices.clone(),
-                    default: *default,
-                };
-                let mut store = bridge_session_store.lock().await;
-                if let Some(entry) = store.sessions.get_mut(&bridge_session_id) {
-                    entry.pending_choices.push(session_store::PendingChoice {
-                        id: id.clone(),
-                        message: dm,
-                        response_url: response_url.clone(),
-                    });
-                    store.notify(&session_id);
+        // Check if worker is alive.
+        if let Some(w) = workers.get(&thread_id) {
+            if !w.input_tx.is_closed() {
+                match msg {
+                    AgentMessage::Input(input, id) => {
+                        let _ = w.input_tx.send((input, id));
+                    }
+                    AgentMessage::Subscribe { request, .. } => {
+                        tracing::debug!("Worker is already alive, sending subscribe request");
+                        let _ = w.subscribe_tx.send(request);
+                        // TODO(shadaj): also subscribe to alive children
+                    }
                 }
-            }
-
-            if let Some(dm) = display_event_to_daemon(evt) {
-                let guard = bridge_handle.lock().unwrap();
-                if let Some(ref tx) = *guard {
-                    let _ = tx.send(dm);
-                }
-            }
-        }
-    });
-
-    let mut thread_txs: HashMap<String, mpsc::UnboundedSender<(InputMessage, String)>> =
-        HashMap::new();
-
-    while let Some((input_msg, message_id)) = rx.recv().await {
-        let group_id = input_msg.group_id.clone();
-
-        if let Some(tx) = thread_txs.get(&group_id) {
-            if tx.send((input_msg.clone(), message_id.clone())).is_ok() {
                 continue;
             }
-            thread_txs.remove(&group_id);
+            workers.remove(&thread_id);
         }
 
-        let (tx, worker_rx) = mpsc::unbounded_channel();
-        let aw = active_workers.clone();
-        let gid = group_id.clone();
-        let itx = idle_tx.clone();
+        // Spawn a new worker.
+        let parent_subs = {
+            let parent_id = conversation_store.get_thread_parent_id(&thread_id);
+            let smap = subscriber_map.lock().unwrap();
+            let source = parent_id.as_deref().unwrap_or(&thread_id);
+            smap.get(source)
+                .map(|arc| arc.lock().unwrap().clone())
+                .unwrap_or_default()
+        };
+        let (input_tx, input_rx) = mpsc::unbounded_channel();
+        let (subscribe_tx, subscribe_rx) = mpsc::unbounded_channel();
+
+        let subscribers = subscriber_map
+            .lock()
+            .unwrap()
+            .entry(thread_id.clone())
+            .or_insert_with(|| Arc::new(std::sync::Mutex::new(parent_subs)))
+            .clone();
+
         tokio::task::spawn_local(thread_worker(
-            gid,
-            worker_rx,
-            display_tx.clone(),
+            thread_id.clone(),
+            input_rx,
+            subscribe_rx,
+            active_threads.clone(),
+            subscribers,
+            session_store.clone(),
+            session_id.clone(),
             model.clone(),
             conversation_store.clone(),
             state_store.clone(),
@@ -120,23 +101,37 @@ pub async fn agent_loop<Mdl>(
             rap_notifier.clone(),
             additional_request_params.clone(),
             active_model_id.clone(),
-            aw,
-            itx,
+            idle_tx.clone(),
             context_window,
         ));
-        let _ = tx.send((input_msg, message_id));
-        thread_txs.insert(group_id, tx);
+
+        match msg {
+            AgentMessage::Input(input, id) => {
+                let _ = input_tx.send((input, id));
+            }
+            AgentMessage::Subscribe { request, .. } => {
+                let _ = subscribe_tx.send(request);
+            }
+        }
+        workers.insert(
+            thread_id,
+            WorkerChannels {
+                input_tx,
+                subscribe_tx,
+            },
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
-    use infinity_agent_core::message::InputMessageContent;
+    use infinity_agent_core::message::{InputMessage, InputMessageContent};
     use infinity_agent_core::traits::ConversationStore;
     use rig::message::UserContent;
     use rig_mock::mock_model;
-    use std::collections::HashSet;
 
     fn tmp_stores() -> (
         InMemoryConversationStore,
@@ -149,8 +144,8 @@ mod tests {
         (conv, state, dir)
     }
 
-    fn user_text_input(group_id: &str, text: &str) -> (InputMessage, String) {
-        (
+    fn user_text_input(group_id: &str, text: &str) -> AgentMessage {
+        AgentMessage::Input(
             InputMessage {
                 content: InputMessageContent::User(UserContent::text(text)),
                 group_id: group_id.into(),
@@ -169,15 +164,24 @@ mod tests {
         state: InMemoryStateStore,
         model: rig_mock::MockCompletionModel,
     ) -> (
-        mpsc::UnboundedSender<(InputMessage, String)>,
+        mpsc::UnboundedSender<AgentMessage>,
         mpsc::UnboundedReceiver<()>,
-        ActiveWorkers,
+        ActiveThreads,
     ) {
-        let (input_tx, input_rx) = mpsc::unbounded_channel();
+        let (agent_tx, agent_rx) = mpsc::unbounded_channel();
         let (idle_tx, idle_rx) = mpsc::unbounded_channel();
-        let active_workers: ActiveWorkers = Arc::new(std::sync::Mutex::new(HashSet::new()));
-        let sender = InMemoryMessageSender::new(input_tx.clone());
-        let client_tx_handle: ClientTxHandle = Arc::new(std::sync::Mutex::new(None));
+        let (input_tx, mut input_adapter_rx) = mpsc::unbounded_channel::<(InputMessage, String)>();
+        let agent_tx_clone = agent_tx.clone();
+        tokio::task::spawn_local(async move {
+            while let Some((msg, id)) = input_adapter_rx.recv().await {
+                if agent_tx_clone.send(AgentMessage::Input(msg, id)).is_err() {
+                    break;
+                }
+            }
+        });
+        let sender = InMemoryMessageSender::new(input_tx);
+        let subscriber_map: SubscriberMap = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let active_threads = Arc::new(std::sync::Mutex::new(HashSet::new()));
 
         let (change_tx, _) = mpsc::unbounded_channel();
         let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -185,11 +189,10 @@ mod tests {
             crate::session_store::SessionStore::load(&tmp.path().to_string_lossy(), change_tx),
         ));
 
-        let aw = active_workers.clone();
         tokio::task::spawn_local(agent_loop(
             session_id.into(),
             session_store,
-            input_rx,
+            agent_rx,
             Arc::new(model),
             conv,
             state,
@@ -200,13 +203,13 @@ mod tests {
             None,
             Arc::new(std::sync::RwLock::new(None)),
             Arc::new(std::sync::RwLock::new(None)),
-            client_tx_handle,
-            aw,
+            subscriber_map.clone(),
+            active_threads.clone(),
             idle_tx,
             0,
         ));
 
-        (input_tx, idle_rx, active_workers)
+        (agent_tx, idle_rx, active_threads)
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -230,7 +233,7 @@ mod tests {
                     .await
                     .expect("root should idle");
 
-                tx.send((
+                tx.send(AgentMessage::Input(
                     InputMessage {
                         content: InputMessageContent::User(UserContent::text("hello child")),
                         group_id: child_id.clone(),

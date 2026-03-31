@@ -1,17 +1,28 @@
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use infinity_agent_core::batch_processor::DisplayEvent;
 use infinity_agent_core::event_processor;
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
 use infinity_agent_core::tools::{Tool, ToolContext};
+use infinity_protocol::DaemonMessage;
 use rig::completion::CompletionModel;
 use rig::message::UserContent;
 use tokio::sync::{mpsc, oneshot};
 
-use super::ActiveWorkers;
+use super::SessionStoreHandle;
+use super::display::{display_event_to_daemon, history_message_to_daemon};
 use crate::memory_store::{InMemoryConversationStore, InMemoryMessageSender, InMemoryStateStore};
 use crate::rap_tools;
+use crate::session::ActiveThreads;
+use crate::session_store;
 use infinity_agent_core::traits::StateStore;
+
+/// Shared subscriber list for a thread worker.
+pub type ThreadSubscribers = Arc<std::sync::Mutex<Vec<mpsc::UnboundedSender<DaemonMessage>>>>;
+
+/// Subscribe request: (client_tx, want_replay).
+pub type SubscribeRequest = (mpsc::UnboundedSender<DaemonMessage>, bool);
 
 pub fn is_user_text_input(msg: &InputMessage) -> bool {
     msg.synthetic.is_none()
@@ -25,7 +36,11 @@ pub fn is_user_text_input(msg: &InputMessage) -> bool {
 pub async fn thread_worker<Mdl>(
     active_group_id: String,
     mut rx: mpsc::UnboundedReceiver<(InputMessage, String)>,
-    display_tx: mpsc::UnboundedSender<DisplayEvent<Mdl::StreamingResponse>>,
+    subscribe_rx: mpsc::UnboundedReceiver<SubscribeRequest>,
+    active_threads: ActiveThreads,
+    subscribers: ThreadSubscribers,
+    session_store: SessionStoreHandle,
+    root_session_id: String,
     model: Arc<Mdl>,
     conversation_store: InMemoryConversationStore,
     state_store: InMemoryStateStore,
@@ -36,24 +51,78 @@ pub async fn thread_worker<Mdl>(
     rap_notifier: Option<rap_client::notifier::RapNotifier<rap_tools::SimpleHttpClient>>,
     additional_request_params: Arc<std::sync::RwLock<Option<serde_json::Value>>>,
     active_model_id: Arc<std::sync::RwLock<Option<String>>>,
-    active_workers: ActiveWorkers,
     idle_tx: mpsc::UnboundedSender<()>,
     context_window: usize,
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
-    active_workers
+    let held_subscribe_rx = RefCell::new(subscribe_rx);
+    active_threads
         .lock()
         .unwrap()
         .insert(active_group_id.clone());
-
     let _guard = WorkerGuard {
-        active_workers: active_workers.clone(),
-        group_id: active_group_id.clone(),
+        active_group_id: active_group_id.clone(),
+        active_threads,
         idle_tx,
     };
 
-    let current_history = std::cell::RefCell::new(
+    // Create a local display channel; a forwarding task converts events and broadcasts to subscribers.
+    let (display_tx, mut display_fwd_rx) =
+        mpsc::unbounded_channel::<DisplayEvent<Mdl::StreamingResponse>>();
+    let fwd_group_id = active_group_id.clone();
+    let fwd_subscribers = subscribers.clone();
+    let fwd_session_store = session_store.clone();
+    let fwd_root_session_id = root_session_id.clone();
+    tokio::task::spawn_local(async move {
+        while let Some(evt) = display_fwd_rx.recv().await {
+            // Update token usage for root thread responses.
+            if let DisplayEvent::ResponseDone(ref r) = evt
+                && fwd_group_id == fwd_root_session_id
+                && let Some(r) = r
+            {
+                use rig::completion::GetTokenUsage;
+                let tokens = r.token_usage().map_or(0, |u| u.total_tokens as usize);
+                let mut store = fwd_session_store.lock().await;
+                store.update(&fwd_root_session_id, tokens, None);
+                let _ = store.save();
+            }
+
+            // Store pending choices.
+            if let DisplayEvent::UserChoiceRequired {
+                ref id,
+                ref prompt,
+                ref choices,
+                ref default,
+                ref response_url,
+            } = evt
+            {
+                let dm = DaemonMessage::UserChoiceRequired {
+                    thread_id: Some(fwd_group_id.clone()),
+                    id: id.clone(),
+                    prompt: prompt.clone(),
+                    choices: choices.clone(),
+                    default: *default,
+                };
+                let mut store = fwd_session_store.lock().await;
+                if let Some(entry) = store.sessions.get_mut(&fwd_root_session_id) {
+                    entry.pending_choices.push(session_store::PendingChoice {
+                        id: id.clone(),
+                        message: dm,
+                        response_url: response_url.clone(),
+                    });
+                    store.notify(&fwd_root_session_id);
+                }
+            }
+
+            if let Some(dm) = display_event_to_daemon(&fwd_group_id, evt) {
+                let mut subs = fwd_subscribers.lock().unwrap();
+                subs.retain(|tx| tx.send(dm.clone()).is_ok());
+            }
+        }
+    });
+
+    let current_history = RefCell::new(
         match event_processor::HistoryManager::new_with_history(
             conversation_store.clone(),
             state_store.clone(),
@@ -100,6 +169,39 @@ pub async fn thread_worker<Mdl>(
     let mut completion_fut = None;
     let mut completion_cancel_tx: Option<oneshot::Sender<()>> = None;
 
+    let handle_subscribe = async |tx: mpsc::UnboundedSender<DaemonMessage>, want_replay: bool| {
+        if want_replay {
+            let history: Vec<DaemonMessage> = {
+                let hist = current_history.borrow();
+                hist.history
+                    .iter()
+                    .filter_map(|m| {
+                        history_message_to_daemon(m, &active_group_id, &conversation_store)
+                    })
+                    .collect()
+            };
+            let store = session_store.lock().await;
+            let choices: Vec<DaemonMessage> = store
+                .sessions
+                .get(&root_session_id)
+                .map(|e| {
+                    e.pending_choices
+                        .iter()
+                        .map(|c| c.message.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            drop(store);
+            if !history.is_empty() || !choices.is_empty() {
+                let _ = tx.send(DaemonMessage::Replay {
+                    history,
+                    pending_choices: choices,
+                });
+            }
+        }
+        subscribers.lock().unwrap().push(tx);
+    };
+
     loop {
         let inputs_before_pending = if let Some(mut_fut) = completion_fut.as_mut() {
             tokio::select! {
@@ -133,9 +235,7 @@ pub async fn thread_worker<Mdl>(
                     continue;
                 },
                 first = rx.recv() => {
-                    let Some(first) = first else {
-                        return;
-                    };
+                    let Some(first) = first else { return };
                     let mut batch = vec![first];
                     while let Ok(item) = rx.try_recv() {
                         batch.push(item);
@@ -163,7 +263,15 @@ pub async fn thread_worker<Mdl>(
                         pending_non_interrupt_items.extend(batch);
                         continue;
                     }
-                }
+                },
+                // cannot handle subscribe here because the RefCell is borrowed across await
+                // instead we use the callback to handle them
+                // req = subscribe_rx.recv() => {
+                //     if let Some((tx, want_replay)) = req {
+                //         handle_subscribe(tx, want_replay).await;
+                //     }
+                //     continue;
+                // }
             }
         } else {
             let mut batch = vec![];
@@ -188,6 +296,11 @@ pub async fn thread_worker<Mdl>(
                         .map(|s| !s.is_empty())
                         .unwrap_or(false);
 
+                    while let Ok((tx, want_replay)) = held_subscribe_rx.borrow_mut().try_recv() {
+                        // handle replays before idling
+                        handle_subscribe(tx, want_replay).await;
+                    }
+
                     if !last_is_tool_call && !has_subs {
                         tracing::info!("Thread {} going to idle", &active_group_id);
                         return;
@@ -197,7 +310,20 @@ pub async fn thread_worker<Mdl>(
                 };
 
                 if first.is_none() {
-                    first = rx.recv().await;
+                    let mut subscribe_rx = held_subscribe_rx.borrow_mut();
+                    loop {
+                        tokio::select! {
+                            msg = rx.recv() => {
+                                first = msg;
+                                break;
+                            }
+                            req = subscribe_rx.recv() => {
+                                if let Some((tx, want_replay)) = req {
+                                    handle_subscribe(tx, want_replay).await;
+                                }
+                            }
+                        }
+                    }
                 }
                 let Some(first) = first else {
                     return;
@@ -238,9 +364,15 @@ pub async fn thread_worker<Mdl>(
         let params = additional_request_params.read().unwrap().clone();
         let mid = active_model_id.read().unwrap().clone();
 
+        let held_subscribe_rx_ref = &held_subscribe_rx;
         let result = infinity_agent_core::batch_processor::process_batch(
             all_inputs.into_iter(),
             &current_history,
+            async move |_h| {
+                if let Ok((tx, want_replay)) = held_subscribe_rx_ref.borrow_mut().try_recv() {
+                    handle_subscribe(tx, want_replay).await;
+                }
+            },
             &conversation_store,
             &display_tx,
             &active_group_id,
@@ -265,16 +397,16 @@ pub async fn thread_worker<Mdl>(
 }
 
 struct WorkerGuard {
-    active_workers: ActiveWorkers,
-    group_id: String,
+    active_group_id: String,
+    active_threads: ActiveThreads,
     idle_tx: mpsc::UnboundedSender<()>,
 }
 
 impl Drop for WorkerGuard {
     fn drop(&mut self) {
-        let mut set = self.active_workers.lock().unwrap();
-        set.remove(&self.group_id);
-        if set.is_empty() {
+        let mut threads = self.active_threads.lock().unwrap();
+        threads.remove(&self.active_group_id);
+        if threads.is_empty() {
             let _ = self.idle_tx.send(());
         }
     }
@@ -283,10 +415,8 @@ impl Drop for WorkerGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use infinity_agent_core::batch_processor::DisplayEvent;
     use infinity_agent_core::traits::InputSender;
-    use rig_mock::{MockStreamingResponse, mock_model};
-    use std::collections::HashSet;
+    use rig_mock::mock_model;
 
     fn tmp_stores() -> (
         InMemoryConversationStore,
@@ -343,19 +473,32 @@ mod tests {
         tools: Vec<Box<dyn Tool<InMemoryMessageSender>>>,
     ) -> (
         mpsc::UnboundedSender<(InputMessage, String)>,
-        mpsc::UnboundedReceiver<DisplayEvent<MockStreamingResponse>>,
+        mpsc::UnboundedReceiver<DaemonMessage>,
         mpsc::UnboundedReceiver<()>,
-        ActiveWorkers,
+        ActiveThreads,
     ) {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
-        let (display_tx, display_rx) = mpsc::unbounded_channel();
+        let (client_tx, client_rx) = mpsc::unbounded_channel();
         let (idle_tx, idle_rx) = mpsc::unbounded_channel();
-        let active_workers: ActiveWorkers = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let (_subscribe_tx, subscribe_rx) = mpsc::unbounded_channel();
+        let active_threads: ActiveThreads =
+            Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         let sender = InMemoryMessageSender::new(input_tx.clone());
+        let subscribers: ThreadSubscribers = Arc::new(std::sync::Mutex::new(vec![client_tx]));
+
+        let (change_tx, _change_rx) = mpsc::unbounded_channel();
+        let session_store: SessionStoreHandle = Arc::new(tokio::sync::Mutex::new(
+            session_store::SessionStore::load("/dev/null", change_tx),
+        ));
+
         tokio::task::spawn_local(thread_worker(
             group_id.into(),
             input_rx,
-            display_tx,
+            subscribe_rx,
+            active_threads.clone(),
+            subscribers,
+            session_store,
+            group_id.into(),
             Arc::new(model),
             conv,
             state,
@@ -366,21 +509,18 @@ mod tests {
             None,
             Arc::new(std::sync::RwLock::new(None)),
             Arc::new(std::sync::RwLock::new(None)),
-            active_workers.clone(),
             idle_tx,
             0,
         ));
-        (input_tx, display_rx, idle_rx, active_workers)
+        (input_tx, client_rx, idle_rx, active_threads)
     }
 
-    async fn collect_until_done(
-        rx: &mut mpsc::UnboundedReceiver<DisplayEvent<MockStreamingResponse>>,
-    ) -> Vec<String> {
+    async fn collect_until_done(rx: &mut mpsc::UnboundedReceiver<DaemonMessage>) -> Vec<String> {
         let mut texts = Vec::new();
         loop {
             match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
-                Ok(Some(DisplayEvent::TextChunk { chunk, .. })) => texts.push(chunk),
-                Ok(Some(DisplayEvent::ResponseDone(..))) => break,
+                Ok(Some(DaemonMessage::TextChunk { chunk, .. })) => texts.push(chunk),
+                Ok(Some(DaemonMessage::ResponseDone { .. })) => break,
                 Ok(Some(_)) => {}
                 Ok(None) => break,
                 Err(_) => panic!("timed out waiting for ResponseDone"),
@@ -451,7 +591,7 @@ mod tests {
                     match tokio::time::timeout(std::time::Duration::from_secs(2), display_rx.recv())
                         .await
                     {
-                        Ok(Some(DisplayEvent::ResponseDone(..))) => break,
+                        Ok(Some(DaemonMessage::ResponseDone { .. })) => break,
                         Ok(Some(_)) => {}
                         _ => panic!("timed out"),
                     }
@@ -489,7 +629,7 @@ mod tests {
                     match tokio::time::timeout(std::time::Duration::from_secs(2), display_rx.recv())
                         .await
                     {
-                        Ok(Some(DisplayEvent::TextChunk { .. })) => break,
+                        Ok(Some(DaemonMessage::TextChunk { .. })) => break,
                         Ok(Some(_)) => {}
                         _ => panic!("timed out"),
                     }
@@ -499,7 +639,7 @@ mod tests {
                     match tokio::time::timeout(std::time::Duration::from_secs(2), display_rx.recv())
                         .await
                     {
-                        Ok(Some(DisplayEvent::TextChunk { .. })) => break,
+                        Ok(Some(DaemonMessage::TextChunk { .. })) => break,
                         Ok(Some(_)) => {}
                         _ => panic!("timed out"),
                     }
@@ -562,7 +702,7 @@ mod tests {
                     match tokio::time::timeout(std::time::Duration::from_secs(2), display_rx.recv())
                         .await
                     {
-                        Ok(Some(DisplayEvent::ResponseDone(..))) => break,
+                        Ok(Some(DaemonMessage::ResponseDone { .. })) => break,
                         Ok(Some(_)) => {}
                         _ => panic!("timed out"),
                     }
@@ -575,7 +715,7 @@ mod tests {
                     match tokio::time::timeout(std::time::Duration::from_secs(2), display_rx.recv())
                         .await
                     {
-                        Ok(Some(DisplayEvent::TextChunk { .. })) => break,
+                        Ok(Some(DaemonMessage::TextChunk { .. })) => break,
                         Ok(Some(_)) => {}
                         _ => panic!("timed out"),
                     }
@@ -655,7 +795,7 @@ mod tests {
                     match tokio::time::timeout(std::time::Duration::from_secs(2), display_rx.recv())
                         .await
                     {
-                        Ok(Some(DisplayEvent::ResponseDone(..))) => break,
+                        Ok(Some(DaemonMessage::ResponseDone { .. })) => break,
                         Ok(Some(_)) => {}
                         _ => panic!("timed out"),
                     }
@@ -666,7 +806,7 @@ mod tests {
                     match tokio::time::timeout(std::time::Duration::from_secs(2), display_rx.recv())
                         .await
                     {
-                        Ok(Some(DisplayEvent::TextChunk { .. })) => break,
+                        Ok(Some(DaemonMessage::TextChunk { .. })) => break,
                         Ok(Some(_)) => {}
                         _ => panic!("timed out"),
                     }
@@ -769,7 +909,7 @@ mod tests {
                     match tokio::time::timeout(std::time::Duration::from_secs(2), display_rx.recv())
                         .await
                     {
-                        Ok(Some(DisplayEvent::ResponseDone(..))) => break,
+                        Ok(Some(DaemonMessage::ResponseDone { .. })) => break,
                         Ok(Some(_)) => {}
                         _ => panic!("timed out"),
                     }

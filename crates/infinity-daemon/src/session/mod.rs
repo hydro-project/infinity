@@ -24,46 +24,49 @@ use crate::rap_tools;
 use crate::session_store;
 use crate::set_title_tool;
 use crate::sleep_tools::{SleepTool, SleepUntilTool};
-use infinity_agent_core::traits::ConversationStore;
 
 pub mod agent_loop;
 pub mod display;
 pub mod thread_worker;
 
 pub use agent_loop::agent_loop;
-use display::history_message_to_daemon;
 pub use thread_worker::thread_worker;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// Shared handle to the currently-attached client sender for a session.
-/// The display bridge reads from this; attach/detach_client writes to it.
-pub type ClientTxHandle = Arc<std::sync::Mutex<Option<mpsc::UnboundedSender<DaemonMessage>>>>;
+/// Re-export from thread_worker.
+pub use thread_worker::{SubscribeRequest, ThreadSubscribers};
 
-/// Tracks which thread group_ids have a running worker task.
-pub type ActiveWorkers = Arc<std::sync::Mutex<HashSet<String>>>;
+/// Message sent to the agent loop — either user input or a subscribe request.
+pub enum AgentMessage {
+    Input(InputMessage, String),
+    Subscribe {
+        thread_id: String,
+        request: SubscribeRequest,
+    },
+}
+
+/// Maps thread_id → subscriber list (for inheriting to children and idle detection).
+pub type SubscriberMap = Arc<std::sync::Mutex<HashMap<String, ThreadSubscribers>>>;
+
+pub type ActiveThreads = Arc<std::sync::Mutex<HashSet<String>>>;
 
 /// A single agent session managed by the daemon.
 /// The session_id doubles as the root thread_id.
 pub struct Session {
     pub session_id: String,
     pub cwd: PathBuf,
-    pub client_tx_handle: ClientTxHandle,
-    pub input_tx: mpsc::UnboundedSender<(InputMessage, String)>,
+    pub active_threads: ActiveThreads,
+    pub agent_tx: mpsc::UnboundedSender<AgentMessage>,
     pub agent_task: JoinHandle<()>,
     pub total_tokens_used: usize,
     pub model_name: String,
     pub context_window: usize,
-    /// Set of group_ids with running thread workers. Empty means idle.
-    pub active_workers: ActiveWorkers,
     /// Send to signal the agent loop to shut down.
     pub shutdown_tx: Option<oneshot::Sender<()>>,
 }
 
 pub type SessionStoreHandle = Arc<tokio::sync::Mutex<session_store::SessionStore>>;
-
-/// Shared map of session_id → ActiveWorkers for determining session status.
-pub type SessionWorkersMap = Arc<std::sync::Mutex<HashMap<String, ActiveWorkers>>>;
 
 /// Manages all active sessions.
 pub struct SessionManager {
@@ -80,10 +83,6 @@ pub struct SessionManager {
     broadcast_clients: Arc<std::sync::Mutex<Vec<mpsc::UnboundedSender<DaemonMessage>>>>,
 }
 
-/// Shared routing table for callback messages.
-pub type RouteMap =
-    Arc<std::sync::Mutex<HashMap<String, mpsc::UnboundedSender<(InputMessage, String)>>>>;
-
 impl SessionManager {
     pub async fn new(
         state_dir: std::path::PathBuf,
@@ -92,6 +91,7 @@ impl SessionManager {
         std::fs::create_dir_all(&state_dir).ok();
         let sessions_path = state_dir.join("sessions.json");
         let (change_tx, mut change_rx) = mpsc::unbounded_channel::<String>();
+        let change_tx_for_conv = change_tx.clone();
         let session_store = Arc::new(tokio::sync::Mutex::new(session_store::SessionStore::load(
             &sessions_path.to_string_lossy(),
             change_tx,
@@ -99,19 +99,30 @@ impl SessionManager {
         let broadcast_clients: Arc<std::sync::Mutex<Vec<mpsc::UnboundedSender<DaemonMessage>>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
 
+        let threads_dir = state_dir.join("threads");
+        std::fs::create_dir_all(&threads_dir).ok();
+        let mut conversation_store = InMemoryConversationStore::new_with_dir(&threads_dir);
+        conversation_store.set_change_tx(change_tx_for_conv);
+        let state_store = InMemoryStateStore::new(state_dir.join("state"));
+
         // Task: listen for session store changes and broadcast to clients
         let bc = broadcast_clients.clone();
         let ss = session_store.clone();
+        let cs = conversation_store.clone();
         tokio::task::spawn_local(async move {
             while let Some(session_id) = change_rx.recv().await {
                 let store = ss.lock().await;
                 let info = match store.sessions.get(&session_id) {
-                    Some(e) => SessionInfo {
-                        title: e.title.clone(),
-                        last_updated: e.last_updated.clone(),
-                        total_tokens_used: e.total_tokens_used,
-                        status: e.status(),
-                    },
+                    Some(e) => {
+                        let threads = cs.get_open_subthreads(&session_id);
+                        SessionInfo {
+                            title: e.title.clone(),
+                            last_updated: e.last_updated.clone(),
+                            total_tokens_used: e.total_tokens_used,
+                            status: e.status(),
+                            threads,
+                        }
+                    }
                     None => continue,
                 };
                 drop(store);
@@ -121,11 +132,6 @@ impl SessionManager {
                 bc.lock().unwrap().retain(|tx| tx.send(msg.clone()).is_ok());
             }
         });
-
-        let threads_dir = state_dir.join("threads");
-        std::fs::create_dir_all(&threads_dir).ok();
-        let conversation_store = InMemoryConversationStore::new_with_dir(&threads_dir);
-        let state_store = InMemoryStateStore::new(state_dir.join("state"));
 
         // Detect model provider
         let provider = model_picker::BedrockProvider;
@@ -154,7 +160,6 @@ impl SessionManager {
     pub async fn create_session(
         &mut self,
         cwd: &Path,
-        client_tx: mpsc::UnboundedSender<DaemonMessage>,
         emit: &mut impl AsyncFnMut(DaemonMessage),
     ) -> Result<String, BoxError> {
         let session_id = uuid::Uuid::new_v4().to_string();
@@ -164,19 +169,14 @@ impl SessionManager {
             let _ = store.save();
         }
         emit(self.build_connected(&session_id).await).await;
-        self.start_session(session_id.clone(), cwd, client_tx, emit)
-            .await?;
+        self.start_session(session_id.clone(), cwd, emit).await?;
         Ok(session_id)
     }
 
     /// Resume a persisted session, recovering its cwd from the session store.
-    /// If the session was previously shut down, this only sends the Connected
-    /// message and replays history — the agent loop is NOT started until user
-    /// input arrives via `send_input`.
     pub async fn resume_session(
         &mut self,
         session_id: &str,
-        client_tx: mpsc::UnboundedSender<DaemonMessage>,
         emit: &mut impl AsyncFnMut(DaemonMessage),
     ) -> Result<(), BoxError> {
         emit(self.build_connected(session_id).await).await;
@@ -188,53 +188,13 @@ impl SessionManager {
             .is_some_and(|s| !s.agent_task.is_finished());
 
         if is_alive {
+            tracing::debug!("Session is already alive");
             return Ok(());
         }
 
-        // Session not alive — check if shut down or idle-cleaned.
-        let store = self.session_store.lock().await;
-        let is_stopped = store.is_shut_down(session_id) || store.is_idle_cleaned(session_id);
-        drop(store);
-        if is_stopped {
-            self.send_replay(session_id, &client_tx).await;
-            Ok(())
-        } else {
-            let cwd = self.session_store.lock().await.get_cwd(session_id).clone();
-            self.start_session(session_id.to_string(), &cwd, client_tx, emit)
-                .await
-        }
-    }
-
-    /// Send history replay to a client, including any pending choices from the store.
-    async fn send_replay(&self, session_id: &str, tx: &mpsc::UnboundedSender<DaemonMessage>) {
-        if let Ok((history, _)) = self
-            .conversation_store
-            .load_history_with_ancestors(session_id)
-            .await
-        {
-            let history: Vec<DaemonMessage> = history
-                .iter()
-                .filter_map(|m| history_message_to_daemon(m, session_id, &self.conversation_store))
-                .collect();
-            let store = self.session_store.lock().await;
-            let choices: Vec<DaemonMessage> = store
-                .sessions
-                .get(session_id)
-                .map(|e| {
-                    e.pending_choices
-                        .iter()
-                        .map(|c| c.message.clone())
-                        .collect()
-                })
-                .unwrap_or_default();
-            drop(store);
-            if !history.is_empty() || !choices.is_empty() {
-                let _ = tx.send(DaemonMessage::Replay {
-                    history,
-                    pending_choices: choices,
-                });
-            }
-        }
+        let cwd = self.session_store.lock().await.get_cwd(session_id).clone();
+        self.session_store.lock().await.clear_shut_down(session_id);
+        self.start_session(session_id.to_string(), &cwd, emit).await
     }
 
     async fn build_connected(&self, session_id: &str) -> DaemonMessage {
@@ -250,21 +210,33 @@ impl SessionManager {
     }
 
     /// Internal: spin up the agent loop for a session.
-    /// If `client_tx` is provided, it's attached immediately so info events flow during setup.
     async fn start_session(
         &mut self,
         session_id: String,
         cwd: &Path,
-        client_tx: mpsc::UnboundedSender<DaemonMessage>,
         emit: &mut impl AsyncFnMut(DaemonMessage),
     ) -> Result<(), BoxError> {
         if self.sessions.contains_key(&session_id) {
             return Ok(());
         }
 
-        let client_tx_handle: ClientTxHandle = Arc::new(std::sync::Mutex::new(Some(client_tx)));
+        let active_threads = Arc::new(std::sync::Mutex::new(HashSet::new()));
 
-        let (input_tx, input_rx) = mpsc::unbounded_channel::<(InputMessage, String)>();
+        let (agent_tx, agent_rx) = mpsc::unbounded_channel::<AgentMessage>();
+        // Adapter: InMemoryMessageSender needs a (InputMessage, String) sender.
+        // Create one that wraps into AgentMessage::Input.
+        let (input_tx, mut input_adapter_rx) = mpsc::unbounded_channel::<(InputMessage, String)>();
+        let agent_tx_for_adapter = agent_tx.clone();
+        tokio::task::spawn_local(async move {
+            while let Some((msg, id)) = input_adapter_rx.recv().await {
+                if agent_tx_for_adapter
+                    .send(AgentMessage::Input(msg, id))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
         let sender = InMemoryMessageSender::new(input_tx.clone());
 
         // Load RAP config
@@ -281,10 +253,21 @@ impl SessionManager {
         });
         tracing::debug!(?local_config, ?user_config);
 
+        // Helper to build Info/Error messages with the session's thread_id.
+        let sid = session_id.clone();
+        let info = |text: String| DaemonMessage::Info {
+            thread_id: Some(sid.clone()),
+            text,
+        };
+        let error = |text: String| DaemonMessage::Error {
+            thread_id: Some(sid.clone()),
+            text,
+        };
+
         let local_config = match local_config {
             Ok(config) => config,
             Err(e) => {
-                emit(DaemonMessage::Error(format!(
+                emit(error(format!(
                     "Failed to load local RAP config {}: {e}",
                     cwd_rap.display(),
                 )))
@@ -295,7 +278,7 @@ impl SessionManager {
         let user_config = match user_config {
             Ok(config) => config,
             Err(e) => {
-                emit(DaemonMessage::Error(format!(
+                emit(error(format!(
                     "Failed to load user RAP config {:?}: {e}",
                     config::user_config_path()
                 )))
@@ -320,25 +303,22 @@ impl SessionManager {
             }
         };
         // Notify user about configuration discovery.
-        emit(DaemonMessage::Info(msg.to_string())).await;
+        emit(info(msg.to_string())).await;
 
         // Spawn servers and load tools
         let mut spawned_servers = Vec::new();
         let mut urls = config.toolset_server_urls();
 
         for cmd in config.toolset_commands() {
-            emit(DaemonMessage::Info(format!("Launching RAP server: {cmd}"))).await;
+            emit(info(format!("Launching RAP server: {cmd}"))).await;
             match spawn_rap_server(&cmd, cwd).await {
                 Ok((child, port)) => {
-                    emit(DaemonMessage::Info(format!(
-                        "RAP server ready on port {port}"
-                    )))
-                    .await;
+                    emit(info(format!("RAP server ready on port {port}"))).await;
                     urls.push(format!("http://127.0.0.1:{port}"));
                     spawned_servers.push(child);
                 }
                 Err(e) => {
-                    emit(DaemonMessage::Info(format!(
+                    emit(info(format!(
                         "Warning: failed to launch RAP server '{cmd}': {e}"
                     )))
                     .await
@@ -346,20 +326,14 @@ impl SessionManager {
             }
         }
         for (name, cmd, env) in config.mcp_servers() {
-            emit(DaemonMessage::Info(format!(
-                "Starting MCP proxy for '{name}'"
-            )))
-            .await;
+            emit(info(format!("Starting MCP proxy for '{name}'"))).await;
             match mcp_proxy::start_mcp_proxy(name.clone(), cmd, env).await {
                 Ok(port) => {
-                    emit(DaemonMessage::Info(format!(
-                        "MCP proxy '{name}' ready on port {port}"
-                    )))
-                    .await;
+                    emit(info(format!("MCP proxy '{name}' ready on port {port}"))).await;
                     urls.push(format!("http://127.0.0.1:{port}"));
                 }
                 Err(e) => {
-                    emit(DaemonMessage::Info(format!(
+                    emit(info(format!(
                         "Warning: failed to start MCP proxy '{name}': {e}"
                     )))
                     .await
@@ -367,20 +341,17 @@ impl SessionManager {
             }
         }
         for (name, mcp_url, headers) in config.http_mcp_servers() {
-            emit(DaemonMessage::Info(format!(
-                "Starting HTTP MCP proxy for '{name}'"
-            )))
-            .await;
+            emit(info(format!("Starting HTTP MCP proxy for '{name}'"))).await;
             match mcp_proxy::start_http_mcp_proxy(name.clone(), mcp_url, headers).await {
                 Ok(port) => {
-                    emit(DaemonMessage::Info(format!(
+                    emit(info(format!(
                         "HTTP MCP proxy '{name}' ready on port {port}"
                     )))
                     .await;
                     urls.push(format!("http://127.0.0.1:{port}"));
                 }
                 Err(e) => {
-                    emit(DaemonMessage::Info(format!(
+                    emit(info(format!(
                         "Warning: failed to start HTTP MCP proxy '{name}': {e}"
                     )))
                     .await
@@ -391,21 +362,14 @@ impl SessionManager {
         let rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>> = if !urls.is_empty() {
             match rap_tools::load_rap_tools(&urls).await {
                 Ok(tools) => {
-                    emit(DaemonMessage::Info(format!(
-                        "Loaded {} RAP tool(s)",
-                        tools.len()
-                    )))
-                    .await;
+                    emit(info(format!("Loaded {} RAP tool(s)", tools.len()))).await;
 
-                    emit(DaemonMessage::Info("".to_string())).await;
+                    emit(info(String::new())).await;
 
                     tools
                 }
                 Err(e) => {
-                    emit(DaemonMessage::Info(format!(
-                        "Warning: failed to load RAP tools: {e}"
-                    )))
-                    .await;
+                    emit(info(format!("Warning: failed to load RAP tools: {e}"))).await;
                     Vec::new()
                 }
             }
@@ -423,14 +387,12 @@ impl SessionManager {
 
         let state_store = self.state_store.clone();
 
-        let active_workers: ActiveWorkers = Arc::new(std::sync::Mutex::new(HashSet::new()));
-        let (idle_tx, idle_rx) = mpsc::unbounded_channel();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
         let (model_name, context_window, agent_handle) = self
             .start_agent_loop(
                 session_id.clone(),
-                input_rx,
+                agent_rx,
                 self.conversation_store.clone(),
                 state_store,
                 sender,
@@ -438,10 +400,7 @@ impl SessionManager {
                 rap_tools,
                 urls,
                 extra_system_prompt,
-                client_tx_handle.clone(),
-                active_workers.clone(),
-                idle_tx,
-                idle_rx,
+                active_threads.clone(),
                 shutdown_rx,
                 spawned_servers,
             )
@@ -450,40 +409,37 @@ impl SessionManager {
         let session = Session {
             session_id: session_id.clone(),
             cwd: cwd.to_path_buf(),
-            client_tx_handle,
-            input_tx,
+            active_threads,
+            agent_tx,
             agent_task: agent_handle,
             total_tokens_used: 0,
             model_name,
             context_window,
-            active_workers: active_workers.clone(),
             shutdown_tx: Some(shutdown_tx),
         };
         self.sessions.insert(session_id.clone(), session);
         Ok(())
     }
 
-    /// Attach a client's message sender to a session for receiving display events.
+    /// Attach a client's message sender to a thread for receiving display events.
+    /// Sends a subscribe request through the agent loop to the thread's worker.
+    /// The worker handles replay from its live HistoryManager.
+    /// Also subscribes to all open descendant threads.
     pub async fn attach_client(
         &mut self,
-        session_id: &str,
+        thread_id: &str,
         tx: mpsc::UnboundedSender<DaemonMessage>,
-    ) -> bool {
-        if !self.sessions.contains_key(session_id) {
-            return false;
-        }
-        self.send_replay(session_id, &tx).await;
-        if let Some(session) = self.sessions.get_mut(session_id) {
-            *session.client_tx_handle.lock().unwrap() = Some(tx);
-        }
-        true
-    }
+        wants_replay: bool,
+    ) {
+        let session_id = self.conversation_store.get_root_thread_id(thread_id);
+        let session = self.sessions.get(&session_id).unwrap();
+        let agent_tx = session.agent_tx.clone();
 
-    /// Detach the client from a session (session keeps running headless).
-    pub fn detach_client(&mut self, session_id: &str) {
-        if let Some(session) = self.sessions.get_mut(session_id) {
-            *session.client_tx_handle.lock().unwrap() = None;
-        }
+        // Subscribe to the target thread with replay.
+        let _ = agent_tx.send(AgentMessage::Subscribe {
+            thread_id: thread_id.to_string(),
+            request: (tx.clone(), wants_replay),
+        });
     }
 
     /// Send user input text to a session's agent loop.
@@ -510,7 +466,7 @@ impl SessionManager {
 
         // if client_tx is None, that means this is for a RAP callback, but if the agent was shut down or idled,
         // we should ignore the callback (the agent will not idle if any tool calls or subscriptions are active)
-        if needs_restart && let Some(client_tx) = client_tx {
+        if needs_restart && client_tx.is_some() {
             // Remove stale session if present.
             self.sessions.remove(session_id);
             {
@@ -519,19 +475,20 @@ impl SessionManager {
                 let _ = store.save();
             }
             let cwd = self.session_store.lock().await.get_cwd(session_id).clone();
-            if let Err(e) = self
-                .start_session(session_id.to_string(), &cwd, client_tx, emit)
-                .await
-            {
+            if let Err(e) = self.start_session(session_id.to_string(), &cwd, emit).await {
                 tracing::error!("failed to restart session: {e}");
                 return false;
+            }
+            // Re-attach client to the new session.
+            if let Some(tx) = client_tx {
+                self.attach_client(session_id, tx, false).await;
             }
         }
 
         if let Some(session) = self.sessions.get(session_id) {
             session
-                .input_tx
-                .send((
+                .agent_tx
+                .send(AgentMessage::Input(
                     msg.0,
                     msg.1.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                 ))
@@ -555,6 +512,7 @@ impl SessionManager {
             std::collections::HashMap::new();
 
         for (id, entry) in &store.sessions {
+            let threads = self.conversation_store.get_open_subthreads(id);
             result.insert(
                 id.clone(),
                 SessionInfo {
@@ -562,6 +520,7 @@ impl SessionManager {
                     last_updated: entry.last_updated.clone(),
                     total_tokens_used: entry.total_tokens_used,
                     status: entry.status(),
+                    threads,
                 },
             );
         }
@@ -599,7 +558,7 @@ impl SessionManager {
         match self.sessions.get(session_id) {
             Some(session) => {
                 session.agent_task.is_finished()
-                    || session.active_workers.lock().unwrap().is_empty()
+                    || session.active_threads.lock().unwrap().is_empty()
             }
             None => true,
         }
@@ -609,7 +568,7 @@ impl SessionManager {
     async fn start_agent_loop(
         &self,
         session_id: String,
-        input_rx: mpsc::UnboundedReceiver<(InputMessage, String)>,
+        agent_rx: mpsc::UnboundedReceiver<AgentMessage>,
         conversation_store: InMemoryConversationStore,
         state_store: InMemoryStateStore,
         sender: InMemoryMessageSender,
@@ -617,10 +576,7 @@ impl SessionManager {
         rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>>,
         tool_server_urls: Vec<String>,
         extra_system_prompt: Option<String>,
-        client_tx_handle: ClientTxHandle,
-        active_workers: ActiveWorkers,
-        idle_tx: mpsc::UnboundedSender<()>,
-        idle_rx: mpsc::UnboundedReceiver<()>,
+        active_threads: ActiveThreads,
         shutdown_rx: oneshot::Receiver<()>,
         spawned_servers: Vec<tokio::process::Child>,
     ) -> Result<(String, usize, JoinHandle<()>), BoxError> {
@@ -635,7 +591,7 @@ impl SessionManager {
             spawn_agent_loop(
                 session_id,
                 self.session_store.clone(),
-                input_rx,
+                agent_rx,
                 model,
                 conversation_store,
                 state_store,
@@ -645,10 +601,7 @@ impl SessionManager {
                 tool_server_urls,
                 extra_system_prompt,
                 default.additional_request_params.clone(),
-                client_tx_handle,
-                active_workers,
-                idle_tx,
-                idle_rx,
+                active_threads,
                 shutdown_rx,
                 spawned_servers,
                 context_window,
@@ -663,7 +616,7 @@ impl SessionManager {
 fn spawn_agent_loop<Mdl>(
     session_id: String,
     session_store: SessionStoreHandle,
-    input_rx: mpsc::UnboundedReceiver<(InputMessage, String)>,
+    agent_rx: mpsc::UnboundedReceiver<AgentMessage>,
     model: Mdl,
     conversation_store: InMemoryConversationStore,
     state_store: InMemoryStateStore,
@@ -673,10 +626,7 @@ fn spawn_agent_loop<Mdl>(
     tool_server_urls: Vec<String>,
     extra_system_prompt: Option<String>,
     additional_params: Option<serde_json::Value>,
-    client_tx_handle: ClientTxHandle,
-    active_workers: ActiveWorkers,
-    idle_tx: mpsc::UnboundedSender<()>,
-    idle_rx: mpsc::UnboundedReceiver<()>,
+    active_threads: ActiveThreads,
     shutdown_rx: oneshot::Receiver<()>,
     spawned_servers: Vec<tokio::process::Child>,
     context_window: usize,
@@ -722,6 +672,7 @@ where
         ),
         Box::new(set_title_tool::SetTitleTool {
             session_store: session_store.clone(),
+            conversation_store: conversation_store.clone(),
         }),
     ];
     tool_impls.extend(rap_tools);
@@ -729,11 +680,14 @@ where
     let tool_impls: Arc<Vec<Box<dyn Tool<InMemoryMessageSender>>>> = Arc::new(tool_impls);
     let model = Arc::new(model);
     let extra_system_prompt = Arc::new(extra_system_prompt);
+    let (idle_tx, idle_rx) = mpsc::unbounded_channel();
+
+    let subscriber_map = Arc::new(std::sync::Mutex::new(HashMap::new()));
 
     let agent_fut = agent_loop(
         session_id.clone(),
         session_store.clone(),
-        input_rx,
+        agent_rx,
         model,
         conversation_store,
         state_store,
@@ -744,8 +698,8 @@ where
         rap_notifier,
         additional_request_params,
         active_model_id,
-        client_tx_handle.clone(),
-        active_workers,
+        subscriber_map.clone(),
+        active_threads.clone(),
         idle_tx,
         context_window,
     );
@@ -754,7 +708,7 @@ where
         agent_fut,
         session_id,
         session_store,
-        client_tx_handle,
+        subscriber_map,
         idle_rx,
         shutdown_rx,
         spawned_servers,
@@ -764,13 +718,12 @@ where
 /// Wrapper that owns the RAP servers and handles cleanup.
 /// Runs agent_loop, selects on shutdown signal and idle notifications.
 /// When done, gracefully kills servers and marks the session store.
-#[expect(clippy::too_many_arguments)]
 #[tracing::instrument(skip_all, fields(session_id))]
 async fn session_wrapper(
     agent_fut: impl Future<Output = ()>,
     session_id: String,
     session_store: SessionStoreHandle,
-    client_tx_handle: ClientTxHandle,
+    subscriber_map: SubscriberMap,
     mut idle_rx: mpsc::UnboundedReceiver<()>,
     mut shutdown_rx: oneshot::Receiver<()>,
     mut spawned_servers: Vec<tokio::process::Child>,
@@ -782,10 +735,11 @@ async fn session_wrapper(
         tokio::select! {
             _ = &mut agent_fut => {
                 // agent_loop returned (rx closed). Wait for workers to drain.
-                while idle_rx.recv().await.is_some() {
-                    break;
-                }
-                idle_exited = client_tx_handle.lock().unwrap().is_none();
+                while idle_rx.try_recv().is_ok() {}
+                idle_exited = {
+                    let smap = subscriber_map.lock().unwrap();
+                    smap.values().all(|subs| subs.lock().unwrap().iter().all(|tx| tx.is_closed()))
+                };
                 break;
             }
             _ = &mut shutdown_rx => {
@@ -797,8 +751,12 @@ async fn session_wrapper(
                 break;
             }
             _ = idle_rx.recv() => {
-                // All workers idle. If no client attached, exit.
-                if client_tx_handle.lock().unwrap().is_none() {
+                // Some worker is idle. If no client attached, exit.
+                let has_clients = {
+                    let smap = subscriber_map.lock().unwrap();
+                    smap.values().any(|subs| subs.lock().unwrap().iter().any(|tx| !tx.is_closed()))
+                };
+                if !has_clients {
                     tracing::info!("Exiting agent {} due to idle", session_id);
                     idle_exited = true;
                     break;

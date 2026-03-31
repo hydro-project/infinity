@@ -384,10 +384,10 @@ fn thread_chain(invocation: &RapInvocation) -> Vec<String> {
 /// Check if write-orig is granted on any thread in the chain.
 async fn is_write_orig_granted<M: MetadataStore>(metadata: &M, chain: &[String]) -> bool {
     for id in chain {
-        if let Ok(Some(s)) = metadata.get(id).await {
-            if s.write_orig_granted {
-                return true;
-            }
+        if let Ok(Some(s)) = metadata.get(id).await
+            && s.write_orig_granted
+        {
+            return true;
         }
     }
     false
@@ -774,7 +774,7 @@ async fn handle_execute_command_streaming_inner<
             prompt_parts.push("the original repository directory".to_string());
         }
         for p in &unapproved_paths {
-            prompt_parts.push(format!("{p}"));
+            prompt_parts.push(p.to_string());
         }
         let prompt = format!("Allow writing to {}?", prompt_parts.join(", "));
 
@@ -1282,10 +1282,8 @@ async fn request_direct_write_approval<B: SandboxBackend, M: MetadataStore, C: C
             }
         }
         true
-    } else if selected == yes_once_idx {
-        true
     } else {
-        false
+        selected == yes_once_idx
     }
 }
 
@@ -1301,10 +1299,9 @@ async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
     if matches!(
         repo_state.as_ref().map(|s| &s.mode),
         Some(SandboxMode::Direct)
-    ) {
-        if !request_direct_write_approval(state, invocation, &args.path).await {
-            return Ok(("Error: file write denied by user.".to_string(), None));
-        }
+    ) && !request_direct_write_approval(state, invocation, &args.path).await
+    {
+        return Ok(("Error: file write denied by user.".to_string(), None));
     }
 
     with_sandbox(
@@ -1359,10 +1356,9 @@ async fn handle_create_file<B: SandboxBackend, M: MetadataStore, C: CallbackClie
     if matches!(
         repo_state.as_ref().map(|s| &s.mode),
         Some(SandboxMode::Direct)
-    ) {
-        if !request_direct_write_approval(state, invocation, &args.path).await {
-            return Ok(("Error: file write denied by user.".to_string(), None));
-        }
+    ) && !request_direct_write_approval(state, invocation, &args.path).await
+    {
+        return Ok(("Error: file write denied by user.".to_string(), None));
     }
 
     with_sandbox(
