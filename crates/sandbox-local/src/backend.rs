@@ -93,13 +93,6 @@ impl LocalBackend {
         tempfile::tempdir_in(&base)
     }
 
-    /// Create a scratch temporary directory for TMPDIR in sandboxed command
-    /// execution. Uses the system temp dir so the scratch space lives outside
-    /// the repository tree, avoiding issues with tools (e.g. jj) that walk
-    /// up the directory tree and discover parent repos.
-    fn make_scratch_tempdir() -> std::io::Result<tempfile::TempDir> {
-        tempfile::tempdir()
-    }
 }
 
 /// Check if a jj bookmark's commit is empty (no changes) using a synchronous command.
@@ -296,7 +289,7 @@ impl SandboxBackend for LocalBackend {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
-            let tmp = Self::make_scratch_tempdir().map_err(SandboxError::Io)?;
+            let tmp = tempfile::tempdir().map_err(SandboxError::Io)?;
             let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
 
             let writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
@@ -331,7 +324,7 @@ impl SandboxBackend for LocalBackend {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
-            let tmp = Self::make_scratch_tempdir().map_err(SandboxError::Io)?;
+            let tmp = tempfile::tempdir().map_err(SandboxError::Io)?;
             let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
             let tmp_str = abs_tmp.to_string_lossy();
 
@@ -424,7 +417,7 @@ impl SandboxBackend for LocalBackend {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
-            let tmp = Self::make_scratch_tempdir().map_err(SandboxError::Io)?;
+            let tmp = tempfile::tempdir().map_err(SandboxError::Io)?;
             let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
 
             let mut writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
@@ -492,7 +485,7 @@ impl SandboxBackend for LocalBackend {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
-            let tmp = Self::make_scratch_tempdir().map_err(SandboxError::Io)?;
+            let tmp = tempfile::tempdir().map_err(SandboxError::Io)?;
             let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
             let tmp_str = abs_tmp.to_string_lossy();
 
