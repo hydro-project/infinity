@@ -1,13 +1,15 @@
 ---
-source: crates/sandbox-local/tests/integration.rs
+source: crates/sandbox-local/tests/describe_changes.rs
 expression: describe_and_read_log(repo).await
 ---
 Commit ID: [COMMIT_ID]
 Change ID: [CHANGE_ID]
 Bookmarks: sandbox-test-thread
-Author   : RAP Sandbox <sandbox@rap> ([TIMESTAMP])
-Committer: RAP Sandbox <sandbox@rap> ([TIMESTAMP])
+Author   : Test User <test@example.com> ([TIMESTAMP])
+Committer: Test User <test@example.com> ([TIMESTAMP])
 
     feat: add widget support
 
     Added the new widget module.
+
+    Co-authored-by: Infinity 🤖 <infinity@hydro.run>

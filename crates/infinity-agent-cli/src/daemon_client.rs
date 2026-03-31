@@ -111,6 +111,10 @@ fn launch_daemon() -> Result<(), BoxError> {
     let current_exe = std::env::current_exe()?;
     std::process::Command::new(&current_exe)
         .arg("daemon")
+        .env(
+            "RUST_LOG",
+            std::env::var_os("RUST_LOG").unwrap_or("debug".into()),
+        )
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
