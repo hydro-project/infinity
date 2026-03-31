@@ -4,6 +4,7 @@ use std::process::Stdio;
 use crate::error::SandboxError;
 
 /// Run a git command in the given directory, returning stdout on success.
+#[tracing::instrument(level = "warn")]
 pub async fn run_git(dir: &Path, args: &[&str]) -> Result<String, SandboxError> {
     let output = tokio::process::Command::new("git")
         .args(args)
@@ -13,19 +14,25 @@ pub async fn run_git(dir: &Path, args: &[&str]) -> Result<String, SandboxError> 
         .stdin(Stdio::null())
         .output()
         .await
-        .map_err(|e| SandboxError::CommandError(format!("failed to spawn git: {e}")))?;
+        .map_err(|e| {
+            tracing::warn!("failed to spawn: {e}");
+            SandboxError::CommandError(format!("failed to spawn git: {e}"))
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!(%stderr, "failed");
         return Err(SandboxError::CommandError(format!("git failed: {stderr}")));
     }
 
+    tracing::debug!("success");
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 /// Create a git worktree with a new branch.
 /// If the branch already exists (e.g. from a previous session), prunes stale
 /// worktrees and checks out the existing branch instead of creating a new one.
+/// Detects the repo's configured user and configures the worktree identity.
 pub async fn git_worktree_add(
     repo_dir: &Path,
     worktree_path: &Path,
@@ -51,6 +58,24 @@ pub async fn git_worktree_add(
             args.push(sp);
         }
         run_git(repo_dir, &args).await?;
+        let (name, email) = git_configured_user(repo_dir).await.unwrap_or_else(|| {
+            (
+                crate::DEFAULT_SANDBOX_NAME.to_string(),
+                crate::DEFAULT_SANDBOX_EMAIL.to_string(),
+            )
+        });
+
+        // Configure the worktree-local user identity for a git worktree.
+        // Enables `extensions.worktreeConfig` on the parent repo so that
+        // `git config --worktree` writes to the worktree-specific config file.
+        run_git(repo_dir, &["config", "extensions.worktreeConfig", "true"]).await?;
+        run_git(worktree_path, &["config", "--worktree", "user.name", &name]).await?;
+        run_git(
+            worktree_path,
+            &["config", "--worktree", "user.email", &email],
+        )
+        .await?;
+
         git_commit_all(worktree_path, "sandbox init").await?;
     }
     Ok(())
@@ -114,4 +139,12 @@ pub async fn git_has_commits_on_branch(dir: &Path, branch: &str) -> Result<bool,
 /// Check if the top commit on a branch has no file changes vs its parent.
 pub async fn git_branch_top_is_empty(dir: &Path) -> bool {
     run_git(dir, &["diff", "--quiet", "HEAD~1"]).await.is_ok()
+}
+
+/// Read the configured git user from a repo directory.
+/// Returns `Some((name, email))` if both are configured, `None` otherwise.
+pub async fn git_configured_user(dir: &Path) -> Option<(String, String)> {
+    let name = run_git(dir, &["config", "user.name"]).await.ok()?;
+    let email = run_git(dir, &["config", "user.email"]).await.ok()?;
+    Some((name.trim().to_string(), email.trim().to_string()))
 }

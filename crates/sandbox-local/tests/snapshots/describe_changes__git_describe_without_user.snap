@@ -1,0 +1,15 @@
+---
+source: crates/sandbox-local/tests/describe_changes.rs
+expression: git_describe_and_read_log(repo).await
+---
+commit [COMMIT_ID]
+Author:     Infinity 🤖 <infinity@hydro.run>
+AuthorDate: [TIMESTAMP]
+Commit:     Infinity 🤖 <infinity@hydro.run>
+CommitDate: [TIMESTAMP]
+
+    feat: add widget support
+    
+    Added the new widget module.
+    
+    Co-authored-by: Infinity 🤖 <infinity@hydro.run>
