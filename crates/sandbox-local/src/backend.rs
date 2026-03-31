@@ -98,18 +98,7 @@ impl LocalBackend {
 /// Check if a jj bookmark's commit is empty (no changes) using a synchronous command.
 fn jj_bookmark_is_empty(dir: &Path, bookmark: &str) -> bool {
     Command::new("jj")
-        .args([
-            "--config",
-            "user.name=RAP Sandbox",
-            "--config",
-            "user.email=sandbox@rap",
-            "log",
-            "--no-graph",
-            "-r",
-            bookmark,
-            "-T",
-            "empty",
-        ])
+        .args(["log", "--no-graph", "-r", bookmark, "-T", "empty"])
         .current_dir(dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -141,14 +130,7 @@ impl Drop for LocalBackend {
                 SandboxMode::Jj { .. } => {
                     if jj_bookmark_is_empty(dir, &branch) {
                         let _ = Command::new("jj")
-                            .args([
-                                "--config",
-                                "user.name=RAP Sandbox",
-                                "--config",
-                                "user.email=sandbox@rap",
-                                "abandon",
-                                &branch,
-                            ])
+                            .args(["abandon", &branch])
                             .current_dir(dir)
                             .status();
                     }
@@ -221,6 +203,8 @@ impl SandboxBackend for LocalBackend {
                     SandboxMode::Git { .. } | SandboxMode::Direct => {}
                 }
                 return Ok(dir);
+            } else {
+                tracing::trace!(group_id = %state.group_id, "no cached sandbox to reuse");
             }
         }
 

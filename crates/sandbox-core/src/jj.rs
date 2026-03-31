@@ -3,64 +3,82 @@ use std::process::Stdio;
 
 use crate::error::SandboxError;
 
-/// Run a jj command in the given directory (status only).
-pub async fn run_jj(dir: &Path, args: &[&str]) -> Result<(), SandboxError> {
-    let status = tokio::process::Command::new("jj")
-        .args(["--config", "user.name=RAP Sandbox"])
-        .args(["--config", "user.email=sandbox@rap"])
-        .args(args)
-        .current_dir(dir)
-        .status()
-        .await
-        .map_err(|e| SandboxError::JujutsuError(format!("failed to spawn jj: {e}")))?;
-
-    if !status.success() {
-        return Err(SandboxError::JujutsuError("jj failed".to_string()));
-    }
-
-    Ok(())
+/// Build a jj command in the given directory.
+fn jj_command(dir: &Path, args: &[&str]) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new("jj");
+    cmd.args(args).current_dir(dir);
+    cmd
 }
 
 /// Run a jj command and return stdout.
-pub async fn run_jj_output(dir: &Path, args: &[&str]) -> Result<String, SandboxError> {
-    let output = tokio::process::Command::new("jj")
-        .args(["--config", "user.name=RAP Sandbox"])
-        .args(["--config", "user.email=sandbox@rap"])
-        .args(args)
-        .current_dir(dir)
+#[tracing::instrument(level = "warn")]
+pub async fn run_jj(dir: &Path, args: &[&str]) -> Result<String, SandboxError> {
+    let output = jj_command(dir, args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .await
-        .map_err(|e| SandboxError::JujutsuError(format!("failed to spawn jj: {e}")))?;
+        .map_err(|e| {
+            tracing::warn!("failed to spawn: {e}");
+            SandboxError::JujutsuError(format!("failed to spawn jj: {e}"))
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!(%stderr, "failed");
         return Err(SandboxError::JujutsuError(format!("jj failed: {stderr}")));
     }
 
+    tracing::debug!("success");
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Resolve a jj revision to an absolute change_id.
 pub async fn jj_resolve_revision(dir: &Path, rev: &str) -> Result<String, SandboxError> {
-    run_jj_output(dir, &["log", "--no-graph", "-r", rev, "-T", "change_id"]).await
+    run_jj(
+        dir,
+        &[
+            "log",
+            "--no-graph",
+            "-r",
+            rev,
+            "-T",
+            "change_id ++ '/' ++ change_offset",
+        ],
+    )
+    .await
 }
 
 /// Create a jj workspace at `dest` based on `revision`, set and edit the bookmark.
+/// Detects the repo's configured user and configures the workspace identity.
 pub async fn jj_git_clone(
     remote: &str,
     dest: &Path,
     bookmark_name: &str,
     revision: &str,
 ) -> Result<(), SandboxError> {
+    let (name, email) = jj_configured_user(Path::new(remote))
+        .await
+        .unwrap_or_else(|| {
+            (
+                crate::DEFAULT_SANDBOX_NAME.to_string(),
+                crate::DEFAULT_SANDBOX_EMAIL.to_string(),
+            )
+        });
+
     let _ = run_jj(&PathBuf::from(remote), &["workspace", "update-stale"]).await;
 
-    let output = tokio::process::Command::new("jj")
-        .args(["--config", "user.name=RAP Sandbox"])
-        .args(["--config", "user.email=sandbox@rap"])
-        .args(["workspace", "add", "-r", "root()", dest.to_str().unwrap()])
-        .current_dir(remote)
+    // workspace add runs against the parent repo before the workspace exists,
+    // so we inject the identity via --config flags for this command.
+    let mut cmd = jj_command(
+        Path::new(remote),
+        &["workspace", "add", "-r", "root()", dest.to_str().unwrap()],
+    );
+    cmd.arg("--config")
+        .arg(format!("user.name={name}"))
+        .arg("--config")
+        .arg(format!("user.email={email}"));
+    let output = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -74,7 +92,18 @@ pub async fn jj_git_clone(
         )));
     }
 
+    // Configure workspace-local user identity for all subsequent workspace commands.
+    run_jj(dest, &["config", "set", "--workspace", "user.name", &name]).await?;
+    run_jj(
+        dest,
+        &["config", "set", "--workspace", "user.email", &email],
+    )
+    .await?;
+
+    // Edit (checkout) the bookmark, creating it if it doesn't yet exist.
+    tracing::info!(bookmark_name, "Edit bookmark");
     if run_jj(dest, &["edit", bookmark_name]).await.is_err() {
+        tracing::info!(bookmark_name, revision, "Bookmark not found, creating new");
         run_jj(dest, &["new", revision]).await?;
         run_jj(dest, &["bookmark", "set", bookmark_name]).await?;
     }
@@ -89,8 +118,43 @@ pub async fn jj_push_working_copy(dir: &Path, bookmark_name: &str) -> Result<(),
 
 /// Check if a bookmark's commit is empty (no file changes).
 pub async fn jj_bookmark_is_empty(dir: &Path, bookmark: &str) -> bool {
-    run_jj_output(dir, &["log", "--no-graph", "-r", bookmark, "-T", "empty"])
+    run_jj(dir, &["log", "--no-graph", "-r", bookmark, "-T", "empty"])
         .await
         .map(|s| s == "true")
         .unwrap_or(false)
+}
+
+/// Read the configured jj user from a repo directory.
+/// Returns `Some((name, email))` if both are configured in the repo, `None` otherwise.
+pub async fn jj_configured_user(dir: &Path) -> Option<(String, String)> {
+    let name = tokio::process::Command::new("jj")
+        .args(["config", "get", "user.name"])
+        .current_dir(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .ok()?;
+    if !name.status.success() {
+        return None;
+    }
+
+    let email = tokio::process::Command::new("jj")
+        .args(["config", "get", "user.email"])
+        .current_dir(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .ok()?;
+    if !email.status.success() {
+        return None;
+    }
+
+    let name = String::from_utf8_lossy(&name.stdout).trim().to_string();
+    let email = String::from_utf8_lossy(&email.stdout).trim().to_string();
+    if name.is_empty() || email.is_empty() {
+        return None;
+    }
+    Some((name, email))
 }
