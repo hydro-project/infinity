@@ -31,59 +31,81 @@ impl GetTokenUsage for DaemonTokenUsage {
     }
 }
 
-fn daemon_msg_to_display(msg: DaemonMessage) -> Option<DisplayEvent<DaemonTokenUsage>> {
+/// Convert a DaemonMessage into a (thread_id, DisplayEvent) tuple.
+/// Returns None for messages that are handled separately (Connected, Welcome, etc.).
+fn daemon_msg_to_display(
+    msg: DaemonMessage,
+) -> Option<(Option<String>, DisplayEvent<DaemonTokenUsage>)> {
     Some(match msg {
-        DaemonMessage::StartOutput { prefix } => DisplayEvent::StartOutput { prefix },
-        DaemonMessage::TextChunk { prefix, chunk } => DisplayEvent::TextChunk { prefix, chunk },
+        DaemonMessage::StartOutput { thread_id } => (thread_id, DisplayEvent::StartOutput),
+        DaemonMessage::TextChunk { thread_id, chunk } => {
+            (thread_id, DisplayEvent::TextChunk { chunk })
+        }
         DaemonMessage::ToolCall {
             name,
             args,
-            prefix,
+            thread_id,
             display_as,
-        } => DisplayEvent::ToolCall {
-            name,
-            args: serde_json::from_str(&args).unwrap(),
-            prefix,
-            display_as,
-        },
+        } => (
+            thread_id,
+            DisplayEvent::ToolCall {
+                name,
+                args: serde_json::from_str(&args).unwrap(),
+                display_as,
+            },
+        ),
         DaemonMessage::ToolResult {
             text,
             display_as,
-            prefix,
-        } => DisplayEvent::ToolResult {
-            text,
-            display_as,
-            prefix,
-        },
-        DaemonMessage::Info(s) => DisplayEvent::Info(s),
+            thread_id,
+        } => (thread_id, DisplayEvent::ToolResult { text, display_as }),
+        DaemonMessage::Info { thread_id, text } => (thread_id, DisplayEvent::Info(text)),
         DaemonMessage::ResponseDone {
             thread_id,
             token_usage,
-        } => DisplayEvent::ResponseDone(thread_id, Some(DaemonTokenUsage(token_usage))),
-        DaemonMessage::UserInputEcho(s) => DisplayEvent::UserInput(s),
-        DaemonMessage::SubscriptionEvent { name, text, prefix } => {
-            DisplayEvent::SubscriptionEvent { name, text, prefix }
+        } => (
+            thread_id,
+            DisplayEvent::ResponseDone(Some(DaemonTokenUsage(token_usage))),
+        ),
+        DaemonMessage::UserInputEcho { thread_id, text } => {
+            (thread_id, DisplayEvent::UserInput(text))
         }
-        DaemonMessage::OAuthRequired { auth_url } => DisplayEvent::OAuthRequired { auth_url },
+        DaemonMessage::SubscriptionEvent {
+            name,
+            text,
+            thread_id,
+        } => (thread_id, DisplayEvent::SubscriptionEvent { name, text }),
+        DaemonMessage::OAuthRequired {
+            thread_id,
+            auth_url,
+        } => (thread_id, DisplayEvent::OAuthRequired { auth_url }),
         DaemonMessage::UserChoiceRequired {
+            thread_id,
             id,
             prompt,
             choices,
             default,
-        } => DisplayEvent::UserChoiceRequired {
-            id,
-            prompt,
-            choices,
-            default,
-            response_url: String::new(),
-        },
-        DaemonMessage::ThinkingStart { prefix } => DisplayEvent::ThinkingStart { prefix },
-        DaemonMessage::ThinkingEnd { prefix } => DisplayEvent::ThinkingEnd { prefix },
-        DaemonMessage::ThinkingChunk { prefix, chunk } => {
-            DisplayEvent::ThinkingChunk { prefix, chunk }
+        } => (
+            thread_id,
+            DisplayEvent::UserChoiceRequired {
+                id,
+                prompt,
+                choices,
+                default,
+                response_url: String::new(),
+            },
+        ),
+        DaemonMessage::ThinkingStart { thread_id } => (thread_id, DisplayEvent::ThinkingStart),
+        DaemonMessage::ThinkingEnd { thread_id } => (thread_id, DisplayEvent::ThinkingEnd),
+        DaemonMessage::ThinkingChunk { thread_id, chunk } => {
+            (thread_id, DisplayEvent::ThinkingChunk { chunk })
         }
-        DaemonMessage::CompactionApplied { prefix } => DisplayEvent::CompactionApplied { prefix },
-        DaemonMessage::Error(e) => DisplayEvent::Info(format!("Error: {e}")),
+        DaemonMessage::CompactionApplied { thread_id } => {
+            (thread_id, DisplayEvent::CompactionApplied)
+        }
+        DaemonMessage::Error { thread_id, text } => {
+            (thread_id, DisplayEvent::Info(format!("Error: {text}")))
+        }
         DaemonMessage::Connected { .. }
         | DaemonMessage::Welcome { .. }
         | DaemonMessage::Replay { .. }
@@ -209,7 +231,7 @@ async fn run_client(
             available_models,
             provider_name,
         ),
-        DaemonMessage::Error(e) => return Err(e.into()),
+        DaemonMessage::Error { text, .. } => return Err(text.into()),
         _ => return Err("expected Welcome from daemon".into()),
     };
 
@@ -225,7 +247,8 @@ async fn run_client(
         })
         .collect();
 
-    let (display_tx, display_rx) = mpsc::unbounded_channel::<DisplayEvent<DaemonTokenUsage>>();
+    let (display_tx, display_rx) =
+        mpsc::unbounded_channel::<(Option<String>, DisplayEvent<DaemonTokenUsage>)>();
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<String>();
     let (load_session_tx, mut load_session_rx) =
         mpsc::unbounded_channel::<(Option<String>, bool)>();
@@ -238,12 +261,12 @@ async fn run_client(
     let (choice_answered_tx, mut choice_answered_rx) = mpsc::unbounded_channel::<(String, usize)>();
 
     if let Some(info) = startup_info {
-        let _ = display_tx.send(DisplayEvent::Info(info));
+        let _ = display_tx.send((None, DisplayEvent::Info(info)));
     }
-    let _ = display_tx.send(DisplayEvent::Info(format!(
-        "Using provider {} ({})",
-        provider_name, model_name
-    )));
+    let _ = display_tx.send((
+        None,
+        DisplayEvent::Info(format!("Using provider {} ({})", provider_name, model_name)),
+    ));
 
     let models_for_switch = model_entries.clone();
 
@@ -292,7 +315,7 @@ async fn run_client(
                                 let _ = display_tx.send(evt);
                             }
                         }
-                        let _ = display_tx.send(DisplayEvent::ResponseDone(None, Some(DaemonTokenUsage(None))));
+                        let _ = display_tx.send((None, DisplayEvent::ResponseDone(Some(DaemonTokenUsage(None)))));
                         for m in pending_choices {
                             if let Some(evt) = daemon_msg_to_display(m) {
                                 let _ = display_tx.send(evt);
@@ -337,13 +360,13 @@ async fn run_client(
                     if shut_down_old {
                         let _ = to_daemon.send(ClientMessage::ShutdownSession { session_id: sid.clone() });
                     } else {
-                        let _ = to_daemon.send(ClientMessage::Disconnect { session_id: sid.clone() });
+                        let _ = to_daemon.send(ClientMessage::Disconnect);
                     }
                 }
                 active_session = None;
 
                 if let Some(target) = maybe_target {
-                    let _ = to_daemon.send(ClientMessage::LoadSession { target_session_id: target });
+                    let _ = to_daemon.send(ClientMessage::Connect { session_id: target, thread_id: None });
                 } // if none, will be created on next user input
             }
 
@@ -391,7 +414,7 @@ async fn run_client(
 
     if let Some(sid) = active_session {
         if keep_running {
-            let _ = to_daemon.send(ClientMessage::Disconnect { session_id: sid });
+            let _ = to_daemon.send(ClientMessage::Disconnect);
         } else {
             let _ = to_daemon.send(ClientMessage::ShutdownSession { session_id: sid });
         }
