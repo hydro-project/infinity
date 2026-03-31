@@ -34,8 +34,12 @@ pub struct InMemoryConversationStore {
     compaction_summaries: Arc<Mutex<HashMap<String, Vec<CompactionSummary>>>>,
     /// Directory where per-thread JSON files are stored. `None` disables persistence.
     dir: Option<PathBuf>,
-    /// Tracks which thread IDs have already been loaded (or attempted) from disk.
+    /// Tracks which thread IDs have had their full data loaded from disk.
     loaded: Arc<Mutex<HashSet<String>>>,
+    /// Tracks which thread IDs have had their metadata loaded from disk.
+    metadata_loaded: Arc<Mutex<HashSet<String>>>,
+    /// Optional sender to notify session store of changes (for SessionsUpdated broadcasts).
+    change_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -50,6 +54,8 @@ struct ThreadInfo {
     title: Option<String>,
     #[serde(default)]
     is_compaction: bool,
+    #[serde(default)]
+    children: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -62,7 +68,6 @@ struct CompactionSummary {
 #[derive(Serialize, Deserialize)]
 struct ThreadSnapshot {
     messages: Vec<(Message, String)>,
-    thread_info: ThreadInfo,
     #[serde(default)]
     display_as: HashMap<String, String>,
     #[serde(default)]
@@ -81,30 +86,46 @@ impl InMemoryConversationStore {
             compaction_summaries: Arc::new(Mutex::new(HashMap::new())),
             dir: Some(dir),
             loaded: Arc::new(Mutex::new(HashSet::new())),
+            metadata_loaded: Arc::new(Mutex::new(HashSet::new())),
+            change_tx: None,
         }
     }
 
-    /// Write a single thread's data to `{dir}/{thread_id}.json`.
+    /// Set the change notification sender. Called after construction.
+    pub fn set_change_tx(&mut self, tx: tokio::sync::mpsc::UnboundedSender<String>) {
+        self.change_tx = Some(tx);
+    }
+
+    /// Notify that a session's thread tree changed.
+    fn notify_session(&self, thread_id: &str) {
+        if let Some(ref tx) = self.change_tx {
+            let root = self.get_root_thread_id(thread_id);
+            let _ = tx.send(root);
+        }
+    }
+
+    /// Write a single thread's metadata to `{dir}/{thread_id}.meta.json`.
+    fn save_thread_metadata(&self, thread_id: &str) {
+        let Some(ref dir) = self.dir else { return };
+        let threads = self.threads.lock().unwrap();
+        if let Some(info) = threads.get(thread_id) {
+            let path = dir.join(format!("{}.meta.json", thread_id));
+            if let Ok(json) = serde_json::to_string_pretty(info) {
+                std::fs::write(path, json).ok();
+            }
+        }
+    }
+
+    /// Write a single thread's data to `{dir}/{thread_id}.json` and metadata to `.meta.json`.
     /// No-op when persistence is disabled.
     fn save_thread(&self, thread_id: &str) {
         let Some(ref dir) = self.dir else { return };
         let messages = self.messages.lock().unwrap();
-        let threads = self.threads.lock().unwrap();
         let display_as_map = self.display_as_map.lock().unwrap();
         let compaction_summaries = self.compaction_summaries.lock().unwrap();
 
         let snapshot = ThreadSnapshot {
             messages: messages.get(thread_id).cloned().unwrap_or_default(),
-            thread_info: threads.get(thread_id).cloned().unwrap_or(ThreadInfo {
-                parent_thread_id: None,
-                root_thread_id: thread_id.to_string(),
-                spawn_message_order: None,
-                spawn_tool_call_id: None,
-                closed: false,
-                is_subscription_event: false,
-                title: None,
-                is_compaction: false,
-            }),
             display_as: display_as_map.get(thread_id).cloned().unwrap_or_default(),
             compaction_summaries: compaction_summaries
                 .get(thread_id)
@@ -116,39 +137,76 @@ impl InMemoryConversationStore {
         if let Ok(json) = serde_json::to_string_pretty(&snapshot) {
             std::fs::write(path, json).ok();
         }
+        self.save_thread_metadata(thread_id);
     }
 
-    /// Ensure a thread's data is loaded from disk into the in-memory caches.
-    /// No-op when persistence is disabled or the thread was already loaded.
-    fn ensure_thread_loaded(&self, thread_id: &str) {
+    /// Ensure a thread's metadata (ThreadInfo) is loaded from disk.
+    /// Tries `.meta.json` first; falls back to extracting from the full `.json` snapshot
+    /// and writes the `.meta.json` for future fast loads.
+    fn ensure_thread_metadata_loaded(&self, thread_id: &str) {
         let Some(ref dir) = self.dir else { return };
 
-        // Fast-path: already loaded.
+        let mut meta_loaded = self.metadata_loaded.lock().unwrap();
+        if meta_loaded.contains(thread_id) {
+            return;
+        }
+
+        // Try the fast metadata file first.
+        let meta_path = dir.join(format!("{}.meta.json", thread_id));
+        if let Ok(json) = std::fs::read_to_string(&meta_path)
+            && let Ok(info) = serde_json::from_str::<ThreadInfo>(&json)
+        {
+            self.threads
+                .lock()
+                .unwrap()
+                .entry(thread_id.to_string())
+                .or_insert(info);
+            meta_loaded.insert(thread_id.to_string());
+            return;
+        }
+
+        // Fall back: extract thread_info from the full snapshot file.
+        let full_path = dir.join(format!("{}.json", thread_id));
+        if let Ok(json) = std::fs::read_to_string(&full_path)
+            && let Ok(val) = serde_json::from_str::<serde_json::Value>(&json)
+            && let Some(info_val) = val.get("thread_info")
+            && let Ok(info) = serde_json::from_value::<ThreadInfo>(info_val.clone())
+        {
+            self.threads
+                .lock()
+                .unwrap()
+                .entry(thread_id.to_string())
+                .or_insert(info);
+            // Migrate: write the .meta.json for next time.
+            self.save_thread_metadata(thread_id);
+        }
+
+        meta_loaded.insert(thread_id.to_string());
+    }
+
+    /// Ensure a thread's full data (messages, display_as, compaction summaries) is loaded.
+    /// Calls `ensure_thread_metadata_loaded` first.
+    fn ensure_thread_loaded(&self, thread_id: &str) {
+        self.ensure_thread_metadata_loaded(thread_id);
+
+        let Some(ref dir) = self.dir else { return };
+
         let mut loaded = self.loaded.lock().unwrap();
         if loaded.contains(thread_id) {
             return;
         }
 
-        // keep it locked while we read to prevent concurrent loading of the same thread
-
-        // Try to read the per-thread file.
         let path = dir.join(format!("{}.json", thread_id));
         if let Ok(json) = std::fs::read_to_string(&path)
             && let Ok(snapshot) = serde_json::from_str::<ThreadSnapshot>(&json)
         {
             let mut messages = self.messages.lock().unwrap();
-            let mut threads = self.threads.lock().unwrap();
             let mut display_as_map = self.display_as_map.lock().unwrap();
             let mut compaction_summaries = self.compaction_summaries.lock().unwrap();
 
             assert!(
                 messages
                     .insert(thread_id.to_string(), snapshot.messages)
-                    .is_none()
-            );
-            assert!(
-                threads
-                    .insert(thread_id.to_string(), snapshot.thread_info)
                     .is_none()
             );
             assert!(
@@ -163,7 +221,6 @@ impl InMemoryConversationStore {
             );
         }
 
-        // Mark as loaded even if the file didn't exist — avoids repeated fs checks.
         loaded.insert(thread_id.to_string());
     }
 
@@ -189,12 +246,67 @@ impl InMemoryConversationStore {
 
     /// Resolve a thread ID to its root thread ID (i.e. the session ID).
     pub fn get_root_thread_id(&self, thread_id: &str) -> String {
-        self.ensure_thread_loaded(thread_id);
+        self.ensure_thread_metadata_loaded(thread_id);
         let threads = self.threads.lock().unwrap();
         threads
             .get(thread_id)
             .map(|t| t.root_thread_id.clone())
             .unwrap_or_else(|| thread_id.to_string())
+    }
+
+    /// Get the parent thread ID, if any.
+    pub fn get_thread_parent_id(&self, thread_id: &str) -> Option<String> {
+        self.ensure_thread_metadata_loaded(thread_id);
+        let threads = self.threads.lock().unwrap();
+        threads
+            .get(thread_id)
+            .and_then(|t| t.parent_thread_id.clone())
+    }
+
+    /// Set the title for a thread.
+    pub fn set_thread_title(&self, thread_id: &str, title: &str) {
+        self.ensure_thread_metadata_loaded(thread_id);
+        {
+            let mut threads = self.threads.lock().unwrap();
+            if let Some(t) = threads.get_mut(thread_id) {
+                t.title = Some(title.to_string());
+            }
+        }
+        self.save_thread_metadata(thread_id);
+        self.notify_session(thread_id);
+    }
+
+    /// List open (non-closed) subthreads that are descendants of `parent_id`
+    /// within the given session. Walks the children tree via metadata.
+    pub fn get_open_subthreads(&self, parent_id: &str) -> Vec<infinity_protocol::SubthreadInfo> {
+        self.ensure_thread_metadata_loaded(parent_id);
+        let mut result = Vec::new();
+        let mut queue = vec![parent_id.to_string()];
+        while let Some(pid) = queue.pop() {
+            let children = {
+                let threads = self.threads.lock().unwrap();
+                threads
+                    .get(&pid)
+                    .map(|t| t.children.clone())
+                    .unwrap_or_default()
+            };
+            for child_id in children {
+                self.ensure_thread_metadata_loaded(&child_id);
+                let threads = self.threads.lock().unwrap();
+                if let Some(info) = threads.get(&child_id)
+                    && !info.closed
+                    && !info.is_compaction
+                {
+                    result.push(infinity_protocol::SubthreadInfo {
+                        thread_id: child_id.clone(),
+                        parent_thread_id: pid.clone(),
+                        title: info.title.clone(),
+                    });
+                    queue.push(child_id);
+                }
+            }
+        }
+        result
     }
 }
 
@@ -220,6 +332,7 @@ impl ConversationStore for InMemoryConversationStore {
                         is_subscription_event: false,
                         title: None,
                         is_compaction: false,
+                        children: Vec::new(),
                     },
                 );
                 true
@@ -289,6 +402,7 @@ impl ConversationStore for InMemoryConversationStore {
         }
         {
             let mut loaded = self.loaded.lock().unwrap();
+            let mut meta_loaded = self.metadata_loaded.lock().unwrap();
 
             {
                 let mut messages = self.messages.lock().unwrap();
@@ -308,8 +422,13 @@ impl ConversationStore for InMemoryConversationStore {
                         is_subscription_event: is_for_subscription_event,
                         title: None,
                         is_compaction: false,
+                        children: Vec::new(),
                     },
                 );
+                // Add to parent's children list.
+                if let Some(parent) = threads.get_mut(parent_thread_id) {
+                    parent.children.push(new_id.clone());
+                }
             }
 
             {
@@ -318,32 +437,36 @@ impl ConversationStore for InMemoryConversationStore {
             }
 
             loaded.insert(new_id.clone());
+            meta_loaded.insert(new_id.clone());
         }
 
         self.save_thread(&new_id);
+        self.save_thread_metadata(parent_thread_id);
+        self.notify_session(parent_thread_id);
         Ok(new_id)
     }
 
     async fn is_thread_closed(&self, thread_id: &str) -> Result<bool, MemoryError> {
-        self.ensure_thread_loaded(thread_id);
+        self.ensure_thread_metadata_loaded(thread_id);
         let threads = self.threads.lock().unwrap();
         Ok(threads.get(thread_id).map(|t| t.closed).unwrap_or(false))
     }
 
     async fn close_thread(&self, thread_id: &str) -> Result<(), MemoryError> {
-        self.ensure_thread_loaded(thread_id);
+        self.ensure_thread_metadata_loaded(thread_id);
         {
             let mut threads = self.threads.lock().unwrap();
             if let Some(t) = threads.get_mut(thread_id) {
                 t.closed = true;
             }
         }
-        self.save_thread(thread_id);
+        self.save_thread_metadata(thread_id);
+        self.notify_session(thread_id);
         Ok(())
     }
 
     async fn is_subscription_event_thread(&self, thread_id: &str) -> Result<bool, MemoryError> {
-        self.ensure_thread_loaded(thread_id);
+        self.ensure_thread_metadata_loaded(thread_id);
         let threads = self.threads.lock().unwrap();
         Ok(threads
             .get(thread_id)
@@ -355,7 +478,7 @@ impl ConversationStore for InMemoryConversationStore {
         &self,
         thread_id: &str,
     ) -> Result<Option<(String, String)>, MemoryError> {
-        self.ensure_thread_loaded(thread_id);
+        self.ensure_thread_metadata_loaded(thread_id);
         let threads = self.threads.lock().unwrap();
         Ok(threads.get(thread_id).and_then(|t| {
             match (&t.parent_thread_id, &t.spawn_tool_call_id) {
@@ -369,7 +492,7 @@ impl ConversationStore for InMemoryConversationStore {
         let mut result = Vec::new();
         let mut current = thread_id.to_string();
         loop {
-            self.ensure_thread_loaded(&current);
+            self.ensure_thread_metadata_loaded(&current);
             let info = {
                 let threads = self.threads.lock().unwrap();
                 threads.get(&current).cloned()
@@ -424,7 +547,7 @@ impl ConversationStore for InMemoryConversationStore {
     }
 
     async fn is_compaction_thread(&self, thread_id: &str) -> Result<bool, MemoryError> {
-        self.ensure_thread_loaded(thread_id);
+        self.ensure_thread_metadata_loaded(thread_id);
         let threads = self.threads.lock().unwrap();
         Ok(threads
             .get(thread_id)
@@ -433,19 +556,19 @@ impl ConversationStore for InMemoryConversationStore {
     }
 
     async fn mark_thread_as_compaction(&self, thread_id: &str) -> Result<(), MemoryError> {
-        self.ensure_thread_loaded(thread_id);
+        self.ensure_thread_metadata_loaded(thread_id);
         {
             let mut threads = self.threads.lock().unwrap();
             if let Some(t) = threads.get_mut(thread_id) {
                 t.is_compaction = true;
             }
         }
-        self.save_thread(thread_id);
+        self.save_thread_metadata(thread_id);
         Ok(())
     }
 
     async fn get_thread_spawn_order(&self, thread_id: &str) -> Result<Option<i64>, MemoryError> {
-        self.ensure_thread_loaded(thread_id);
+        self.ensure_thread_metadata_loaded(thread_id);
         let threads = self.threads.lock().unwrap();
         Ok(threads.get(thread_id).and_then(|t| t.spawn_message_order))
     }

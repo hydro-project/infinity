@@ -237,6 +237,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         let batch_result = batch_processor::process_batch(
             inputs.into_iter(),
             &current_history,
+            async |_| {},
             &conversation_store,
             &display_tx,
             &group_id,
@@ -307,9 +308,10 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             .borrow()
             .get_metadata()
             .unwrap_or(serde_json::json!({}));
-        let output_text = if let Some(prefix) = current_history.borrow().get_thread_nesting_prefix()
-        {
-            format!("{} {}", prefix, accumulated_text)
+        let thread_id = current_history.borrow().thread_id.clone();
+        let root_id = current_history.borrow().root_thread_id.clone();
+        let output_text = if thread_id != root_id {
+            format!("[{}] {}", thread_id, accumulated_text)
         } else {
             accumulated_text
         };

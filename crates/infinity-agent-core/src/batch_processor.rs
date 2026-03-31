@@ -27,31 +27,25 @@ use rap_client::notifier::RapNotifier;
 /// Generic over `R`, the model's streaming response type (used only in
 /// [`ResponseDone`](DisplayEvent::ResponseDone) to carry usage information).
 pub enum DisplayEvent<R> {
-    StartOutput {
-        prefix: Option<String>,
-    },
+    StartOutput,
     TextChunk {
-        prefix: Option<String>,
         chunk: String,
     },
     ToolCall {
         name: String,
         args: serde_json::Value,
-        prefix: Option<String>,
         display_as: Option<String>,
     },
     ToolResult {
         text: String,
         display_as: Option<String>,
-        prefix: Option<String>,
     },
     Info(String),
-    ResponseDone(Option<String>, Option<R>),
+    ResponseDone(Option<R>),
     UserInput(String),
     SubscriptionEvent {
         name: String,
         text: String,
-        prefix: Option<String>,
     },
     OAuthRequired {
         auth_url: String,
@@ -63,19 +57,12 @@ pub enum DisplayEvent<R> {
         default: usize,
         response_url: String,
     },
-    ThinkingStart {
-        prefix: Option<String>,
-    },
-    ThinkingEnd {
-        prefix: Option<String>,
-    },
+    ThinkingStart,
+    ThinkingEnd,
     ThinkingChunk {
-        prefix: Option<String>,
         chunk: String,
     },
-    CompactionApplied {
-        prefix: Option<String>,
-    },
+    CompactionApplied,
 }
 
 /// Process a single input message: run prepare_input and emit display events.
@@ -105,9 +92,7 @@ where
     match prepare_result {
         Ok(event_processor::PrepareResult::Handled) => None,
         Ok(event_processor::PrepareResult::CompactionApplied) => {
-            let _ = display_tx.send(DisplayEvent::CompactionApplied {
-                prefix: current_history.get_thread_nesting_prefix(),
-            });
+            let _ = display_tx.send(DisplayEvent::CompactionApplied);
             None
         }
         Ok(event_processor::PrepareResult::OAuthRequired { auth_url }) => {
@@ -167,7 +152,6 @@ where
                         let _ = display_tx.send(DisplayEvent::SubscriptionEvent {
                             name,
                             text: text.text,
-                            prefix: current_history.get_thread_nesting_prefix(),
                         });
                     }
                 }
@@ -178,7 +162,6 @@ where
                 let _ = display_tx.send(DisplayEvent::ToolResult {
                     text: text.text,
                     display_as: input_msg.display_as.clone(),
-                    prefix: current_history.get_thread_nesting_prefix(),
                 });
             } else if let InputMessageContent::User(UserContent::Text(ref text)) = input_msg.content
             {
@@ -201,9 +184,10 @@ where
 ///
 /// Returns `None` when no inputs were actionable (all handled/skipped).
 #[expect(clippy::too_many_arguments, reason = "shared entry point")]
-pub async fn process_batch<'a, Mdl, C, S, M, H>(
+pub async fn process_batch<'a: 'b, 'b, Mdl, C, S, M, H>(
     inputs: impl Iterator<Item = (InputMessage, String)>,
     current_history: &'a RefCell<HistoryManager<C, S>>,
+    callback_with_history: impl AsyncFnMut(&HistoryManager<C, S>) + 'b,
     conversation_store: &'a C,
     display_tx: &'a mpsc::UnboundedSender<DisplayEvent<Mdl::StreamingResponse>>,
     active_group_id: &'a str,
@@ -217,7 +201,7 @@ pub async fn process_batch<'a, Mdl, C, S, M, H>(
     model_id_override: Option<String>,
     rap_notifier: Option<&'a RapNotifier<H>>,
     input_tokens_out: Option<&'a Cell<u64>>,
-) -> Option<(Pin<Box<dyn Future<Output = ()> + 'a>>, oneshot::Sender<()>)>
+) -> Option<(Pin<Box<dyn Future<Output = ()> + 'b>>, oneshot::Sender<()>)>
 where
     Mdl: CompletionModel,
     C: ConversationStore,
@@ -269,20 +253,17 @@ where
 
     let (cancel_tx, cancel_rx) = oneshot::channel();
 
-    let thread_prefix = current_history.borrow().get_thread_nesting_prefix();
-    let prefix = current_history.borrow().get_thread_nesting_prefix();
     let active_thread_id = current_history.borrow().thread_id.clone();
     let completion_message_id = last_message_id;
 
     let fut = Box::pin(async move {
-        let mut hist = current_history.borrow_mut();
-
         // Scope the stream so its &mut borrow of `hist` is released
         // before we call sync / execute_action.
         let action = {
             let mut stream = std::pin::pin!(event_processor::run_completion(
                 model,
-                &mut *hist,
+                current_history,
+                callback_with_history,
                 tool_names,
                 tool_defs,
                 tool_registry,
@@ -295,9 +276,7 @@ where
                 cancel_rx,
             ));
 
-            let _ = display_tx.send(DisplayEvent::StartOutput {
-                prefix: thread_prefix.clone(),
-            });
+            let _ = display_tx.send(DisplayEvent::StartOutput);
 
             let mut action = None;
             let mut resp = None;
@@ -308,42 +287,31 @@ where
                         let _ = display_tx.send(DisplayEvent::Info(info));
                     }
                     Ok(event_processor::CompletionEvent::TextChunk(chunk)) => {
-                        let _ = display_tx.send(DisplayEvent::TextChunk {
-                            prefix: thread_prefix.clone(),
-                            chunk,
-                        });
+                        let _ = display_tx.send(DisplayEvent::TextChunk { chunk });
                     }
                     Ok(event_processor::CompletionEvent::ThinkingStart) => {
-                        let _ = display_tx.send(DisplayEvent::ThinkingStart {
-                            prefix: thread_prefix.clone(),
-                        });
+                        let _ = display_tx.send(DisplayEvent::ThinkingStart);
                     }
                     Ok(event_processor::CompletionEvent::ThinkingEnd) => {
-                        let _ = display_tx.send(DisplayEvent::ThinkingEnd {
-                            prefix: thread_prefix.clone(),
-                        });
+                        let _ = display_tx.send(DisplayEvent::ThinkingEnd);
                     }
                     Ok(event_processor::CompletionEvent::ThinkingChunk(chunk)) => {
-                        let _ = display_tx.send(DisplayEvent::ThinkingChunk {
-                            prefix: thread_prefix.clone(),
-                            chunk,
-                        });
+                        let _ = display_tx.send(DisplayEvent::ThinkingChunk { chunk });
                     }
                     Ok(event_processor::CompletionEvent::SyncToolResult(res)) => {
                         if let ToolResultContent::Text(text) = res.content.first() {
                             let _ = display_tx.send(DisplayEvent::ToolResult {
                                 text: text.text,
                                 display_as: None,
-                                prefix: prefix.clone(),
                             });
                         }
                     }
                     Ok(event_processor::CompletionEvent::Action(CompletionAction::Done(r))) => {
                         // there may be multiple `Done` if the agent synchronously loops back
-                        if let Some(input_tokens_out) = input_tokens_out {
-                            if let Some(usage) = r.token_usage() {
-                                input_tokens_out.set(usage.input_tokens);
-                            }
+                        if let Some(input_tokens_out) = input_tokens_out
+                            && let Some(usage) = r.token_usage()
+                        {
+                            input_tokens_out.set(usage.input_tokens);
                         }
                         resp = Some(r);
                     }
@@ -359,7 +327,6 @@ where
                         let _ = display_tx.send(DisplayEvent::ToolCall {
                             name: tool_name.clone(),
                             args: tool_args.clone(),
-                            prefix: thread_prefix.clone(),
                             display_as,
                         });
                     }
@@ -378,7 +345,6 @@ where
                             let _ = display_tx.send(DisplayEvent::ToolCall {
                                 name: tool_name.clone(),
                                 args: tool_args.clone(),
-                                prefix: thread_prefix.clone(),
                                 display_as,
                             });
                         }
@@ -393,13 +359,13 @@ where
                 }
             }
 
-            let _ = display_tx.send(DisplayEvent::ResponseDone(thread_prefix.clone(), resp));
+            let _ = display_tx.send(DisplayEvent::ResponseDone(resp));
 
             action
         };
         // Stream dropped — hist is usable again.
 
-        hist.sync().await.ok();
+        current_history.borrow_mut().sync().await.ok();
 
         if let Some(action) = action
             && let Err(e) =
@@ -592,14 +558,14 @@ mod tests {
         let mut out = Vec::new();
         while let Ok(ev) = rx.try_recv() {
             out.push(match ev {
-                DisplayEvent::StartOutput { .. } => "StartOutput".into(),
+                DisplayEvent::StartOutput => "StartOutput".into(),
                 DisplayEvent::TextChunk { chunk, .. } => format!("Text:{chunk}"),
                 DisplayEvent::ToolCall { name, .. } => format!("ToolCall:{name}"),
                 DisplayEvent::ToolResult { text, .. } => {
                     format!("ToolResult:{}", &text[..text.len().min(40)])
                 }
                 DisplayEvent::Info(s) => format!("Info:{}", &s[..s.len().min(40)]),
-                DisplayEvent::ResponseDone(_, _) => "Done".into(),
+                DisplayEvent::ResponseDone(_) => "Done".into(),
                 DisplayEvent::UserInput(s) => format!("UserInput:{s}"),
                 DisplayEvent::OAuthRequired { auth_url } => format!("OAuth:{auth_url}"),
                 DisplayEvent::UserChoiceRequired { id, .. } => format!("Choice:{id}"),
@@ -630,6 +596,7 @@ mod tests {
         let r = super::process_batch(
             vec![user_input("hi")].into_iter(),
             &hm,
+            async |_| {},
             &s,
             &dtx,
             "t1",
@@ -680,6 +647,7 @@ mod tests {
         let r = super::process_batch(
             vec![input].into_iter(),
             &hm,
+            async |_| {},
             &s,
             &dtx,
             "t1",
@@ -734,6 +702,7 @@ mod tests {
         let r = super::process_batch(
             vec![input].into_iter(),
             &hm,
+            async |_| {},
             &s,
             &dtx,
             "t1",
@@ -769,6 +738,7 @@ mod tests {
         let r = super::process_batch(
             vec![user_input("hi")].into_iter(),
             &hm,
+            async |_| {},
             &s,
             &dtx,
             "t1",
@@ -842,6 +812,7 @@ mod tests {
         let r = super::process_batch(
             vec![input].into_iter(),
             &hm,
+            async |_| {},
             &s,
             &dtx,
             "t1",
@@ -894,6 +865,7 @@ mod tests {
         let _ = super::process_batch(
             vec![input1].into_iter(),
             &hm,
+            async |_| {},
             &s,
             &dtx,
             "t1",
@@ -924,6 +896,7 @@ mod tests {
         let r = super::process_batch(
             vec![input2].into_iter(),
             &hm,
+            async |_| {},
             &s,
             &dtx,
             "t1",
@@ -976,6 +949,7 @@ mod tests {
         let r = super::process_batch(
             vec![oauth, text].into_iter(),
             &hm,
+            async |_| {},
             &s,
             &dtx,
             "t1",
