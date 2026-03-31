@@ -41,12 +41,27 @@ export function App() {
   const [pendingChoices, setPendingChoices] = useState<
     { id: string; prompt: string; choices: string[]; default: number }[]
   >([]);
+  // Thread navigation: viewThreadId is the currently viewed thread (null = root).
+  // threadStack tracks the path from root so we can pop back when threads close.
+  // e.g. [childA, grandchildB] means we navigated root → childA → grandchildB.
+  const [viewThreadId, setViewThreadId] = useState<string | null>(null);
+  const threadStackRef = useRef<string[]>([]);
 
   const sessionRef = useRef<string | null>(null);
   const pendingInputRef = useRef<string[]>([]);
   const sendRef = useRef<(msg: ClientMessage) => void>(() => {});
   // Track whether we're currently accumulating assistant text
   const streamingRef = useRef(false);
+
+  /** Check if a message's thread_id matches the thread we're currently viewing. */
+  const isForCurrentView = useCallback(
+    (msgThreadId: string | null) => {
+      const viewing = viewThreadId ?? sessionRef.current;
+      // null thread_id = root, session_id = root
+      return msgThreadId === null || msgThreadId === viewing;
+    },
+    [viewThreadId],
+  );
 
   // Apply theme to document
   useEffect(() => {
@@ -132,16 +147,18 @@ export function App() {
             break;
           }
           case "StartOutput": {
-            const p = msgPayload<{ prefix: string | null }>(m);
-            if (p.prefix === null) {
+            const p = msgPayload<{ thread_id: string | null }>(m);
+            if (isForCurrentView(p.thread_id)) {
               streamingRef.current = false;
               setSpinner((prev) => (prev === "tool" ? "thinking" : "loading"));
             }
             break;
           }
           case "TextChunk": {
-            const p = msgPayload<{ prefix: string | null; chunk: string }>(m);
-            if (p.prefix === null) {
+            const p = msgPayload<{ thread_id: string | null; chunk: string }>(
+              m,
+            );
+            if (isForCurrentView(p.thread_id)) {
               setSpinner("thinking");
               const chunk = !streamingRef.current
                 ? p.chunk.trimStart()
@@ -152,17 +169,18 @@ export function App() {
             break;
           }
           case "ThinkingStart": {
-            const p = msgPayload<{ prefix: string | null }>(m);
-            if (p.prefix === null) {
+            const p = msgPayload<{ thread_id: string | null }>(m);
+            if (isForCurrentView(p.thread_id)) {
               setSpinner("thinking");
             }
             break;
           }
           case "ThinkingChunk": {
-            const p = msgPayload<{ prefix: string | null; chunk: string }>(m);
-            if (p.prefix === null) {
+            const p = msgPayload<{ thread_id: string | null; chunk: string }>(
+              m,
+            );
+            if (isForCurrentView(p.thread_id)) {
               setSpinner("thinking");
-              // Update thinking display
               setMessages((prev) => {
                 const last = prev[prev.length - 1];
                 if (last && last.type === "thinking" && !last.done) {
@@ -182,8 +200,8 @@ export function App() {
             break;
           }
           case "ThinkingEnd": {
-            const p = msgPayload<{ prefix: string | null }>(m);
-            if (p.prefix === null) {
+            const p = msgPayload<{ thread_id: string | null }>(m);
+            if (isForCurrentView(p.thread_id)) {
               setMessages((prev) => {
                 const last = prev[prev.length - 1];
                 if (last && last.type === "thinking" && !last.done) {
@@ -200,10 +218,10 @@ export function App() {
             const p = msgPayload<{
               name: string;
               args: string;
-              prefix: string | null;
+              thread_id: string | null;
               display_as: string | null;
             }>(m);
-            if (p.prefix === null) {
+            if (isForCurrentView(p.thread_id)) {
               finishAssistant();
               streamingRef.current = false;
               setSpinner("tool");
@@ -216,9 +234,9 @@ export function App() {
             const p = msgPayload<{
               text: string;
               display_as: string | null;
-              prefix: string | null;
+              thread_id: string | null;
             }>(m);
-            if (p.prefix === null) {
+            if (isForCurrentView(p.thread_id)) {
               const display = p.display_as ?? p.text;
               const lines = display.split("\n");
               appendMessage({
@@ -234,7 +252,7 @@ export function App() {
               thread_id: string | null;
               token_usage: TokenUsage | null;
             }>(m);
-            if (p.thread_id === null) {
+            if (isForCurrentView(p.thread_id)) {
               if (p.token_usage) {
                 const total =
                   (p.token_usage.input_tokens ?? 0) +
@@ -243,31 +261,37 @@ export function App() {
               }
               finishAssistant();
               streamingRef.current = false;
-              setSpinner((prev) => prev === 'tool' ? prev : null);
+              setSpinner((prev) => (prev === "tool" ? prev : null));
             }
             break;
           }
           case "UserInputEcho": {
-            const text = msgPayload<string>(m);
-            finishAssistant();
-            appendMessage({ type: "user", text });
-            setSpinner("loading");
-            streamingRef.current = false;
+            const p = msgPayload<{ thread_id: string | null; text: string }>(m);
+            if (isForCurrentView(p.thread_id)) {
+              finishAssistant();
+              appendMessage({ type: "user", text: p.text });
+              setSpinner("loading");
+              streamingRef.current = false;
+            }
             break;
           }
           case "Info": {
-            const text = msgPayload<string>(m);
-            appendMessage({ type: "info", text });
+            const p = msgPayload<{ thread_id: string | null; text: string }>(m);
+            if (isForCurrentView(p.thread_id)) {
+              appendMessage({ type: "info", text: p.text });
+            }
             break;
           }
           case "Error": {
-            const text = msgPayload<string>(m);
-            appendMessage({ type: "error", text });
+            const p = msgPayload<{ thread_id: string | null; text: string }>(m);
+            if (isForCurrentView(p.thread_id)) {
+              appendMessage({ type: "error", text: p.text });
+            }
             break;
           }
           case "CompactionApplied": {
-            const p = msgPayload<{ prefix: string | null }>(m);
-            if (p.prefix === null) {
+            const p = msgPayload<{ thread_id: string | null }>(m);
+            if (isForCurrentView(p.thread_id)) {
               appendMessage({ type: "compaction" });
             }
             break;
@@ -276,15 +300,52 @@ export function App() {
             const p = msgPayload<{
               name: string;
               text: string;
-              prefix: string | null;
+              thread_id: string | null;
             }>(m);
-            appendMessage({ type: "subscription", name: p.name, text: p.text });
-            setSpinner("loading");
+            if (isForCurrentView(p.thread_id)) {
+              appendMessage({
+                type: "subscription",
+                name: p.name,
+                text: p.text,
+              });
+              setSpinner("loading");
+            }
             break;
           }
           case "SessionsUpdated": {
             const p = msgPayload<{ sessions: Record<string, SessionInfo> }>(m);
-            setSessions((prev) => ({ ...prev, ...p.sessions }));
+            setSessions((prev) => {
+              const next = { ...prev, ...p.sessions };
+              const stack = threadStackRef.current;
+              const sid = sessionRef.current;
+              if (stack.length > 0 && sid && next[sid]) {
+                const threads = next[sid].threads;
+                const currentView = stack[stack.length - 1];
+                if (!threads.some((t) => t.thread_id === currentView)) {
+                  // Current thread gone — pop until we find one that exists.
+                  while (
+                    stack.length > 0 &&
+                    !threads.some(
+                      (t) => t.thread_id === stack[stack.length - 1],
+                    )
+                  ) {
+                    stack.pop();
+                  }
+                  const newView =
+                    stack.length > 0 ? stack[stack.length - 1] : null;
+                  threadStackRef.current = stack;
+                  setViewThreadId(newView);
+                  setMessages([]);
+                  setSpinner(null);
+                  setPendingChoices([]);
+                  streamingRef.current = false;
+                  sendRef.current({
+                    Connect: { session_id: sid, thread_id: newView },
+                  });
+                }
+              }
+              return next;
+            });
             break;
           }
           case "Replay": {
@@ -301,12 +362,15 @@ export function App() {
           }
           case "UserChoiceRequired": {
             const p = msgPayload<{
+              thread_id: string | null;
               id: string;
               prompt: string;
               choices: string[];
               default: number;
             }>(m);
-            setPendingChoices((prev) => [...prev, p]);
+            if (isForCurrentView(p.thread_id)) {
+              setPendingChoices((prev) => [...prev, p]);
+            }
             break;
           }
           // Ignored for now
@@ -318,7 +382,7 @@ export function App() {
       };
       processOne(msg);
     },
-    [appendMessage, updateLastAssistant, finishAssistant],
+    [appendMessage, updateLastAssistant, finishAssistant, isForCurrentView],
   );
 
   const { send, status } = useSocket({
@@ -339,26 +403,52 @@ export function App() {
     [send],
   );
 
-  const handleSelectSession = useCallback(
-    (id: string) => {
+  const navigateTo = useCallback(
+    (sessionId: string, threadId: string | null) => {
+      const switchingSession =
+        sessionRef.current !== null && sessionRef.current !== sessionId;
+
+      // Disconnect from current view
       if (sessionRef.current) {
-        send({ Disconnect: { session_id: sessionRef.current } });
+        send("Disconnect");
       }
-      sessionRef.current = null;
+
+      // Build thread stack from sessions data
+      if (threadId) {
+        const info = sessions[sessionId];
+        const stack: string[] = [];
+        let cur: string | null = threadId;
+        while (cur && cur !== sessionId) {
+          stack.unshift(cur);
+          const t = info?.threads.find((th) => th.thread_id === cur);
+          cur = t?.parent_thread_id ?? null;
+        }
+        threadStackRef.current = stack;
+      } else {
+        threadStackRef.current = [];
+      }
+
+      setViewThreadId(threadId);
       setMessages([]);
       setSpinner(null);
       setPendingChoices([]);
       streamingRef.current = false;
-      send({ LoadSession: { target_session_id: id } });
+
+      if (switchingSession) {
+        sessionRef.current = null;
+      }
+      send({ Connect: { session_id: sessionId, thread_id: threadId } });
     },
-    [send],
+    [send, sessions],
   );
 
   const handleNewSession = useCallback(() => {
     if (sessionRef.current) {
-      send({ Disconnect: { session_id: sessionRef.current } });
+      send("Disconnect");
     }
     sessionRef.current = null;
+    setViewThreadId(null);
+    threadStackRef.current = [];
     setMessages([]);
     setSpinner(null);
     setPendingChoices([]);
@@ -379,16 +469,15 @@ export function App() {
     pendingInputRef.current = [];
   }, []);
 
-  const handleChoiceSelect = useCallback(
-    (index: number) => {
-      setPendingChoices((prev) => {
-        if (prev.length === 0) return prev;
-        sendRef.current({ UserChoiceAnswered: { choice_id: prev[0].id, selected: index } });
-        return prev.slice(1);
+  const handleChoiceSelect = useCallback((index: number) => {
+    setPendingChoices((prev) => {
+      if (prev.length === 0) return prev;
+      sendRef.current({
+        UserChoiceAnswered: { choice_id: prev[0].id, selected: index },
       });
-    },
-    [],
-  );
+      return prev.slice(1);
+    });
+  }, []);
 
   const contextPct =
     contextWindow > 0 ? Math.min(100, (totalTokens / contextWindow) * 100) : 0;
@@ -398,8 +487,9 @@ export function App() {
       <SessionSidebar
         sessions={sessions}
         activeSessionId={sessionRef.current}
+        activeThreadId={viewThreadId}
         open={sidebarOpen}
-        onSelect={handleSelectSession}
+        onSelect={navigateTo}
         onNew={handleNewSession}
         onClose={() => setSidebarOpen(false)}
       />
@@ -427,7 +517,14 @@ export function App() {
           {theme === "dark" ? "\u2600" : "\u263E"}
         </button>
       </div>
-      <MessageList messages={messages} spinner={spinner} onSend={handleSend} inputDisabled={status !== "connected"} pendingChoice={pendingChoices[0] ?? null} onChoiceSelect={handleChoiceSelect} />
+      <MessageList
+        messages={messages}
+        spinner={spinner}
+        onSend={handleSend}
+        inputDisabled={status !== "connected"}
+        pendingChoice={pendingChoices[0] ?? null}
+        onChoiceSelect={handleChoiceSelect}
+      />
       {cwdPickerOpen && (
         <CwdPicker onConfirm={handleCwdConfirm} onCancel={handleCwdCancel} />
       )}

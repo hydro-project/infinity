@@ -41,7 +41,7 @@ enum UiMode {
     ChoicePicker,
 }
 
-/// Spinner animation state — only affected by main-thread (prefix=None) events.
+/// Spinner animation state — only affected by root-thread events.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum SpinnerState {
     /// After StartOutput but before any thinking/text/tool call.
@@ -96,7 +96,7 @@ struct PendingChoice {
 
 pub async fn run<R>(
     input_tx: mpsc::UnboundedSender<String>,
-    mut display_rx: mpsc::UnboundedReceiver<DisplayEvent<R>>,
+    mut display_rx: mpsc::UnboundedReceiver<(Option<String>, DisplayEvent<R>)>,
     mut model_name: String,
     mut context_window: usize,
     initial_sessions: std::collections::HashMap<String, infinity_protocol::SessionInfo>,
@@ -287,16 +287,19 @@ where
             }
 
             evt = display_rx.recv() => {
-                let Some(evt) = evt else {
+                let Some((evt_thread_id, evt)) = evt else {
                     if pending_soft_detach.is_some() {
                         cleanup()?;
                         return Ok(true);
                     }
                     panic!("agent loop terminated unexpectedly");
                 };
+                let is_root = evt_thread_id.is_none() || evt_thread_id.as_ref() == thread_id.as_ref();
+                // For non-root events, the thread_id is always Some.
+                let child_tid = evt_thread_id.unwrap_or_default();
                 match evt {
-                    DisplayEvent::ThinkingStart { prefix } => {
-                        if prefix.is_none() {
+                    DisplayEvent::ThinkingStart => {
+                        if is_root {
                             if spinner_state == Some(SpinnerState::LoadingContext) {
                                 spinner_state = Some(SpinnerState::Thinking);
                             }
@@ -304,20 +307,20 @@ where
                             thinking_text_buffer.clear();
                         }
                     }
-                    DisplayEvent::ThinkingEnd { prefix } => {
-                        if prefix.is_none() {
+                    DisplayEvent::ThinkingEnd => {
+                        if is_root {
                             thinking_text_buffer.clear();
                         }
                     }
-                    DisplayEvent::ThinkingChunk { prefix, chunk } => {
-                        if prefix.is_none() {
+                    DisplayEvent::ThinkingChunk { chunk } => {
+                        if is_root {
                             thinking_text_buffer.push_str(&chunk);
-                        } else if let Some(p) = prefix {
-                            thread_buffers.entry(p).or_default().push_str(&chunk);
+                        } else {
+                            thread_buffers.entry(child_tid).or_default().push_str(&chunk);
                         }
                     }
-                    DisplayEvent::StartOutput { prefix } => {
-                        if prefix.is_none() {
+                    DisplayEvent::StartOutput => {
+                        if is_root {
                             end_stream(&mut viewport, &mut mid_stream)?;
                             stream_start = true;
 
@@ -328,23 +331,20 @@ where
                                 spinner_state = Some(SpinnerState::LoadingContext);
                             }
                             thinking_start = Instant::now();
-                        } else if let Some(p) = prefix {
-                            thread_buffers.entry(p).or_default();
+                        } else {
+                            thread_buffers.entry(child_tid).or_default();
                         }
                     }
                     DisplayEvent::TextChunk {
-                        prefix,
                         chunk
                     } => {
-                        if prefix.is_none() {
+                        if is_root {
                             if spinner_state.is_none() {
                                 thinking_start = Instant::now();
                             }
 
                             spinner_state = Some(SpinnerState::Thinking);
-                        }
 
-                        if prefix.is_none() {
                             let chunk = if stream_start {
                                 stream_start = false;
                                 chunk.trim_start().to_string()
@@ -363,31 +363,30 @@ where
                                     write!(w, "{}", sanitized)
                                 })?;
                             }
-                        } else if let Some(p) = prefix {
-                            thread_buffers.entry(p).or_default().push_str(&chunk);
+                        } else {
+                            thread_buffers.entry(child_tid).or_default().push_str(&chunk);
                         }
                     }
-                    DisplayEvent::ResponseDone(prefix, r) => {
-                        if prefix.is_none() {
+                    DisplayEvent::ResponseDone(r) => {
+                        if is_root {
                             if let Some(r) = r {
                                 total_tokens_used = r.token_usage().map_or(0, |u| u.total_tokens as usize);
                             }
                             if spinner_state != Some(SpinnerState::WaitingToolCall) {
                                 spinner_state = None;
                             }
-                        } else if let Some(p) = prefix
-                            && !thread_tool_call_active.contains(&p) {
-                                thread_buffers.remove(&p);
+                        } else if !thread_tool_call_active.contains(&child_tid) {
+                                thread_buffers.remove(&child_tid);
                             }
                     }
-                    DisplayEvent::ToolCall { name, args, prefix, display_as } => {
+                    DisplayEvent::ToolCall { name, args, display_as } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
                         thinking_text_buffer.clear();
 
                         let display_text = display_as
                             .unwrap_or_else(|| format!("{}({})", name, args));
 
-                        if prefix.is_none() {
+                        if is_root {
                             spinner_state = Some(SpinnerState::WaitingToolCall);
                             thinking_text_buffer.push_str("waiting for tool call result");
                             thinking_start = Instant::now();
@@ -395,18 +394,18 @@ where
                                 Span::styled(format!("◆ {}", display_text), Style::default().fg(Color::Blue)),
                             ]))?;
                             mid_stream = true;
-                        } else if let Some(p) = prefix {
-                            *thread_buffers.entry(p.clone()).or_default() = format!("\n◆ {}", display_text);
+                        } else {
+                            *thread_buffers.entry(child_tid.clone()).or_default() = format!("\n◆ {}", display_text);
 
                             if name != "close_thread" { // never gets a response
-                                thread_tool_call_active.insert(p);
+                                thread_tool_call_active.insert(child_tid);
                             } else {
-                                thread_buffers.remove(&p);
+                                thread_buffers.remove(&child_tid);
                             }
                         }
                     }
-                    DisplayEvent::ToolResult { text, display_as, prefix } => {
-                        if prefix.is_none() {
+                    DisplayEvent::ToolResult { text, display_as } => {
+                        if is_root {
                             let display_text = display_as.as_deref().unwrap_or(&text);
                             let lines: Vec<&str> = display_text.lines().collect();
 
@@ -435,16 +434,16 @@ where
                                 )?;
                                 viewport.print_line_above(Line::from(vec![]))?;
                             }
-                        } else if let Some(p) = prefix {
-                            thread_tool_call_active.remove(&p);
+                        } else {
+                            thread_tool_call_active.remove(&child_tid);
                         }
                     }
                     DisplayEvent::Info(text) => {
                         end_stream(&mut viewport, &mut mid_stream)?;
                         viewport.print_line_above(Line::from(text))?;
                     }
-                    DisplayEvent::CompactionApplied { prefix } => {
-                        if prefix.is_none() {
+                    DisplayEvent::CompactionApplied => {
+                        if is_root {
                             end_stream(&mut viewport, &mut mid_stream)?;
                             viewport.print_line_above(Line::from(vec![
                                 Span::styled("✦ Compaction applied", Style::default().fg(Color::Magenta)),
@@ -462,9 +461,9 @@ where
                         thinking_start = Instant::now();
                         stream_start = true; // any new assistant output is a start
                     }
-                    DisplayEvent::SubscriptionEvent { name, text, prefix } => {
+                    DisplayEvent::SubscriptionEvent { name, text } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
-                        let pfx = prefix.map(|p| format!("[{}] ", p)).unwrap_or_default();
+                        let pfx = if !is_root { format!("[{}] ", &child_tid[..child_tid.len().min(8)]) } else { String::new() };
                         let lines: Vec<&str> = text.lines().collect();
                         if lines.len() <= 1 {
                             // Single line: print inline

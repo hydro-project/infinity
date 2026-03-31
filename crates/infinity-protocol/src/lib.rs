@@ -33,18 +33,17 @@ pub enum ClientMessage {
     CreateSession {
         cwd: PathBuf,
     },
-    /// Connect to an existing session.
+    /// Connect to an existing session (optionally a specific thread).
     Connect {
         session_id: String,
+        thread_id: Option<String>,
     },
     UserInput {
         session_id: String,
         text: String,
     },
     /// Disconnect from the session while letting the agent continue to run in the background.
-    Disconnect {
-        session_id: String,
-    },
+    Disconnect,
     /// Immediately attempt to detach. If the agent is idle, the daemon shuts
     /// down the session (closing the display channel). If not idle, the daemon
     /// responds with `DisconnectNotIdle` so the client can show a picker.
@@ -55,9 +54,6 @@ pub enum ClientMessage {
     /// new user inputs.
     ShutdownSession {
         session_id: String,
-    },
-    LoadSession {
-        target_session_id: String,
     },
     SwitchModel {
         session_id: String,
@@ -87,57 +83,68 @@ pub enum DaemonMessage {
         total_tokens_used: usize,
     },
     StartOutput {
-        prefix: Option<String>,
+        thread_id: Option<String>,
     },
     TextChunk {
-        prefix: Option<String>,
+        thread_id: Option<String>,
         chunk: String,
     },
     ToolCall {
         name: String,
         args: String,
-        prefix: Option<String>,
+        thread_id: Option<String>,
         display_as: Option<String>,
     },
     ToolResult {
         text: String,
         display_as: Option<String>,
-        prefix: Option<String>,
+        thread_id: Option<String>,
     },
-    Info(String),
+    Info {
+        thread_id: Option<String>,
+        text: String,
+    },
     ResponseDone {
         thread_id: Option<String>,
         token_usage: Option<TokenUsage>,
     },
-    UserInputEcho(String),
+    UserInputEcho {
+        thread_id: Option<String>,
+        text: String,
+    },
     SubscriptionEvent {
         name: String,
         text: String,
-        prefix: Option<String>,
+        thread_id: Option<String>,
     },
     OAuthRequired {
+        thread_id: Option<String>,
         auth_url: String,
     },
     UserChoiceRequired {
+        thread_id: Option<String>,
         id: String,
         prompt: String,
         choices: Vec<String>,
         default: usize,
     },
     ThinkingStart {
-        prefix: Option<String>,
+        thread_id: Option<String>,
     },
     ThinkingEnd {
-        prefix: Option<String>,
+        thread_id: Option<String>,
     },
     ThinkingChunk {
-        prefix: Option<String>,
+        thread_id: Option<String>,
         chunk: String,
     },
     CompactionApplied {
-        prefix: Option<String>,
+        thread_id: Option<String>,
     },
-    Error(String),
+    Error {
+        thread_id: Option<String>,
+        text: String,
+    },
     /// Batch replay of history messages, sent on connect/load.
     Replay {
         history: Vec<DaemonMessage>,
@@ -178,6 +185,15 @@ pub struct SessionInfo {
     pub last_updated: String,
     pub total_tokens_used: usize,
     pub status: SessionStatus,
+    #[serde(default)]
+    pub threads: Vec<SubthreadInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubthreadInfo {
+    pub thread_id: String,
+    pub parent_thread_id: String,
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

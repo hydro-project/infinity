@@ -1,21 +1,52 @@
 import { useCallback, useRef, useState, useEffect } from 'react';
-import type { SessionInfo } from '../types';
+import type { SessionInfo, SubthreadInfo } from '../types';
 import css from './SessionSidebar.module.css';
 
 interface Props {
   sessions: Record<string, SessionInfo>;
   activeSessionId: string | null;
+  activeThreadId: string | null;
   open: boolean;
-  onSelect: (id: string) => void;
+  onSelect: (sessionId: string, threadId: string | null) => void;
   onNew: () => void;
   onClose: () => void;
+}
+
+function ThreadTree({ threads, parentId, sessionId, activeThreadId, onSelect, depth }: {
+  threads: SubthreadInfo[];
+  parentId: string;
+  sessionId: string;
+  activeThreadId: string | null;
+  onSelect: (sessionId: string, threadId: string | null) => void;
+  depth: number;
+}) {
+  const children = threads.filter((t) => t.parent_thread_id === parentId);
+  if (children.length === 0) return null;
+  return (
+    <div className={css.threadList} style={{ paddingLeft: depth > 0 ? 12 : 16 }}>
+      {children.map((t) => (
+        <div key={t.thread_id}>
+          <button
+            className={`${css.threadItem} ${activeThreadId === t.thread_id ? css.active : ''}`}
+            onClick={(e) => { e.stopPropagation(); onSelect(sessionId, t.thread_id); }}
+          >
+            <span className={css.threadLine} />
+            <span className={css.threadTitle}>
+              {t.title || t.thread_id.slice(0, 8)}
+            </span>
+          </button>
+          <ThreadTree threads={threads} parentId={t.thread_id} sessionId={sessionId} activeThreadId={activeThreadId} onSelect={onSelect} depth={depth + 1} />
+        </div>
+      ))}
+    </div>
+  );
 }
 
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 480;
 const DEFAULT_WIDTH = 272;
 
-export function SessionSidebar({ sessions, activeSessionId, open, onSelect, onNew, onClose }: Props) {
+export function SessionSidebar({ sessions, activeSessionId, activeThreadId, open, onSelect, onNew, onClose }: Props) {
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   const dragging = useRef(false);
 
@@ -65,19 +96,23 @@ export function SessionSidebar({ sessions, activeSessionId, open, onSelect, onNe
       </div>
       <div className={css.list}>
         {sorted.map(([id, info]) => (
-          <button
-            key={id}
-            className={`${css.item} ${id === activeSessionId ? css.active : ''}`}
-            onClick={() => onSelect(id)}
-          >
-            <span className={css.itemTitle}>
-              {info.title || id.slice(0, 8)}
-            </span>
-            <span className={css.itemMeta}>
-              <span className={css.statusDot} data-status={info.status} />
-              {info.total_tokens_used.toLocaleString()} tokens
-            </span>
-          </button>
+          <div key={id}>
+            <button
+              className={`${css.item} ${id === activeSessionId && !activeThreadId ? css.active : ''}`}
+              onClick={() => onSelect(id, null)}
+            >
+              <span className={css.itemTitle}>
+                {info.title || id.slice(0, 8)}
+              </span>
+              <span className={css.itemMeta}>
+                <span className={css.statusDot} data-status={info.status} />
+                {info.total_tokens_used.toLocaleString()} tokens
+              </span>
+            </button>
+            {info.threads && info.threads.length > 0 && (
+              <ThreadTree threads={info.threads} parentId={id} sessionId={id} activeThreadId={activeThreadId} onSelect={onSelect} depth={0} />
+            )}
+          </div>
         ))}
         {sorted.length === 0 && (
           <div className={css.empty}>No sessions yet</div>

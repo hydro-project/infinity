@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     time::Duration,
 };
@@ -353,31 +354,6 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 _ => break,
             }
         }
-    }
-
-    pub fn get_thread_nesting_prefix(&self) -> Option<String> {
-        if self.ancestor_chain.is_empty() {
-            return None;
-        }
-        let mut labels: Vec<String> = self
-            .ancestor_chain
-            .iter()
-            .skip(1)
-            .map(|id| {
-                if id.len() > 8 {
-                    id[..8].to_string()
-                } else {
-                    id.clone()
-                }
-            })
-            .collect();
-        let short = if self.thread_id.len() > 8 {
-            &self.thread_id[..8]
-        } else {
-            &self.thread_id
-        };
-        labels.push(short.to_string());
-        Some(format!("[{}]", labels.join(":")))
     }
 
     /// Returns the full thread stack: [root, ..ancestors, current_thread].
@@ -902,9 +878,10 @@ where
 //     terminal Action). Handles stream errors and unknown tools internally.
 // ═══════════════════════════════════════════════════════════════════════
 
-pub fn run_completion<'a, Mdl, C, S, M>(
+pub fn run_completion<'a: 'b, 'b, Mdl, C, S, M>(
     model: &'a Mdl,
-    history: &'a mut HistoryManager<C, S>,
+    history: &'a RefCell<HistoryManager<C, S>>,
+    mut callback_with_history: impl AsyncFnMut(&HistoryManager<C, S>) + 'b,
     tool_names: &'a HashSet<String>,
     tools: &'a [ToolDefinition],
     tool_registry: &'a HashMap<String, &'a dyn Tool<M>>,
@@ -915,7 +892,7 @@ pub fn run_completion<'a, Mdl, C, S, M>(
     additional_request_params: Option<&'a serde_json::Value>,
     model_id_override: Option<&'a str>,
     cancel_rx: tokio::sync::oneshot::Receiver<()>,
-) -> impl futures_util::Stream<Item = Result<CompletionEvent<Mdl::StreamingResponse>, BoxError>> + 'a
+) -> impl futures_util::Stream<Item = Result<CompletionEvent<Mdl::StreamingResponse>, BoxError>> + 'b
 where
     Mdl: CompletionModel,
     C: ConversationStore,
@@ -929,6 +906,7 @@ where
         let mut retry_count = 0;
 
         let preamble = {
+            let history = history.borrow();
             let base = include_str!("default_prompt.md");
             let thread_info = format!("\n\nYour current thread ID is `{}`. The root thread ID is `{}`.", history.thread_id, history.root_thread_id);
             match extra_system_prompt {
@@ -942,7 +920,7 @@ where
                 .stream(CompletionRequest {
                     model: model_id_override.map(|s| s.to_string()),
                     preamble: Some(preamble.clone()),
-                    chat_history: history.get_history(),
+                    chat_history: history.borrow().get_history(),
                     documents: vec![],
                     tools: tools.to_vec(),
                     temperature: None,
@@ -964,6 +942,9 @@ where
                     },
                     output_schema: None,
                 });
+
+            // here, the history is not borrowed, so we can run the callback
+            callback_with_history(&*history.borrow()).await;
 
             let stream_result = tokio::select! {
                 r = stream_result => {
@@ -1029,6 +1010,9 @@ where
             let mut should_loop_back = false;
 
             loop {
+                // here, the history is not borrowed, so we can run the callback
+                callback_with_history(&*history.borrow()).await;
+
                 // Race between LLM output and cancellation signal.
                 // We avoid `yield` inside `select!` (async_stream limitation)
                 // by capturing the result into locals first.
@@ -1041,7 +1025,7 @@ where
                         if retry_count < 10 {
                             yield CompletionEvent::Info("Stream error (timeout), retrying...".to_string());
                             tracing::warn!("Stream ended unexpectedly, removing trailing reasoning and retrying...");
-                            history.remove_trailing_reasoning();
+                            history.borrow_mut().remove_trailing_reasoning();
                             if is_thinking {
                                 is_thinking = false;
                                 yield CompletionEvent::ThinkingEnd;
@@ -1056,7 +1040,7 @@ where
 
                 if cancelled {
                     tracing::info!("Completion cancelled");
-                    history.remove_trailing_reasoning();
+                    history.borrow_mut().remove_trailing_reasoning();
                     if is_thinking {
                         yield CompletionEvent::ThinkingEnd;
                     }
@@ -1066,7 +1050,7 @@ where
                 let res = match llm_next {
                     Some(r) => r,
                     None => {
-                        history.remove_trailing_reasoning();
+                        history.borrow_mut().remove_trailing_reasoning();
                         if is_thinking {
                             is_thinking = false;
                             yield CompletionEvent::ThinkingEnd;
@@ -1090,7 +1074,7 @@ where
                         c
                     },
                     Err(e) => {
-                        history.remove_trailing_reasoning();
+                        history.borrow_mut().remove_trailing_reasoning();
                         if is_thinking {
                             is_thinking = false;
                             yield CompletionEvent::ThinkingEnd;
@@ -1119,7 +1103,7 @@ where
                 if let StreamedAssistantContent::ToolCall { .. } = chunk && has_emitted_tool_call {
 
                 } else {
-                    history.handle_completion(&chunk, completion_id);
+                    history.borrow_mut().handle_completion(&chunk, completion_id);
                     match chunk {
                         StreamedAssistantContent::Text(text) => {
                             if is_thinking {
@@ -1150,7 +1134,7 @@ where
                                             })),
                                         })),
                                     };
-                                    history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
+                                    history.borrow_mut().handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
                                     should_loop_back = true;
                                     continue;
                                 } else if !tool_names.contains(call.function.name.as_str()) {
@@ -1165,7 +1149,7 @@ where
                                             })),
                                         })),
                                     };
-                                    history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
+                                    history.borrow_mut().handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
                                     should_loop_back = true;
                                     continue;
                                 }
@@ -1177,7 +1161,7 @@ where
                                 // the tool call appear cancelled.
                                 let tool = tool_registry.get(call.function.name.as_str()).unwrap();
                                 if tool.supports_sync() {
-                                    history.sync().await?; // we must sync the history so that thread spawning uses the correct state
+                                    history.borrow_mut().sync().await?; // we must sync the history so that thread spawning uses the correct state
 
                                     let res = tool.execute_synchronous(
                                         &call.function.arguments,
@@ -1194,7 +1178,7 @@ where
 
                                     let sync_id = format!("{}-sync-result-{}", call.id, completion_counter);
                                     completion_counter += 1;
-                                    history.handle_content(
+                                    history.borrow_mut().handle_content(
                                         Message::User { content: OneOrMany::one(UserContent::ToolResult(res)) },
                                         sync_id,
                                     ).await?;
@@ -1489,13 +1473,13 @@ mod tests {
     async fn make_history(
         store: &StubConversationStore,
         initial_history: Vec<Message>,
-    ) -> HistoryManager<StubConversationStore, StubStateStore> {
+    ) -> RefCell<HistoryManager<StubConversationStore, StubStateStore>> {
         let mut hm =
             HistoryManager::new_with_history(store.clone(), StubStateStore, "thread-1".to_string())
                 .await
                 .unwrap();
         hm.history = initial_history;
-        hm
+        RefCell::new(hm)
     }
 
     fn user_text_msg(group_id: &str, text: &str) -> InputMessage {
@@ -1552,12 +1536,12 @@ mod tests {
     #[tokio::test]
     async fn simple_user_message_on_empty_history() {
         let store = StubConversationStore::new();
-        let mut hm = make_history(&store, vec![]).await;
+        let hm = make_history(&store, vec![]).await;
 
         let result = prepare_input(
             user_text_msg("thread-1", "hello"),
             "msg-1".to_string(),
-            &mut hm,
+            &mut *hm.borrow_mut(),
             &store,
             &StubSender,
         )
@@ -1565,7 +1549,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, PrepareResult::Ready);
-        insta::assert_json_snapshot!(hm.history);
+        insta::assert_json_snapshot!(hm.into_inner().history);
     }
 
     #[tokio::test]
@@ -1573,12 +1557,12 @@ mod tests {
         let store = StubConversationStore {
             closed_threads: HashSet::from(["thread-1".to_string()]),
         };
-        let mut hm = make_history(&store, vec![]).await;
+        let hm = make_history(&store, vec![]).await;
 
         let result = prepare_input(
             user_text_msg("thread-1", "hello"),
             "msg-1".to_string(),
-            &mut hm,
+            &mut *hm.borrow_mut(),
             &store,
             &StubSender,
         )
@@ -1586,13 +1570,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, PrepareResult::Handled);
-        assert!(hm.history.is_empty());
+        assert!(hm.into_inner().history.is_empty());
     }
 
     #[tokio::test]
     async fn oauth_required_returns_auth_url() {
         let store = StubConversationStore::new();
-        let mut hm = make_history(&store, vec![]).await;
+        let hm = make_history(&store, vec![]).await;
 
         let input = InputMessage {
             content: InputMessageContent::OAuth(OAuthRequired {
@@ -1608,24 +1592,30 @@ mod tests {
             subscription: false,
         };
 
-        let result = prepare_input(input, "msg-1".to_string(), &mut hm, &store, &StubSender)
-            .await
-            .unwrap();
+        let result = prepare_input(
+            input,
+            "msg-1".to_string(),
+            &mut *hm.borrow_mut(),
+            &store,
+            &StubSender,
+        )
+        .await
+        .unwrap();
 
         insta::assert_json_snapshot!(result);
-        assert!(hm.history.is_empty());
+        assert!(hm.into_inner().history.is_empty());
     }
 
     #[tokio::test]
     async fn duplicate_message_returns_handled() {
         let store = StubConversationStore::new();
-        let mut hm = make_history(&store, vec![]).await;
+        let hm = make_history(&store, vec![]).await;
 
         // First call succeeds
         let r1 = prepare_input(
             user_text_msg("thread-1", "hello"),
             "msg-1".to_string(),
-            &mut hm,
+            &mut *hm.borrow_mut(),
             &store,
             &StubSender,
         )
@@ -1637,7 +1627,7 @@ mod tests {
         let r2 = prepare_input(
             user_text_msg("thread-1", "hello"),
             "msg-1".to_string(),
-            &mut hm,
+            &mut *hm.borrow_mut(),
             &store,
             &StubSender,
         )
@@ -1646,7 +1636,7 @@ mod tests {
 
         assert_eq!(r2, PrepareResult::Handled);
         // History should still have only one user message
-        insta::assert_json_snapshot!(hm.history);
+        insta::assert_json_snapshot!(hm.into_inner().history);
     }
 
     #[tokio::test]
@@ -1659,12 +1649,12 @@ mod tests {
             },
             tool_call_msg("tc-1", "some_tool", serde_json::json!({"x": 1})),
         ];
-        let mut hm = make_history(&store, initial).await;
+        let hm = make_history(&store, initial).await;
 
         let result = prepare_input(
             user_text_msg("thread-1", "actually, never mind"),
             "msg-2".to_string(),
-            &mut hm,
+            &mut *hm.borrow_mut(),
             &store,
             &StubSender,
         )
@@ -1673,7 +1663,7 @@ mod tests {
 
         assert_eq!(result, PrepareResult::Ready);
         // Should have: original user, tool call, synthetic interrupted result, new user msg
-        insta::assert_json_snapshot!(hm.history);
+        insta::assert_json_snapshot!(hm.into_inner().history);
     }
 
     #[tokio::test]
@@ -1685,16 +1675,22 @@ mod tests {
             },
             tool_call_msg("tc-1", "some_tool", serde_json::json!({"x": 1})),
         ];
-        let mut hm = make_history(&store, initial).await;
+        let hm = make_history(&store, initial).await;
 
         let input = tool_result_input("thread-1", "tc-1", "tool output", None);
 
-        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store, &StubSender)
-            .await
-            .unwrap();
+        let result = prepare_input(
+            input,
+            "msg-2".to_string(),
+            &mut *hm.borrow_mut(),
+            &store,
+            &StubSender,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result, PrepareResult::Ready);
-        insta::assert_json_snapshot!(hm.history);
+        insta::assert_json_snapshot!(hm.into_inner().history);
     }
 
     #[tokio::test]
@@ -1720,8 +1716,10 @@ mod tests {
                 })),
             },
         ];
-        let mut hm = make_history(&store, initial).await;
-        hm.processed_tool_calls.insert("tc-sub".to_string());
+        let hm = make_history(&store, initial).await;
+        hm.borrow_mut()
+            .processed_tool_calls
+            .insert("tc-sub".to_string());
 
         let input = tool_result_input(
             "thread-1",
@@ -1733,14 +1731,20 @@ mod tests {
             })),
         );
 
-        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store, &StubSender)
-            .await
-            .unwrap();
+        let result = prepare_input(
+            input,
+            "msg-2".to_string(),
+            &mut *hm.borrow_mut(),
+            &store,
+            &StubSender,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result, PrepareResult::Ready);
         // Should have: original user, original tool call, original result, synthetic tool call, synthetic result
         insta::assert_json_snapshot!(
-            hm.history,
+            hm.into_inner().history,
             { "[3].content[0].id" => "[uuid]", "[4].content[0].id" => "[uuid]" }
         );
     }
@@ -1759,7 +1763,7 @@ mod tests {
                 serde_json::json!({"topic": "events"}),
             ),
         ];
-        let mut hm = make_history(&store, initial).await;
+        let hm = make_history(&store, initial).await;
 
         let input = tool_result_input(
             "thread-1",
@@ -1771,13 +1775,19 @@ mod tests {
             })),
         );
 
-        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store, &StubSender)
-            .await
-            .unwrap();
+        let result = prepare_input(
+            input,
+            "msg-2".to_string(),
+            &mut *hm.borrow_mut(),
+            &store,
+            &StubSender,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result, PrepareResult::Ready);
         insta::assert_json_snapshot!(
-            hm.history,
+            hm.into_inner().history,
             { "[3].content[0].id" => "[uuid]", "[4].content[0].id" => "[uuid]" }
         );
     }
@@ -1805,7 +1815,7 @@ mod tests {
                 })),
             },
         ];
-        let mut hm = make_history(&store, initial).await;
+        let hm = make_history(&store, initial).await;
 
         let input = tool_result_input(
             "thread-1",
@@ -1820,12 +1830,18 @@ mod tests {
             )),
         );
 
-        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store, &StubSender)
-            .await
-            .unwrap();
+        let result = prepare_input(
+            input,
+            "msg-2".to_string(),
+            &mut *hm.borrow_mut(),
+            &store,
+            &StubSender,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result, PrepareResult::Handled);
-        assert_eq!(hm.thread_id, "thread-1");
+        assert_eq!(hm.into_inner().thread_id, "thread-1");
     }
 
     #[tokio::test]
@@ -1842,7 +1858,7 @@ mod tests {
                 serde_json::json!({"topic": "events"}),
             ),
         ];
-        let mut hm = make_history(&store, initial).await;
+        let hm = make_history(&store, initial).await;
 
         let input = tool_result_input(
             "thread-1",
@@ -1857,19 +1873,25 @@ mod tests {
             )),
         );
 
-        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store, &StubSender)
-            .await
-            .unwrap();
+        let result = prepare_input(
+            input,
+            "msg-2".to_string(),
+            &mut *hm.borrow_mut(),
+            &store,
+            &StubSender,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result, PrepareResult::Handled);
-        assert_eq!(hm.thread_id, "thread-1");
+        assert_eq!(hm.into_inner().thread_id, "thread-1");
     }
 
     #[tokio::test]
     async fn synthetic_with_missing_tool_call_returns_handled() {
         let store = StubConversationStore::new();
         // Empty history — no tool call to match
-        let mut hm = make_history(&store, vec![]).await;
+        let hm = make_history(&store, vec![]).await;
 
         let input = tool_result_input(
             "thread-1",
@@ -1884,19 +1906,25 @@ mod tests {
             )),
         );
 
-        let result = prepare_input(input, "msg-1".to_string(), &mut hm, &store, &StubSender)
-            .await
-            .unwrap();
+        let result = prepare_input(
+            input,
+            "msg-1".to_string(),
+            &mut *hm.borrow_mut(),
+            &store,
+            &StubSender,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result, PrepareResult::Handled);
-        assert!(hm.history.is_empty());
+        assert!(hm.into_inner().history.is_empty());
     }
 
     #[tokio::test]
     async fn metadata_is_updated_before_processing() {
         let store = StubConversationStore::new();
-        let mut hm = make_history(&store, vec![]).await;
-        assert!(hm.get_metadata().is_none());
+        let hm = make_history(&store, vec![]).await;
+        assert!(hm.borrow().get_metadata().is_none());
 
         let input = InputMessage {
             content: InputMessageContent::User(UserContent::text("hi")),
@@ -1907,11 +1935,17 @@ mod tests {
             subscription: false,
         };
 
-        let _ = prepare_input(input, "msg-1".to_string(), &mut hm, &store, &StubSender)
-            .await
-            .unwrap();
+        let _ = prepare_input(
+            input,
+            "msg-1".to_string(),
+            &mut *hm.borrow_mut(),
+            &store,
+            &StubSender,
+        )
+        .await
+        .unwrap();
 
-        insta::assert_json_snapshot!(hm.get_metadata());
+        insta::assert_json_snapshot!(hm.into_inner().get_metadata());
     }
 
     #[tokio::test]
@@ -1937,8 +1971,10 @@ mod tests {
                 })),
             },
         ];
-        let mut hm = make_history(&store, initial).await;
-        hm.processed_tool_calls.insert("tc-cmd".to_string());
+        let hm = make_history(&store, initial).await;
+        hm.borrow_mut()
+            .processed_tool_calls
+            .insert("tc-cmd".to_string());
 
         let input = tool_result_input(
             "thread-1",
@@ -1953,16 +1989,22 @@ mod tests {
             )),
         );
 
-        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store, &StubSender)
-            .await
-            .unwrap();
+        let result = prepare_input(
+            input,
+            "msg-2".to_string(),
+            &mut *hm.borrow_mut(),
+            &store,
+            &StubSender,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result, PrepareResult::Ready);
         // Should NOT spawn a subthread — stays in the same thread
-        assert_eq!(hm.thread_id, "thread-1");
+        assert_eq!(hm.borrow().thread_id, "thread-1");
         // Should have: original user, tool call, original result, synthetic tool call, event result
         insta::assert_json_snapshot!(
-            hm.history,
+            hm.into_inner().history,
             { "[3].content[0].id" => "[uuid]", "[4].content[0].id" => "[uuid]" }
         );
     }
@@ -1981,7 +2023,7 @@ mod tests {
                 serde_json::json!({"command": "make build"}),
             ),
         ];
-        let mut hm = make_history(&store, initial).await;
+        let hm = make_history(&store, initial).await;
 
         let input = tool_result_input(
             "thread-1",
@@ -1996,15 +2038,21 @@ mod tests {
             )),
         );
 
-        let result = prepare_input(input, "msg-2".to_string(), &mut hm, &store, &StubSender)
-            .await
-            .unwrap();
+        let result = prepare_input(
+            input,
+            "msg-2".to_string(),
+            &mut *hm.borrow_mut(),
+            &store,
+            &StubSender,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result, PrepareResult::Ready);
         // Should NOT spawn a subthread — stays in the same thread
-        assert_eq!(hm.thread_id, "thread-1");
+        assert_eq!(hm.borrow().thread_id, "thread-1");
         insta::assert_json_snapshot!(
-            hm.history,
+            hm.into_inner().history,
             { "[3].content[0].id" => "[uuid]", "[4].content[0].id" => "[uuid]" }
         );
     }
@@ -2043,7 +2091,7 @@ mod tests {
     async fn basic_text_completion() {
         let (model, mut ctrl) = mock_model();
         let convo_store = StubConversationStore::new();
-        let mut hm = make_history(
+        let hm = make_history(
             &convo_store,
             vec![Message::User {
                 content: OneOrMany::one(UserContent::text("hello")),
@@ -2055,10 +2103,11 @@ mod tests {
         let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
         // Spawn the stream consumer
-        let handle = tokio::spawn(async move {
+        let handle = tokio::task::spawn_local(async move {
             let stream = crate::event_processor::run_completion(
                 &model,
-                &mut hm,
+                &hm,
+                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,
@@ -2100,7 +2149,7 @@ mod tests {
     async fn cancellation_mid_stream() {
         let (model, mut ctrl) = mock_model();
         let convo_store = StubConversationStore::new();
-        let mut hm = make_history(
+        let hm = make_history(
             &convo_store,
             vec![Message::User {
                 content: OneOrMany::one(UserContent::text("hello")),
@@ -2111,10 +2160,11 @@ mod tests {
         let ctx = tool_context();
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
-        let handle = tokio::spawn(async move {
+        let handle = tokio::task::spawn_local(async move {
             let stream = super::run_completion(
                 &model,
-                &mut hm,
+                &hm,
+                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,
@@ -2159,7 +2209,7 @@ mod tests {
     async fn unknown_tool_injects_error_and_retries() {
         let (model, mut ctrl) = mock_model();
         let convo_store = StubConversationStore::new();
-        let mut hm = make_history(
+        let hm = make_history(
             &convo_store,
             vec![Message::User {
                 content: OneOrMany::one(UserContent::text("do it")),
@@ -2170,10 +2220,11 @@ mod tests {
         let ctx = tool_context();
         let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
-        let handle = tokio::spawn(async move {
+        let handle = tokio::task::spawn_local(async move {
             let stream = super::run_completion(
                 &model,
-                &mut hm,
+                &hm,
+                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,
@@ -2232,7 +2283,7 @@ mod tests {
     async fn receive_event_injected_tool_rejected() {
         let (model, mut ctrl) = mock_model();
         let convo_store = StubConversationStore::new();
-        let mut hm = make_history(
+        let hm = make_history(
             &convo_store,
             vec![Message::User {
                 content: OneOrMany::one(UserContent::text("do it")),
@@ -2243,10 +2294,11 @@ mod tests {
         let ctx = tool_context();
         let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
-        let handle = tokio::spawn(async move {
+        let handle = tokio::task::spawn_local(async move {
             let stream = super::run_completion(
                 &model,
-                &mut hm,
+                &hm,
+                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,
@@ -2333,7 +2385,7 @@ mod tests {
     async fn sync_tool_loops_back_without_new_stream() {
         let (model, mut ctrl) = mock_model();
         let convo_store = StubConversationStore::new();
-        let mut hm = make_history(
+        let hm = make_history(
             &convo_store,
             vec![Message::User {
                 content: OneOrMany::one(UserContent::text("echo something")),
@@ -2353,10 +2405,11 @@ mod tests {
         let ctx = tool_context();
         let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
-        let handle = tokio::spawn(async move {
+        let handle = tokio::task::spawn_local(async move {
             let stream = super::run_completion(
                 &model,
-                &mut hm,
+                &hm,
+                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,
@@ -2419,7 +2472,7 @@ mod tests {
     async fn thinking_chunks_emitted() {
         let (model, mut ctrl) = mock_model();
         let convo_store = StubConversationStore::new();
-        let mut hm = make_history(
+        let hm = make_history(
             &convo_store,
             vec![Message::User {
                 content: OneOrMany::one(UserContent::text("think hard")),
@@ -2430,10 +2483,11 @@ mod tests {
         let ctx = tool_context();
         let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
-        let handle = tokio::spawn(async move {
+        let handle = tokio::task::spawn_local(async move {
             let stream = super::run_completion(
                 &model,
-                &mut hm,
+                &hm,
+                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,
@@ -2482,7 +2536,7 @@ mod tests {
     async fn async_tool_call_yields_execute_action() {
         let (model, mut ctrl) = mock_model();
         let convo_store = StubConversationStore::new();
-        let mut hm = make_history(
+        let hm = make_history(
             &convo_store,
             vec![Message::User {
                 content: OneOrMany::one(UserContent::text("run tool")),
@@ -2526,10 +2580,11 @@ mod tests {
         let ctx = tool_context();
         let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
-        let handle = tokio::spawn(async move {
+        let handle = tokio::task::spawn_local(async move {
             let stream = super::run_completion(
                 &model,
-                &mut hm,
+                &hm,
+                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,
@@ -2568,7 +2623,7 @@ mod tests {
         // When the model stream ends unexpectedly (None from next()), the loop retries.
         let (model, mut ctrl) = mock_model();
         let convo_store = StubConversationStore::new();
-        let mut hm = make_history(
+        let hm = make_history(
             &convo_store,
             vec![Message::User {
                 content: OneOrMany::one(UserContent::text("go")),
@@ -2579,10 +2634,11 @@ mod tests {
         let ctx = tool_context();
         let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
-        let handle = tokio::spawn(async move {
+        let handle = tokio::task::spawn_local(async move {
             let stream = super::run_completion(
                 &model,
-                &mut hm,
+                &hm,
+                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,
@@ -2628,7 +2684,7 @@ mod tests {
     async fn cancellation_during_thinking_emits_thinking_end() {
         let (model, mut ctrl) = mock_model();
         let convo_store = StubConversationStore::new();
-        let mut hm = make_history(
+        let hm = make_history(
             &convo_store,
             vec![Message::User {
                 content: OneOrMany::one(UserContent::text("think")),
@@ -2639,10 +2695,11 @@ mod tests {
         let ctx = tool_context();
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
-        let handle = tokio::spawn(async move {
+        let handle = tokio::task::spawn_local(async move {
             let stream = super::run_completion(
                 &model,
-                &mut hm,
+                &hm,
+                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,
@@ -2691,7 +2748,7 @@ mod tests {
         // Model calls sync tool twice in sequence (two completion rounds), then responds.
         let (model, mut ctrl) = mock_model();
         let convo_store = StubConversationStore::new();
-        let mut hm = make_history(
+        let hm = make_history(
             &convo_store,
             vec![Message::User {
                 content: OneOrMany::one(UserContent::text("echo twice")),
@@ -2711,10 +2768,11 @@ mod tests {
         let ctx = tool_context();
         let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
-        let handle = tokio::spawn(async move {
+        let handle = tokio::task::spawn_local(async move {
             let stream = super::run_completion(
                 &model,
-                &mut hm,
+                &hm,
+                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,

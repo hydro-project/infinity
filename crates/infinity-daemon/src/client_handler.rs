@@ -56,7 +56,7 @@ pub async fn handle_client_channels(
     daemon_tx: mpsc::UnboundedSender<DaemonMessage>,
     session_manager: Arc<Mutex<SessionManager>>,
 ) {
-    let (client_tx, mut client_tx_rx) = mpsc::unbounded_channel::<DaemonMessage>();
+    let (mut client_tx, mut client_tx_rx) = mpsc::unbounded_channel::<DaemonMessage>();
     let mut attached_session_id: Option<String> = None;
 
     // Send Welcome immediately
@@ -96,22 +96,26 @@ pub async fn handle_client_channels(
                         let mut emit = async |msg: DaemonMessage| {
                             let _ = daemon_tx.send(msg);
                         };
-                        match mgr.create_session(&cwd, client_tx.clone(), &mut emit).await {
-                            Ok(sid) => { attached_session_id = Some(sid); }
-                            Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error(format!("failed to create session: {e}"))); }
+                        match mgr.create_session(&cwd, &mut emit).await {
+                            Ok(sid) => {
+                                mgr.attach_client(&sid, client_tx.clone(), false).await;
+                                attached_session_id = Some(sid);
+                            }
+                            Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error { thread_id: None, text: format!("failed to create session: {e}") }); }
                         }
                     }
-                    ClientMessage::Connect { session_id } => {
+                    ClientMessage::Connect { session_id, thread_id } => {
                         let mut mgr = session_manager.lock().await;
                         let mut emit = async |msg: DaemonMessage| {
                             let _ = daemon_tx.send(msg);
                         };
-                        match mgr.resume_session(&session_id, client_tx.clone(), &mut emit).await {
+                        match mgr.resume_session(&session_id, &mut emit).await {
                             Ok(()) => {
-                                mgr.attach_client(&session_id, client_tx.clone()).await;
+                                let target = thread_id.as_deref().unwrap_or(&session_id);
+                                mgr.attach_client(target, client_tx.clone(), true).await;
                                 attached_session_id = Some(session_id);
                             }
-                            Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error(format!("failed to resume session: {e}"))); }
+                            Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error { thread_id: Some(session_id), text: format!("failed to resume session: {e}") }); }
                         }
                     }
                     ClientMessage::UserInput { session_id, text } => {
@@ -127,12 +131,15 @@ pub async fn handle_client_channels(
                             display_as: None,
                             subscription: false,
                         }, None), Some(client_tx.clone()), &mut emit).await {
-                            let _ = daemon_tx.send(DaemonMessage::Error(format!("session {} not found", session_id)));
+                            let _ = daemon_tx.send(DaemonMessage::Error { thread_id: Some(session_id), text: "session not found".into() });
                         }
                     }
-                    ClientMessage::Disconnect { session_id } => {
-                        let mut mgr = session_manager.lock().await;
-                        mgr.detach_client(&session_id);
+                    ClientMessage::Disconnect => {
+                        // Drop the receiver to invalidate all senders in subscriber lists.
+                        // Workers will prune them on next send via retain.
+                        let (new_tx, new_rx) = mpsc::unbounded_channel::<DaemonMessage>();
+                        client_tx = new_tx;
+                        client_tx_rx = new_rx;
                         attached_session_id = None;
                     }
                     ClientMessage::SoftDetach { session_id } => {
@@ -152,19 +159,6 @@ pub async fn handle_client_channels(
                         mgr.cleanup_session(&session_id).await;
                         attached_session_id = None;
                     }
-                    ClientMessage::LoadSession { target_session_id } => {
-                        let mut mgr = session_manager.lock().await;
-                        let mut emit = async |msg: DaemonMessage| {
-                            let _ = daemon_tx.send(msg);
-                        };
-                        match mgr.resume_session(&target_session_id, client_tx.clone(), &mut emit).await {
-                            Ok(()) => {
-                                mgr.attach_client(&target_session_id, client_tx.clone()).await;
-                                attached_session_id = Some(target_session_id);
-                            }
-                            Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error(format!("failed to resume session: {e}"))); }
-                        }
-                    }
                     ClientMessage::TriggerCompaction { session_id } => {
                         let mut mgr = session_manager.lock().await;
                         let mut emit = async |msg: DaemonMessage| {
@@ -180,7 +174,7 @@ pub async fn handle_client_channels(
                         }, None), Some(client_tx.clone()), &mut emit).await;
                     }
                     ClientMessage::SwitchModel { .. } => {
-                        let _ = daemon_tx.send(DaemonMessage::Info("Model switching not yet implemented".to_string()));
+                        let _ = daemon_tx.send(DaemonMessage::Info { thread_id: None, text: "Model switching not yet implemented".into() });
                     }
                     ClientMessage::UserChoiceAnswered { choice_id, selected } => {
                         if let Some(ref sid) = attached_session_id {
@@ -210,10 +204,7 @@ pub async fn handle_client_channels(
         }
     }
 
-    tracing::trace!("Client stream ended, detaching");
-    if let Some(sid) = attached_session_id {
-        tracing::trace!("Detaching client from session, agent continues in background");
-        let mut mgr = session_manager.lock().await;
-        mgr.detach_client(&sid);
-    }
+    // Client stream ended — just drop client_tx_rx (already happens implicitly).
+    // Stale senders in subscriber lists will be pruned on next broadcast.
+    tracing::trace!("Client stream ended");
 }
