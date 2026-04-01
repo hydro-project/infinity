@@ -429,6 +429,17 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
     let args: CloneRepoArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
+    // Reject re-initialization unless upgrading from Direct mode.
+    if let Some(existing) = state.metadata.get(&invocation.group_id).await? {
+        if !matches!(existing.mode, SandboxMode::Direct) {
+            return Err(SandboxError::Other(
+                "A repository has already been initialized for this thread. \
+                 Re-initializing with a different repository is not supported."
+                    .to_string(),
+            ));
+        }
+    }
+
     let remote_uri = state
         .backend
         .init_repo(&args.repo, &invocation.group_id)
