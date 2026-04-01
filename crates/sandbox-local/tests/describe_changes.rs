@@ -5,79 +5,12 @@
 //! forwards the repo's configured identity, the `with_repo_user` snapshots
 //! will diverge to show "Test User".
 
+mod common;
+
+use common::{invoke, start_test_server};
 use rap_client::callback_server::start_callback_channel;
-use rap_protocol::{RapCallback, RapInvocation};
-use sandbox_core::callback::PlainCallbackClient;
-use sandbox_core::server::build_router;
-use sandbox_local::backend::LocalBackend;
-use sandbox_local::metadata::FileMetadataStore;
 
 use std::path::Path;
-
-/// Writable location for jj's secure config, outside any repo tree.
-fn xdg_config_home() -> std::path::PathBuf {
-    std::env::temp_dir().join("xdg-config-home")
-}
-
-/// Start the RAP server on an OS-assigned port, returning the base URL.
-async fn start_test_server(repo_dir: &Path) -> String {
-    let metadata_dir = repo_dir.join(".test-metadata");
-    std::fs::create_dir_all(&metadata_dir).unwrap();
-
-    // Redirect jj's secure config dir so server-side jj commands
-    // don't try to write to ~/.config/jj/repos/.
-    unsafe {
-        std::env::set_var("XDG_CONFIG_HOME", xdg_config_home());
-    }
-
-    let backend = LocalBackend::new(false);
-    let metadata = FileMetadataStore::new(metadata_dir);
-    let (app, _tracker) = build_router(backend, metadata, PlainCallbackClient::new());
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-
-    format!("http://127.0.0.1:{port}")
-}
-
-/// POST a RapInvocation and wait for the callback result text.
-async fn invoke(
-    server_url: &str,
-    callback_url: &str,
-    group_id: &str,
-    operation: &str,
-    arguments: serde_json::Value,
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<RapCallback>,
-) -> String {
-    let invocation = RapInvocation {
-        operation: operation.to_string(),
-        arguments,
-        id: format!("call-{operation}"),
-        call_id: None,
-        callback_url: callback_url.to_string(),
-        group_id: group_id.to_string(),
-        user_id: None,
-        thread_ancestors: None,
-    };
-
-    reqwest::Client::new()
-        .post(format!("{server_url}/invoke"))
-        .json(&invocation)
-        .send()
-        .await
-        .unwrap();
-
-    let cb = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
-        .await
-        .expect("timed out waiting for callback")
-        .expect("channel closed");
-
-    match cb {
-        RapCallback::ToolResult(r) => r.text,
-        other => panic!("expected ToolResult, got: {other:?}"),
-    }
-}
 
 fn redact_jj_log(text: &str) -> String {
     use regex::Regex;
@@ -125,7 +58,7 @@ fn jj_cmd(repo: &Path) -> std::process::Command {
 
 /// Clone repo, describe changes, return the redacted jj log of the sandbox bookmark.
 async fn describe_and_read_log(repo: &Path) -> String {
-    let server_url = start_test_server(repo).await;
+    let server_url = start_test_server(&repo.join(".test-metadata")).await;
     let (callback_url, mut rx) = start_callback_channel().await.unwrap();
 
     let group_id = "test-thread";
@@ -246,7 +179,7 @@ async fn git_describe_and_read_log(repo: &Path) -> String {
         std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
     }
 
-    let server_url = start_test_server(repo).await;
+    let server_url = start_test_server(&repo.join(".test-metadata")).await;
     let (callback_url, mut rx) = start_callback_channel().await.unwrap();
 
     let group_id = "test-thread";
