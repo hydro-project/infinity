@@ -170,7 +170,7 @@ impl InMemoryConversationStore {
             .get("last_updated")
             .and_then(|v| v.as_str())
             .unwrap_or("")
-            .to_string();
+            .to_owned();
         let total_tokens_used = entry
             .get("total_tokens_used")
             .and_then(|v| v.as_u64())
@@ -255,7 +255,7 @@ impl InMemoryConversationStore {
             self.threads
                 .lock()
                 .expect("bug: mutex poisoned")
-                .entry(thread_id.to_string())
+                .entry(thread_id.to_owned())
                 .or_insert(info);
         } else {
             // Fall back: extract thread_info from the full snapshot file.
@@ -268,7 +268,7 @@ impl InMemoryConversationStore {
                 self.threads
                     .lock()
                     .expect("bug: mutex poisoned")
-                    .entry(thread_id.to_string())
+                    .entry(thread_id.to_owned())
                     .or_insert(info);
                 // Migrate: write the .meta.json for next time.
                 self.save_thread_metadata(thread_id);
@@ -278,7 +278,7 @@ impl InMemoryConversationStore {
         // Migration: restore title/last_updated from legacy sessions.json
         self.migrate_from_session_store(thread_id, dir);
 
-        meta_loaded.insert(thread_id.to_string());
+        meta_loaded.insert(thread_id.to_owned());
     }
 
     /// Ensure a thread's full data (messages, display_as, compaction summaries) is loaded.
@@ -306,22 +306,22 @@ impl InMemoryConversationStore {
 
             assert!(
                 messages
-                    .insert(thread_id.to_string(), snapshot.messages)
+                    .insert(thread_id.to_owned(), snapshot.messages)
                     .is_none()
             );
             assert!(
                 display_as_map
-                    .insert(thread_id.to_string(), snapshot.display_as)
+                    .insert(thread_id.to_owned(), snapshot.display_as)
                     .is_none()
             );
             assert!(
                 compaction_summaries
-                    .insert(thread_id.to_string(), snapshot.compaction_summaries)
+                    .insert(thread_id.to_owned(), snapshot.compaction_summaries)
                     .is_none()
             );
         }
 
-        loaded.insert(thread_id.to_string());
+        loaded.insert(thread_id.to_owned());
 
         self.load_views(thread_id);
     }
@@ -336,9 +336,9 @@ impl InMemoryConversationStore {
         self.ensure_thread_loaded(thread_id);
         {
             let mut map = self.display_as_map.lock().expect("bug: mutex poisoned");
-            map.entry(thread_id.to_string())
+            map.entry(thread_id.to_owned())
                 .or_default()
-                .insert(tool_result_id.to_string(), display_as.to_vec());
+                .insert(tool_result_id.to_owned(), display_as.to_vec());
         }
         self.save_thread(thread_id);
     }
@@ -362,7 +362,7 @@ impl InMemoryConversationStore {
         threads
             .get(thread_id)
             .map(|t| t.root_thread_id.clone())
-            .unwrap_or_else(|| thread_id.to_string())
+            .unwrap_or_else(|| thread_id.to_owned())
     }
 
     /// Get the parent thread ID, if any.
@@ -380,7 +380,7 @@ impl InMemoryConversationStore {
         {
             let mut threads = self.threads.lock().expect("bug: mutex poisoned");
             if let Some(t) = threads.get_mut(thread_id) {
-                t.title = Some(title.to_string());
+                t.title = Some(title.to_owned());
             }
         }
         self.save_thread_metadata(thread_id);
@@ -392,7 +392,7 @@ impl InMemoryConversationStore {
     pub fn get_open_subthreads(&self, parent_id: &str) -> Vec<infinity_protocol::SubthreadInfo> {
         self.ensure_thread_metadata_loaded(parent_id);
         let mut result = Vec::new();
-        let mut queue = vec![parent_id.to_string()];
+        let mut queue = vec![parent_id.to_owned()];
         while let Some(pid) = queue.pop() {
             let children = {
                 let threads = self.threads.lock().expect("bug: mutex poisoned");
@@ -462,7 +462,7 @@ impl InMemoryConversationStore {
             .expect("bug: mutex poisoned")
             .get_mut(thread_id)
         {
-            t.last_updated = ts.to_string();
+            t.last_updated = ts.to_owned();
         }
         self.save_thread_metadata(thread_id);
     }
@@ -494,7 +494,7 @@ impl InMemoryConversationStore {
             self.views
                 .lock()
                 .expect("bug: mutex poisoned")
-                .insert(thread_id.to_string(), v);
+                .insert(thread_id.to_owned(), v);
         }
     }
 
@@ -503,9 +503,9 @@ impl InMemoryConversationStore {
         {
             let mut views = self.views.lock().expect("bug: mutex poisoned");
             views
-                .entry(thread_id.to_string())
+                .entry(thread_id.to_owned())
                 .or_default()
-                .insert(view_type.to_string(), content);
+                .insert(view_type.to_owned(), content);
         }
         self.save_views(thread_id);
     }
@@ -534,7 +534,7 @@ impl InMemoryConversationStore {
         self.pending_choices
             .lock()
             .expect("bug: mutex poisoned")
-            .entry(root_thread_id.to_string())
+            .entry(root_thread_id.to_owned())
             .or_default()
             .push(choice);
         self.notify_session(root_thread_id);
@@ -584,7 +584,7 @@ impl InMemoryConversationStore {
     /// Serialize all threads in a session tree to a JSON string.
     pub fn serialize_session(&self, root_thread_id: &str) -> String {
         let mut threads: HashMap<String, SerializedThread> = HashMap::new();
-        let mut queue = vec![root_thread_id.to_string()];
+        let mut queue = vec![root_thread_id.to_owned()];
         while let Some(tid) = queue.pop() {
             self.ensure_thread_loaded(&tid);
             let metadata = {
@@ -682,10 +682,10 @@ impl ConversationStore for InMemoryConversationStore {
                 false
             } else {
                 threads.insert(
-                    thread_id.to_string(),
+                    thread_id.to_owned(),
                     ThreadInfo {
                         parent_thread_id: None,
-                        root_thread_id: thread_id.to_string(),
+                        root_thread_id: thread_id.to_owned(),
                         spawn_message_order: None,
                         spawn_tool_call_id: None,
                         closed: false,
@@ -733,7 +733,7 @@ impl ConversationStore for InMemoryConversationStore {
         tracing::trace!("Appending messages {:?} to store", &messages);
         {
             let mut store = self.messages.lock().expect("bug: mutex poisoned");
-            let entry = store.entry(session_id.to_string()).or_default();
+            let entry = store.entry(session_id.to_owned()).or_default();
             entry.extend(messages);
         }
         self.save_thread(session_id);
@@ -760,7 +760,7 @@ impl ConversationStore for InMemoryConversationStore {
             root = threads
                 .get(parent_thread_id)
                 .map(|t| t.root_thread_id.clone())
-                .unwrap_or_else(|| parent_thread_id.to_string());
+                .unwrap_or_else(|| parent_thread_id.to_owned());
         }
         {
             let mut loaded = self.loaded.lock().expect("bug: mutex poisoned");
@@ -776,10 +776,10 @@ impl ConversationStore for InMemoryConversationStore {
                 threads.insert(
                     new_id.clone(),
                     ThreadInfo {
-                        parent_thread_id: Some(parent_thread_id.to_string()),
+                        parent_thread_id: Some(parent_thread_id.to_owned()),
                         root_thread_id: root,
                         spawn_message_order: Some(spawn_message_order),
-                        spawn_tool_call_id: Some(spawn_tool_call_id.to_string()),
+                        spawn_tool_call_id: Some(spawn_tool_call_id.to_owned()),
                         closed: false,
                         is_subscription_event: is_for_subscription_event,
                         title: None,
@@ -854,7 +854,7 @@ impl ConversationStore for InMemoryConversationStore {
 
     async fn get_ancestor_chain(&self, thread_id: &str) -> Result<Vec<(String, i64)>, MemoryError> {
         let mut result = Vec::new();
-        let mut current = thread_id.to_string();
+        let mut current = thread_id.to_owned();
         loop {
             self.ensure_thread_metadata_loaded(&current);
             let info = {
@@ -889,10 +889,10 @@ impl ConversationStore for InMemoryConversationStore {
                 .compaction_summaries
                 .lock()
                 .expect("bug: mutex poisoned");
-            cs.entry(thread_id.to_string())
+            cs.entry(thread_id.to_owned())
                 .or_default()
                 .push(CompactionSummary {
-                    summary: summary.to_string(),
+                    summary: summary.to_owned(),
                     up_to_order,
                 });
         }
@@ -1027,21 +1027,21 @@ impl InMemoryStateStore {
             let mut subscriptions = self.subscriptions.lock().expect("bug: mutex poisoned");
 
             processed_ids.insert(
-                key.to_string(),
+                key.to_owned(),
                 (
                     snapshot.processed_message_ids,
                     snapshot.processed_tool_call_ids,
                 ),
             );
             if let Some(meta) = snapshot.metadata {
-                metadata.insert(key.to_string(), meta);
+                metadata.insert(key.to_owned(), meta);
             }
             if !snapshot.subscriptions.is_empty() {
-                subscriptions.insert(key.to_string(), snapshot.subscriptions);
+                subscriptions.insert(key.to_owned(), snapshot.subscriptions);
             }
         }
 
-        loaded.insert(key.to_string());
+        loaded.insert(key.to_owned());
     }
 }
 
@@ -1070,7 +1070,7 @@ impl StateStore for InMemoryStateStore {
         {
             let mut store = self.processed_ids.lock().expect("bug: mutex poisoned");
             let entry = store
-                .entry(thread_id.to_string())
+                .entry(thread_id.to_owned())
                 .or_insert_with(|| (HashSet::new(), HashSet::new()));
             entry.0.extend(message_ids);
         }
@@ -1087,7 +1087,7 @@ impl StateStore for InMemoryStateStore {
         {
             let mut store = self.processed_ids.lock().expect("bug: mutex poisoned");
             let entry = store
-                .entry(thread_id.to_string())
+                .entry(thread_id.to_owned())
                 .or_insert_with(|| (HashSet::new(), HashSet::new()));
             entry.1.extend(tool_call_ids);
         }
@@ -1112,7 +1112,7 @@ impl StateStore for InMemoryStateStore {
         self.ensure_loaded(root_thread_id);
         {
             let mut store = self.metadata.lock().expect("bug: mutex poisoned");
-            store.insert(root_thread_id.to_string(), metadata);
+            store.insert(root_thread_id.to_owned(), metadata);
         }
         self.save_key(root_thread_id);
         Ok(())
@@ -1136,9 +1136,9 @@ impl StateStore for InMemoryStateStore {
         {
             let mut store = self.subscriptions.lock().expect("bug: mutex poisoned");
             store
-                .entry(thread_id.to_string())
+                .entry(thread_id.to_owned())
                 .or_default()
-                .insert(tool_call_id.to_string());
+                .insert(tool_call_id.to_owned());
         }
         self.save_key(thread_id);
         Ok(())
@@ -1185,14 +1185,14 @@ impl InputSender for InMemoryMessageSender {
         dedup_id: &str,
     ) -> Result<(), MemoryError> {
         self.tx
-            .send((message, dedup_id.to_string()))
+            .send((message, dedup_id.to_owned()))
             .map_err(|e| MemoryError(format!("channel send failed: {}", e)))?;
         Ok(())
     }
 }
 
 #[cfg(test)]
-#[allow(clippy::collapsible_if)]
+#[expect(clippy::collapsible_if, reason = "readability")]
 mod tests {
     use super::*;
     use infinity_agent_core::traits::ConversationStore;

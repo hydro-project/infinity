@@ -321,7 +321,6 @@ async fn close_thread_handler<
 #[derive(Debug, Deserialize)]
 struct CancelToolCallRequest {
     tool_call_id: String,
-    #[allow(dead_code)]
     thread_id: String,
 }
 
@@ -421,11 +420,8 @@ async fn is_write_orig_granted<M: MetadataStore>(metadata: &M, chain: &[String])
 }
 
 /// Return the set of paths already granted across the thread chain.
-async fn granted_write_paths<M: MetadataStore>(
-    metadata: &M,
-    chain: &[String],
-) -> std::collections::HashSet<String> {
-    let mut granted = std::collections::HashSet::new();
+async fn granted_write_paths<M: MetadataStore>(metadata: &M, chain: &[String]) -> HashSet<String> {
+    let mut granted = HashSet::new();
     for id in chain {
         if let Ok(Some(s)) = metadata.get(id).await {
             granted.extend(s.write_path_grants.iter().cloned());
@@ -461,7 +457,7 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
         return Err(SandboxError::Other(
             "A repository has already been initialized for this thread. \
              Re-initializing with a different repository is not supported."
-                .to_string(),
+                .to_owned(),
         ));
     }
 
@@ -471,37 +467,31 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
         .await?;
 
     let bookmark = format!("sandbox-{}", invocation.group_id);
-    let path = std::path::PathBuf::from(&remote_uri);
+    let path = PathBuf::from(&remote_uri);
 
     // Resolve the base revision to an absolute jj change_id.
     let (repo_state, msg) = if path.join(".jj").is_dir() {
         // Jujutsu repo — resolve base revision via jj.
-        let _ = crate::jj::run_jj(&path, &["workspace", "update-stale"]).await;
+        let _ = run_jj(&path, &["workspace", "update-stale"]).await;
         let rev_to_resolve = args
             .base_thread_id
             .as_ref()
             .map(|id| format!("sandbox-{}", id));
-        let default_rev =
-            if rev_to_resolve.is_none() && crate::jj::jj_bookmark_is_empty(&path, "@").await {
-                "@-"
-            } else {
-                "@"
-            };
-        let base_revision = match crate::jj::jj_resolve_revision(
-            &path,
-            rev_to_resolve.as_deref().unwrap_or(default_rev),
-        )
-        .await
+        let default_rev = if rev_to_resolve.is_none() && jj::jj_bookmark_is_empty(&path, "@").await
         {
-            Ok(rev) => rev,
-            Err(_) => {
-                return Err(SandboxError::Other(
-                    "Failed to resolve the base revision. This can happen when the repository \
-                         has no commits yet. Use the `open_sandbox_direct` tool instead, which \
-                         operates directly on the repository without requiring an existing commit."
-                        .to_string(),
-                ));
-            }
+            "@-"
+        } else {
+            "@"
+        };
+        let Ok(base_revision) =
+            jj::jj_resolve_revision(&path, rev_to_resolve.as_deref().unwrap_or(default_rev)).await
+        else {
+            return Err(SandboxError::Other(
+                "Failed to resolve the base revision. This can happen when the repository \
+                     has no commits yet. Use the `open_sandbox_direct` tool instead, which \
+                     operates directly on the repository without requiring an existing commit."
+                    .to_owned(),
+            ));
         };
 
         let rs = RepoState {
@@ -522,7 +512,7 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
         };
         let msg = match rev_to_resolve {
             Some(rev) => format!("Repository initialized on top of {rev}."),
-            None => "Repository initialized (using Jujutsu workspaces).".to_string(),
+            None => "Repository initialized (using Jujutsu workspaces).".to_owned(),
         };
         (rs, msg)
     } else {
@@ -532,18 +522,15 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
             .as_ref()
             .map(|id| format!("sandbox-{}", id));
         let rev = rev_to_resolve.as_deref().unwrap_or("HEAD");
-        let output = match crate::git::run_git(&path, &["rev-parse", rev]).await {
-            Ok(o) => o,
-            Err(_) => {
-                return Err(SandboxError::Other(
-                    "Failed to resolve the HEAD commit. This can happen when the repository \
-                     has no commits yet. Use the `open_sandbox_direct` tool instead, which \
-                     operates directly on the repository without requiring an existing commit."
-                        .to_string(),
-                ));
-            }
+        let Ok(output) = git::run_git(&path, &["rev-parse", rev]).await else {
+            return Err(SandboxError::Other(
+                "Failed to resolve the HEAD commit. This can happen when the repository \
+                 has no commits yet. Use the `open_sandbox_direct` tool instead, which \
+                 operates directly on the repository without requiring an existing commit."
+                    .to_owned(),
+            ));
         };
-        let base_revision = output.trim().to_string();
+        let base_revision = output.trim().to_owned();
 
         let rs = RepoState {
             group_id: invocation.group_id.clone(),
@@ -563,7 +550,7 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
         };
         let msg = match rev_to_resolve {
             Some(rev) => format!("Repository initialized on top of {rev}."),
-            None => "Repository initialized (using Git worktrees).".to_string(),
+            None => "Repository initialized (using Git worktrees).".to_owned(),
         };
         (rs, msg)
     };
@@ -606,7 +593,7 @@ async fn handle_open_sandbox_direct<B: SandboxBackend, M: MetadataStore, C: Call
     state.metadata.put(&repo_state).await?;
 
     tracing::info!(group_id = %invocation.group_id, remote = %remote_uri, "opened direct sandbox");
-    Ok("Repository initialized (Direct mode — file edits require approval, commands run without file write access unless write-orig is granted).".to_string())
+    Ok("Repository initialized (Direct mode — file edits require approval, commands run without file write access unless write-orig is granted).".to_owned())
 }
 
 use crate::{DEFAULT_SANDBOX_EMAIL, DEFAULT_SANDBOX_NAME};
@@ -632,15 +619,15 @@ where
     B: SandboxBackend,
     M: MetadataStore,
     C: CallbackClient,
-    F: FnOnce(std::path::PathBuf) -> Fut,
-    Fut: std::future::Future<Output = DisplayResult>,
+    F: FnOnce(PathBuf) -> Fut,
+    Fut: Future<Output = DisplayResult>,
 {
     let group_id = &invocation.group_id;
     let repo_state = state
         .metadata
         .get(group_id)
         .await?
-        .ok_or_else(|| SandboxError::RepoNotFound(group_id.to_string()))?;
+        .ok_or_else(|| SandboxError::RepoNotFound(group_id.to_owned()))?;
 
     let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;
 
@@ -819,7 +806,7 @@ async fn handle_execute_command_streaming_inner<
         .map(|perms| {
             perms
                 .iter()
-                .filter_map(|s| s.strip_prefix("write:").map(|p| p.to_string()))
+                .filter_map(|s| s.strip_prefix("write:").map(|p| p.to_owned()))
                 .collect()
         })
         .unwrap_or_default();
@@ -838,7 +825,7 @@ async fn handle_execute_command_streaming_inner<
         // Build a single batch prompt for all unapproved permissions
         let mut prompt_parts = Vec::new();
         if needs_write_orig_approval {
-            prompt_parts.push("the original repository directory".to_string());
+            prompt_parts.push("the original repository directory".to_owned());
         }
         for p in &unapproved_paths {
             prompt_parts.push(p.to_string());
@@ -849,14 +836,14 @@ async fn handle_execute_command_streaming_inner<
         let (mut choices, grant_ids) = build_grant_choices(&chain);
         let yes_once_idx = choices.len();
         let no_idx = yes_once_idx + 1;
-        choices.push("Yes once".to_string());
-        choices.push("No".to_string());
+        choices.push("Yes once".to_owned());
+        choices.push("No".to_owned());
 
         let base_url = state
             .server_base_url
             .get()
             .cloned()
-            .unwrap_or_else(|| "http://localhost".to_string());
+            .unwrap_or_else(|| "http://localhost".to_owned());
         let response_url = format!("{base_url}/user_choice_response");
 
         let (choice_tx, choice_rx) = tokio::sync::oneshot::channel();
@@ -955,10 +942,9 @@ async fn handle_execute_command_streaming_inner<
 
     // Spawn the process
     let is_direct = matches!(repo_state.mode, SandboxMode::Direct);
-    let orig_path = std::path::PathBuf::from(&repo_state.remote_uri);
-    let write_path_bufs: Vec<std::path::PathBuf> =
-        write_paths.iter().map(std::path::PathBuf::from).collect();
-    let mut extra_writable: Vec<&std::path::Path> = if needs_write_orig {
+    let orig_path = PathBuf::from(&repo_state.remote_uri);
+    let write_path_bufs: Vec<PathBuf> = write_paths.iter().map(PathBuf::from).collect();
+    let mut extra_writable: Vec<&Path> = if needs_write_orig {
         vec![orig_path.as_path()]
     } else {
         vec![]
@@ -999,12 +985,12 @@ async fn handle_execute_command_streaming_inner<
         .child
         .stdout
         .take()
-        .ok_or_else(|| SandboxError::Other("failed to capture stdout".to_string()))?;
+        .ok_or_else(|| SandboxError::Other("failed to capture stdout".to_owned()))?;
     let stderr = spawned
         .child
         .stderr
         .take()
-        .ok_or_else(|| SandboxError::Other("failed to capture stderr".to_string()))?;
+        .ok_or_else(|| SandboxError::Other("failed to capture stderr".to_owned()))?;
 
     // Channel for output events from reader tasks
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutputEvent>();
@@ -1339,14 +1325,14 @@ async fn request_direct_write_approval<B: SandboxBackend, M: MetadataStore, C: C
     let (mut choices, grant_ids) = build_grant_choices(&chain);
     let yes_once_idx = choices.len();
     let no_idx = yes_once_idx + 1;
-    choices.push("Yes once".to_string());
-    choices.push("No".to_string());
+    choices.push("Yes once".to_owned());
+    choices.push("No".to_owned());
 
     let base_url = state
         .server_base_url
         .get()
         .cloned()
-        .unwrap_or_else(|| "http://localhost".to_string());
+        .unwrap_or_else(|| "http://localhost".to_owned());
     let response_url = format!("{base_url}/user_choice_response");
 
     let (choice_tx, choice_rx) = tokio::sync::oneshot::channel();
@@ -1396,7 +1382,7 @@ async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
         Some(SandboxMode::Direct)
     ) && !request_direct_write_approval(state, invocation, &args.path).await
     {
-        return Ok(("Error: file write denied by user.".to_string(), None));
+        return Ok(("Error: file write denied by user.".to_owned(), None));
     }
 
     with_sandbox(
@@ -1454,7 +1440,7 @@ async fn handle_create_file<B: SandboxBackend, M: MetadataStore, C: CallbackClie
         Some(SandboxMode::Direct)
     ) && !request_direct_write_approval(state, invocation, &args.path).await
     {
-        return Ok(("Error: file write denied by user.".to_string(), None));
+        return Ok(("Error: file write denied by user.".to_owned(), None));
     }
 
     with_sandbox(
@@ -1507,7 +1493,7 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
         return Err(SandboxError::Other(
             "ripgrep (rg) is not installed or not found in PATH. \
              Please install it: https://github.com/BurntSushi/ripgrep#installation"
-                .to_string(),
+                .to_owned(),
         ));
     }
 
@@ -1556,13 +1542,13 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
                     "Searched for '{}' — no matches",
                     query_for_display
                 ))];
-                return Ok(("No matches found.".to_string(), Some(display)));
+                return Ok(("No matches found.".to_owned(), Some(display)));
             }
 
             let stdout = &exec_result.stdout;
 
             // Build summary: count matching files and match lines
-            let mut files = std::collections::HashSet::new();
+            let mut files = HashSet::new();
             let mut match_count = 0usize;
             for line in stdout.lines() {
                 // Match lines have the format "file:line:content" (colon after line number)
@@ -1608,7 +1594,7 @@ async fn handle_describe_overall_changes<B: SandboxBackend, M: MetadataStore, C:
         state,
         invocation,
         Some(&args.message),
-        |_sandbox_dir| async move { Ok(("Edits described.".to_string(), None)) },
+        |_sandbox_dir| async move { Ok(("Edits described.".to_owned(), None)) },
         true,
     )
     .await
@@ -1670,7 +1656,7 @@ async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackC
             .await
         }
         SandboxMode::Direct => Err(SandboxError::Other(
-            "squash_sandbox is not supported in Direct mode".to_string(),
+            "squash_sandbox is not supported in Direct mode".to_owned(),
         )),
     };
 
@@ -1690,7 +1676,7 @@ async fn push_diff_view<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     let Ok(Some(repo_state)) = state.metadata.get(&invocation.group_id).await else {
         return;
     };
-    let repo_path = std::path::PathBuf::from(&repo_state.remote_uri);
+    let repo_path = PathBuf::from(&repo_state.remote_uri);
     let diff = match &repo_state.mode {
         SandboxMode::Jj { base_revision } => run_jj(
             &repo_path,
@@ -1739,7 +1725,7 @@ fn build_edit_diff(path: &str, old_str: &str, new_str: &str) -> Vec<DisplaySegme
     // Trim trailing whitespace but keep the structure intact
     patch.truncate(patch.trim_end().len());
     vec![DisplaySegment::Diff(DiffContent {
-        path: path.to_string(),
+        path: path.to_owned(),
         patch,
     })]
 }
@@ -1779,7 +1765,7 @@ async fn migrate_handler<
         "received migrate request"
     );
     match migrate_inner(&state, &request).await {
-        Ok(()) => (StatusCode::OK, "migration complete".to_string()),
+        Ok(()) => (StatusCode::OK, "migration complete".to_owned()),
         Err(e) => {
             tracing::error!("migration failed: {e}");
             (
@@ -1934,7 +1920,7 @@ async fn migrate_import_handler<
     mut multipart: Multipart,
 ) -> (StatusCode, String) {
     match migrate_import_inner(&state, &mut multipart).await {
-        Ok(()) => (StatusCode::OK, "import complete".to_string()),
+        Ok(()) => (StatusCode::OK, "import complete".to_owned()),
         Err(e) => {
             tracing::error!("migration import failed: {e}");
             (
@@ -2045,14 +2031,14 @@ async fn migrate_import_inner<B: SandboxBackend, M: MetadataStore, C: CallbackCl
 
 fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
     ToolsetManifest {
-        name: "sandbox-tools".to_string(),
-        description: Some("Sandboxed code editing and execution tools using jujutsu for filesystem versioning".to_string()),
-        endpoint: endpoint.to_string(),
+        name: "sandbox-tools".to_owned(),
+        description: Some("Sandboxed code editing and execution tools using jujutsu for filesystem versioning".to_owned()),
+        endpoint: endpoint.to_owned(),
         needs_migration,
         tools: vec![
             ToolDef {
-                name: "clone_repo".to_string(),
-                description: "Initialize a repository for sandboxed execution. Provide a local path to a git repo (local mode) or a git remote URI (remote mode). This must be called before execute_command.".to_string(),
+                name: "clone_repo".to_owned(),
+                description: "Initialize a repository for sandboxed execution. Provide a local path to a git repo (local mode) or a git remote URI (remote mode). This must be called before execute_command.".to_owned(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -2071,8 +2057,8 @@ fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
                 display_script: None,
             },
             ToolDef {
-                name: "open_sandbox_direct".to_string(),
-                description: "Open a repository in Direct mode (regular clone_repo is always preferred). Direct mode operates on the original directory with no worktrees — file edits and creation require user approval, and commands run without file write access unless write-orig is granted. Use this only when clone_repo fails (e.g. the repository has no commits yet).".to_string(),
+                name: "open_sandbox_direct".to_owned(),
+                description: "Open a repository in Direct mode (regular clone_repo is always preferred). Direct mode operates on the original directory with no worktrees — file edits and creation require user approval, and commands run without file write access unless write-orig is granted. Use this only when clone_repo fails (e.g. the repository has no commits yet).".to_owned(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -2087,8 +2073,8 @@ fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
                 display_script: None,
             },
             ToolDef {
-                name: "execute_command".to_string(),
-                description: "Execute a bash command in a sandboxed copy of the repository. The sandbox is an isolated temporary directory with the repo's current state. There is no need to cd to folders like /tmp before running commands.".to_string(),
+                name: "execute_command".to_owned(),
+                description: "Execute a bash command in a sandboxed copy of the repository. The sandbox is an isolated temporary directory with the repo's current state. There is no need to cd to folders like /tmp before running commands.".to_owned(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -2105,11 +2091,11 @@ fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
                     "required": ["command"]
                 }),
                 annotations: None,
-                display_script: Some(r#""$ " + args.command"#.to_string()),
+                display_script: Some(r#""$ " + args.command"#.to_owned()),
             },
             ToolDef {
-                name: "read_file".to_string(),
-                description: "Read the content of a single file with optional line range specification. Returns the file content with line numbers. Use start_line and end_line to focus on specific sections of large files.".to_string(),
+                name: "read_file".to_owned(),
+                description: "Read the content of a single file with optional line range specification. Returns the file content with line numbers. Use start_line and end_line to focus on specific sections of large files.".to_owned(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -2129,11 +2115,11 @@ fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
                     "required": ["path"]
                 }),
                 annotations: None,
-                display_script: Some(r#"let s = "Read " + args.path; if args.start_line != () { s += ":" + args.start_line; if args.end_line != () { s += "-" + args.end_line; } } s"#.to_string()),
+                display_script: Some(r#"let s = "Read " + args.path; if args.start_line != () { s += ":" + args.start_line; if args.end_line != () { s += "-" + args.end_line; } } s"#.to_owned()),
             },
             ToolDef {
-                name: "edit_file".to_string(),
-                description: "Replace text in a file. The old_str must match exactly one location in the file. The new_str will replace it. Ensure old_str is unique and includes enough context to identify a single location.".to_string(),
+                name: "edit_file".to_owned(),
+                description: "Replace text in a file. The old_str must match exactly one location in the file. The new_str will replace it. Ensure old_str is unique and includes enough context to identify a single location.".to_owned(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -2153,11 +2139,11 @@ fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
                     "required": ["path", "old_str", "new_str"]
                 }),
                 annotations: None,
-                display_script: Some(r#"let n = args.new_str.split("\n").len(); "Edit " + args.path + " (" + n + " lines)""#.to_string()),
+                display_script: Some(r#"let n = args.new_str.split("\n").len(); "Edit " + args.path + " (" + n + " lines)""#.to_owned()),
             },
             ToolDef {
-                name: "create_file".to_string(),
-                description: "Create a new file with the given content. Fails if the file already exists. Parent directories are created automatically if needed.".to_string(),
+                name: "create_file".to_owned(),
+                description: "Create a new file with the given content. Fails if the file already exists. Parent directories are created automatically if needed.".to_owned(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -2176,8 +2162,8 @@ fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
                 display_script: None,
             },
             ToolDef {
-                name: "grep".to_string(),
-                description: "Fast text-based regex search that finds exact pattern matches within files using ripgrep. Search results include line numbers, file paths, and 2 lines of context around each match. Results are capped at 50 matches.".to_string(),
+                name: "grep".to_owned(),
+                description: "Fast text-based regex search that finds exact pattern matches within files using ripgrep. Search results include line numbers, file paths, and 2 lines of context around each match. Results are capped at 50 matches.".to_owned(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -2201,11 +2187,11 @@ fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
                     "required": ["query"]
                 }),
                 annotations: None,
-                display_script: Some(r#"let s = "Grep: " + args.query; if args.includePattern != () { s += " in " + args.includePattern; } s"#.to_string()),
+                display_script: Some(r#"let s = "Grep: " + args.query; if args.includePattern != () { s += " in " + args.includePattern; } s"#.to_owned()),
             },
             ToolDef {
-                name: "describe_overall_changes".to_string(),
-                description: "Call this after finishing a coding task or subtask to describe the overall changes. Use a git-style commit message: a short one-line summary, followed by a blank line, then detailed explanations of what was changed and why.".to_string(),
+                name: "describe_overall_changes".to_owned(),
+                description: "Call this after finishing a coding task or subtask to describe the overall changes. Use a git-style commit message: a short one-line summary, followed by a blank line, then detailed explanations of what was changed and why.".to_owned(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -2220,8 +2206,8 @@ fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
                 display_script: None,
             },
             ToolDef {
-                name: "squash_sandbox".to_string(),
-                description: "Squash changes from a child thread's sandbox into the current thread's sandbox. This runs `jj squash` to merge the child's changes. Use this after a child thread completes its work to incorporate its edits.".to_string(),
+                name: "squash_sandbox".to_owned(),
+                description: "Squash changes from a child thread's sandbox into the current thread's sandbox. This runs `jj squash` to merge the child's changes. Use this after a child thread completes its work to incorporate its edits.".to_owned(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {

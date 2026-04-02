@@ -34,7 +34,7 @@ struct JsonRpcRequest {
 
 #[derive(Deserialize)]
 struct JsonRpcResponse {
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "reserved for future use")]
     id: Option<u64>,
     result: Option<serde_json::Value>,
     error: Option<JsonRpcError>,
@@ -101,7 +101,7 @@ impl StdioMcpClient {
         let req = JsonRpcRequest {
             jsonrpc: "2.0",
             id: self.next_id,
-            method: method.to_string(),
+            method: method.to_owned(),
             params,
         };
         let mut line = serde_json::to_string(&req)?;
@@ -167,7 +167,7 @@ struct HttpMcpClient {
 impl HttpMcpClient {
     async fn new(url: &str, headers: &HashMap<String, String>) -> Result<Self, BoxError> {
         let mut client = Self {
-            url: url.to_string(),
+            url: url.to_owned(),
             headers: headers.clone(),
             session_id: None,
             next_id: 0,
@@ -255,7 +255,7 @@ impl McpTransport for HttpMcpClient {
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
-            .to_string();
+            .to_owned();
         let text = resp.text().await?;
 
         if content_type.contains("text/event-stream") {
@@ -284,7 +284,7 @@ impl McpTransport for HttpMcpClient {
 #[doc(hidden)]
 pub type McpClientFactory = Box<
     dyn Fn() -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<Box<dyn McpTransport>, BoxError>> + Send>,
+            Box<dyn Future<Output = Result<Box<dyn McpTransport>, BoxError>> + Send>,
         > + Send
         + Sync,
 >;
@@ -320,7 +320,7 @@ impl ProxyState {
             .cloned()
             .unwrap_or_default();
         if tools.is_empty() {
-            return Ok(("No tools available from this MCP server.".to_string(), None));
+            return Ok(("No tools available from this MCP server.".to_owned(), None));
         }
         let mut out = format!("Available tools ({}):\n\n", tools.len());
         for tool in &tools {
@@ -409,19 +409,19 @@ fn json_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
         .header("content-type", "application/json")
-        .body(Full::new(Bytes::from(body.to_string())))
+        .body(Full::new(Bytes::from(body.to_owned())))
         .expect("bug: failed to build HTTP response")
 }
 
 fn text_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
-        .body(Full::new(Bytes::from(body.to_string())))
+        .body(Full::new(Bytes::from(body.to_owned())))
         .expect("bug: failed to build HTTP response")
 }
 
 async fn handle(req: Request<Incoming>, state: Arc<ProxyState>) -> Response<Full<Bytes>> {
-    let path = req.uri().path().to_string();
+    let path = req.uri().path().to_owned();
     let method = req.method().clone();
 
     // Discovery endpoint
@@ -478,7 +478,7 @@ async fn handle(req: Request<Incoming>, state: Arc<ProxyState>) -> Response<Full
                 .get("tool_name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
-                .to_string();
+                .to_owned();
             let args = inv
                 .arguments
                 .get("arguments")

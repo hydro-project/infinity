@@ -81,7 +81,7 @@ impl ToolsConfig {
         let existing_ids: std::collections::HashSet<String> = self
             .tool_sets
             .iter()
-            .filter_map(|ts| ts.id().map(|s| s.to_string()))
+            .filter_map(|ts| ts.id().map(|s| s.to_owned()))
             .collect();
         for ts in other.tool_sets {
             if let Some(id) = ts.id()

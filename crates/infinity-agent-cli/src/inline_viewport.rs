@@ -3,13 +3,13 @@ use ratatui::{
     buffer::Buffer,
     crossterm::{
         Command,
-        cursor::{self, MoveTo, MoveUp, SavePosition},
+        cursor::{self},
         queue,
         style::{
             Attribute as CAttribute, Color as CColor, Colors, Print, SetAttribute,
             SetBackgroundColor, SetColors, SetForegroundColor,
         },
-        terminal::{self as cterm, Clear},
+        terminal::{self as cterm},
     },
     layout::{Position, Rect},
     style::{Color, Modifier},
@@ -131,7 +131,7 @@ impl InlineViewport {
         // Scroll the screen up to make room for the viewport at the bottom.
         queue!(stdout, cursor::MoveTo(0, rows.saturating_sub(1)))?;
         for _ in 0..height {
-            queue!(stdout, ratatui::crossterm::style::Print("\n"))?;
+            queue!(stdout, Print("\n"))?;
         }
 
         let viewport_y = rows.saturating_sub(height);
@@ -275,7 +275,7 @@ impl InlineViewport {
             let cursor_position_here = cursor::position().expect("failed to get cursor position");
             self.viewport_y = cursor_position_here.1 + 1;
 
-            queue!(stdout, Clear(cterm::ClearType::FromCursorDown))?;
+            queue!(stdout, cterm::Clear(cterm::ClearType::FromCursorDown))?;
         }
 
         queue!(stdout, cursor::RestorePosition)?;
@@ -293,10 +293,10 @@ impl InlineViewport {
                 }
                 queue!(stdout, cursor::RestorePosition)?;
                 queue!(stdout, cursor::MoveUp(shift_up))?;
-                queue!(stdout, SavePosition)?;
+                queue!(stdout, cursor::SavePosition)?;
                 self.last_effective_viewport_y = self.viewport_y;
             } else if ideal_viewport_y > self.viewport_y {
-                queue!(stdout, MoveTo(0, ideal_viewport_y - 1))?;
+                queue!(stdout, cursor::MoveTo(0, ideal_viewport_y - 1))?;
                 self.last_effective_viewport_y = ideal_viewport_y;
             }
         }
@@ -326,54 +326,38 @@ impl InlineViewport {
 
             queue!(
                 stdout,
-                ratatui::crossterm::style::SetAttribute(
-                    ratatui::crossterm::style::Attribute::Reset
-                )
+                SetAttribute(ratatui::crossterm::style::Attribute::Reset)
             )?;
-            let fg: ratatui::style::Color = cell.fg;
-            queue!(
-                stdout,
-                ratatui::crossterm::style::SetForegroundColor(fg.into())
-            )?;
-            let bg: ratatui::style::Color = cell.bg;
-            queue!(
-                stdout,
-                ratatui::crossterm::style::SetBackgroundColor(bg.into())
-            )?;
+            let fg: Color = cell.fg;
+            queue!(stdout, SetForegroundColor(fg.into()))?;
+            let bg: Color = cell.bg;
+            queue!(stdout, SetBackgroundColor(bg.into()))?;
             let mods = cell.modifier;
-            if mods.contains(ratatui::style::Modifier::BOLD) {
+            if mods.contains(Modifier::BOLD) {
                 queue!(
                     stdout,
-                    ratatui::crossterm::style::SetAttribute(
-                        ratatui::crossterm::style::Attribute::Bold
-                    )
+                    SetAttribute(ratatui::crossterm::style::Attribute::Bold)
                 )?;
             }
-            if mods.contains(ratatui::style::Modifier::DIM) {
+            if mods.contains(Modifier::DIM) {
                 queue!(
                     stdout,
-                    ratatui::crossterm::style::SetAttribute(
-                        ratatui::crossterm::style::Attribute::Dim
-                    )
+                    SetAttribute(ratatui::crossterm::style::Attribute::Dim)
                 )?;
             }
-            if mods.contains(ratatui::style::Modifier::ITALIC) {
+            if mods.contains(Modifier::ITALIC) {
                 queue!(
                     stdout,
-                    ratatui::crossterm::style::SetAttribute(
-                        ratatui::crossterm::style::Attribute::Italic
-                    )
+                    SetAttribute(ratatui::crossterm::style::Attribute::Italic)
                 )?;
             }
-            if mods.contains(ratatui::style::Modifier::UNDERLINED) {
+            if mods.contains(Modifier::UNDERLINED) {
                 queue!(
                     stdout,
-                    ratatui::crossterm::style::SetAttribute(
-                        ratatui::crossterm::style::Attribute::Underlined
-                    )
+                    SetAttribute(ratatui::crossterm::style::Attribute::Underlined)
                 )?;
             }
-            queue!(stdout, ratatui::crossterm::style::Print(cell.symbol()))?;
+            queue!(stdout, Print(cell.symbol()))?;
 
             // Advance column tracking by the symbol's display width.
             cur_col += unicode_width::UnicodeWidthStr::width(cell.symbol()) as u16;
@@ -385,7 +369,7 @@ impl InlineViewport {
                 queue!(stdout, MoveToNextLine(pos.y - cur_row))?;
                 cur_col = 0;
             } else {
-                queue!(stdout, MoveUp(cur_row - pos.y))?;
+                queue!(stdout, cursor::MoveUp(cur_row - pos.y))?;
             }
 
             if pos.x != cur_col {
@@ -400,7 +384,7 @@ impl InlineViewport {
         queue!(stdout, EnableWrap)?;
         queue!(
             stdout,
-            ratatui::crossterm::style::SetAttribute(ratatui::crossterm::style::Attribute::Reset)
+            SetAttribute(ratatui::crossterm::style::Attribute::Reset)
         )?;
 
         stdout.flush()?;

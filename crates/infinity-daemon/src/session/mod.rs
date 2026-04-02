@@ -89,10 +89,7 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    pub async fn new(
-        state_dir: std::path::PathBuf,
-        callback_url: String,
-    ) -> Result<Self, BoxError> {
+    pub async fn new(state_dir: PathBuf, callback_url: String) -> Result<Self, BoxError> {
         std::fs::create_dir_all(&state_dir).ok();
         let sessions_path = state_dir.join("sessions.json");
         let (change_tx, mut change_rx) = mpsc::unbounded_channel::<String>();
@@ -134,7 +131,7 @@ impl SessionManager {
                         None => continue,
                     };
                     drop(store);
-                    let mut sessions = std::collections::HashMap::new();
+                    let mut sessions = HashMap::new();
                     sessions.insert(session_id, info);
                     let msg = DaemonMessage::SessionsUpdated { sessions };
                     bc.lock()
@@ -190,8 +187,8 @@ impl SessionManager {
 
         let session_id = self.conversation_store.get_root_thread_id(group_id);
         let msg = DaemonMessage::ViewUpdate {
-            thread_id: Some(group_id.to_string()),
-            view_type: view_type.to_string(),
+            thread_id: Some(group_id.to_owned()),
+            view_type: view_type.to_owned(),
             content,
         };
 
@@ -220,7 +217,7 @@ impl SessionManager {
         }
         self.conversation_store
             .set_last_updated(&session_id, &chrono::Utc::now().to_rfc3339());
-        emit(self.build_connected(&session_id, &session_id).await).await;
+        emit(self.build_connected(&session_id, &session_id)).await;
         self.start_session(session_id.clone(), cwd, emit).await?;
         Ok(session_id)
     }
@@ -234,14 +231,14 @@ impl SessionManager {
         thread_id: &str,
         emit: &mut impl AsyncFnMut(DaemonMessage),
     ) -> Result<(), BoxError> {
-        emit(self.build_connected(session_id, thread_id).await).await;
+        emit(self.build_connected(session_id, thread_id)).await;
         Ok(())
     }
 
-    async fn build_connected(&self, session_id: &str, thread_id: &str) -> DaemonMessage {
+    fn build_connected(&self, session_id: &str, thread_id: &str) -> DaemonMessage {
         DaemonMessage::Connected {
-            session_id: session_id.to_string(),
-            thread_id: thread_id.to_string(),
+            session_id: session_id.to_owned(),
+            thread_id: thread_id.to_owned(),
             model_name: self.default_model_name.clone(),
             context_window: self.default_context_window,
             title: self.conversation_store.get_thread_title(session_id),
@@ -295,8 +292,8 @@ impl SessionManager {
             Err(e) => {
                 emit(info(format!("Warning: failed to boot RAP servers: {e}"))).await;
                 BootedRapServers {
-                    server_ports: std::collections::HashMap::new(),
-                    server_ids: std::collections::HashMap::new(),
+                    server_ports: HashMap::new(),
+                    server_ids: HashMap::new(),
                     spawned_servers: Vec::new(),
                     urls: Vec::new(),
                 }
@@ -400,7 +397,7 @@ impl SessionManager {
                 .agent_tx
                 .clone();
             let _ = agent_tx.send(AgentMessage::Subscribe {
-                thread_id: thread_id.to_string(),
+                thread_id: thread_id.to_owned(),
                 request: (tx.clone(), wants_replay),
             });
         } else if wants_replay {
@@ -463,7 +460,7 @@ impl SessionManager {
                 let _ = store.save();
             }
             let cwd = self.session_store.lock().await.get_cwd(session_id).clone();
-            if let Err(e) = self.start_session(session_id.to_string(), &cwd, emit).await {
+            if let Err(e) = self.start_session(session_id.to_owned(), &cwd, emit).await {
                 tracing::error!("failed to restart session: {e}");
                 return false;
             }
@@ -496,7 +493,7 @@ impl SessionManager {
     pub async fn list_sessions(
         &self,
         subscribe: Option<mpsc::UnboundedSender<DaemonMessage>>,
-    ) -> std::collections::HashMap<String, SessionInfo> {
+    ) -> HashMap<String, SessionInfo> {
         if let Some(tx) = subscribe {
             self.broadcast_clients
                 .lock()
@@ -505,8 +502,7 @@ impl SessionManager {
         }
 
         let store = self.session_store.lock().await;
-        let mut result: std::collections::HashMap<String, SessionInfo> =
-            std::collections::HashMap::new();
+        let mut result: HashMap<String, SessionInfo> = HashMap::new();
 
         for (id, entry) in &store.sessions {
             let threads = self.conversation_store.get_open_subthreads(id);
@@ -585,7 +581,10 @@ impl SessionManager {
     }
 
     /// Start the agent loop for a session. Returns (model_name, context_window).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "session setup requires many dependencies"
+    )]
     async fn start_agent_loop(
         &self,
         session_id: String,
@@ -643,7 +642,10 @@ impl SessionManager {
 
 // ── Agent loop (mirrors CLI main.rs agent_loop/thread_worker) ───────────────
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "agent loop requires many dependencies"
+)]
 fn spawn_agent_loop<Mdl>(
     session_id: String,
     session_store: SessionStoreHandle,
@@ -751,7 +753,10 @@ where
 /// Runs agent_loop, selects on shutdown signal and idle notifications.
 /// When done, gracefully kills servers and marks the session store.
 #[tracing::instrument(skip_all, fields(session_id))]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "session wrapper requires many dependencies"
+)]
 async fn session_wrapper(
     agent_fut: impl Future<Output = ()>,
     session_id: String,
@@ -892,9 +897,9 @@ async fn spawn_rap_server(
 /// Result of booting RAP servers.
 pub struct BootedRapServers {
     /// config_id → port for each server (only servers with an ID).
-    pub server_ports: std::collections::HashMap<String, u16>,
+    pub server_ports: HashMap<String, u16>,
     /// URL → config_id mapping for servers that have an ID.
-    pub server_ids: std::collections::HashMap<String, String>,
+    pub server_ids: HashMap<String, String>,
     /// Spawned child processes (command-based servers only; MCP proxies are managed internally).
     pub spawned_servers: Vec<tokio::process::Child>,
     /// All server URLs (including pre-existing toolset_server URLs from config).
@@ -919,8 +924,8 @@ pub async fn boot_rap_servers(
         (None, None) => {
             emit("Neither local nor user RAP configs exist, using empty config".into()).await;
             return Ok(BootedRapServers {
-                server_ports: std::collections::HashMap::new(),
-                server_ids: std::collections::HashMap::new(),
+                server_ports: HashMap::new(),
+                server_ids: HashMap::new(),
                 spawned_servers: Vec::new(),
                 urls: Vec::new(),
             });
@@ -940,8 +945,8 @@ pub async fn boot_rap_servers(
         }
     };
 
-    let mut server_ports = std::collections::HashMap::new();
-    let mut server_ids = std::collections::HashMap::new();
+    let mut server_ports = HashMap::new();
+    let mut server_ids = HashMap::new();
     let mut spawned_servers = Vec::new();
     let mut urls: Vec<String> = Vec::new();
 

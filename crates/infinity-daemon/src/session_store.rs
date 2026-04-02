@@ -94,7 +94,7 @@ impl SessionStore {
 
         Self {
             sessions,
-            path: path.to_string(),
+            path: path.to_owned(),
             change_tx: Some(change_tx),
         }
     }
@@ -107,13 +107,13 @@ impl SessionStore {
 
     pub fn notify(&self, session_id: &str) {
         if let Some(ref tx) = self.change_tx {
-            let _ = tx.send(session_id.to_string());
+            let _ = tx.send(session_id.to_owned());
         }
     }
 
     pub fn create(&mut self, session_id: &str, cwd: PathBuf) {
         self.sessions.insert(
-            session_id.to_string(),
+            session_id.to_owned(),
             SessionEntry {
                 cwd,
                 shut_down: false,

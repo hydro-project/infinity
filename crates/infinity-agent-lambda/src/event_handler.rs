@@ -36,7 +36,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     let dsql_client = DsqlClient::new(&config);
     let sqs_client = SqsClient::new(&config);
     let scheduler_client = SchedulerClient::new(&config);
-    let table_name = "InfinityAgentsState".to_string();
+    let table_name = "InfinityAgentsState".to_owned();
     let output_queue_url = std::env::var("OUTPUT_QUEUE_URL").unwrap_or_default();
     let scheduler_role_arn = std::env::var("SCHEDULER_ROLE_ARN").unwrap_or_default();
     let dsql_cluster_endpoint = std::env::var("DSQL_CLUSTER_ENDPOINT")
@@ -60,7 +60,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 .await?
                 .item()
                 .and_then(|i| i.get("config").and_then(|v| v.as_s().ok()))
-                .unwrap_or(&"{}".to_string()),
+                .unwrap_or(&"{}".to_owned()),
         ) {
             Ok(config) => {
                 tracing::info!("Loaded tools config from DynamoDB key {}", ddb_key);
@@ -73,7 +73,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         }
     } else {
         let config_path =
-            std::env::var("TOOLS_CONFIG_PATH").unwrap_or_else(|_| "tools.json".to_string());
+            std::env::var("TOOLS_CONFIG_PATH").unwrap_or_else(|_| "tools.json".to_owned());
         ToolsConfig::from_file(&config_path)
             .ok()
             .or_else(|| ToolsConfig::from_env().ok())
@@ -204,12 +204,12 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     .map_err(|e| Error::from(format!("{}", e)))?;
 
     let tool_names: std::collections::HashSet<String> =
-        tool_impls.iter().map(|t| t.name().to_string()).collect();
+        tool_impls.iter().map(|t| t.name().to_owned()).collect();
     let tool_defs: Vec<rig::completion::ToolDefinition> = tool_impls
         .iter()
         .map(|t| rig::completion::ToolDefinition {
-            name: t.name().to_string(),
-            description: t.description().to_string(),
+            name: t.name().to_owned(),
+            description: t.description().to_owned(),
             parameters: t.parameters(),
         })
         .collect();
@@ -229,7 +229,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
 
     let tool_registry: std::collections::HashMap<String, &dyn Tool<SqsMessageSender>> = tool_impls
         .iter()
-        .map(|t| (t.name().to_string(), t.as_ref()))
+        .map(|t| (t.name().to_owned(), t.as_ref()))
         .collect();
 
     let (display_tx, mut display_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -292,7 +292,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             .get_metadata()
             .unwrap_or(serde_json::json!({}));
         let oauth_msg = event_processor::OAuthOutputMessage {
-            message_type: "oauth_required".to_string(),
+            message_type: "oauth_required".to_owned(),
             auth_url,
             metadata,
         };

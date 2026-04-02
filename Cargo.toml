@@ -54,7 +54,26 @@ tempfile = "3"
 axum = { version = "0.8", features = ["multipart"] }
 insta = { version = "1", features = ["json", "redactions"] }
 
+[workspace.lints.rust]
+impl_trait_overcaptures = "warn"
+missing_unsafe_on_extern = "deny"
+unsafe_attr_outside_unsafe = "deny"
+unused_qualifications = "warn"
+
 [workspace.lints.clippy]
+alloc_instead_of_core = "warn"
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+explicit_into_iter_loop = "warn"
+let_and_return = "allow"
+manual_is_variant_and = "warn"
+manual_let_else = "warn"
+redundant_clone = "warn"
+self_named_module_files = "warn"
+str_to_string = "warn"
+try_err = "warn"
+uninlined_format_args = "allow"
+unused_async = "warn"
 unwrap_used = "warn"
 
 [patch.crates-io]

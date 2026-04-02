@@ -288,7 +288,7 @@ async fn migrate_multiple_threads() {
             "clone_repo",
             serde_json::json!({ "repo": source_path.to_str().expect("path") }),
             &mut rx,
-            Some(vec!["session-root".to_string()]),
+            Some(vec!["session-root".to_owned()]),
         )
         .await;
         assert!(text.contains("Repository initialized"), "got: {text}");
@@ -675,7 +675,7 @@ async fn migrate_after_squash_child() {
             "clone_repo",
             serde_json::json!({ "repo": source_path.to_str().expect("path") }),
             &mut rx,
-            Some(vec!["session-root".to_string()]),
+            Some(vec!["session-root".to_owned()]),
         )
         .await;
         assert!(text.contains("Repository initialized"), "got: {text}");
