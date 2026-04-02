@@ -34,7 +34,7 @@ impl DsqlConversationStore {
     pub async fn new(_dsql_client: &DsqlClient, cluster_endpoint: &str) -> Result<Self, Error> {
         let region = std::env::var("AWS_REGION")
             .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
-            .unwrap_or_else(|_| "us-east-1".to_string());
+            .unwrap_or_else(|_| "us-east-1".to_owned());
 
         tracing::info!(
             "Generating DSQL auth token for cluster: {} in region: {}",
@@ -231,7 +231,7 @@ impl ConversationStore for DsqlConversationStore {
             current_order += 1;
             let json_str = serde_json::to_string(&message)
                 .map_err(|e| DsqlError(format!("Failed to serialize message: {}", e)))?;
-            session_ids.push(session_id.to_string());
+            session_ids.push(session_id.to_owned());
             message_orders.push(current_order);
             message_ids_vec.push(message_id);
             message_data.push(json_str);
@@ -357,7 +357,7 @@ impl ConversationStore for DsqlConversationStore {
 
     async fn get_ancestor_chain(&self, thread_id: &str) -> Result<Vec<(String, i64)>, DsqlError> {
         let mut result: Vec<(String, i64)> = Vec::new();
-        let mut current = thread_id.to_string();
+        let mut current = thread_id.to_owned();
 
         loop {
             let row = sqlx::query(

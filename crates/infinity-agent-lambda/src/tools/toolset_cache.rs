@@ -31,7 +31,7 @@ impl ToolsetCache for DynamoDbToolsetCache {
             .client
             .get_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(cache_key.to_string()))
+            .key("session", AttributeValue::S(cache_key.to_owned()))
             .send()
             .await
             .map_err(|e| CacheError(format!("Cache get failed: {}", e)))?;
@@ -47,8 +47,8 @@ impl ToolsetCache for DynamoDbToolsetCache {
         self.client
             .put_item()
             .table_name(&self.table_name)
-            .item("session", AttributeValue::S(cache_key.to_string()))
-            .item("toolset_json", AttributeValue::S(json.to_string()))
+            .item("session", AttributeValue::S(cache_key.to_owned()))
+            .item("toolset_json", AttributeValue::S(json.to_owned()))
             .send()
             .await
             .map_err(|e| CacheError(format!("Cache put failed: {}", e)))?;

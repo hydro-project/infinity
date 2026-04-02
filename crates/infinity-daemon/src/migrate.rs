@@ -23,7 +23,7 @@ pub async fn orchestrate_migration(
     to: String,
     dest_cwd: PathBuf,
     session_manager: Arc<Mutex<SessionManager>>,
-    daemon_tx: tokio::sync::mpsc::UnboundedSender<DaemonMessage>,
+    daemon_tx: UnboundedSender<DaemonMessage>,
 ) {
     let _ = daemon_tx.send(DaemonMessage::MigrateStarted {
         session_id: session_id.clone(),
@@ -33,7 +33,7 @@ pub async fn orchestrate_migration(
         .split_once('/')
         .map_or(session_id.as_str(), |(_, s)| s);
     let new_session_id = if to == "local" {
-        real_session_id.to_string()
+        real_session_id.to_owned()
     } else {
         format!("{to}/{real_session_id}")
     };
@@ -62,12 +62,12 @@ async fn run_migration(
 ) -> Result<(), BoxError> {
     let source_is_local = !session_id.contains('/');
     let (source_remote, real_session_id) = if source_is_local {
-        (None, session_id.to_string())
+        (None, session_id.to_owned())
     } else {
         let (r, s) = session_id
             .split_once('/')
             .ok_or("invalid remote session id")?;
-        (Some(r.to_string()), s.to_string())
+        (Some(r.to_owned()), s.to_owned())
     };
     let dest_is_local = to == "local";
 
@@ -407,7 +407,7 @@ async fn emigrate_from_remote(
     let (tx, mut rx) = rd.open_raw_connection(remote_name).await?;
 
     tx.send(ClientMessage::Emigrate {
-        session_id: session_id.to_string(),
+        session_id: session_id.to_owned(),
         dest_rap_urls,
     })?;
 
@@ -429,9 +429,9 @@ async fn immigrate_to_remote(
     let (tx, mut rx) = rd.open_raw_connection(remote_name).await?;
 
     tx.send(ClientMessage::ImportSession {
-        session_id: session_id.to_string(),
+        session_id: session_id.to_owned(),
         cwd: dest_cwd.to_path_buf(),
-        session_data: session_data.to_string(),
+        session_data: session_data.to_owned(),
     })?;
 
     match rx.recv().await {
@@ -449,7 +449,7 @@ async fn send_emigrate_done(
 ) -> Result<(), BoxError> {
     let (tx, _rx) = rd.open_raw_connection(remote_name).await?;
     tx.send(ClientMessage::EmigrateDone {
-        session_id: session_id.to_string(),
+        session_id: session_id.to_owned(),
     })
     .map_err(|e| e.into())
 }

@@ -104,9 +104,9 @@ impl<M: InputSender + 'static> Tool<M> for SleepUntilTool {
         call_id: Option<String>,
         context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let date_str = args["date"].as_str().unwrap_or("").to_string();
-        let time_str = args["time"].as_str().unwrap_or("").to_string();
-        let tz_str = args["timezone"].as_str().unwrap_or("UTC").to_string();
+        let date_str = args["date"].as_str().unwrap_or("").to_owned();
+        let time_str = args["time"].as_str().unwrap_or("").to_owned();
+        let tz_str = args["timezone"].as_str().unwrap_or("UTC").to_owned();
 
         let tz: chrono_tz::Tz = tz_str
             .parse()

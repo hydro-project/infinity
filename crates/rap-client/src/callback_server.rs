@@ -94,7 +94,7 @@ pub async fn start_callback_channel()
 fn ok_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
-        .body(Full::new(Bytes::from(body.to_string())))
+        .body(Full::new(Bytes::from(body.to_owned())))
         .expect("bug: failed to build HTTP response")
 }
 

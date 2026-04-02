@@ -94,7 +94,7 @@ struct PendingChoice {
     default: usize,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "complex rendering logic")]
 pub async fn run<R>(
     input_tx: mpsc::UnboundedSender<String>,
     mut display_rx: mpsc::UnboundedReceiver<(Option<String>, DisplayEvent<R>)>,
@@ -187,7 +187,7 @@ where
 
     // Send the initial message if provided via --message/-m.
     if let Some(text) = initial_message {
-        let trimmed = text.trim().to_string();
+        let trimmed = text.trim().to_owned();
         if !trimmed.is_empty() {
             let _ = input_tx.send(trimmed);
         }
@@ -348,7 +348,7 @@ where
 
                             let chunk = if stream_start {
                                 stream_start = false;
-                                chunk.trim_start().to_string()
+                                chunk.trim_start().to_owned()
                             } else {
                                 chunk
                             };
@@ -438,7 +438,7 @@ where
                                         let first_line = lines.first().copied().unwrap_or("");
                                         viewport.print_line_above(Line::from(vec![
                                             Span::styled("✓ ", Style::default().fg(Color::Green)),
-                                            Span::styled(first_line.to_string(), Style::default().fg(Color::DarkGray)),
+                                            Span::styled(first_line.to_owned(), Style::default().fg(Color::DarkGray)),
                                         ]))?;
                                         print_continuation_lines(
                                             &mut viewport,
@@ -653,7 +653,7 @@ where
                                     // Handle Tab for autocomplete cycling.
                                     if key.code == KeyCode::Tab {
                                         let prefix = tab_complete.as_ref().map(|(p, _)| p.clone())
-                                            .unwrap_or_else(|| input.text().trim().to_string());
+                                            .unwrap_or_else(|| input.text().trim().to_owned());
                                         if prefix.starts_with('/') && !prefix.contains(' ') && !prefix.is_empty() {
                                             let matches: Vec<&str> = SLASH_COMMANDS
                                                 .iter()
@@ -685,7 +685,7 @@ where
                                             (KeyCode::Char('s'), m) if m.contains(KeyModifiers::CONTROL) => (Some("/stop"), None),
                                             (KeyCode::Enter, _) if !input.is_empty() => {
                                                 tab_complete = None;
-                                                let trimmed = input.take_text().trim().to_string();
+                                                let trimmed = input.take_text().trim().to_owned();
                                                 match trimmed.as_str() {
                                                     "/help" | "/h" => (Some("/help"), None),
                                                     "/quit" | "/exit" | "/q" => (Some("/quit"), None),
@@ -745,7 +745,7 @@ where
                                                 ui_mode = UiMode::ModelPicker;
                                             }
                                             Some("/compact") => {
-                                                let _ = input_tx.send("__compact__".to_string());
+                                                let _ = input_tx.send("__compact__".to_owned());
                                                 viewport.print_line_above(Line::from(vec![
                                                     Span::styled("✦ Compaction triggered", Style::default().fg(Color::Yellow)),
                                                 ]))?;
@@ -879,7 +879,7 @@ fn show_help(viewport: &mut InlineViewport) -> Result<(), BoxError> {
 
 // ── Viewport drawing ────────────────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "complex rendering logic")]
 fn draw_viewport(
     viewport: &mut InlineViewport,
     input: &TextInput,
@@ -920,7 +920,7 @@ fn draw_viewport(
     };
     let status_left = match ui_mode {
         UiMode::SessionPicker | UiMode::ModelPicker | UiMode::QuitPicker | UiMode::ChoicePicker => {
-            "↑↓ navigate  enter select  esc cancel".to_string()
+            "↑↓ navigate  enter select  esc cancel".to_owned()
         }
         UiMode::Normal => format!("{} (/help for commands)", model_name),
     };

@@ -113,7 +113,7 @@ fn convert_callback(cb: RapCallback) -> InputMessage {
         }
         RapCallback::OAuth(oa) => InputMessage {
             content: InputMessageContent::OAuth(OAuthRequired {
-                content_type: "oauth_required".to_string(),
+                content_type: "oauth_required".to_owned(),
                 id: oa.id,
                 call_id: oa.call_id,
                 auth_url: oa.auth_url,
@@ -126,7 +126,7 @@ fn convert_callback(cb: RapCallback) -> InputMessage {
         },
         RapCallback::UserChoice(uc) => InputMessage {
             content: InputMessageContent::UserChoice(UserChoiceRequired {
-                content_type: "user_choice_required".to_string(),
+                content_type: "user_choice_required".to_owned(),
                 id: uc.id,
                 call_id: uc.call_id,
                 prompt: uc.prompt,

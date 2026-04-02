@@ -74,8 +74,8 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
 
         if child_of != context.thread_stack {
             return Some(ToolResult {
-                id: id.to_string(),
-                call_id: call_id.map(|c| c.to_string()),
+                id: id.to_owned(),
+                call_id: call_id.map(|c| c.to_owned()),
                 content: OneOrMany::one(ToolResultContent::Text(Text {
                     text: format!(
                         "Error: child_of {:?} does not match the actual thread stack {:?}. You may be confused and think you are in the parent thread, but you are not. You are in thread {}. Do NOT spawn threads — focus on your assigned task.",
@@ -94,8 +94,8 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             Err(e) => {
                 tracing::error!("failed to spawn thread in conversation store: {e}");
                 return Some(ToolResult {
-                    id: id.to_string(),
-                    call_id: call_id.map(|c| c.to_string()),
+                    id: id.to_owned(),
+                    call_id: call_id.map(|c| c.to_owned()),
                     content: OneOrMany::one(ToolResultContent::Text(Text {
                         text: format!("Error: failed to spawn thread: {e}"),
                     })),
@@ -110,8 +110,8 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
         );
 
         let parent_result = ToolResult {
-            id: id.to_string(),
-            call_id: call_id.map(|c| c.to_string()),
+            id: id.to_owned(),
+            call_id: call_id.map(|c| c.to_owned()),
             content: OneOrMany::one(ToolResultContent::Text(Text {
                 text: format!(
                     "Child thread is successfully spawned and has ID: {}. You will be notified automatically when the child has anything to report. Make sure that you **do not** do the task assigned to the child thread.",
@@ -128,8 +128,8 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
 
         let child_result = InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                id: id.to_string(),
-                call_id: call_id.map(|c| c.to_string()),
+                id: id.to_owned(),
+                call_id: call_id.map(|c| c.to_owned()),
                 content: OneOrMany::one(ToolResultContent::Text(Text {
                     text: format!(
                         "You are now INSIDE the thread that you requested to create. Your thread ID is {}. Your next task is to exactly follow these instructions: {}\n. Start by repeating to yourself the instructions, ignoring thinking from the parent context. Make sure to not be confused by the parent context. If the parent was planning to spawn more threads, you should not.",
@@ -250,7 +250,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Repor
                 id: id.clone(),
                 call_id,
                 content: OneOrMany::one(ToolResultContent::Text(Text {
-                    text: "Report sent to parent thread.".to_string(),
+                    text: "Report sent to parent thread.".to_owned(),
                 })),
             })),
             group_id: context.group_id.clone(),
@@ -389,7 +389,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
                         id: String::new(),
                         call_id: None,
                         content: OneOrMany::one(ToolResultContent::Text(Text {
-                            text: "Compaction complete".to_string(),
+                            text: "Compaction complete".to_owned(),
                         })),
                     })),
                     group_id: parent_id,
@@ -458,7 +458,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
                     metadata: None,
                     synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
                         tool_call_id: spawn_tool_call_id,
-                        child_thread_id: thread_id.to_string(),
+                        child_thread_id: thread_id.to_owned(),
                     })),
                     display_as: None,
                     subscription: false,
@@ -573,7 +573,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M>
                     text: format!("Message from parent thread: {}", message_text),
                 })),
             })),
-            group_id: child_thread_id.to_string(),
+            group_id: child_thread_id.to_owned(),
             metadata: None,
             synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::ParentMessage {
                 tool_call_id: spawn_tool_call_id,
@@ -592,7 +592,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M>
                 id: id.clone(),
                 call_id,
                 content: OneOrMany::one(ToolResultContent::Text(Text {
-                    text: "Message sent to child thread.".to_string(),
+                    text: "Message sent to child thread.".to_owned(),
                 })),
             })),
             group_id: context.group_id.clone(),

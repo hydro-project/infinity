@@ -109,15 +109,15 @@ impl MockModelController {
 
     /// Send a text chunk.
     pub fn send_text(&self, text: &str) {
-        self.send_chunk(RawStreamingChoice::Message(text.to_string()));
+        self.send_chunk(RawStreamingChoice::Message(text.to_owned()));
     }
 
     /// Send a complete tool call.
     pub fn send_tool_call(&self, id: &str, name: &str, args: serde_json::Value) {
         use rig::streaming::RawStreamingToolCall;
         self.send_chunk(RawStreamingChoice::ToolCall(RawStreamingToolCall::new(
-            id.to_string(),
-            name.to_string(),
+            id.to_owned(),
+            name.to_owned(),
             args,
         )));
     }

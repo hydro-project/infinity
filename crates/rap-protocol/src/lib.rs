@@ -49,7 +49,7 @@ pub fn build_display_segments(
     text: &str,
 ) -> Vec<DisplaySegment> {
     let mut segments: Vec<DisplaySegment> = display_as.map(|s| s.to_vec()).unwrap_or_default();
-    segments.push(DisplaySegment::Text(text.to_string()));
+    segments.push(DisplaySegment::Text(text.to_owned()));
     segments
 }
 
@@ -194,7 +194,7 @@ impl CallbackClient for PlainCallbackClient {
         self.client
             .post(url)
             .header("content-type", "application/json")
-            .body(body.to_string())
+            .body(body.to_owned())
             .send()
             .await?;
         Ok(())
@@ -215,7 +215,7 @@ pub async fn send_tool_result<C: CallbackClient>(
         group_id: invocation.group_id.clone(),
         id: invocation.id.clone(),
         call_id: invocation.call_id.clone(),
-        text: text.to_string(),
+        text: text.to_owned(),
         display_as,
         subscription: if subscription { Some(true) } else { None },
     });
@@ -238,10 +238,10 @@ pub async fn send_user_choice<C: CallbackClient>(
         group_id: invocation.group_id.clone(),
         id: invocation.id.clone(),
         call_id: invocation.call_id.clone(),
-        prompt: prompt.to_string(),
+        prompt: prompt.to_owned(),
         choices,
         default,
-        response_url: response_url.to_string(),
+        response_url: response_url.to_owned(),
     });
     let body = serde_json::to_string(&msg).expect("bug: failed to serialize user_choice");
     if let Err(e) = client.post_json(&invocation.callback_url, &body).await {
@@ -262,7 +262,7 @@ pub async fn send_subscription_event<C: CallbackClient>(
     let event = RapCallback::SubscriptionEvent(RapSubscriptionEvent {
         group_id,
         tool_call_id,
-        text: text.to_string(),
+        text: text.to_owned(),
         associative,
         r#final: if r#final { Some(true) } else { None },
     });
@@ -282,7 +282,7 @@ pub async fn send_view_update<C: CallbackClient>(
 ) {
     let msg = RapCallback::ViewUpdate(RapViewUpdate {
         group_id,
-        view_type: view_type.to_string(),
+        view_type: view_type.to_owned(),
         content,
     });
     let body = serde_json::to_string(&msg).expect("bug: failed to serialize view_update");

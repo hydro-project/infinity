@@ -30,7 +30,7 @@ pub async fn run_jj(dir: &Path, args: &[&str]) -> Result<String, SandboxError> {
     }
 
     tracing::debug!("success");
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 /// Resolve a jj revision to an absolute change_id.
@@ -61,8 +61,8 @@ pub async fn jj_git_clone(
         .await
         .unwrap_or_else(|| {
             (
-                crate::DEFAULT_SANDBOX_NAME.to_string(),
-                crate::DEFAULT_SANDBOX_EMAIL.to_string(),
+                crate::DEFAULT_SANDBOX_NAME.to_owned(),
+                crate::DEFAULT_SANDBOX_EMAIL.to_owned(),
             )
         });
 
@@ -172,8 +172,8 @@ pub async fn jj_configured_user(dir: &Path) -> Option<(String, String)> {
         return None;
     }
 
-    let name = String::from_utf8_lossy(&name.stdout).trim().to_string();
-    let email = String::from_utf8_lossy(&email.stdout).trim().to_string();
+    let name = String::from_utf8_lossy(&name.stdout).trim().to_owned();
+    let email = String::from_utf8_lossy(&email.stdout).trim().to_owned();
     if name.is_empty() || email.is_empty() {
         return None;
     }

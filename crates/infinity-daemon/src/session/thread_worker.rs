@@ -30,7 +30,10 @@ pub fn is_user_text_input(msg: &InputMessage) -> bool {
         )
 }
 
-#[expect(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "thread worker requires many dependencies"
+)]
 pub async fn thread_worker<Mdl>(
     active_group_id: String,
     mut rx: mpsc::UnboundedReceiver<(InputMessage, String)>,
@@ -135,12 +138,12 @@ pub async fn thread_worker<Mdl>(
     };
 
     let tool_names: std::collections::HashSet<String> =
-        tool_impls.iter().map(|t| t.name().to_string()).collect();
+        tool_impls.iter().map(|t| t.name().to_owned()).collect();
     let tool_defs: Vec<rig::completion::ToolDefinition> = tool_impls
         .iter()
         .map(|t| rig::completion::ToolDefinition {
-            name: t.name().to_string(),
-            description: t.description().to_string(),
+            name: t.name().to_owned(),
+            description: t.description().to_owned(),
             parameters: t.parameters(),
         })
         .collect();
@@ -156,7 +159,7 @@ pub async fn thread_worker<Mdl>(
     let tool_registry: std::collections::HashMap<String, &dyn Tool<InMemoryMessageSender>> =
         tool_impls
             .iter()
-            .map(|t| (t.name().to_string(), t.as_ref()))
+            .map(|t| (t.name().to_owned(), t.as_ref()))
             .collect();
 
     let input_tokens_cell = std::cell::Cell::new(0u64);
@@ -206,7 +209,7 @@ pub async fn thread_worker<Mdl>(
                             &active_group_id, input_tokens, context_window
                         );
                         let _ = display_tx.send(DisplayEvent::Info(
-                            "✦ Auto-compaction triggered (context > 75%)".to_string(),
+                            "✦ Auto-compaction triggered (context > 75%)".to_owned(),
                         ));
                         pending_non_interrupt_items.push((InputMessage {
                             content: InputMessageContent::User(UserContent::text("")),
@@ -396,7 +399,11 @@ impl Drop for WorkerGuard {
 }
 
 #[cfg(test)]
-#[allow(clippy::collapsible_if, clippy::type_complexity)]
+#[expect(
+    clippy::collapsible_if,
+    clippy::type_complexity,
+    reason = "test readability"
+)]
 mod tests {
     use super::*;
     use infinity_agent_core::traits::InputSender;
