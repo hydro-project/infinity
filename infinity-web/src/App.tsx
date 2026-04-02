@@ -7,6 +7,7 @@ import { CwdPicker } from "./components/CwdPicker";
 import type {
   ClientMessage,
   DaemonMessage,
+  DisplaySegment,
   SessionInfo,
   ModelInfo,
   SpinnerState,
@@ -235,17 +236,13 @@ export function App() {
           }
           case "ToolResult": {
             const p = msgPayload<{
-              text: string;
-              display_as: string | null;
+              segments: DisplaySegment[];
               thread_id: string | null;
             }>(m);
             if (isForCurrentView(p.thread_id)) {
-              const display = p.display_as ?? p.text;
-              const lines = display.split("\n");
               appendMessage({
                 type: "tool_result",
-                text: display,
-                multiline: lines.length > 1,
+                segments: p.segments,
               });
             }
             break;
@@ -529,6 +526,7 @@ export function App() {
         inputDisabled={status !== "connected"}
         pendingChoice={pendingChoices[0] ?? null}
         onChoiceSelect={handleChoiceSelect}
+        theme={theme}
       />
       {cwdPickerOpen && (
         <CwdPicker onConfirm={handleCwdConfirm} onCancel={handleCwdCancel} />

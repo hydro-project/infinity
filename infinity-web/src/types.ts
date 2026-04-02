@@ -27,6 +27,12 @@ export interface TokenUsage {
   output_tokens: number | null;
 }
 
+/* ── Display segments for structured tool result rendering ── */
+
+export type DisplaySegment =
+  | { type: "text"; content: string }
+  | { type: "diff"; content: { path: string; patch: string } };
+
 /* ── Daemon → Client messages ── */
 
 export type DaemonMessage =
@@ -60,8 +66,7 @@ export type DaemonMessage =
     }
   | {
       ToolResult: {
-        text: string;
-        display_as: string | null;
+        segments: DisplaySegment[];
         thread_id: string | null;
       };
     }
@@ -125,7 +130,7 @@ export type MessageItem =
   | { type: "assistant"; text: string; done: boolean }
   | { type: "thinking"; text: string; done: boolean }
   | { type: "tool_call"; name: string; displayText: string }
-  | { type: "tool_result"; text: string; multiline: boolean }
+  | { type: "tool_result"; segments: DisplaySegment[] }
   | { type: "info"; text: string }
   | { type: "subscription"; name: string; text: string }
   | { type: "compaction" }
