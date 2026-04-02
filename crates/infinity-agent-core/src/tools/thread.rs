@@ -85,12 +85,23 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             });
         }
 
-        let new_thread_id = self
+        let new_thread_id = match self
             .conversation_store
             .spawn_thread(&context.group_id, id, false)
             .await
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-            .expect("failed to spawn thread in conversation store");
+        {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::error!("failed to spawn thread in conversation store: {e}");
+                return Some(ToolResult {
+                    id: id.to_string(),
+                    call_id: call_id.map(|c| c.to_string()),
+                    content: OneOrMany::one(ToolResultContent::Text(Text {
+                        text: format!("Error: failed to spawn thread: {e}"),
+                    })),
+                });
+            }
+        };
 
         tracing::info!(
             "Spawned new thread {} from parent {}",
