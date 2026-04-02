@@ -138,7 +138,7 @@ impl InMemoryConversationStore {
         let Some(info) = threads.get(thread_id) else {
             return;
         };
-        if info.last_updated.is_empty() {
+        if !info.last_updated.is_empty() {
             return;
         }
         drop(threads);
