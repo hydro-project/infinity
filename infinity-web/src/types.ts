@@ -14,6 +14,7 @@ export interface SessionInfo {
   total_tokens_used: number;
   status: SessionStatus;
   threads: SubthreadInfo[];
+  remote?: string | null;
 }
 
 export interface ModelInfo {

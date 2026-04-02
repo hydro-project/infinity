@@ -9,10 +9,8 @@ use rig::{
 };
 
 use crate::memory_store::InMemoryConversationStore;
-use crate::session::SessionStoreHandle;
 
 pub struct SetTitleTool {
-    pub session_store: SessionStoreHandle,
     pub conversation_store: InMemoryConversationStore,
 }
 
@@ -52,16 +50,8 @@ impl<M: InputSender + 'static> Tool<M> for SetTitleTool {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let title = args["title"].as_str().unwrap_or("").to_string();
 
-        // Save title in conversation store (works for all threads)
         self.conversation_store
             .set_thread_title(&context.group_id, &title);
-
-        if context.thread_stack.len() <= 1 {
-            // Root thread: also save in session store
-            let mut store = self.session_store.lock().await;
-            store.set_title(&context.group_id, &title);
-            let _ = store.save();
-        }
 
         let msg = InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {

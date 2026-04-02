@@ -25,6 +25,14 @@ pub fn state_dir() -> PathBuf {
         .join(".infinity")
 }
 
+/// Returns the path to the remotes config: `~/.infinity/remotes.json`.
+pub fn remotes_config_path() -> PathBuf {
+    dirs::home_dir()
+        .expect("could not determine home directory")
+        .join(".infinity")
+        .join("remotes.json")
+}
+
 // ── Client → Daemon ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,6 +196,9 @@ pub struct SessionInfo {
     pub status: SessionStatus,
     #[serde(default)]
     pub threads: Vec<SubthreadInfo>,
+    /// If set, this session lives on a remote daemon with this name.
+    #[serde(default)]
+    pub remote: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

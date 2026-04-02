@@ -5,6 +5,7 @@ pub mod memory_store;
 pub mod model_picker;
 pub mod rap_callback;
 pub mod rap_tools;
+pub mod remote;
 pub mod session;
 pub mod session_store;
 pub mod set_title_tool;
@@ -41,6 +42,13 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>
         .await
         .map_err(|e| format!("Failed to start callback server: {e}"))?;
     tracing::info!("shared callback server started");
+
+    // Initialize remote daemon connections
+    let remote_configs = remote::load_remotes_config();
+    if !remote_configs.is_empty() {
+        tracing::info!("loaded {} remote daemon config(s)", remote_configs.len());
+        session_manager.lock().await.init_remotes(remote_configs);
+    }
 
     // Start WebSocket server
     let ws_port: u16 = std::env::var("INFINITY_WS_PORT")

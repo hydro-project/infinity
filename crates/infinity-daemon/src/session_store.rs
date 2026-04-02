@@ -1,6 +1,5 @@
 use std::{collections::HashMap, path::PathBuf};
 
-use chrono::Utc;
 use infinity_protocol::DaemonMessage;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -15,26 +14,18 @@ pub struct PendingChoice {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SessionEntry {
-    pub total_tokens_used: usize,
-    pub last_updated: String,
-    #[serde(default)]
-    pub title: Option<String>,
     pub cwd: PathBuf,
     /// When true, only user text input should re-awaken the agent.
-    /// Set on explicit shutdown; cleared on next user input.
     #[serde(default)]
     pub shut_down: bool,
-    /// When true, the agent is idle (no active work). Can be true alongside `shut_down`.
+    /// When true, the agent is idle (no active work).
     #[serde(default)]
     pub idle: bool,
-    /// Pending user choice requests (transient, not persisted).
-    #[serde(skip)]
-    pub pending_choices: Vec<PendingChoice>,
 }
 
 impl SessionEntry {
-    pub fn status(&self) -> infinity_protocol::SessionStatus {
-        if !self.pending_choices.is_empty() {
+    pub fn status(&self, has_pending_choices: bool) -> infinity_protocol::SessionStatus {
+        if has_pending_choices {
             infinity_protocol::SessionStatus::WaitingForChoice
         } else if self.idle {
             infinity_protocol::SessionStatus::Idle
@@ -68,10 +59,6 @@ impl SessionStore {
                 #[derive(Deserialize)]
                 struct LegacyEntry {
                     thread_id: String,
-                    total_tokens_used: usize,
-                    last_updated: String,
-                    #[serde(default)]
-                    title: Option<String>,
                 }
                 #[derive(Deserialize)]
                 struct LegacyStore {
@@ -85,14 +72,10 @@ impl SessionStore {
                             (
                                 e.thread_id,
                                 SessionEntry {
-                                    total_tokens_used: e.total_tokens_used,
-                                    last_updated: e.last_updated,
-                                    title: e.title,
                                     cwd: std::env::current_dir()
                                         .expect("failed to get current directory"),
                                     shut_down: false,
                                     idle: false,
-                                    pending_choices: Vec::new(),
                                 },
                             )
                         })
@@ -122,34 +105,15 @@ impl SessionStore {
         }
     }
 
-    pub fn update(&mut self, session_id: &str, total_tokens_used: usize, title: Option<String>) {
-        let now = Utc::now().to_rfc3339();
-        let entry = self
-            .sessions
-            .get_mut(session_id)
-            .expect("bug: session not found in store");
-        entry.total_tokens_used = total_tokens_used;
-        entry.last_updated = now;
-        if title.is_some() {
-            entry.title = title;
-        }
-        self.notify(session_id);
-    }
-
     pub fn create(&mut self, session_id: &str, cwd: PathBuf) {
         self.sessions.insert(
             session_id.to_string(),
             SessionEntry {
-                total_tokens_used: 0,
-                last_updated: Utc::now().to_rfc3339(),
-                title: None,
                 cwd,
                 shut_down: false,
                 idle: false,
-                pending_choices: Vec::new(),
             },
         );
-
         self.notify(session_id);
     }
 
@@ -159,19 +123,6 @@ impl SessionStore {
             .get(session_id)
             .expect("bug: session not found in store")
             .cwd
-    }
-
-    pub fn set_title(&mut self, session_id: &str, title: &str) {
-        if let Some(entry) = self.sessions.get_mut(session_id) {
-            entry.title = Some(title.to_string());
-        } else {
-            self.update(session_id, 0, Some(title.to_string()));
-        }
-        self.notify(session_id);
-    }
-
-    pub fn get_title(&self, session_id: &str) -> Option<String> {
-        self.sessions.get(session_id).and_then(|e| e.title.clone())
     }
 
     pub fn mark_shut_down(&mut self, session_id: &str) {
