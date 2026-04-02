@@ -39,7 +39,6 @@ clap = { version = "4", features = ["derive"] }
 dirs = "6"
 tokio-util = { version = "0.7", features = ["codec"] }
 bytes = "1"
-bincode = "1"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["signal"] }
