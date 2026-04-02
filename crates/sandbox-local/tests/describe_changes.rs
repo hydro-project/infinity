@@ -73,13 +73,14 @@ async fn describe_and_read_log(repo: &Path) -> String {
         "clone_repo",
         serde_json::json!({ "repo": repo_str }),
         &mut rx,
+        None,
     )
     .await;
     assert!(text.contains("Repository initialized"), "got: {text}");
 
     let text = invoke(&server_url, &callback_url, group_id, "describe_overall_changes",
         serde_json::json!({ "message": "feat: add widget support\n\nAdded the new widget module." }),
-        &mut rx).await;
+        &mut rx, None).await;
     assert_eq!(text, "Edits described.");
 
     let output = jj_cmd(repo)
@@ -196,13 +197,14 @@ async fn git_describe_and_read_log(repo: &Path) -> String {
         "clone_repo",
         serde_json::json!({ "repo": repo_str }),
         &mut rx,
+        None,
     )
     .await;
     assert!(text.contains("Repository initialized"), "got: {text}");
 
     let text = invoke(&server_url, &callback_url, group_id, "describe_overall_changes",
         serde_json::json!({ "message": "feat: add widget support\n\nAdded the new widget module." }),
-        &mut rx).await;
+        &mut rx, None).await;
     assert_eq!(text, "Edits described.");
 
     let output = std::process::Command::new("git")

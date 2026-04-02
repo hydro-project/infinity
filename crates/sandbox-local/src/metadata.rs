@@ -50,4 +50,24 @@ impl MetadataStore for FileMetadataStore {
         std::fs::write(&path, json).map_err(SandboxError::Io)?;
         Ok(())
     }
+
+    async fn list_all(&self) -> Result<Vec<RepoState>, SandboxError> {
+        let entries = match std::fs::read_dir(&self.base_dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(SandboxError::Io(e)),
+        };
+        let mut states = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(SandboxError::Io)?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                let contents = std::fs::read_to_string(&path).map_err(SandboxError::Io)?;
+                if let Ok(state) = serde_json::from_str::<RepoState>(&contents) {
+                    states.push(state);
+                }
+            }
+        }
+        Ok(states)
+    }
 }

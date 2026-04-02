@@ -11,6 +11,7 @@ use sandbox_local::metadata::FileMetadataStore;
 
 static CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[allow(unused)]
 /// Start the RAP server on an OS-assigned port, returning the base URL.
 /// `metadata_dir` is where per-group JSON state files are stored.
 pub async fn start_test_server(metadata_dir: &Path) -> String {
@@ -25,7 +26,7 @@ pub async fn start_test_server(metadata_dir: &Path) -> String {
 
     let backend = LocalBackend::new(false);
     let metadata = FileMetadataStore::new(metadata_dir.to_path_buf());
-    let (app, _tracker) = build_router(backend, metadata, PlainCallbackClient::new());
+    let (app, _tracker) = build_router(backend, metadata, PlainCallbackClient::new(), false, None);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -44,6 +45,7 @@ pub async fn invoke(
     operation: &str,
     arguments: serde_json::Value,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<RapCallback>,
+    thread_ancestors: Option<Vec<String>>,
 ) -> String {
     let invocation = RapInvocation {
         operation: operation.to_string(),
@@ -56,7 +58,7 @@ pub async fn invoke(
         callback_url: callback_url.to_string(),
         group_id: group_id.to_string(),
         user_id: None,
-        thread_ancestors: None,
+        thread_ancestors,
     };
 
     reqwest::Client::new()

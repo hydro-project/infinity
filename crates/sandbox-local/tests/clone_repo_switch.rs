@@ -64,6 +64,7 @@ async fn clone_repo_rejects_reinit() {
         "clone_repo",
         serde_json::json!({ "repo": repo_a.path().to_str().expect("repo_a path to str") }),
         &mut rx,
+        None,
     )
     .await;
     insta::assert_snapshot!(text, @"Repository initialized (using Jujutsu workspaces).");
@@ -76,6 +77,7 @@ async fn clone_repo_rejects_reinit() {
         "clone_repo",
         serde_json::json!({ "repo": repo_b.path().to_str().expect("repo_b path to str") }),
         &mut rx,
+        None,
     )
     .await;
     insta::assert_snapshot!(text, @"Error: A repository has already been initialized for this thread. Re-initializing with a different repository is not supported.");
@@ -105,6 +107,7 @@ async fn clone_repo_allows_upgrade_from_direct() {
         "open_sandbox_direct",
         serde_json::json!({ "repo": repo_str }),
         &mut rx,
+        None,
     )
     .await;
     insta::assert_snapshot!(text, @"Repository initialized (Direct mode — file edits require approval, commands run without file write access unless write-orig is granted).");
@@ -117,6 +120,7 @@ async fn clone_repo_allows_upgrade_from_direct() {
         "clone_repo",
         serde_json::json!({ "repo": repo_str }),
         &mut rx,
+        None,
     )
     .await;
     insta::assert_snapshot!(text, @"Repository initialized (using Jujutsu workspaces).");
@@ -129,6 +133,7 @@ async fn clone_repo_allows_upgrade_from_direct() {
         "read_file",
         serde_json::json!({ "path": "README.txt" }),
         &mut rx,
+        None,
     )
     .await;
     assert!(

@@ -77,6 +77,34 @@ pub enum ClientMessage {
     TriggerCompaction {
         session_id: String,
     },
+    /// Request migration of a session to a different host.
+    RequestMigrate {
+        session_id: String,
+        /// "local" or a remote name.
+        to: String,
+        dest_cwd: PathBuf,
+    },
+    /// Daemon-to-daemon: request a session to emigrate. Includes destination RAP URLs
+    /// so source RAP servers can migrate their state.
+    Emigrate {
+        session_id: String,
+        /// config_id → destination URL
+        dest_rap_urls: HashMap<String, String>,
+    },
+    /// Daemon-to-daemon: immigration is complete, source can clean up.
+    EmigrateDone {
+        session_id: String,
+    },
+    /// Daemon-to-daemon: import a serialized session at the given cwd.
+    ImportSession {
+        session_id: String,
+        cwd: PathBuf,
+        session_data: String,
+    },
+    /// Daemon-to-daemon: boot RAP servers at the given cwd and return their ports.
+    BootRapServers {
+        cwd: PathBuf,
+    },
 }
 
 // ── Daemon → Client ─────────────────────────────────────────────────────────
@@ -166,16 +194,47 @@ pub enum DaemonMessage {
         default_model_name: String,
         default_context_window: usize,
         provider_name: String,
+        #[serde(default)]
+        remotes: Vec<RemoteInfo>,
     },
     /// Broadcast: one or more sessions were created or updated.
     SessionsUpdated {
         sessions: HashMap<String, SessionInfo>,
+    },
+    /// Broadcast: remote connection statuses changed.
+    RemotesUpdated {
+        remotes: Vec<RemoteInfo>,
     },
     /// The agent is not idle — the client should show the full quit picker UI.
     DisconnectNotIdle,
     /// The agent was idle and has been detached — the client can proceed with
     /// its pending action (quit, switch, new session) without showing a picker.
     DetachedIdle,
+    /// Response to Emigrate: serialized session data (thread tree as JSON).
+    EmigrateResult {
+        session_id: String,
+        session_data: String,
+    },
+    MigrateStarted {
+        session_id: String,
+    },
+    MigrateComplete {
+        session_id: String,
+        to: String,
+    },
+    MigrateError {
+        session_id: String,
+        error: String,
+    },
+    /// Response to ImportSession.
+    ImportComplete {
+        session_id: String,
+    },
+    /// Response to BootRapServers: maps config ID → local port for servers needing migration.
+    RapServersBooted {
+        /// config_id → port on the remote host (only servers with needsMigration)
+        server_ports: HashMap<String, u16>,
+    },
 }
 
 // ── Supporting types ────────────────────────────────────────────────────────
@@ -186,6 +245,8 @@ pub enum SessionStatus {
     Idle,
     Stopped,
     WaitingForChoice,
+    Migrating,
+    Archived,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,4 +280,10 @@ pub struct ModelInfo {
     pub display_name: String,
     pub model_id: String,
     pub context_window: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteInfo {
+    pub name: String,
+    pub status: String,
 }

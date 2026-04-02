@@ -28,6 +28,7 @@ A toolset MUST be a JSON object with the following top-level fields:
 | `description` | `string` | No | Human-readable description of the toolset's purpose. |
 | `endpoint` | `string` | Yes | The HTTP endpoint URL where the runtime MUST send [tool invocations](/spec/basic/tool-invocation) for this toolset's operations. |
 | `tools` | `array` | Yes | Array of [tool definitions](#tool-definition). MUST contain at least one tool. |
+| `needsMigration` | `boolean` | No | When `true`, the runtime MUST call the [migration endpoint](/spec/basic/migration) during session migration. Defaults to `false`. |
 
 ## Tool Definition
 
