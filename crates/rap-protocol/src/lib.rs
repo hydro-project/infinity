@@ -19,6 +19,38 @@ pub struct RapInvocation {
     pub thread_ancestors: Option<Vec<String>>,
 }
 
+/// A segment of display content for human-facing UIs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "content")]
+pub enum DisplaySegment {
+    /// Plain text display.
+    #[serde(rename = "text")]
+    Text(String),
+    /// A unified diff.
+    #[serde(rename = "diff")]
+    Diff(DiffContent),
+}
+
+/// Content for a diff display segment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffContent {
+    /// File path the diff applies to.
+    pub path: String,
+    /// Unified diff string.
+    pub patch: String,
+}
+
+/// Build the prioritized display segments list: tool-provided `display_as`
+/// segments first, then the raw `text` as a trailing `Text` fallback.
+pub fn build_display_segments(
+    display_as: Option<&[DisplaySegment]>,
+    text: &str,
+) -> Vec<DisplaySegment> {
+    let mut segments: Vec<DisplaySegment> = display_as.map(|s| s.to_vec()).unwrap_or_default();
+    segments.push(DisplaySegment::Text(text.to_string()));
+    segments
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RapToolResult {
     pub group_id: String,
@@ -27,7 +59,7 @@ pub struct RapToolResult {
     pub call_id: Option<String>,
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_as: Option<String>,
+    pub display_as: Option<Vec<DisplaySegment>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription: Option<bool>,
 }
@@ -161,7 +193,7 @@ pub async fn send_tool_result<C: CallbackClient>(
     client: &C,
     invocation: &RapInvocation,
     text: &str,
-    display_as: Option<String>,
+    display_as: Option<Vec<DisplaySegment>>,
     subscription: bool,
 ) {
     let result = RapCallback::ToolResult(RapToolResult {

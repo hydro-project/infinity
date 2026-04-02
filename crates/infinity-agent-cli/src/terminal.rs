@@ -404,35 +404,56 @@ where
                             }
                         }
                     }
-                    DisplayEvent::ToolResult { text, display_as } => {
+                    DisplayEvent::ToolResult { segments } => {
                         if is_root {
-                            let display_text = display_as.as_deref().unwrap_or(&text);
-                            let lines: Vec<&str> = display_text.lines().collect();
-
-                            if lines.len() <= 1 {
-                                // Single line: print directly after tool call on same line
-                                let first = lines.first().copied().unwrap_or("");
-                                let result_line = Line::from(vec![
-                                    Span::styled(format!(" ✓ {}", first), Style::default().fg(Color::Green)),
-                                ]);
-                                viewport.print_spans_above(result_line)?;
-                                mid_stream = false;
-                            } else {
-                                // Multi line: end stream, print check + first line, then remaining lines
-                                // end_stream(&mut viewport, &mut mid_stream)?;
-                                mid_stream = false;
-                                let first = lines.first().copied().unwrap_or("");
-                                viewport.print_line_above(Line::from(vec![
-                                    Span::styled("✓ ", Style::default().fg(Color::Green)),
-                                    Span::styled(first.to_string(), Style::default().fg(Color::DarkGray)),
-                                ]))?;
-                                print_continuation_lines(
-                                    &mut viewport,
-                                    &lines[1..],
-                                    2,
-                                    Style::default().fg(Color::DarkGray),
-                                )?;
-                                viewport.print_line_above(Line::from(vec![]))?;
+                            // Find the first supported segment type.
+                            // Terminal supports both "text" and "diff".
+                            let first = segments.first();
+                            match first {
+                                Some(rap_protocol::DisplaySegment::Diff(diff)) => {
+                                    mid_stream = false;
+                                    viewport.print_spans_above(Line::from(vec![
+                                        Span::styled(" ✓", Style::default().fg(Color::Green)),
+                                    ]))?;
+                                    let lines: Vec<&str> = diff.patch.lines().collect();
+                                    print_continuation_lines(
+                                        &mut viewport,
+                                        &lines,
+                                        2,
+                                        Style::default().fg(Color::DarkGray),
+                                    )?;
+                                    viewport.print_line_above(Line::from(vec![]))?;
+                                }
+                                Some(rap_protocol::DisplaySegment::Text(t)) => {
+                                    let lines: Vec<&str> = t.lines().collect();
+                                    if lines.len() <= 1 {
+                                        let first = lines.first().copied().unwrap_or("");
+                                        viewport.print_spans_above(Line::from(vec![
+                                            Span::styled(format!(" ✓ {}", first), Style::default().fg(Color::Green)),
+                                        ]))?;
+                                        mid_stream = false;
+                                    } else {
+                                        mid_stream = false;
+                                        let first_line = lines.first().copied().unwrap_or("");
+                                        viewport.print_line_above(Line::from(vec![
+                                            Span::styled("✓ ", Style::default().fg(Color::Green)),
+                                            Span::styled(first_line.to_string(), Style::default().fg(Color::DarkGray)),
+                                        ]))?;
+                                        print_continuation_lines(
+                                            &mut viewport,
+                                            &lines[1..],
+                                            2,
+                                            Style::default().fg(Color::DarkGray),
+                                        )?;
+                                        viewport.print_line_above(Line::from(vec![]))?;
+                                    }
+                                }
+                                None => {
+                                    viewport.print_spans_above(Line::from(vec![
+                                        Span::styled(" ✓", Style::default().fg(Color::Green)),
+                                    ]))?;
+                                    mid_stream = false;
+                                }
                             }
                         } else {
                             thread_tool_call_active.remove(&child_tid);
@@ -780,9 +801,9 @@ fn print_continuation_lines(
     base_style: Style,
 ) -> Result<(), BoxError> {
     for line in lines {
-        let style = if line.starts_with("- ") {
+        let style = if line.starts_with('-') {
             Style::default().fg(Color::Red)
-        } else if line.starts_with("+ ") {
+        } else if line.starts_with('+') {
             Style::default().fg(Color::Green)
         } else if line.starts_with("@@") {
             Style::default().fg(Color::Cyan)

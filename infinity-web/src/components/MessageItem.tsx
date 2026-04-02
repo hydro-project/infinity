@@ -1,16 +1,18 @@
 import { Streamdown } from "streamdown";
 import "streamdown/styles.css";
+import { PatchDiff } from "@pierre/diffs/react";
 import { useState } from "react";
-import type { MessageItem as MsgItem } from "../types";
+import type { MessageItem as MsgItem, DisplaySegment } from "../types";
 import css from "./MessageItem.module.css";
 
 interface Props {
   item: MsgItem;
   isFirst?: boolean;
   defaultCollapsed?: boolean;
+  theme?: "light" | "dark";
 }
 
-export function MessageItem({ item, isFirst, defaultCollapsed }: Props) {
+export function MessageItem({ item, isFirst, defaultCollapsed, theme }: Props) {
   switch (item.type) {
     case "user":
       return (
@@ -35,7 +37,9 @@ export function MessageItem({ item, isFirst, defaultCollapsed }: Props) {
       );
 
     case "thinking":
-      return <ThinkingBlock text={item.text} defaultCollapsed={defaultCollapsed} />;
+      return (
+        <ThinkingBlock text={item.text} defaultCollapsed={defaultCollapsed} />
+      );
 
     case "tool_call":
       return (
@@ -46,7 +50,38 @@ export function MessageItem({ item, isFirst, defaultCollapsed }: Props) {
       );
 
     case "tool_result": {
-      const lines = item.text.split("\n");
+      // Find the first supported segment type to render
+      const seg = item.segments.find(
+        (s): s is DisplaySegment => s.type === "diff" || s.type === "text",
+      );
+      if (!seg) return null;
+
+      if (seg.type === "diff") {
+        return (
+          <>
+            {seg.content.patch.length > 0 && (
+              <div className={css.toolResultDiff}>
+                <PatchDiff
+                  patch={seg.content.patch}
+                  options={{
+                    diffStyle: "unified",
+                    themeType: theme ?? "system",
+                  }}
+                />
+              </div>
+            )}
+            {seg.content.patch.length == 0 && (
+              <div className={css.toolResult}>
+                <span className={css.checkIcon}>{"\u2713"}</span>
+                <span>Empty Diff</span>
+              </div>
+            )}
+          </>
+        );
+      }
+
+      // text segment
+      const lines = seg.content.split("\n");
       if (lines.length <= 1) {
         return (
           <div className={css.toolResult}>
@@ -103,21 +138,36 @@ export function MessageItem({ item, isFirst, defaultCollapsed }: Props) {
   }
 }
 
-function ThinkingBlock({ text, defaultCollapsed }: { text: string; defaultCollapsed?: boolean }) {
+function ThinkingBlock({
+  text,
+  defaultCollapsed,
+}: {
+  text: string;
+  defaultCollapsed?: boolean;
+}) {
   // null = use default, true/false = user explicitly toggled
   const [userChoice, setUserChoice] = useState<boolean | null>(null);
   const collapsed = userChoice !== null ? userChoice : !!defaultCollapsed;
 
   return (
     <div className={css.thinking}>
-      <button className={css.thinkingToggle} onClick={() => setUserChoice((prev) => prev !== null ? !prev : !collapsed)}>
-        <span className={`${css.thinkingChevron} ${collapsed ? css.chevronCollapsed : ''}`}>{'\u25BE'}</span>
+      <button
+        className={css.thinkingToggle}
+        onClick={() =>
+          setUserChoice((prev) => (prev !== null ? !prev : !collapsed))
+        }
+      >
+        <span
+          className={`${css.thinkingChevron} ${collapsed ? css.chevronCollapsed : ""}`}
+        >
+          {"\u25BE"}
+        </span>
         <span className={css.thinkingLabel}>Thinking</span>
       </button>
-      <div className={`${css.thinkingBody} ${collapsed ? css.thinkingCollapsed : ''}`}>
-        <div className={css.thinkingBodyInner}>
-          {text}
-        </div>
+      <div
+        className={`${css.thinkingBody} ${collapsed ? css.thinkingCollapsed : ""}`}
+      >
+        <div className={css.thinkingBodyInner}>{text}</div>
       </div>
     </div>
   );

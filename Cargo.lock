@@ -1954,6 +1954,7 @@ dependencies = [
  "infinity-daemon",
  "infinity-protocol",
  "nix",
+ "rap-protocol",
  "ratatui",
  "reqwest",
  "rig-bedrock",
@@ -2064,6 +2065,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "dirs",
+ "rap-protocol",
  "serde",
 ]
 

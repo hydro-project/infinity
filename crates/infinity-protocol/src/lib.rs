@@ -97,8 +97,8 @@ pub enum DaemonMessage {
         display_as: Option<String>,
     },
     ToolResult {
-        text: String,
-        display_as: Option<String>,
+        /// Prioritized display segments. Clients use the first type they support.
+        segments: Vec<rap_protocol::DisplaySegment>,
         thread_id: Option<String>,
     },
     Info {
