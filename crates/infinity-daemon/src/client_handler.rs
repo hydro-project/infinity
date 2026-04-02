@@ -109,29 +109,29 @@ pub async fn handle_client_channels(
                         let mut emit = async |msg: DaemonMessage| {
                             let _ = daemon_tx.send(msg);
                         };
-                        match mgr.resume_session(&session_id, &mut emit).await {
+                        let target = thread_id.as_deref().unwrap_or(&session_id);
+                        match mgr.resume_session(&session_id, &target, &mut emit).await {
                             Ok(()) => {
-                                let target = thread_id.as_deref().unwrap_or(&session_id);
                                 mgr.attach_client(target, client_tx.clone(), true).await;
                                 attached_session_id = Some(session_id);
                             }
                             Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error { thread_id: Some(session_id), text: format!("failed to resume session: {e}") }); }
                         }
                     }
-                    ClientMessage::UserInput { session_id, text } => {
+                    ClientMessage::UserInput { session_id: thread_id, text } => {
                         let mut mgr = session_manager.lock().await;
                         let mut emit = async |msg: DaemonMessage| {
                             let _ = daemon_tx.send(msg);
                         };
-                        if !mgr.send_input(&session_id, (InputMessage {
+                        if !mgr.send_input(&thread_id, (InputMessage {
                             content: InputMessageContent::User(UserContent::text(&text)),
-                            group_id: session_id.clone(),
+                            group_id: thread_id.clone(),
                             metadata: None,
                             synthetic: None,
                             display_as: None,
                             subscription: false,
                         }, None), Some(client_tx.clone()), &mut emit).await {
-                            let _ = daemon_tx.send(DaemonMessage::Error { thread_id: Some(session_id), text: "session not found".into() });
+                            let _ = daemon_tx.send(DaemonMessage::Error { thread_id: Some(thread_id), text: "session not found".into() });
                         }
                     }
                     ClientMessage::Disconnect => {
