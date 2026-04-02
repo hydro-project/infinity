@@ -65,6 +65,8 @@ pub struct Session {
     pub context_window: usize,
     /// Send to signal the agent loop to shut down.
     pub shutdown_tx: Option<oneshot::Sender<()>>,
+    /// Send to ping the agent to attempt to idle.
+    pub idle_tx: mpsc::UnboundedSender<()>,
 }
 
 pub type SessionStoreHandle = Arc<tokio::sync::Mutex<session_store::SessionStore>>;
@@ -380,7 +382,7 @@ impl SessionManager {
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-        let (model_name, context_window, agent_handle) = self
+        let (model_name, context_window, idle_tx, agent_handle) = self
             .start_agent_loop(
                 session_id.clone(),
                 agent_rx,
@@ -407,6 +409,7 @@ impl SessionManager {
             model_name,
             context_window,
             shutdown_tx: Some(shutdown_tx),
+            idle_tx,
         };
         self.sessions.insert(session_id.clone(), session);
         Ok(())
@@ -598,6 +601,13 @@ impl SessionManager {
         }
     }
 
+    /// Ping the agent to attempt to idle (e.g. after client disconnect).
+    pub fn send_idle_ping(&self, session_id: &str) {
+        if let Some(session) = self.sessions.get(session_id) {
+            let _ = session.idle_tx.send(());
+        }
+    }
+
     /// Start the agent loop for a session. Returns (model_name, context_window).
     async fn start_agent_loop(
         &self,
@@ -613,12 +623,12 @@ impl SessionManager {
         active_threads: ActiveThreads,
         shutdown_rx: oneshot::Receiver<()>,
         spawned_servers: Vec<tokio::process::Child>,
-    ) -> Result<(String, usize, JoinHandle<()>), BoxError> {
+    ) -> Result<(String, usize, mpsc::UnboundedSender<()>, JoinHandle<()>), BoxError> {
         let default = &self.available_models[0]; // already validated in new()
         let model_name = default.display_name.clone();
         let context_window = default.context_window;
 
-        let handle = {
+        let (idle_tx, handle) = {
             let client = rig_bedrock::client::Client::from_env();
             let model = client.completion_model(&default.model_id);
 
@@ -641,7 +651,7 @@ impl SessionManager {
                 context_window,
             )
         };
-        Ok((model_name, context_window, handle))
+        Ok((model_name, context_window, idle_tx, handle))
     }
 }
 
@@ -664,7 +674,7 @@ fn spawn_agent_loop<Mdl>(
     shutdown_rx: oneshot::Receiver<()>,
     spawned_servers: Vec<tokio::process::Child>,
     context_window: usize,
-) -> JoinHandle<()>
+) -> (mpsc::UnboundedSender<()>, JoinHandle<()>)
 where
     Mdl: CompletionModel + 'static,
 {
@@ -734,19 +744,21 @@ where
         active_model_id,
         subscriber_map.clone(),
         active_threads.clone(),
-        idle_tx,
+        idle_tx.clone(),
         context_window,
     );
 
-    tokio::task::spawn_local(session_wrapper(
+    let handle = tokio::task::spawn_local(session_wrapper(
         agent_fut,
         session_id,
         session_store,
         subscriber_map,
+        active_threads,
         idle_rx,
         shutdown_rx,
         spawned_servers,
-    ))
+    ));
+    (idle_tx, handle)
 }
 
 /// Wrapper that owns the RAP servers and handles cleanup.
@@ -758,6 +770,7 @@ async fn session_wrapper(
     session_id: String,
     session_store: SessionStoreHandle,
     subscriber_map: SubscriberMap,
+    active_threads: ActiveThreads,
     mut idle_rx: mpsc::UnboundedReceiver<()>,
     mut shutdown_rx: oneshot::Receiver<()>,
     mut spawned_servers: Vec<tokio::process::Child>,
@@ -790,6 +803,10 @@ async fn session_wrapper(
                     let mut store = session_store.lock().await;
                     store.mark_idle(&session_id);
                     let _ = store.save();
+                }
+                // idle_tx means "might be idle" — check active threads.
+                if !active_threads.lock().unwrap().is_empty() {
+                    continue;
                 }
                 // If no client attached, exit the loop entirely.
                 let has_clients = {

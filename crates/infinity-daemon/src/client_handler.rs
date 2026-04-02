@@ -140,14 +140,21 @@ pub async fn handle_client_channels(
                         let (new_tx, new_rx) = mpsc::unbounded_channel::<DaemonMessage>();
                         client_tx = new_tx;
                         client_tx_rx = new_rx;
+                        if let Some(ref sid) = attached_session_id {
+                            let mgr = session_manager.lock().await;
+                            mgr.send_idle_ping(sid);
+                        }
                         attached_session_id = None;
                     }
                     ClientMessage::SoftDetach { session_id } => {
-                        let mut mgr = session_manager.lock().await;
+                        let mgr = session_manager.lock().await;
                         let do_cleanup = mgr.is_session_idle(&session_id);
                         tracing::debug!(do_cleanup, "Handling SoftDetach");
                         if do_cleanup {
-                            mgr.cleanup_session(&session_id).await;
+                            let (new_tx, new_rx) = mpsc::unbounded_channel::<DaemonMessage>();
+                            client_tx = new_tx;
+                            client_tx_rx = new_rx;
+                            mgr.send_idle_ping(&session_id);
                             attached_session_id = None;
                             let _ = daemon_tx.send(DaemonMessage::DetachedIdle);
                         } else {
@@ -204,7 +211,12 @@ pub async fn handle_client_channels(
         }
     }
 
-    // Client stream ended — just drop client_tx_rx (already happens implicitly).
-    // Stale senders in subscriber lists will be pruned on next broadcast.
+    // Client stream ended — drop client_tx to invalidate subscriber senders,
+    // then ping idle so the agent can shut down if it was already idle.
+    drop(client_tx);
+    if let Some(ref sid) = attached_session_id {
+        let mgr = session_manager.lock().await;
+        mgr.send_idle_ping(sid);
+    }
     tracing::trace!("Client stream ended");
 }
