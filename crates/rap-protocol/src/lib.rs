@@ -1,5 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
 
 // ── RAP protocol types ──
 
@@ -254,5 +256,21 @@ pub async fn send_subscription_event<C: CallbackClient>(
     let body = serde_json::to_string(&event).expect("bug: failed to serialize subscription event");
     if let Err(e) = client.post_json(callback_url, &body).await {
         tracing::error!("failed to send subscription event: {e}");
+    }
+}
+
+/// Run a future and log if it panics, instead of silently swallowing the panic.
+/// Use this to wrap fire-and-forget spawned tasks.
+pub async fn log_panic<F: Future<Output = ()>>(name: &'static str, f: F) {
+    use futures_util::FutureExt;
+    if let Err(e) = AssertUnwindSafe(f).catch_unwind().await {
+        let msg = if let Some(s) = e.downcast_ref::<&str>() {
+            *s
+        } else if let Some(s) = e.downcast_ref::<String>() {
+            &**s
+        } else {
+            "unknown panic payload"
+        };
+        tracing::error!("task '{name}' panicked: {msg}");
     }
 }

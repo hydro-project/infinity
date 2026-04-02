@@ -469,7 +469,7 @@ async fn handle(req: Request<Incoming>, state: Arc<ProxyState>) -> Response<Full
 
     // Return immediately, process async
     let state = state.clone();
-    tokio::spawn(async move {
+    tokio::spawn(rap_protocol::log_panic("mcp_proxy_invoke", async move {
         let res = if inv.operation.ends_with("_list_tools") {
             state.list_tools().await
         } else if inv.operation.ends_with("_invoke_tool") {
@@ -521,7 +521,7 @@ async fn handle(req: Request<Incoming>, state: Arc<ProxyState>) -> Response<Full
             }
             _ => {}
         }
-    });
+    }));
 
     text_response(StatusCode::OK, "OK")
 }
@@ -582,30 +582,36 @@ pub async fn start_proxy_server(name: String, factory: McpClientFactory) -> Resu
         port,
     });
 
-    tokio::spawn(async move {
-        loop {
-            let (stream, _) = match listener.accept().await {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!("MCP proxy accept error: {e}");
-                    continue;
-                }
-            };
-            let state = state.clone();
-            tokio::spawn(async move {
-                let svc = hyper::service::service_fn(move |req: Request<Incoming>| {
-                    let state = state.clone();
-                    async move { Ok::<_, Infallible>(handle(req, state).await) }
-                });
-                if let Err(e) = http1::Builder::new()
-                    .serve_connection(TokioIo::new(stream), svc)
-                    .await
-                {
-                    tracing::warn!("MCP proxy connection error: {e}");
-                }
-            });
-        }
-    });
+    tokio::spawn(rap_protocol::log_panic(
+        "mcp_proxy_accept_loop",
+        async move {
+            loop {
+                let (stream, _) = match listener.accept().await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!("MCP proxy accept error: {e}");
+                        continue;
+                    }
+                };
+                let state = state.clone();
+                tokio::spawn(rap_protocol::log_panic(
+                    "mcp_proxy_connection",
+                    async move {
+                        let svc = hyper::service::service_fn(move |req: Request<Incoming>| {
+                            let state = state.clone();
+                            async move { Ok::<_, Infallible>(handle(req, state).await) }
+                        });
+                        if let Err(e) = http1::Builder::new()
+                            .serve_connection(TokioIo::new(stream), svc)
+                            .await
+                        {
+                            tracing::warn!("MCP proxy connection error: {e}");
+                        }
+                    },
+                ));
+            }
+        },
+    ));
 
     tracing::info!("MCP proxy RAP server listening on port {port}");
     Ok(port)

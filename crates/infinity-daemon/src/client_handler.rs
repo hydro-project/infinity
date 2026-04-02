@@ -357,7 +357,7 @@ pub async fn handle_client_channels(
                                 let _ = daemon_tx.send(msg);
                             };
                             let target = thread_id.as_deref().unwrap_or(&session_id);
-                            match mgr.resume_session(&session_id, &target, &mut emit).await {
+                            match mgr.resume_session(&session_id, target, &mut emit).await {
                                 Ok(()) => {
                                     mgr.attach_client(target, client_tx.clone(), true).await;
                                     attached_session_id = Some(session_id);
@@ -435,7 +435,7 @@ pub async fn handle_client_channels(
                             if let Some(pending) = mgr.conversation_store().remove_pending_choice(sid, &choice_id) {
                                 let url = pending.response_url;
                                 let id = pending.id;
-                                tokio::spawn(async move {
+                                tokio::spawn(rap_protocol::log_panic("user_choice_post", async move {
                                     let client = reqwest::Client::new();
                                     let _ = client
                                         .post(&url)
@@ -445,7 +445,7 @@ pub async fn handle_client_channels(
                                         }))
                                         .send()
                                         .await;
-                                });
+                                }));
                             }
                         }
                     }
@@ -459,11 +459,11 @@ pub async fn handle_client_channels(
     // Also tear down any active remote proxy.
     drop(remote_proxy_tx);
     drop(client_tx);
-    if let Some(ref sid) = attached_session_id {
-        if active_remote_name.is_none() {
-            let mgr = session_manager.lock().await;
-            mgr.send_idle_ping(sid);
-        }
+    if let Some(ref sid) = attached_session_id
+        && active_remote_name.is_none()
+    {
+        let mgr = session_manager.lock().await;
+        mgr.send_idle_ping(sid);
     }
     tracing::trace!("Client stream ended");
 }

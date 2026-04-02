@@ -9,6 +9,7 @@ serde_json = { workspace = true }
 async-trait = { workspace = true }
 reqwest = { workspace = true }
 tracing = { workspace = true }
+futures-util = { workspace = true }
 
 [lints]
 workspace = true

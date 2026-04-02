@@ -71,51 +71,54 @@ pub async fn thread_worker<Mdl>(
     let fwd_subscribers = subscribers.clone();
     let fwd_conversation_store = conversation_store.clone();
     let fwd_root_session_id = root_session_id.clone();
-    tokio::task::spawn_local(async move {
-        while let Some(evt) = display_fwd_rx.recv().await {
-            // Update token usage for root thread responses.
-            if let DisplayEvent::ResponseDone(ref r) = evt
-                && let Some(r) = r
-            {
-                use rig::completion::GetTokenUsage;
-                let tokens = r.token_usage().map_or(0, |u| u.total_tokens as usize);
-                fwd_conversation_store.set_total_tokens_used(&fwd_group_id, tokens);
-                fwd_conversation_store
-                    .set_last_updated(&fwd_group_id, &chrono::Utc::now().to_rfc3339());
-            }
+    tokio::task::spawn_local(rap_protocol::log_panic(
+        "display_event_forwarder",
+        async move {
+            while let Some(evt) = display_fwd_rx.recv().await {
+                // Update token usage for root thread responses.
+                if let DisplayEvent::ResponseDone(ref r) = evt
+                    && let Some(r) = r
+                {
+                    use rig::completion::GetTokenUsage;
+                    let tokens = r.token_usage().map_or(0, |u| u.total_tokens as usize);
+                    fwd_conversation_store.set_total_tokens_used(&fwd_group_id, tokens);
+                    fwd_conversation_store
+                        .set_last_updated(&fwd_group_id, &chrono::Utc::now().to_rfc3339());
+                }
 
-            // Store pending choices.
-            if let DisplayEvent::UserChoiceRequired {
-                ref id,
-                ref prompt,
-                ref choices,
-                ref default,
-                ref response_url,
-            } = evt
-            {
-                let dm = DaemonMessage::UserChoiceRequired {
-                    thread_id: Some(fwd_group_id.clone()),
-                    id: id.clone(),
-                    prompt: prompt.clone(),
-                    choices: choices.clone(),
-                    default: *default,
-                };
-                fwd_conversation_store.add_pending_choice(
-                    &fwd_root_session_id,
-                    session_store::PendingChoice {
+                // Store pending choices.
+                if let DisplayEvent::UserChoiceRequired {
+                    ref id,
+                    ref prompt,
+                    ref choices,
+                    ref default,
+                    ref response_url,
+                } = evt
+                {
+                    let dm = DaemonMessage::UserChoiceRequired {
+                        thread_id: Some(fwd_group_id.clone()),
                         id: id.clone(),
-                        message: dm,
-                        response_url: response_url.clone(),
-                    },
-                );
-            }
+                        prompt: prompt.clone(),
+                        choices: choices.clone(),
+                        default: *default,
+                    };
+                    fwd_conversation_store.add_pending_choice(
+                        &fwd_root_session_id,
+                        session_store::PendingChoice {
+                            id: id.clone(),
+                            message: dm,
+                            response_url: response_url.clone(),
+                        },
+                    );
+                }
 
-            if let Some(dm) = display_event_to_daemon(&fwd_group_id, evt) {
-                let mut subs = fwd_subscribers.lock().expect("bug: mutex poisoned");
-                subs.retain(|tx| tx.send(dm.clone()).is_ok());
+                if let Some(dm) = display_event_to_daemon(&fwd_group_id, evt) {
+                    let mut subs = fwd_subscribers.lock().expect("bug: mutex poisoned");
+                    subs.retain(|tx| tx.send(dm.clone()).is_ok());
+                }
             }
-        }
-    });
+        },
+    ));
 
     let current_history = match event_processor::HistoryManager::new_with_history(
         conversation_store.clone(),

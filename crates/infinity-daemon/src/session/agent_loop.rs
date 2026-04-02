@@ -82,25 +82,28 @@ pub async fn agent_loop<Mdl>(
             .or_insert_with(|| Arc::new(std::sync::Mutex::new(parent_subs)))
             .clone();
 
-        tokio::task::spawn_local(thread_worker(
-            thread_id.clone(),
-            input_rx,
-            subscribe_rx,
-            active_threads.clone(),
-            subscribers,
-            session_id.clone(),
-            model.clone(),
-            conversation_store.clone(),
-            state_store.clone(),
-            sender.clone(),
-            callback_url.clone(),
-            tool_impls.clone(),
-            extra_system_prompt.as_ref().clone(),
-            rap_notifier.clone(),
-            additional_request_params.clone(),
-            active_model_id.clone(),
-            idle_tx.clone(),
-            context_window,
+        tokio::task::spawn_local(rap_protocol::log_panic(
+            "thread_worker",
+            thread_worker(
+                thread_id.clone(),
+                input_rx,
+                subscribe_rx,
+                active_threads.clone(),
+                subscribers,
+                session_id.clone(),
+                model.clone(),
+                conversation_store.clone(),
+                state_store.clone(),
+                sender.clone(),
+                callback_url.clone(),
+                tool_impls.clone(),
+                extra_system_prompt.as_ref().clone(),
+                rap_notifier.clone(),
+                additional_request_params.clone(),
+                active_model_id.clone(),
+                idle_tx.clone(),
+                context_window,
+            ),
         ));
 
         match msg {
