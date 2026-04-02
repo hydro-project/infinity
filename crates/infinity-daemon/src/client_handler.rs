@@ -30,7 +30,7 @@ pub async fn handle_client(stream: UnixStream, session_manager: Arc<Mutex<Sessio
         tokio::select! {
             msg = daemon_msg_rx.recv() => {
                 let Some(msg) = msg else { break };
-                let bytes = Bytes::from(serde_json::to_vec(&msg).unwrap());
+                let bytes = Bytes::from(serde_json::to_vec(&msg).expect("bug: failed to serialize DaemonMessage"));
                 if framed.send(bytes).await.is_err() { break; }
             }
             _ = &mut handler => {
@@ -39,7 +39,7 @@ pub async fn handle_client(stream: UnixStream, session_manager: Arc<Mutex<Sessio
             frame = framed.next() => {
                 let Some(Ok(bytes)) = frame else { break };
                 let Ok(msg) = serde_json::from_slice::<ClientMessage>(&bytes) else { continue };
-                client_msg_tx.send(msg).unwrap();
+                client_msg_tx.send(msg).expect("bug: client message receiver dropped");
             }
         }
     }
@@ -110,7 +110,7 @@ pub async fn handle_client_channels(
                             let _ = daemon_tx.send(msg);
                         };
                         let target = thread_id.as_deref().unwrap_or(&session_id);
-                        match mgr.resume_session(&session_id, &target, &mut emit).await {
+                        match mgr.resume_session(&session_id, target, &mut emit).await {
                             Ok(()) => {
                                 mgr.attach_client(target, client_tx.clone(), true).await;
                                 attached_session_id = Some(session_id);

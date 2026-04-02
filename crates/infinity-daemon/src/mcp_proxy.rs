@@ -281,17 +281,17 @@ impl McpTransport for HttpMcpClient {
     }
 }
 
+#[doc(hidden)]
+pub type McpClientFactory = Box<
+    dyn Fn() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Box<dyn McpTransport>, BoxError>> + Send>,
+        > + Send
+        + Sync,
+>;
+
 struct ProxyState {
     name: String,
-    client_factory: Box<
-        dyn Fn() -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<Output = Result<Box<dyn McpTransport>, BoxError>>
-                        + Send,
-                >,
-            > + Send
-            + Sync,
-    >,
+    client_factory: McpClientFactory,
     client: Mutex<Option<Box<dyn McpTransport>>>,
     port: u16,
 }
@@ -308,7 +308,9 @@ impl ProxyState {
     async fn list_tools(&self) -> Result<(String, Option<Vec<DisplaySegment>>), BoxError> {
         self.ensure_client().await?;
         let mut guard = self.client.lock().await;
-        let client = guard.as_mut().unwrap();
+        let client = guard
+            .as_mut()
+            .expect("bug: client missing after ensure_client");
         let result = client
             .request("tools/list", Some(serde_json::json!({})))
             .await?;
@@ -336,7 +338,13 @@ impl ProxyState {
             }
             out.push('\n');
         }
-        Ok((out, Some(vec![DisplaySegment::Text(format!("Loaded {} tools", tools.len()))])))
+        Ok((
+            out,
+            Some(vec![DisplaySegment::Text(format!(
+                "Loaded {} tools",
+                tools.len()
+            ))]),
+        ))
     }
 
     async fn invoke_tool(
@@ -346,7 +354,9 @@ impl ProxyState {
     ) -> Result<String, BoxError> {
         self.ensure_client().await?;
         let mut guard = self.client.lock().await;
-        let client = guard.as_mut().unwrap();
+        let client = guard
+            .as_mut()
+            .expect("bug: client missing after ensure_client");
         let result = client
             .request(
                 "tools/call",
@@ -400,14 +410,14 @@ fn json_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
         .status(status)
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(body.to_string())))
-        .unwrap()
+        .expect("bug: failed to build HTTP response")
 }
 
 fn text_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
         .body(Full::new(Bytes::from(body.to_string())))
-        .unwrap()
+        .expect("bug: failed to build HTTP response")
 }
 
 async fn handle(req: Request<Incoming>, state: Arc<ProxyState>) -> Response<Full<Bytes>> {
@@ -492,7 +502,7 @@ async fn handle(req: Request<Incoming>, state: Arc<ProxyState>) -> Response<Full
             display_as,
             subscription: None,
         }))
-        .unwrap();
+        .expect("bug: serialize RapCallback");
 
         match reqwest::Client::new()
             .post(&inv.callback_url)
@@ -523,15 +533,7 @@ pub async fn start_mcp_proxy(
     command: Vec<String>,
     env: HashMap<String, String>,
 ) -> Result<u16, BoxError> {
-    let factory: Box<
-        dyn Fn() -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<Output = Result<Box<dyn McpTransport>, BoxError>>
-                        + Send,
-                >,
-            > + Send
-            + Sync,
-    > = {
+    let factory: McpClientFactory = {
         let command = command.clone();
         let env = env.clone();
         Box::new(move || {
@@ -553,15 +555,7 @@ pub async fn start_http_mcp_proxy(
     url: String,
     headers: HashMap<String, String>,
 ) -> Result<u16, BoxError> {
-    let factory: Box<
-        dyn Fn() -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<Output = Result<Box<dyn McpTransport>, BoxError>>
-                        + Send,
-                >,
-            > + Send
-            + Sync,
-    > = {
+    let factory: McpClientFactory = {
         let url = url.clone();
         let headers = headers.clone();
         Box::new(move || {
@@ -577,18 +571,7 @@ pub async fn start_http_mcp_proxy(
 }
 
 #[doc(hidden)]
-pub async fn start_proxy_server(
-    name: String,
-    factory: Box<
-        dyn Fn() -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<Output = Result<Box<dyn McpTransport>, BoxError>>
-                        + Send,
-                >,
-            > + Send
-            + Sync,
-    >,
-) -> Result<u16, BoxError> {
+pub async fn start_proxy_server(name: String, factory: McpClientFactory) -> Result<u16, BoxError> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
 

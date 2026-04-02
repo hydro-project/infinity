@@ -351,7 +351,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         self.metadata.borrow().clone()
     }
     pub fn get_history(&self) -> OneOrMany<Message> {
-        OneOrMany::many(self.history.borrow().clone()).unwrap()
+        OneOrMany::many(self.history.borrow().clone()).expect("bug: history should never be empty")
     }
 
     pub fn remove_trailing_reasoning(&self) {
@@ -902,6 +902,7 @@ where
 //     terminal Action). Handles stream errors and unknown tools internally.
 // ═══════════════════════════════════════════════════════════════════════
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_completion<'a: 'b, 'b, Mdl, C, S, M>(
     model: &'a Mdl,
     history: &'a HistoryManager<C, S>,
@@ -1175,7 +1176,7 @@ where
                                 // continue the completion loop instead of returning. This
                                 // prevents race conditions where a concurrent event makes
                                 // the tool call appear cancelled.
-                                let tool = tool_registry.get(call.function.name.as_str()).unwrap();
+                                let tool = tool_registry.get(call.function.name.as_str()).expect("bug: tool not found in registry after call");
                                 if tool.supports_sync() {
                                     history.sync().await?; // we must sync the history so that thread spawning uses the correct state
 
@@ -1184,7 +1185,7 @@ where
                                         &call.id,
                                         call.call_id.as_deref(),
                                         tool_context,
-                                    ).await.unwrap();
+                                    ).await.expect("bug: synchronous tool execution failed");
 
                                     yield CompletionEvent::SyncToolCall {
                                         tool_name: call.function.name.clone(),
@@ -1285,6 +1286,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::collapsible_if, clippy::type_complexity)]
 mod tests {
     use super::*;
     use crate::message::{
@@ -1493,7 +1495,7 @@ mod tests {
         let hm =
             HistoryManager::new_with_history(store.clone(), StubStateStore, "thread-1".to_string())
                 .await
-                .unwrap();
+                .expect("create history manager");
         *hm.history.borrow_mut() = initial_history;
         hm
     }
@@ -1562,7 +1564,7 @@ mod tests {
             &StubSender,
         )
         .await
-        .unwrap();
+        .expect("prepare input");
 
         assert_eq!(result, PrepareResult::Ready);
         insta::assert_json_snapshot!(hm.history.into_inner());
@@ -1583,7 +1585,7 @@ mod tests {
             &StubSender,
         )
         .await
-        .unwrap();
+        .expect("prepare input");
 
         assert_eq!(result, PrepareResult::Handled);
         assert!(hm.history.into_inner().is_empty());
@@ -1610,7 +1612,7 @@ mod tests {
 
         let result = prepare_input(input, "msg-1".to_string(), &hm, &store, &StubSender)
             .await
-            .unwrap();
+            .expect("prepare input");
 
         insta::assert_json_snapshot!(result);
         assert!(hm.history.into_inner().is_empty());
@@ -1630,7 +1632,7 @@ mod tests {
             &StubSender,
         )
         .await
-        .unwrap();
+        .expect("prepare input");
         assert!(matches!(r1, PrepareResult::Ready));
 
         // Same message_id again
@@ -1642,7 +1644,7 @@ mod tests {
             &StubSender,
         )
         .await
-        .unwrap();
+        .expect("prepare input");
 
         assert_eq!(r2, PrepareResult::Handled);
         // History should still have only one user message
@@ -1669,7 +1671,7 @@ mod tests {
             &StubSender,
         )
         .await
-        .unwrap();
+        .expect("prepare input");
 
         assert_eq!(result, PrepareResult::Ready);
         // Should have: original user, tool call, synthetic interrupted result, new user msg
@@ -1691,7 +1693,7 @@ mod tests {
 
         let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
             .await
-            .unwrap();
+            .expect("prepare input");
 
         assert_eq!(result, PrepareResult::Ready);
         insta::assert_json_snapshot!(hm.history.into_inner());
@@ -1737,7 +1739,7 @@ mod tests {
 
         let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
             .await
-            .unwrap();
+            .expect("prepare input");
 
         assert_eq!(result, PrepareResult::Ready);
         // Should have: original user, original tool call, original result, synthetic tool call, synthetic result
@@ -1775,7 +1777,7 @@ mod tests {
 
         let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
             .await
-            .unwrap();
+            .expect("prepare input");
 
         assert_eq!(result, PrepareResult::Ready);
         insta::assert_json_snapshot!(
@@ -1824,7 +1826,7 @@ mod tests {
 
         let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
             .await
-            .unwrap();
+            .expect("prepare input");
 
         assert_eq!(result, PrepareResult::Handled);
         assert_eq!(hm.thread_id, "thread-1");
@@ -1861,7 +1863,7 @@ mod tests {
 
         let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
             .await
-            .unwrap();
+            .expect("prepare input");
 
         assert_eq!(result, PrepareResult::Handled);
         assert_eq!(hm.thread_id, "thread-1");
@@ -1888,7 +1890,7 @@ mod tests {
 
         let result = prepare_input(input, "msg-1".to_string(), &hm, &store, &StubSender)
             .await
-            .unwrap();
+            .expect("prepare input");
 
         assert_eq!(result, PrepareResult::Handled);
         assert!(hm.history.into_inner().is_empty());
@@ -1911,7 +1913,7 @@ mod tests {
 
         let _ = prepare_input(input, "msg-1".to_string(), &hm, &store, &StubSender)
             .await
-            .unwrap();
+            .expect("prepare input");
 
         insta::assert_json_snapshot!(hm.get_metadata());
     }
@@ -1959,7 +1961,7 @@ mod tests {
 
         let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
             .await
-            .unwrap();
+            .expect("prepare input");
 
         assert_eq!(result, PrepareResult::Ready);
         // Should NOT spawn a subthread — stays in the same thread
@@ -2002,7 +2004,7 @@ mod tests {
 
         let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
             .await
-            .unwrap();
+            .expect("prepare input");
 
         assert_eq!(result, PrepareResult::Ready);
         // Should NOT spawn a subthread — stays in the same thread
@@ -2081,7 +2083,7 @@ mod tests {
                     let mut texts = Vec::new();
                     let mut got_done = false;
                     while let Some(ev) = stream.next().await {
-                        match ev.unwrap() {
+                        match ev.expect("receive stream event") {
                             CompletionEvent::TextChunk(t) => texts.push(t),
                             CompletionEvent::Action(CompletionAction::Done(_)) => {
                                 got_done = true;
@@ -2098,7 +2100,7 @@ mod tests {
                 ctrl.send_text("world!");
                 ctrl.finish();
 
-                let (texts, got_done) = handle.await.unwrap();
+                let (texts, got_done) = handle.await.expect("await task handle");
                 assert_eq!(texts, vec!["Hello ", "world!"]);
                 assert!(got_done);
             })
@@ -2142,7 +2144,7 @@ mod tests {
                     let mut texts = Vec::new();
                     let mut got_done = false;
                     while let Some(ev) = stream.next().await {
-                        match ev.unwrap() {
+                        match ev.expect("receive stream event") {
                             CompletionEvent::TextChunk(t) => texts.push(t),
                             CompletionEvent::Action(CompletionAction::Done(_)) => {
                                 got_done = true;
@@ -2159,9 +2161,9 @@ mod tests {
                 tokio::task::yield_now().await;
                 tokio::task::yield_now().await;
                 // Cancel before finishing
-                cancel_tx.send(()).unwrap();
+                cancel_tx.send(()).expect("send cancel signal");
 
-                let (texts, got_done) = handle.await.unwrap();
+                let (texts, got_done) = handle.await.expect("await task handle");
                 assert_eq!(texts, vec!["partial"]);
                 // Should NOT get Done — stream was cancelled
                 assert!(!got_done);
@@ -2206,7 +2208,7 @@ mod tests {
                     let mut texts = Vec::new();
                     let mut got_done = false;
                     while let Some(ev) = stream.next().await {
-                        match ev.unwrap() {
+                        match ev.expect("receive stream event") {
                             CompletionEvent::TextChunk(t) => texts.push(t),
                             CompletionEvent::Action(CompletionAction::Done(_)) => {
                                 got_done = true;
@@ -2225,7 +2227,11 @@ mod tests {
                 // Round 2: after error injection, model retries and returns text
                 let req2 = ctrl.next_request().await;
                 // The history should now contain the error tool result
-                let last_msg = req2.chat_history.into_iter().last().unwrap();
+                let last_msg = req2
+                    .chat_history
+                    .into_iter()
+                    .last()
+                    .expect("bug: chat history is empty");
                 if let Message::User { content } = &last_msg {
                     if let UserContent::ToolResult(res) = content.first() {
                         if let rig::message::ToolResultContent::Text(t) = res.content.first() {
@@ -2240,7 +2246,7 @@ mod tests {
                 ctrl.send_text("ok, done");
                 ctrl.finish();
 
-                let (texts, got_done) = handle.await.unwrap();
+                let (texts, got_done) = handle.await.expect("await task handle");
                 assert_eq!(texts, vec!["ok, done"]);
                 assert!(got_done);
             })
@@ -2300,7 +2306,7 @@ mod tests {
                 ctrl.send_text("understood");
                 ctrl.finish();
 
-                let got_done = handle.await.unwrap();
+                let got_done = handle.await.expect("await task handle");
                 assert!(got_done);
             })
             .await;
@@ -2400,7 +2406,7 @@ mod tests {
                     let mut sync_results = Vec::new();
                     let mut texts = Vec::new();
                     while let Some(ev) = stream.next().await {
-                        match ev.unwrap() {
+                        match ev.expect("receive stream event") {
                             CompletionEvent::SyncToolCall { tool_name, .. } => sync_calls.push(tool_name),
                             CompletionEvent::SyncToolResult(res) => {
                                 if let ToolResultContent::Text(t) = res.content.first() {
@@ -2436,7 +2442,7 @@ mod tests {
                 ctrl.send_text("done");
                 ctrl.finish();
 
-                let (sync_calls, sync_results, texts) = handle.await.unwrap();
+                let (sync_calls, sync_results, texts) = handle.await.expect("await task handle");
                 assert_eq!(sync_calls, vec!["echo_sync"]);
                 assert_eq!(sync_results, vec!["echo: hi"]);
                 assert_eq!(texts, vec!["done"]);
@@ -2480,7 +2486,7 @@ mod tests {
                     tokio::pin!(stream);
                     let mut events = Vec::new();
                     while let Some(ev) = stream.next().await {
-                        match ev.unwrap() {
+                        match ev.expect("receive stream event") {
                             CompletionEvent::ThinkingStart => events.push("start".to_string()),
                             CompletionEvent::ThinkingEnd => events.push("end".to_string()),
                             CompletionEvent::ThinkingChunk(c) => {
@@ -2505,7 +2511,7 @@ mod tests {
                 ctrl.send_text("answer");
                 ctrl.finish();
 
-                let events = handle.await.unwrap();
+                let events = handle.await.expect("await task handle");
                 assert_eq!(
                     events,
                     vec!["start", "think:hmm", "think:...", "end", "text:answer"]
@@ -2598,7 +2604,7 @@ mod tests {
                 ctrl.send_tool_call("tc-1", "async_tool", serde_json::json!({"x": 1}));
                 ctrl.finish();
 
-                let name = handle.await.unwrap();
+                let name = handle.await.expect("await task handle");
                 assert_eq!(name, Some("async_tool".to_string()));
             })
             .await;
@@ -2642,7 +2648,7 @@ mod tests {
                     let mut texts = Vec::new();
                     let mut info_count = 0;
                     while let Some(ev) = stream.next().await {
-                        match ev.unwrap() {
+                        match ev.expect("receive stream event") {
                             CompletionEvent::TextChunk(t) => texts.push(t),
                             CompletionEvent::Info(_) => info_count += 1,
                             _ => {}
@@ -2660,7 +2666,7 @@ mod tests {
                 ctrl.send_text("recovered");
                 ctrl.finish();
 
-                let (texts, info_count) = handle.await.unwrap();
+                let (texts, info_count) = handle.await.expect("await task handle");
                 assert_eq!(texts, vec!["recovered"]);
                 assert!(
                     info_count >= 1,
@@ -2706,7 +2712,7 @@ mod tests {
                     tokio::pin!(stream);
                     let mut events = Vec::new();
                     while let Some(ev) = stream.next().await {
-                        match ev.unwrap() {
+                        match ev.expect("receive stream event") {
                             CompletionEvent::ThinkingStart => events.push("start"),
                             CompletionEvent::ThinkingEnd => events.push("end"),
                             CompletionEvent::ThinkingChunk(_) => events.push("chunk"),
@@ -2723,9 +2729,9 @@ mod tests {
                 });
                 tokio::task::yield_now().await;
                 tokio::task::yield_now().await;
-                cancel_tx.send(()).unwrap();
+                cancel_tx.send(()).expect("send cancel signal");
 
-                let events = handle.await.unwrap();
+                let events = handle.await.expect("await task handle");
                 // Should have: start, chunk, end (end emitted on cancellation)
                 assert!(events.contains(&"start"));
                 assert!(
@@ -2784,7 +2790,7 @@ mod tests {
                     let mut sync_calls = 0;
                     let mut texts = Vec::new();
                     while let Some(ev) = stream.next().await {
-                        match ev.unwrap() {
+                        match ev.expect("receive stream event") {
                             CompletionEvent::SyncToolCall { .. } => sync_calls += 1,
                             CompletionEvent::TextChunk(t) => texts.push(t),
                             _ => {}
@@ -2808,7 +2814,7 @@ mod tests {
                 ctrl.send_text("all done");
                 ctrl.finish();
 
-                let (sync_calls, texts) = handle.await.unwrap();
+                let (sync_calls, texts) = handle.await.expect("await task handle");
                 assert_eq!(sync_calls, 2);
                 assert_eq!(texts, vec!["all done"]);
             })

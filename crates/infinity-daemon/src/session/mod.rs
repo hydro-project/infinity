@@ -40,7 +40,7 @@ pub use thread_worker::{SubscribeRequest, ThreadSubscribers};
 
 /// Message sent to the agent loop — either user input or a subscribe request.
 pub enum AgentMessage {
-    Input(InputMessage, String),
+    Input(Box<InputMessage>, String),
     Subscribe {
         thread_id: String,
         request: SubscribeRequest,
@@ -132,7 +132,9 @@ impl SessionManager {
                 let mut sessions = std::collections::HashMap::new();
                 sessions.insert(session_id, info);
                 let msg = DaemonMessage::SessionsUpdated { sessions };
-                bc.lock().unwrap().retain(|tx| tx.send(msg.clone()).is_ok());
+                bc.lock()
+                    .expect("bug: mutex poisoned")
+                    .retain(|tx| tx.send(msg.clone()).is_ok());
             }
         });
 
@@ -223,7 +225,7 @@ impl SessionManager {
         tokio::task::spawn_local(async move {
             while let Some((msg, id)) = input_adapter_rx.recv().await {
                 if agent_tx_for_adapter
-                    .send(AgentMessage::Input(msg, id))
+                    .send(AgentMessage::Input(Box::new(msg), id))
                     .is_err()
                 {
                     break;
@@ -433,7 +435,12 @@ impl SessionManager {
             .is_some_and(|s| !s.agent_task.is_finished());
 
         if is_alive {
-            let agent_tx = self.sessions.get(&session_id).unwrap().agent_tx.clone();
+            let agent_tx = self
+                .sessions
+                .get(&session_id)
+                .expect("bug: session missing after is_alive check")
+                .agent_tx
+                .clone();
             let _ = agent_tx.send(AgentMessage::Subscribe {
                 thread_id: thread_id.to_string(),
                 request: (tx.clone(), wants_replay),
@@ -526,7 +533,7 @@ impl SessionManager {
             session
                 .agent_tx
                 .send(AgentMessage::Input(
-                    msg.0,
+                    Box::new(msg.0),
                     msg.1.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                 ))
                 .is_ok()
@@ -541,7 +548,10 @@ impl SessionManager {
         subscribe: Option<mpsc::UnboundedSender<DaemonMessage>>,
     ) -> std::collections::HashMap<String, SessionInfo> {
         if let Some(tx) = subscribe {
-            self.broadcast_clients.lock().unwrap().push(tx);
+            self.broadcast_clients
+                .lock()
+                .expect("bug: mutex poisoned")
+                .push(tx);
         }
 
         let store = self.session_store.lock().await;
@@ -595,7 +605,11 @@ impl SessionManager {
         match self.sessions.get(session_id) {
             Some(session) => {
                 session.agent_task.is_finished()
-                    || session.active_threads.lock().unwrap().is_empty()
+                    || session
+                        .active_threads
+                        .lock()
+                        .expect("bug: mutex poisoned")
+                        .is_empty()
             }
             None => true,
         }
@@ -609,6 +623,7 @@ impl SessionManager {
     }
 
     /// Start the agent loop for a session. Returns (model_name, context_window).
+    #[allow(clippy::too_many_arguments)]
     async fn start_agent_loop(
         &self,
         session_id: String,
@@ -657,6 +672,7 @@ impl SessionManager {
 
 // ── Agent loop (mirrors CLI main.rs agent_loop/thread_worker) ───────────────
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_agent_loop<Mdl>(
     session_id: String,
     session_store: SessionStoreHandle,
@@ -765,6 +781,7 @@ where
 /// Runs agent_loop, selects on shutdown signal and idle notifications.
 /// When done, gracefully kills servers and marks the session store.
 #[tracing::instrument(skip_all, fields(session_id))]
+#[allow(clippy::too_many_arguments)]
 async fn session_wrapper(
     agent_fut: impl Future<Output = ()>,
     session_id: String,
@@ -784,8 +801,8 @@ async fn session_wrapper(
                 // agent_loop returned (rx closed). Wait for workers to drain.
                 while idle_rx.try_recv().is_ok() {}
                 idle_exited = {
-                    let smap = subscriber_map.lock().unwrap();
-                    smap.values().all(|subs| subs.lock().unwrap().iter().all(|tx| tx.is_closed()))
+                    let smap = subscriber_map.lock().expect("bug: mutex poisoned");
+                    smap.values().all(|subs| subs.lock().expect("bug: mutex poisoned").iter().all(|tx| tx.is_closed()))
                 };
                 break;
             }
@@ -799,7 +816,7 @@ async fn session_wrapper(
             }
             _ = idle_rx.recv() => {
                 // idle_tx means "might be idle" — check active threads.
-                if !active_threads.lock().unwrap().is_empty() {
+                if !active_threads.lock().expect("bug: active_threads mutex poisoned").is_empty() {
                     continue;
                 }
 
@@ -812,8 +829,8 @@ async fn session_wrapper(
 
                 // If no client attached, exit the loop entirely.
                 let has_clients = {
-                    let smap = subscriber_map.lock().unwrap();
-                    smap.values().any(|subs| subs.lock().unwrap().iter().any(|tx| !tx.is_closed()))
+                    let smap = subscriber_map.lock().expect("bug: mutex poisoned");
+                    smap.values().any(|subs| subs.lock().expect("bug: mutex poisoned").iter().any(|tx| !tx.is_closed()))
                 };
                 if !has_clients {
                     tracing::info!("Exiting agent {} due to idle", session_id);

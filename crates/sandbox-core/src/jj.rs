@@ -72,7 +72,14 @@ pub async fn jj_git_clone(
     // so we inject the identity via --config flags for this command.
     let mut cmd = jj_command(
         Path::new(remote),
-        &["workspace", "add", "-r", "root()", dest.to_str().unwrap()],
+        &[
+            "workspace",
+            "add",
+            "-r",
+            "root()",
+            dest.to_str()
+                .expect("bug: sandbox dest path is not valid UTF-8"),
+        ],
     );
     cmd.arg("--config")
         .arg(format!("user.name={name}"))

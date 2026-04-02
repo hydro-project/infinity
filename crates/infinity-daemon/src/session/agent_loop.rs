@@ -51,7 +51,7 @@ pub async fn agent_loop<Mdl>(
             if !w.input_tx.is_closed() {
                 match msg {
                     AgentMessage::Input(input, id) => {
-                        let _ = w.input_tx.send((input, id));
+                        let _ = w.input_tx.send((*input, id));
                     }
                     AgentMessage::Subscribe { request, .. } => {
                         tracing::debug!("Worker is already alive, sending subscribe request");
@@ -67,10 +67,10 @@ pub async fn agent_loop<Mdl>(
         // Spawn a new worker.
         let parent_subs = {
             let parent_id = conversation_store.get_thread_parent_id(&thread_id);
-            let smap = subscriber_map.lock().unwrap();
+            let smap = subscriber_map.lock().expect("bug: mutex poisoned");
             let source = parent_id.as_deref().unwrap_or(&thread_id);
             smap.get(source)
-                .map(|arc| arc.lock().unwrap().clone())
+                .map(|arc| arc.lock().expect("bug: mutex poisoned").clone())
                 .unwrap_or_default()
         };
         let (input_tx, input_rx) = mpsc::unbounded_channel();
@@ -78,7 +78,7 @@ pub async fn agent_loop<Mdl>(
 
         let subscribers = subscriber_map
             .lock()
-            .unwrap()
+            .expect("bug: mutex poisoned")
             .entry(thread_id.clone())
             .or_insert_with(|| Arc::new(std::sync::Mutex::new(parent_subs)))
             .clone();
@@ -107,7 +107,7 @@ pub async fn agent_loop<Mdl>(
 
         match msg {
             AgentMessage::Input(input, id) => {
-                let _ = input_tx.send((input, id));
+                let _ = input_tx.send((*input, id));
             }
             AgentMessage::Subscribe { request, .. } => {
                 let _ = subscribe_tx.send(request);
@@ -124,6 +124,7 @@ pub async fn agent_loop<Mdl>(
 }
 
 #[cfg(test)]
+#[allow(clippy::collapsible_if)]
 mod tests {
     use std::collections::HashSet;
 
@@ -138,7 +139,7 @@ mod tests {
         InMemoryStateStore,
         tempfile::TempDir,
     ) {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let conv = InMemoryConversationStore::new_with_dir(dir.path().join("threads"));
         let state = InMemoryStateStore::new(dir.path().join("state"));
         (conv, state, dir)
@@ -146,14 +147,14 @@ mod tests {
 
     fn user_text_input(group_id: &str, text: &str) -> AgentMessage {
         AgentMessage::Input(
-            InputMessage {
+            Box::new(InputMessage {
                 content: InputMessageContent::User(UserContent::text(text)),
                 group_id: group_id.into(),
                 metadata: None,
                 synthetic: None,
                 display_as: None,
                 subscription: false,
-            },
+            }),
             uuid::Uuid::new_v4().to_string(),
         )
     }
@@ -174,7 +175,10 @@ mod tests {
         let agent_tx_clone = agent_tx.clone();
         tokio::task::spawn_local(async move {
             while let Some((msg, id)) = input_adapter_rx.recv().await {
-                if agent_tx_clone.send(AgentMessage::Input(msg, id)).is_err() {
+                if agent_tx_clone
+                    .send(AgentMessage::Input(Box::new(msg), id))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -184,7 +188,7 @@ mod tests {
         let active_threads = Arc::new(std::sync::Mutex::new(HashSet::new()));
 
         let (change_tx, _) = mpsc::unbounded_channel();
-        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let tmp = tempfile::NamedTempFile::new().expect("create temp file");
         let session_store = Arc::new(tokio::sync::Mutex::new(
             crate::session_store::SessionStore::load(&tmp.path().to_string_lossy(), change_tx),
         ));
@@ -219,12 +223,18 @@ mod tests {
             .run_until(async {
                 let (conv, state, _dir) = tmp_stores();
                 let (model, mut ctrl) = mock_model();
-                conv.ensure_root_thread("root").await.unwrap();
-                let child_id = conv.spawn_thread("root", "tc-spawn", false).await.unwrap();
+                conv.ensure_root_thread("root")
+                    .await
+                    .expect("ensure root thread");
+                let child_id = conv
+                    .spawn_thread("root", "tc-spawn", false)
+                    .await
+                    .expect("spawn child thread");
 
                 let (tx, mut idle_rx, _) = spawn_test_agent_loop("root", conv, state, model);
 
-                tx.send(user_text_input("root", "hello root")).unwrap();
+                tx.send(user_text_input("root", "hello root"))
+                    .expect("send root user input");
                 let _req1 = ctrl.next_request().await;
                 ctrl.send_text("root resp");
                 ctrl.finish();
@@ -234,17 +244,17 @@ mod tests {
                     .expect("root should idle");
 
                 tx.send(AgentMessage::Input(
-                    InputMessage {
+                    Box::new(InputMessage {
                         content: InputMessageContent::User(UserContent::text("hello child")),
                         group_id: child_id.clone(),
                         metadata: None,
                         synthetic: None,
                         display_as: None,
                         subscription: false,
-                    },
+                    }),
                     uuid::Uuid::new_v4().to_string(),
                 ))
-                .unwrap();
+                .expect("send child user input");
 
                 let req2 = ctrl.next_request().await;
                 let has_child_msg = req2.chat_history.into_iter().any(|m| {
@@ -269,11 +279,14 @@ mod tests {
             .run_until(async {
                 let (conv, state, _dir) = tmp_stores();
                 let (model, mut ctrl) = mock_model();
-                conv.ensure_root_thread("t1").await.unwrap();
+                conv.ensure_root_thread("t1")
+                    .await
+                    .expect("ensure root thread");
 
                 let (tx, mut idle_rx, _) = spawn_test_agent_loop("t1", conv, state, model);
 
-                tx.send(user_text_input("t1", "first")).unwrap();
+                tx.send(user_text_input("t1", "first"))
+                    .expect("send first user input");
                 let _req1 = ctrl.next_request().await;
                 ctrl.send_text("resp 1");
                 ctrl.finish();
@@ -282,7 +295,8 @@ mod tests {
                     .await
                     .expect("should idle");
 
-                tx.send(user_text_input("t1", "second")).unwrap();
+                tx.send(user_text_input("t1", "second"))
+                    .expect("send second user input");
                 let req2 = ctrl.next_request().await;
                 let has_second = req2.chat_history.into_iter().any(|m| {
                     if let rig::message::Message::User { content } = &m {

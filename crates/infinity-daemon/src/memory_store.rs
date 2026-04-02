@@ -29,6 +29,7 @@ pub struct InMemoryConversationStore {
     threads: Arc<Mutex<HashMap<String, ThreadInfo>>>,
     /// thread_id -> tool_result_id -> display_as segments.
     /// Persisted separately because rig's `Message` type does not carry display_as.
+    #[expect(clippy::type_complexity, reason = "shared state")]
     display_as_map: Arc<Mutex<HashMap<String, HashMap<String, Vec<rap_protocol::DisplaySegment>>>>>,
     /// thread_id -> compaction summaries
     compaction_summaries: Arc<Mutex<HashMap<String, Vec<CompactionSummary>>>>,
@@ -132,7 +133,7 @@ impl InMemoryConversationStore {
     /// Write a single thread's metadata to `{dir}/{thread_id}.meta.json`.
     fn save_thread_metadata(&self, thread_id: &str) {
         let Some(ref dir) = self.dir else { return };
-        let threads = self.threads.lock().unwrap();
+        let threads = self.threads.lock().expect("bug: mutex poisoned");
         if let Some(info) = threads.get(thread_id) {
             let path = dir.join(format!("{}.meta.json", thread_id));
             if let Ok(json) = serde_json::to_string_pretty(info) {
@@ -145,9 +146,12 @@ impl InMemoryConversationStore {
     /// No-op when persistence is disabled.
     fn save_thread(&self, thread_id: &str) {
         let Some(ref dir) = self.dir else { return };
-        let messages = self.messages.lock().unwrap();
-        let display_as_map = self.display_as_map.lock().unwrap();
-        let compaction_summaries = self.compaction_summaries.lock().unwrap();
+        let messages = self.messages.lock().expect("bug: mutex poisoned");
+        let display_as_map = self.display_as_map.lock().expect("bug: mutex poisoned");
+        let compaction_summaries = self
+            .compaction_summaries
+            .lock()
+            .expect("bug: mutex poisoned");
 
         let snapshot = ThreadSnapshot {
             messages: messages.get(thread_id).cloned().unwrap_or_default(),
@@ -171,7 +175,7 @@ impl InMemoryConversationStore {
     fn ensure_thread_metadata_loaded(&self, thread_id: &str) {
         let Some(ref dir) = self.dir else { return };
 
-        let mut meta_loaded = self.metadata_loaded.lock().unwrap();
+        let mut meta_loaded = self.metadata_loaded.lock().expect("bug: mutex poisoned");
         if meta_loaded.contains(thread_id) {
             return;
         }
@@ -183,7 +187,7 @@ impl InMemoryConversationStore {
         {
             self.threads
                 .lock()
-                .unwrap()
+                .expect("bug: mutex poisoned")
                 .entry(thread_id.to_string())
                 .or_insert(info);
             meta_loaded.insert(thread_id.to_string());
@@ -199,7 +203,7 @@ impl InMemoryConversationStore {
         {
             self.threads
                 .lock()
-                .unwrap()
+                .expect("bug: mutex poisoned")
                 .entry(thread_id.to_string())
                 .or_insert(info);
             // Migrate: write the .meta.json for next time.
@@ -216,7 +220,7 @@ impl InMemoryConversationStore {
 
         let Some(ref dir) = self.dir else { return };
 
-        let mut loaded = self.loaded.lock().unwrap();
+        let mut loaded = self.loaded.lock().expect("bug: mutex poisoned");
         if loaded.contains(thread_id) {
             return;
         }
@@ -225,9 +229,12 @@ impl InMemoryConversationStore {
         if let Ok(json) = std::fs::read_to_string(&path)
             && let Ok(snapshot) = serde_json::from_str::<ThreadSnapshot>(&json)
         {
-            let mut messages = self.messages.lock().unwrap();
-            let mut display_as_map = self.display_as_map.lock().unwrap();
-            let mut compaction_summaries = self.compaction_summaries.lock().unwrap();
+            let mut messages = self.messages.lock().expect("bug: mutex poisoned");
+            let mut display_as_map = self.display_as_map.lock().expect("bug: mutex poisoned");
+            let mut compaction_summaries = self
+                .compaction_summaries
+                .lock()
+                .expect("bug: mutex poisoned");
 
             assert!(
                 messages
@@ -258,7 +265,7 @@ impl InMemoryConversationStore {
     ) {
         self.ensure_thread_loaded(thread_id);
         {
-            let mut map = self.display_as_map.lock().unwrap();
+            let mut map = self.display_as_map.lock().expect("bug: mutex poisoned");
             map.entry(thread_id.to_string())
                 .or_default()
                 .insert(tool_result_id.to_string(), display_as.to_vec());
@@ -273,7 +280,7 @@ impl InMemoryConversationStore {
         tool_result_id: &str,
     ) -> Option<Vec<rap_protocol::DisplaySegment>> {
         self.ensure_thread_loaded(thread_id);
-        let map = self.display_as_map.lock().unwrap();
+        let map = self.display_as_map.lock().expect("bug: mutex poisoned");
         map.get(thread_id)
             .and_then(|inner| inner.get(tool_result_id).cloned())
     }
@@ -281,7 +288,7 @@ impl InMemoryConversationStore {
     /// Resolve a thread ID to its root thread ID (i.e. the session ID).
     pub fn get_root_thread_id(&self, thread_id: &str) -> String {
         self.ensure_thread_metadata_loaded(thread_id);
-        let threads = self.threads.lock().unwrap();
+        let threads = self.threads.lock().expect("bug: mutex poisoned");
         threads
             .get(thread_id)
             .map(|t| t.root_thread_id.clone())
@@ -291,7 +298,7 @@ impl InMemoryConversationStore {
     /// Get the parent thread ID, if any.
     pub fn get_thread_parent_id(&self, thread_id: &str) -> Option<String> {
         self.ensure_thread_metadata_loaded(thread_id);
-        let threads = self.threads.lock().unwrap();
+        let threads = self.threads.lock().expect("bug: mutex poisoned");
         threads
             .get(thread_id)
             .and_then(|t| t.parent_thread_id.clone())
@@ -301,7 +308,7 @@ impl InMemoryConversationStore {
     pub fn set_thread_title(&self, thread_id: &str, title: &str) {
         self.ensure_thread_metadata_loaded(thread_id);
         {
-            let mut threads = self.threads.lock().unwrap();
+            let mut threads = self.threads.lock().expect("bug: mutex poisoned");
             if let Some(t) = threads.get_mut(thread_id) {
                 t.title = Some(title.to_string());
             }
@@ -318,7 +325,7 @@ impl InMemoryConversationStore {
         let mut queue = vec![parent_id.to_string()];
         while let Some(pid) = queue.pop() {
             let children = {
-                let threads = self.threads.lock().unwrap();
+                let threads = self.threads.lock().expect("bug: mutex poisoned");
                 threads
                     .get(&pid)
                     .map(|t| t.children.clone())
@@ -326,7 +333,7 @@ impl InMemoryConversationStore {
             };
             for child_id in children {
                 self.ensure_thread_metadata_loaded(&child_id);
-                let threads = self.threads.lock().unwrap();
+                let threads = self.threads.lock().expect("bug: mutex poisoned");
                 if let Some(info) = threads.get(&child_id)
                     && !info.closed
                     && !info.is_compaction
@@ -351,7 +358,7 @@ impl ConversationStore for InMemoryConversationStore {
     async fn ensure_root_thread(&self, thread_id: &str) -> Result<(), MemoryError> {
         self.ensure_thread_loaded(thread_id);
         let inserted = {
-            let mut threads = self.threads.lock().unwrap();
+            let mut threads = self.threads.lock().expect("bug: mutex poisoned");
             if threads.contains_key(thread_id) {
                 false
             } else {
@@ -385,7 +392,7 @@ impl ConversationStore for InMemoryConversationStore {
         up_to: Option<i64>,
     ) -> Result<Vec<Message>, MemoryError> {
         self.ensure_thread_loaded(session_id);
-        let msgs = self.messages.lock().unwrap();
+        let msgs = self.messages.lock().expect("bug: mutex poisoned");
         Ok(msgs
             .get(session_id)
             .map(|v| {
@@ -404,7 +411,7 @@ impl ConversationStore for InMemoryConversationStore {
         self.ensure_thread_loaded(session_id);
         tracing::trace!("Appending messages {:?} to store", &messages);
         {
-            let mut store = self.messages.lock().unwrap();
+            let mut store = self.messages.lock().expect("bug: mutex poisoned");
             let entry = store.entry(session_id.to_string()).or_default();
             entry.extend(messages);
         }
@@ -423,8 +430,8 @@ impl ConversationStore for InMemoryConversationStore {
         let spawn_message_order;
         let root;
         {
-            let threads = self.threads.lock().unwrap();
-            let msgs = self.messages.lock().unwrap();
+            let threads = self.threads.lock().expect("bug: mutex poisoned");
+            let msgs = self.messages.lock().expect("bug: mutex poisoned");
             spawn_message_order = msgs
                 .get(parent_thread_id)
                 .map(|v| v.len() as i64)
@@ -435,16 +442,16 @@ impl ConversationStore for InMemoryConversationStore {
                 .unwrap_or_else(|| parent_thread_id.to_string());
         }
         {
-            let mut loaded = self.loaded.lock().unwrap();
-            let mut meta_loaded = self.metadata_loaded.lock().unwrap();
+            let mut loaded = self.loaded.lock().expect("bug: mutex poisoned");
+            let mut meta_loaded = self.metadata_loaded.lock().expect("bug: mutex poisoned");
 
             {
-                let mut messages = self.messages.lock().unwrap();
+                let mut messages = self.messages.lock().expect("bug: mutex poisoned");
                 messages.insert(new_id.clone(), vec![]);
             }
 
             {
-                let mut threads = self.threads.lock().unwrap();
+                let mut threads = self.threads.lock().expect("bug: mutex poisoned");
                 threads.insert(
                     new_id.clone(),
                     ThreadInfo {
@@ -466,7 +473,7 @@ impl ConversationStore for InMemoryConversationStore {
             }
 
             {
-                let mut display_as_map = self.display_as_map.lock().unwrap();
+                let mut display_as_map = self.display_as_map.lock().expect("bug: mutex poisoned");
                 display_as_map.insert(new_id.clone(), HashMap::new());
             }
 
@@ -482,14 +489,14 @@ impl ConversationStore for InMemoryConversationStore {
 
     async fn is_thread_closed(&self, thread_id: &str) -> Result<bool, MemoryError> {
         self.ensure_thread_metadata_loaded(thread_id);
-        let threads = self.threads.lock().unwrap();
+        let threads = self.threads.lock().expect("bug: mutex poisoned");
         Ok(threads.get(thread_id).map(|t| t.closed).unwrap_or(false))
     }
 
     async fn close_thread(&self, thread_id: &str) -> Result<(), MemoryError> {
         self.ensure_thread_metadata_loaded(thread_id);
         {
-            let mut threads = self.threads.lock().unwrap();
+            let mut threads = self.threads.lock().expect("bug: mutex poisoned");
             if let Some(t) = threads.get_mut(thread_id) {
                 t.closed = true;
             }
@@ -501,7 +508,7 @@ impl ConversationStore for InMemoryConversationStore {
 
     async fn is_subscription_event_thread(&self, thread_id: &str) -> Result<bool, MemoryError> {
         self.ensure_thread_metadata_loaded(thread_id);
-        let threads = self.threads.lock().unwrap();
+        let threads = self.threads.lock().expect("bug: mutex poisoned");
         Ok(threads
             .get(thread_id)
             .map(|t| t.is_subscription_event)
@@ -513,7 +520,7 @@ impl ConversationStore for InMemoryConversationStore {
         thread_id: &str,
     ) -> Result<Option<(String, String)>, MemoryError> {
         self.ensure_thread_metadata_loaded(thread_id);
-        let threads = self.threads.lock().unwrap();
+        let threads = self.threads.lock().expect("bug: mutex poisoned");
         Ok(threads.get(thread_id).and_then(|t| {
             match (&t.parent_thread_id, &t.spawn_tool_call_id) {
                 (Some(p), Some(tc)) => Some((p.clone(), tc.clone())),
@@ -528,12 +535,14 @@ impl ConversationStore for InMemoryConversationStore {
         loop {
             self.ensure_thread_metadata_loaded(&current);
             let info = {
-                let threads = self.threads.lock().unwrap();
+                let threads = self.threads.lock().expect("bug: mutex poisoned");
                 threads.get(&current).cloned()
             };
             match info {
                 Some(t) if t.parent_thread_id.is_some() => {
-                    let parent = t.parent_thread_id.unwrap();
+                    let parent = t
+                        .parent_thread_id
+                        .expect("bug: parent_thread_id was None after is_some check");
                     let order = t.spawn_message_order.unwrap_or(0);
                     result.push((parent.clone(), order));
                     current = parent;
@@ -553,7 +562,10 @@ impl ConversationStore for InMemoryConversationStore {
     ) -> Result<(), MemoryError> {
         self.ensure_thread_loaded(thread_id);
         {
-            let mut cs = self.compaction_summaries.lock().unwrap();
+            let mut cs = self
+                .compaction_summaries
+                .lock()
+                .expect("bug: mutex poisoned");
             cs.entry(thread_id.to_string())
                 .or_default()
                 .push(CompactionSummary {
@@ -571,7 +583,10 @@ impl ConversationStore for InMemoryConversationStore {
         up_to_order: Option<i64>,
     ) -> Result<Option<(String, i64)>, MemoryError> {
         self.ensure_thread_loaded(thread_id);
-        let cs = self.compaction_summaries.lock().unwrap();
+        let cs = self
+            .compaction_summaries
+            .lock()
+            .expect("bug: mutex poisoned");
         Ok(cs.get(thread_id).and_then(|v| {
             v.iter()
                 .rev()
@@ -582,7 +597,7 @@ impl ConversationStore for InMemoryConversationStore {
 
     async fn is_compaction_thread(&self, thread_id: &str) -> Result<bool, MemoryError> {
         self.ensure_thread_metadata_loaded(thread_id);
-        let threads = self.threads.lock().unwrap();
+        let threads = self.threads.lock().expect("bug: mutex poisoned");
         Ok(threads
             .get(thread_id)
             .map(|t| t.is_compaction)
@@ -592,7 +607,7 @@ impl ConversationStore for InMemoryConversationStore {
     async fn mark_thread_as_compaction(&self, thread_id: &str) -> Result<(), MemoryError> {
         self.ensure_thread_metadata_loaded(thread_id);
         {
-            let mut threads = self.threads.lock().unwrap();
+            let mut threads = self.threads.lock().expect("bug: mutex poisoned");
             if let Some(t) = threads.get_mut(thread_id) {
                 t.is_compaction = true;
             }
@@ -603,7 +618,7 @@ impl ConversationStore for InMemoryConversationStore {
 
     async fn get_thread_spawn_order(&self, thread_id: &str) -> Result<Option<i64>, MemoryError> {
         self.ensure_thread_metadata_loaded(thread_id);
-        let threads = self.threads.lock().unwrap();
+        let threads = self.threads.lock().expect("bug: mutex poisoned");
         Ok(threads.get(thread_id).and_then(|t| t.spawn_message_order))
     }
 }
@@ -651,9 +666,9 @@ impl InMemoryStateStore {
 
     /// Write a single key's state data to `{dir}/{key}.state.json`.
     fn save_key(&self, key: &str) {
-        let processed_ids = self.processed_ids.lock().unwrap();
-        let metadata = self.metadata.lock().unwrap();
-        let subscriptions = self.subscriptions.lock().unwrap();
+        let processed_ids = self.processed_ids.lock().expect("bug: mutex poisoned");
+        let metadata = self.metadata.lock().expect("bug: mutex poisoned");
+        let subscriptions = self.subscriptions.lock().expect("bug: mutex poisoned");
 
         let (msg_ids, tc_ids) = processed_ids
             .get(key)
@@ -675,7 +690,7 @@ impl InMemoryStateStore {
 
     /// Ensure a key's data is loaded from disk into the in-memory caches.
     fn ensure_loaded(&self, key: &str) {
-        let mut loaded = self.loaded.lock().unwrap();
+        let mut loaded = self.loaded.lock().expect("bug: mutex poisoned");
         if loaded.contains(key) {
             return;
         }
@@ -684,9 +699,9 @@ impl InMemoryStateStore {
         if let Ok(json) = std::fs::read_to_string(&path)
             && let Ok(snapshot) = serde_json::from_str::<StateThreadSnapshot>(&json)
         {
-            let mut processed_ids = self.processed_ids.lock().unwrap();
-            let mut metadata = self.metadata.lock().unwrap();
-            let mut subscriptions = self.subscriptions.lock().unwrap();
+            let mut processed_ids = self.processed_ids.lock().expect("bug: mutex poisoned");
+            let mut metadata = self.metadata.lock().expect("bug: mutex poisoned");
+            let mut subscriptions = self.subscriptions.lock().expect("bug: mutex poisoned");
 
             processed_ids.insert(
                 key.to_string(),
@@ -716,7 +731,7 @@ impl StateStore for InMemoryStateStore {
         thread_id: &str,
     ) -> Result<(HashSet<String>, HashSet<String>), MemoryError> {
         self.ensure_loaded(thread_id);
-        let store = self.processed_ids.lock().unwrap();
+        let store = self.processed_ids.lock().expect("bug: mutex poisoned");
         Ok(store
             .get(thread_id)
             .cloned()
@@ -730,7 +745,7 @@ impl StateStore for InMemoryStateStore {
     ) -> Result<(), MemoryError> {
         self.ensure_loaded(thread_id);
         {
-            let mut store = self.processed_ids.lock().unwrap();
+            let mut store = self.processed_ids.lock().expect("bug: mutex poisoned");
             let entry = store
                 .entry(thread_id.to_string())
                 .or_insert_with(|| (HashSet::new(), HashSet::new()));
@@ -747,7 +762,7 @@ impl StateStore for InMemoryStateStore {
     ) -> Result<(), MemoryError> {
         self.ensure_loaded(thread_id);
         {
-            let mut store = self.processed_ids.lock().unwrap();
+            let mut store = self.processed_ids.lock().expect("bug: mutex poisoned");
             let entry = store
                 .entry(thread_id.to_string())
                 .or_insert_with(|| (HashSet::new(), HashSet::new()));
@@ -762,7 +777,7 @@ impl StateStore for InMemoryStateStore {
         root_thread_id: &str,
     ) -> Result<Option<serde_json::Value>, MemoryError> {
         self.ensure_loaded(root_thread_id);
-        let store = self.metadata.lock().unwrap();
+        let store = self.metadata.lock().expect("bug: mutex poisoned");
         Ok(store.get(root_thread_id).cloned())
     }
 
@@ -773,7 +788,7 @@ impl StateStore for InMemoryStateStore {
     ) -> Result<(), MemoryError> {
         self.ensure_loaded(root_thread_id);
         {
-            let mut store = self.metadata.lock().unwrap();
+            let mut store = self.metadata.lock().expect("bug: mutex poisoned");
             store.insert(root_thread_id.to_string(), metadata);
         }
         self.save_key(root_thread_id);
@@ -782,7 +797,7 @@ impl StateStore for InMemoryStateStore {
 
     async fn get_active_subscriptions(&self, thread_id: &str) -> Result<Vec<String>, MemoryError> {
         self.ensure_loaded(thread_id);
-        let store = self.subscriptions.lock().unwrap();
+        let store = self.subscriptions.lock().expect("bug: mutex poisoned");
         Ok(store
             .get(thread_id)
             .map(|s| s.iter().cloned().collect())
@@ -796,7 +811,7 @@ impl StateStore for InMemoryStateStore {
     ) -> Result<(), MemoryError> {
         self.ensure_loaded(thread_id);
         {
-            let mut store = self.subscriptions.lock().unwrap();
+            let mut store = self.subscriptions.lock().expect("bug: mutex poisoned");
             store
                 .entry(thread_id.to_string())
                 .or_default()
@@ -813,7 +828,7 @@ impl StateStore for InMemoryStateStore {
     ) -> Result<(), MemoryError> {
         self.ensure_loaded(thread_id);
         {
-            let mut store = self.subscriptions.lock().unwrap();
+            let mut store = self.subscriptions.lock().expect("bug: mutex poisoned");
             if let Some(subs) = store.get_mut(thread_id) {
                 subs.remove(tool_call_id);
             }
@@ -854,6 +869,7 @@ impl InputSender for InMemoryMessageSender {
 }
 
 #[cfg(test)]
+#[allow(clippy::collapsible_if)]
 mod tests {
     use super::*;
     use infinity_agent_core::traits::ConversationStore;
@@ -876,18 +892,24 @@ mod tests {
     /// should return parent[0..2] + child messages.
     #[tokio::test]
     async fn ancestors_basic_cutoff() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let store = InMemoryConversationStore::new_with_dir(dir.path());
-        store.ensure_root_thread("root").await.unwrap();
+        store
+            .ensure_root_thread("root")
+            .await
+            .expect("ensure root thread");
         store
             .append_messages(
                 "root",
                 vec![(user_msg("p1"), "m1".into()), (asst_msg("p2"), "m2".into())],
             )
             .await
-            .unwrap();
+            .expect("append root messages");
 
-        let child = store.spawn_thread("root", "tc-1", false).await.unwrap();
+        let child = store
+            .spawn_thread("root", "tc-1", false)
+            .await
+            .expect("spawn child thread");
 
         store
             .append_messages(
@@ -895,14 +917,17 @@ mod tests {
                 vec![(user_msg("p3"), "m3".into()), (asst_msg("p4"), "m4".into())],
             )
             .await
-            .unwrap();
+            .expect("append root messages after spawn");
 
         store
             .append_messages(&child, vec![(user_msg("c1"), "m5".into())])
             .await
-            .unwrap();
+            .expect("append child messages");
 
-        let (history, _) = store.load_history_with_ancestors(&child).await.unwrap();
+        let (history, _) = store
+            .load_history_with_ancestors(&child)
+            .await
+            .expect("load history with ancestors");
         assert_eq!(history.len(), 3);
         if let Message::User { content } = &history[0] {
             assert!(matches!(content.first(), UserContent::Text(t) if t.text == "p1"));
@@ -915,42 +940,54 @@ mod tests {
     /// Three-level chain: root → child → grandchild.
     #[tokio::test]
     async fn ancestors_three_levels() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let store = InMemoryConversationStore::new_with_dir(dir.path());
-        store.ensure_root_thread("root").await.unwrap();
+        store
+            .ensure_root_thread("root")
+            .await
+            .expect("ensure root thread");
         store
             .append_messages("root", vec![(user_msg("r1"), "m1".into())])
             .await
-            .unwrap();
+            .expect("append root messages");
 
-        let child = store.spawn_thread("root", "tc-1", false).await.unwrap();
+        let child = store
+            .spawn_thread("root", "tc-1", false)
+            .await
+            .expect("spawn child thread");
         store
             .append_messages(
                 &child,
                 vec![(user_msg("c1"), "m2".into()), (asst_msg("c2"), "m3".into())],
             )
             .await
-            .unwrap();
+            .expect("append child messages");
 
-        let grandchild = store.spawn_thread(&child, "tc-2", false).await.unwrap();
+        let grandchild = store
+            .spawn_thread(&child, "tc-2", false)
+            .await
+            .expect("spawn grandchild thread");
         store
             .append_messages(&grandchild, vec![(user_msg("g1"), "m4".into())])
             .await
-            .unwrap();
+            .expect("append grandchild messages");
 
         let (history, _) = store
             .load_history_with_ancestors(&grandchild)
             .await
-            .unwrap();
+            .expect("load history with ancestors");
         assert_eq!(history.len(), 4);
     }
 
     /// Compaction on root: should return [summary] + messages after compaction point.
     #[tokio::test]
     async fn ancestors_with_compaction_on_self() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let store = InMemoryConversationStore::new_with_dir(dir.path());
-        store.ensure_root_thread("root").await.unwrap();
+        store
+            .ensure_root_thread("root")
+            .await
+            .expect("ensure root thread");
         store
             .append_messages(
                 "root",
@@ -962,14 +999,17 @@ mod tests {
                 ],
             )
             .await
-            .unwrap();
+            .expect("append root messages");
 
         store
             .save_compaction_summary("root", "summary of old stuff", 2)
             .await
-            .unwrap();
+            .expect("save compaction summary");
 
-        let (history, compacted_up_to) = store.load_history_with_ancestors("root").await.unwrap();
+        let (history, compacted_up_to) = store
+            .load_history_with_ancestors("root")
+            .await
+            .expect("load history with ancestors");
         assert_eq!(history.len(), 3);
         assert_eq!(compacted_up_to, Some(2));
         if let Message::Assistant { content, .. } = &history[0] {
@@ -982,9 +1022,12 @@ mod tests {
     /// Compaction on parent: child should use parent's compaction summary.
     #[tokio::test]
     async fn ancestors_with_compaction_on_parent() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let store = InMemoryConversationStore::new_with_dir(dir.path());
-        store.ensure_root_thread("root").await.unwrap();
+        store
+            .ensure_root_thread("root")
+            .await
+            .expect("ensure root thread");
         store
             .append_messages(
                 "root",
@@ -995,20 +1038,26 @@ mod tests {
                 ],
             )
             .await
-            .unwrap();
+            .expect("append root messages");
 
         store
             .save_compaction_summary("root", "compacted root", 2)
             .await
-            .unwrap();
+            .expect("save compaction summary");
 
-        let child = store.spawn_thread("root", "tc-1", false).await.unwrap();
+        let child = store
+            .spawn_thread("root", "tc-1", false)
+            .await
+            .expect("spawn child thread");
         store
             .append_messages(&child, vec![(user_msg("c1"), "m4".into())])
             .await
-            .unwrap();
+            .expect("append child messages");
 
-        let (history, _) = store.load_history_with_ancestors(&child).await.unwrap();
+        let (history, _) = store
+            .load_history_with_ancestors(&child)
+            .await
+            .expect("load history with ancestors");
         assert_eq!(history.len(), 3);
         if let Message::Assistant { content, .. } = &history[0] {
             if let AssistantContent::Text(t) = content.first() {
@@ -1020,9 +1069,12 @@ mod tests {
     /// Two compactions on root — should pick the latest that fits within cutoff.
     #[tokio::test]
     async fn ancestors_multiple_compactions_picks_latest() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let store = InMemoryConversationStore::new_with_dir(dir.path());
-        store.ensure_root_thread("root").await.unwrap();
+        store
+            .ensure_root_thread("root")
+            .await
+            .expect("ensure root thread");
         store
             .append_messages(
                 "root",
@@ -1035,24 +1087,30 @@ mod tests {
                 ],
             )
             .await
-            .unwrap();
+            .expect("append root messages");
 
         store
             .save_compaction_summary("root", "early summary", 2)
             .await
-            .unwrap();
+            .expect("save early compaction summary");
         store
             .save_compaction_summary("root", "later summary", 4)
             .await
-            .unwrap();
+            .expect("save later compaction summary");
 
-        let child = store.spawn_thread("root", "tc-1", false).await.unwrap();
+        let child = store
+            .spawn_thread("root", "tc-1", false)
+            .await
+            .expect("spawn child thread");
         store
             .append_messages(&child, vec![(user_msg("c1"), "m6".into())])
             .await
-            .unwrap();
+            .expect("append child messages");
 
-        let (history, _) = store.load_history_with_ancestors(&child).await.unwrap();
+        let (history, _) = store
+            .load_history_with_ancestors(&child)
+            .await
+            .expect("load history with ancestors");
         assert_eq!(history.len(), 3);
         if let Message::Assistant { content, .. } = &history[0] {
             if let AssistantContent::Text(t) = content.first() {
@@ -1065,22 +1123,28 @@ mod tests {
     /// used exclusively — ancestors are skipped entirely.
     #[tokio::test]
     async fn leaf_compaction_takes_priority_over_ancestor() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let store = InMemoryConversationStore::new_with_dir(dir.path());
-        store.ensure_root_thread("root").await.unwrap();
+        store
+            .ensure_root_thread("root")
+            .await
+            .expect("ensure root thread");
         store
             .append_messages(
                 "root",
                 vec![(user_msg("r1"), "m1".into()), (asst_msg("r2"), "m2".into())],
             )
             .await
-            .unwrap();
+            .expect("append root messages");
         store
             .save_compaction_summary("root", "root compaction", 2)
             .await
-            .unwrap();
+            .expect("save root compaction summary");
 
-        let child = store.spawn_thread("root", "tc-1", false).await.unwrap();
+        let child = store
+            .spawn_thread("root", "tc-1", false)
+            .await
+            .expect("spawn child thread");
         store
             .append_messages(
                 &child,
@@ -1092,13 +1156,16 @@ mod tests {
                 ],
             )
             .await
-            .unwrap();
+            .expect("append child messages");
         store
             .save_compaction_summary(&child, "child compaction", 2)
             .await
-            .unwrap();
+            .expect("save child compaction summary");
 
-        let (history, compacted_up_to) = store.load_history_with_ancestors(&child).await.unwrap();
+        let (history, compacted_up_to) = store
+            .load_history_with_ancestors(&child)
+            .await
+            .expect("load history with ancestors");
         // Should be: [child compaction summary] + c3 + c4 = 3
         // No ancestor messages at all — leaf compaction short-circuits.
         assert_eq!(history.len(), 3);

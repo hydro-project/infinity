@@ -18,7 +18,7 @@ fn main() {
 
     println!("cargo:warning=bwrap not found, running install-bwrap.sh...");
 
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
     let script = std::path::Path::new(&manifest_dir).join("scripts/install-bwrap.sh");
 
     let status = Command::new("bash")
