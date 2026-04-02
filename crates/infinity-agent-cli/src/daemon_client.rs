@@ -111,7 +111,14 @@ fn daemon_msg_to_display(
         | DaemonMessage::Replay { .. }
         | DaemonMessage::SessionsUpdated { .. }
         | DaemonMessage::DisconnectNotIdle
-        | DaemonMessage::DetachedIdle => return None,
+        | DaemonMessage::DetachedIdle
+        | DaemonMessage::EmigrateResult { .. }
+        | DaemonMessage::MigrateStarted { .. }
+        | DaemonMessage::MigrateComplete { .. }
+        | DaemonMessage::MigrateError { .. }
+        | DaemonMessage::ImportComplete { .. }
+        | DaemonMessage::RapServersBooted { .. }
+        | DaemonMessage::RemotesUpdated { .. } => return None,
     })
 }
 
@@ -224,6 +231,7 @@ async fn run_client(
             sessions,
             available_models,
             provider_name,
+            ..
         } => (
             default_model_name,
             default_context_window,

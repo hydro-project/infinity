@@ -122,6 +122,8 @@ pub struct ToolsetManifest {
     pub description: Option<String>,
     pub endpoint: String,
     pub tools: Vec<ToolDef>,
+    #[serde(default, rename = "needsMigration")]
+    pub needs_migration: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

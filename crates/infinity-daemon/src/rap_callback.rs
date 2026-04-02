@@ -31,10 +31,19 @@ pub async fn start_callback_server(
         SessionManager::new(state_dir, callback_url).await?,
     ));
 
-    let sm = session_manager.clone();
+    // Use a channel to bridge from the Send-required callback server
+    // to the LocalSet where SessionManager lives.
+    let (cb_tx, mut cb_rx) = tokio::sync::mpsc::unbounded_channel::<RapCallback>();
     rap_client::callback_server::start_callback_server_on(listener, move |cb| {
-        let sm = sm.clone();
+        let cb_tx = cb_tx.clone();
         async move {
+            let _ = cb_tx.send(cb);
+        }
+    });
+
+    let sm = session_manager.clone();
+    tokio::task::spawn_local(async move {
+        while let Some(cb) = cb_rx.recv().await {
             let input_msg = convert_callback(cb);
             let group_id = input_msg.group_id.clone();
             let dedup = uuid::Uuid::new_v4().to_string();

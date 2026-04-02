@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use infinity_agent_core::message::InputMessage;
 use infinity_agent_core::tools::Tool;
-use infinity_agent_core::tools::config::ToolsConfig;
 use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
 use infinity_agent_core::tools::thread::{
     CloseThreadTool, ReportToParentTool, SendMessageToChildTool, SpawnThreadTool,
@@ -256,133 +255,46 @@ impl SessionManager {
         let sender = InMemoryMessageSender::new(input_tx.clone());
 
         // Load RAP config
-        let cwd_rap = Path::new(&cwd).join(".infinity").join("rap.json");
-        let local_config = cwd_rap
-            .exists()
-            .then(|| config::load_config(&cwd_rap))
-            .transpose();
-        let user_config = config::user_config_path().and_then(|user_path| {
-            user_path
-                .exists()
-                .then(|| config::load_config(&user_path))
-                .transpose()
-        });
-        tracing::debug!(?local_config, ?user_config);
-
-        // Helper to build Info/Error messages with the session's thread_id.
         let sid = session_id.clone();
         let info = |text: String| DaemonMessage::Info {
             thread_id: Some(sid.clone()),
             text,
         };
-        let error = |text: String| DaemonMessage::Error {
-            thread_id: Some(sid.clone()),
-            text,
-        };
 
-        let local_config = match local_config {
-            Ok(config) => config,
+        let boot_result = boot_rap_servers(cwd, &mut async |text: String| {
+            emit(info(text)).await;
+        })
+        .await;
+        let booted = match boot_result {
+            Ok(b) => b,
             Err(e) => {
-                emit(error(format!(
-                    "Failed to load local RAP config {}: {e}",
-                    cwd_rap.display(),
-                )))
-                .await;
-                None
+                emit(info(format!("Warning: failed to boot RAP servers: {e}"))).await;
+                BootedRapServers {
+                    server_ports: std::collections::HashMap::new(),
+                    server_ids: std::collections::HashMap::new(),
+                    spawned_servers: Vec::new(),
+                    urls: Vec::new(),
+                }
             }
         };
-        let user_config = match user_config {
-            Ok(config) => config,
-            Err(e) => {
-                emit(error(format!(
-                    "Failed to load user RAP config {:?}: {e}",
-                    config::user_config_path()
-                )))
-                .await;
-                None
-            }
-        };
-
-        let (config, msg) = match (local_config, user_config) {
-            (None, None) => (
-                ToolsConfig::empty(),
-                "Neither local nor user RAP configs exist, using empty config",
-            ),
-            (None, Some(user_config)) => (user_config, "Using user config"),
-            (Some(local_config), None) => (local_config, "Using local config"),
-            (Some(mut local_config), Some(user_config)) => {
-                local_config.merge(user_config);
-                (
-                    local_config,
-                    "Both local and user RAP configs exist, merging",
-                )
-            }
-        };
-        // Notify user about configuration discovery.
-        emit(info(msg.to_string())).await;
-
-        // Spawn servers and load tools
-        let mut spawned_servers = Vec::new();
-        let mut urls = config.toolset_server_urls();
-
-        for cmd in config.toolset_commands() {
-            emit(info(format!("Launching RAP server: {cmd}"))).await;
-            match spawn_rap_server(&cmd, cwd).await {
-                Ok((child, port)) => {
-                    emit(info(format!("RAP server ready on port {port}"))).await;
-                    urls.push(format!("http://127.0.0.1:{port}"));
-                    spawned_servers.push(child);
-                }
-                Err(e) => {
-                    emit(info(format!(
-                        "Warning: failed to launch RAP server '{cmd}': {e}"
-                    )))
-                    .await
-                }
-            }
-        }
-        for (name, cmd, env) in config.mcp_servers() {
-            emit(info(format!("Starting MCP proxy for '{name}'"))).await;
-            match mcp_proxy::start_mcp_proxy(name.clone(), cmd, env).await {
-                Ok(port) => {
-                    emit(info(format!("MCP proxy '{name}' ready on port {port}"))).await;
-                    urls.push(format!("http://127.0.0.1:{port}"));
-                }
-                Err(e) => {
-                    emit(info(format!(
-                        "Warning: failed to start MCP proxy '{name}': {e}"
-                    )))
-                    .await
-                }
-            }
-        }
-        for (name, mcp_url, headers) in config.http_mcp_servers() {
-            emit(info(format!("Starting HTTP MCP proxy for '{name}'"))).await;
-            match mcp_proxy::start_http_mcp_proxy(name.clone(), mcp_url, headers).await {
-                Ok(port) => {
-                    emit(info(format!(
-                        "HTTP MCP proxy '{name}' ready on port {port}"
-                    )))
-                    .await;
-                    urls.push(format!("http://127.0.0.1:{port}"));
-                }
-                Err(e) => {
-                    emit(info(format!(
-                        "Warning: failed to start HTTP MCP proxy '{name}': {e}"
-                    )))
-                    .await
-                }
-            }
-        }
+        let spawned_servers = booted.spawned_servers;
+        let urls = booted.urls;
 
         let rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>> = if !urls.is_empty() {
-            match rap_tools::load_rap_tools(&urls).await {
-                Ok(tools) => {
-                    emit(info(format!("Loaded {} RAP tool(s)", tools.len()))).await;
+            let servers_with_ids: Vec<(String, Option<String>)> = urls
+                .iter()
+                .map(|u| {
+                    let id = booted.server_ids.get(u).cloned();
+                    (u.clone(), id)
+                })
+                .collect();
+            match rap_tools::load_rap_tools(&servers_with_ids).await {
+                Ok(loaded) => {
+                    emit(info(format!("Loaded {} RAP tool(s)", loaded.tools.len()))).await;
 
                     emit(info(String::new())).await;
 
-                    tools
+                    loaded.tools
                 }
                 Err(e) => {
                     emit(info(format!("Warning: failed to load RAP tools: {e}"))).await;
@@ -918,6 +830,7 @@ async fn spawn_rap_server(
         .process_group(0)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("failed to spawn '{command}': {e}"))?;
 
@@ -937,4 +850,131 @@ async fn spawn_rap_server(
     let ready: CommandServerReady = serde_json::from_str(line.trim())
         .map_err(|e| format!("invalid startup JSON: {e} (got: {line})"))?;
     Ok((child, ready.port))
+}
+
+/// Result of booting RAP servers.
+pub struct BootedRapServers {
+    /// config_id → port for each server (only servers with an ID).
+    pub server_ports: std::collections::HashMap<String, u16>,
+    /// URL → config_id mapping for servers that have an ID.
+    pub server_ids: std::collections::HashMap<String, String>,
+    /// Spawned child processes (command-based servers only; MCP proxies are managed internally).
+    pub spawned_servers: Vec<tokio::process::Child>,
+    /// All server URLs (including pre-existing toolset_server URLs from config).
+    pub urls: Vec<String>,
+}
+
+/// Boot RAP servers at the given cwd using local + user config.
+/// The `emit` callback streams individual progress messages as servers launch.
+pub async fn boot_rap_servers(
+    cwd: &Path,
+    emit: &mut impl AsyncFnMut(String),
+) -> Result<BootedRapServers, BoxError> {
+    let cwd_rap = cwd.join(".infinity").join("rap.json");
+    let local_config = cwd_rap
+        .exists()
+        .then(|| config::load_config(&cwd_rap))
+        .transpose()?;
+    let user_config = config::user_config_path()
+        .and_then(|p| p.exists().then(|| config::load_config(&p)).transpose())?;
+
+    let config = match (local_config, user_config) {
+        (None, None) => {
+            emit("Neither local nor user RAP configs exist, using empty config".into()).await;
+            return Ok(BootedRapServers {
+                server_ports: std::collections::HashMap::new(),
+                server_ids: std::collections::HashMap::new(),
+                spawned_servers: Vec::new(),
+                urls: Vec::new(),
+            });
+        }
+        (None, Some(c)) => {
+            emit("Using user config".into()).await;
+            c
+        }
+        (Some(c), None) => {
+            emit("Using local config".into()).await;
+            c
+        }
+        (Some(mut l), Some(u)) => {
+            emit("Both local and user RAP configs exist, merging".into()).await;
+            l.merge(u);
+            l
+        }
+    };
+
+    let mut server_ports = std::collections::HashMap::new();
+    let mut server_ids = std::collections::HashMap::new();
+    let mut spawned_servers = Vec::new();
+    let mut urls: Vec<String> = Vec::new();
+
+    for (server_url, id) in config.toolset_server_urls() {
+        urls.push(server_url.clone());
+        if let Some(id) = id {
+            server_ids.insert(server_url, id);
+        }
+    }
+
+    for (cmd, id) in config.toolset_commands() {
+        emit(format!("Launching RAP server: {cmd}")).await;
+        match spawn_rap_server(&cmd, cwd).await {
+            Ok((child, port)) => {
+                emit(format!("RAP server ready on port {port}")).await;
+                let url = format!("http://127.0.0.1:{port}");
+                if let Some(id) = id {
+                    server_ports.insert(id.clone(), port);
+                    server_ids.insert(url.clone(), id);
+                }
+                urls.push(url);
+                spawned_servers.push(child);
+            }
+            Err(e) => {
+                emit(format!("Warning: failed to launch RAP server '{cmd}': {e}")).await;
+            }
+        }
+    }
+    for (name, cmd, env, id) in config.mcp_servers() {
+        emit(format!("Starting MCP proxy for '{name}'")).await;
+        match mcp_proxy::start_mcp_proxy(name.clone(), cmd, env).await {
+            Ok(port) => {
+                emit(format!("MCP proxy '{name}' ready on port {port}")).await;
+                let url = format!("http://127.0.0.1:{port}");
+                if let Some(id) = id {
+                    server_ports.insert(id.clone(), port);
+                    server_ids.insert(url.clone(), id);
+                }
+                urls.push(url);
+            }
+            Err(e) => {
+                emit(format!("Warning: failed to start MCP proxy '{name}': {e}")).await;
+            }
+        }
+    }
+    for (name, mcp_url, headers, id) in config.http_mcp_servers() {
+        emit(format!("Starting HTTP MCP proxy for '{name}'")).await;
+        match mcp_proxy::start_http_mcp_proxy(name.clone(), mcp_url, headers).await {
+            Ok(port) => {
+                emit(format!("HTTP MCP proxy '{name}' ready on port {port}")).await;
+                let url = format!("http://127.0.0.1:{port}");
+                if let Some(id) = id {
+                    server_ports.insert(id.clone(), port);
+                    server_ids.insert(url.clone(), id);
+                }
+                urls.push(url);
+            }
+            Err(e) => {
+                emit(format!(
+                    "Warning: failed to start HTTP MCP proxy '{name}': {e}"
+                ))
+                .await;
+            }
+        }
+    }
+
+    Ok(BootedRapServers {
+        server_ports,
+        server_ids,
+        spawned_servers,
+        urls,
+    })
 }

@@ -40,6 +40,9 @@ pub struct RepoState {
     /// Absolute paths granted write permission via `write:/path`.
     #[serde(default)]
     pub write_path_grants: HashSet<String>,
+    /// The root thread (session) this sandbox belongs to.
+    #[serde(default)]
+    pub root_thread_id: Option<String>,
 }
 
 /// Input for the clone_repo tool.
