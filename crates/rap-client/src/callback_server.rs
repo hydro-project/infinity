@@ -32,30 +32,33 @@ where
         "RAP callback server listening on {:?}",
         listener.local_addr()
     );
-    tokio::spawn(async move {
-        loop {
-            let (stream, _) = match listener.accept().await {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!("Callback accept error: {}", e);
-                    continue;
-                }
-            };
-            let handler = handler.clone();
-            tokio::spawn(async move {
-                let svc = hyper::service::service_fn(move |req: Request<Incoming>| {
-                    let handler = handler.clone();
-                    async move { Ok::<_, Infallible>(handle(req, handler).await) }
-                });
-                if let Err(e) = http1::Builder::new()
-                    .serve_connection(TokioIo::new(stream), svc)
-                    .await
-                {
-                    tracing::warn!("Callback connection error: {}", e);
-                }
-            });
-        }
-    });
+    tokio::spawn(rap_protocol::log_panic(
+        "callback_accept_loop",
+        async move {
+            loop {
+                let (stream, _) = match listener.accept().await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!("Callback accept error: {}", e);
+                        continue;
+                    }
+                };
+                let handler = handler.clone();
+                tokio::spawn(rap_protocol::log_panic("callback_connection", async move {
+                    let svc = hyper::service::service_fn(move |req: Request<Incoming>| {
+                        let handler = handler.clone();
+                        async move { Ok::<_, Infallible>(handle(req, handler).await) }
+                    });
+                    if let Err(e) = http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), svc)
+                        .await
+                    {
+                        tracing::warn!("Callback connection error: {}", e);
+                    }
+                }));
+            }
+        },
+    ));
 }
 
 /// Start a callback server that passes each [`RapCallback`] to the given handler.
