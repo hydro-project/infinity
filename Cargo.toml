@@ -31,7 +31,7 @@ uuid = { version = "1", features = ["v4"] }
 url = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "ansi"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "default-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "default-tls", "multipart", "stream"] }
 rhai = { version = "1", features = ["no_optimize"] }
 
 # AWS crates
@@ -51,7 +51,7 @@ similar = "2"
 which = "8"
 thiserror = "2"
 tempfile = "3"
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 insta = { version = "1", features = ["json", "redactions"] }
 
 [workspace.lints.clippy]

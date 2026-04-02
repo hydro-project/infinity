@@ -137,49 +137,65 @@ impl ToolsConfig {
         Ok(config)
     }
 
-    /// Extract server URLs from entries that already have a URL.
-    pub fn toolset_server_urls(&self) -> Vec<String> {
+    /// Extract server URLs from entries that already have a URL: (url, id).
+    pub fn toolset_server_urls(&self) -> Vec<(String, Option<String>)> {
         self.tool_sets
             .iter()
             .filter_map(|ts| match ts {
-                ToolSetConfig::ToolsetServer { server_url, .. } => Some(server_url.clone()),
+                ToolSetConfig::ToolsetServer { server_url, id, .. } => {
+                    Some((server_url.clone(), id.clone()))
+                }
                 _ => None,
             })
             .collect()
     }
 
-    /// Extract commands from entries that specify a command to launch.
-    pub fn toolset_commands(&self) -> Vec<String> {
+    /// Extract commands from entries that specify a command to launch: (command, id).
+    pub fn toolset_commands(&self) -> Vec<(String, Option<String>)> {
         self.tool_sets
             .iter()
             .filter_map(|ts| match ts {
-                ToolSetConfig::ToolsetCommand { command, .. } => Some(command.clone()),
+                ToolSetConfig::ToolsetCommand { command, id, .. } => {
+                    Some((command.clone(), id.clone()))
+                }
                 _ => None,
             })
             .collect()
     }
 
-    /// Extract MCP server configs: (name, command, env).
-    pub fn mcp_servers(&self) -> Vec<(String, Vec<String>, HashMap<String, String>)> {
+    /// Extract MCP server configs: (name, command, env, id).
+    #[expect(clippy::type_complexity, reason = "internal // TODO")]
+    pub fn mcp_servers(
+        &self,
+    ) -> Vec<(String, Vec<String>, HashMap<String, String>, Option<String>)> {
         self.tool_sets
             .iter()
             .filter_map(|ts| match ts {
                 ToolSetConfig::McpServer {
-                    name, command, env, ..
-                } => Some((name.clone(), command.clone(), env.clone())),
+                    name,
+                    command,
+                    env,
+                    id,
+                } => Some((name.clone(), command.clone(), env.clone(), id.clone())),
                 _ => None,
             })
             .collect()
     }
 
-    /// Extract HTTP MCP server configs: (name, url, headers).
-    pub fn http_mcp_servers(&self) -> Vec<(String, String, HashMap<String, String>)> {
+    /// Extract HTTP MCP server configs: (name, url, headers, id).
+    #[expect(clippy::type_complexity, reason = "internal // TODO")]
+    pub fn http_mcp_servers(
+        &self,
+    ) -> Vec<(String, String, HashMap<String, String>, Option<String>)> {
         self.tool_sets
             .iter()
             .filter_map(|ts| match ts {
                 ToolSetConfig::HttpMcpServer {
-                    name, url, headers, ..
-                } => Some((name.clone(), url.clone(), headers.clone())),
+                    name,
+                    url,
+                    headers,
+                    id,
+                } => Some((name.clone(), url.clone(), headers.clone(), id.clone())),
                 _ => None,
             })
             .collect()

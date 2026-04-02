@@ -21,11 +21,16 @@ pub struct SessionEntry {
     /// When true, the agent is idle (no active work).
     #[serde(default)]
     pub idle: bool,
+    /// When true, the session has been migrated away and should not be displayed.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 impl SessionEntry {
     pub fn status(&self, has_pending_choices: bool) -> infinity_protocol::SessionStatus {
-        if has_pending_choices {
+        if self.archived {
+            infinity_protocol::SessionStatus::Archived
+        } else if has_pending_choices {
             infinity_protocol::SessionStatus::WaitingForChoice
         } else if self.idle {
             infinity_protocol::SessionStatus::Idle
@@ -76,6 +81,7 @@ impl SessionStore {
                                         .expect("failed to get current directory"),
                                     shut_down: false,
                                     idle: false,
+                                    archived: false,
                                 },
                             )
                         })
@@ -93,7 +99,7 @@ impl SessionStore {
         }
     }
 
-    pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn save(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let json = serde_json::to_string_pretty(self)?;
         std::fs::write(&self.path, json)?;
         Ok(())
@@ -112,6 +118,7 @@ impl SessionStore {
                 cwd,
                 shut_down: false,
                 idle: false,
+                archived: false,
             },
         );
         self.notify(session_id);
@@ -170,5 +177,12 @@ impl SessionStore {
             .get(session_id)
             .map(|e| e.shut_down)
             .unwrap_or(false)
+    }
+
+    pub fn mark_archived(&mut self, session_id: &str) {
+        if let Some(entry) = self.sessions.get_mut(session_id) {
+            entry.archived = true;
+            self.notify(session_id);
+        }
     }
 }

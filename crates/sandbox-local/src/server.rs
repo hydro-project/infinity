@@ -18,7 +18,7 @@ pub async fn run_server<B: SandboxBackend + 'static, M: MetadataStore + 'static>
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let embedded = std::env::var("RAP_EMBEDDED").is_ok();
 
-    let (app, tracker) = build_router(backend, metadata, PlainCallbackClient::new());
+    let (app, tracker) = build_router(backend, metadata, PlainCallbackClient::new(), true, None);
 
     // In embedded mode, ignore the requested port and let the OS assign one.
     let bind_port = if embedded { 0 } else { port };

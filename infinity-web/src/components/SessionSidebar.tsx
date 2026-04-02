@@ -78,9 +78,11 @@ export function SessionSidebar({ sessions, activeSessionId, activeThreadId, open
     setWidth(DEFAULT_WIDTH);
   }, []);
 
-  const sorted = Object.entries(sessions).sort(
-    ([, a], [, b]) => b.last_updated.localeCompare(a.last_updated),
-  );
+  const sorted = Object.entries(sessions)
+    .filter(([, info]) => info.status !== "Archived")
+    .sort(
+      ([, a], [, b]) => b.last_updated.localeCompare(a.last_updated),
+    );
 
   return (
     <aside

@@ -149,12 +149,16 @@ impl SessionPicker {
                 SessionStatus::Idle => "idle",
                 SessionStatus::Stopped => "stopped",
                 SessionStatus::WaitingForChoice => "waiting for choice",
+                SessionStatus::Migrating => "migrating",
+                SessionStatus::Archived => "archived",
             };
             let status_fg = match info.status {
                 SessionStatus::Running => Color::Green,
                 SessionStatus::Idle => Color::Yellow,
                 SessionStatus::Stopped => Color::DarkGray,
                 SessionStatus::WaitingForChoice => Color::Magenta,
+                SessionStatus::Migrating => Color::Cyan,
+                SessionStatus::Archived => Color::DarkGray,
             };
             let time_str = &info.last_updated;
             let tokens_str = format!("{}tok", info.total_tokens_used);

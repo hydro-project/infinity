@@ -222,10 +222,16 @@ pub async fn handle_client_channels(
     let mut remote_proxy_tx: Option<mpsc::UnboundedSender<ClientMessage>> = None;
     let mut remote_proxy_rx: Option<mpsc::UnboundedReceiver<DaemonMessage>> = None;
     let mut active_remote_name: Option<String> = None;
+    let mut _booted_rap_servers: Vec<tokio::process::Child> = Vec::new(); // prevents shutdown until close
 
     // Send Welcome immediately
     {
         let mgr = session_manager.lock().await;
+        let remotes = mgr
+            .remote_daemons
+            .as_ref()
+            .map(|rd| rd.remote_info_list())
+            .unwrap_or_default();
         let _ = daemon_tx.send(DaemonMessage::Welcome {
             sessions: mgr.list_sessions(Some(daemon_tx.clone())).await,
             available_models: mgr
@@ -240,6 +246,7 @@ pub async fn handle_client_channels(
             default_model_name: mgr.default_model_name.clone(),
             default_context_window: mgr.default_context_window,
             provider_name: "bedrock".to_string(),
+            remotes,
         });
     }
 
@@ -299,6 +306,9 @@ pub async fn handle_client_channels(
                             remote_proxy_rx = None;
                             active_remote_name = None;
                             // Fall through to handle locally below
+                        }
+                        ClientMessage::RequestMigrate { .. } => {
+                            // Always handled locally; fall through without tearing down proxy
                         }
                         _ => {
                             // Forward everything else to remote (stripped)
@@ -449,6 +459,81 @@ pub async fn handle_client_channels(
                             }
                         }
                     }
+                    ClientMessage::RequestMigrate { session_id, to, dest_cwd } => {
+                        let mgr = session_manager.clone();
+                        let tx = daemon_tx.clone();
+                        tokio::task::spawn_local(crate::migrate::orchestrate_migration(
+                            session_id, to, dest_cwd, mgr, tx,
+                        ));
+                    }
+                    ClientMessage::Emigrate { session_id, dest_rap_urls } => {
+                        // Daemon-to-daemon: shut down session, migrate RAP servers, serialize, return data
+                        let mgr = session_manager.clone();
+                        match crate::migrate::handle_emigrate(&session_id, dest_rap_urls, &mgr).await {
+                            Ok(data) => {
+                                let _ = daemon_tx.send(DaemonMessage::EmigrateResult {
+                                    session_id,
+                                    session_data: data,
+                                });
+                            }
+                            Err(e) => {
+                                let _ = daemon_tx.send(DaemonMessage::Error {
+                                    thread_id: None,
+                                    text: e.to_string(),
+                                });
+                            }
+                        }
+                    }
+                    ClientMessage::EmigrateDone { session_id } => {
+                        // Daemon-to-daemon: immigration complete, archive local session
+                        let mgr = session_manager.lock().await;
+                        let mut store = mgr.session_store.lock().await;
+                        store.mark_archived(&session_id);
+                        let _ = store.save();
+                    }
+                    ClientMessage::ImportSession { session_id, cwd, session_data } => {
+                        // Daemon-to-daemon: import a serialized session
+                        let mgr = session_manager.lock().await;
+                        match mgr.conversation_store().import_session(&session_data) {
+                            Ok(()) => {
+                                let mut store = mgr.session_store.lock().await;
+                                store.create(&session_id, cwd);
+                                store.mark_shut_down(&session_id);
+                                let _ = store.save();
+                                let _ = daemon_tx.send(DaemonMessage::ImportComplete { session_id });
+                            }
+                            Err(e) => {
+                                let _ = daemon_tx.send(DaemonMessage::Error {
+                                    thread_id: None,
+                                    text: format!("import failed: {e}"),
+                                });
+                            }
+                        }
+                    }
+                    ClientMessage::BootRapServers { cwd } => {
+                        match crate::session::boot_rap_servers(&cwd, &mut |_text| async {}).await {
+                            Ok(booted) => {
+                                match crate::migrate::filter_migration_server_ports(&booted).await {
+                                    Ok(server_ports) => {
+                                        _booted_rap_servers = booted.spawned_servers;
+                                        let _ = daemon_tx.send(DaemonMessage::RapServersBooted { server_ports });
+                                    }
+                                    Err(e) => {
+                                        let _ = daemon_tx.send(DaemonMessage::Error {
+                                            thread_id: None,
+                                            text: format!("failed to identify RAP servers for migration: {e}"),
+                                        });
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = daemon_tx.send(DaemonMessage::Error {
+                                    thread_id: None,
+                                    text: format!("failed to boot RAP servers: {e}"),
+                                });
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -456,7 +541,7 @@ pub async fn handle_client_channels(
 
     // Client stream ended — drop client_tx to invalidate subscriber senders,
     // then ping idle so the agent can shut down if it was already idle.
-    // Also tear down any active remote proxy.
+    // Also tear down any active remote proxy and kill booted RAP servers.
     drop(remote_proxy_tx);
     drop(client_tx);
     if let Some(ref sid) = attached_session_id

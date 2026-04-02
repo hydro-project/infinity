@@ -81,7 +81,12 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
 
     let toolset_server_urls: Vec<String> = tools_config
         .as_ref()
-        .map(|tc| tc.toolset_server_urls())
+        .map(|tc| {
+            tc.toolset_server_urls()
+                .into_iter()
+                .map(|(url, _)| url)
+                .collect()
+        })
         .unwrap_or_default();
 
     let http_client = RapHttpClient::new(&config);

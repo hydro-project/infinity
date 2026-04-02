@@ -59,6 +59,7 @@ impl MetadataStore for DynamoMetadataStore {
             sandbox_path: None,
             write_orig_granted: false,
             write_path_grants: Default::default(),
+            root_thread_id: None,
         }))
     }
 

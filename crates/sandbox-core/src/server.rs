@@ -1,7 +1,10 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, Multipart, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -71,6 +74,13 @@ struct AppState<B: SandboxBackend, M: MetadataStore, C: CallbackClient> {
     pending_choices: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<usize>>>>,
     /// Server base URL, set from the first request's Host header.
     server_base_url: std::sync::OnceLock<String>,
+    /// Whether this server advertises migration support.
+    needs_migration: bool,
+    /// Optional repo root for migration import. When set, the import handler
+    /// uses this path instead of `std::env::current_dir()`.
+    repo_root: Option<PathBuf>,
+    /// Reusable HTTP client for outbound requests (e.g. migration).
+    http_client: reqwest::Client,
 }
 
 /// Shared handle to pending background tasks and in-flight commands.
@@ -107,7 +117,13 @@ impl TaskTracker {
 }
 
 /// Build the axum Router for the sandbox RAP server.
-pub fn build_router<B, M, C>(backend: B, metadata: M, callback_client: C) -> (Router, TaskTracker)
+pub fn build_router<B, M, C>(
+    backend: B,
+    metadata: M,
+    callback_client: C,
+    needs_migration: bool,
+    repo_root: Option<PathBuf>,
+) -> (Router, TaskTracker)
 where
     B: SandboxBackend + 'static,
     M: MetadataStore + 'static,
@@ -129,6 +145,9 @@ where
         in_flight,
         pending_choices: Arc::new(Mutex::new(HashMap::new())),
         server_base_url: std::sync::OnceLock::new(),
+        needs_migration,
+        repo_root,
+        http_client: reqwest::Client::new(),
     });
 
     let router = Router::new()
@@ -142,6 +161,11 @@ where
         .route(
             "/user_choice_response",
             post(user_choice_response_handler::<B, M, C>),
+        )
+        .route("/migrate", post(migrate_handler::<B, M, C>))
+        .route(
+            "/migrate/import",
+            post(migrate_import_handler::<B, M, C>).layer(DefaultBodyLimit::disable()),
         )
         .with_state(state);
 
@@ -168,7 +192,7 @@ async fn toolset_handler<
     let base_url = format!("{scheme}://{host}");
     let _ = state.server_base_url.set(base_url);
     let endpoint = format!("{scheme}://{host}/invoke");
-    Json(build_manifest(&endpoint))
+    Json(build_manifest(&endpoint, state.needs_migration))
 }
 
 async fn invoke_handler<
@@ -488,6 +512,13 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
             sandbox_path: None,
             write_orig_granted: false,
             write_path_grants: Default::default(),
+            root_thread_id: Some(
+                invocation
+                    .thread_ancestors
+                    .as_ref()
+                    .and_then(|a| a.first().cloned())
+                    .unwrap_or_else(|| invocation.group_id.clone()),
+            ),
         };
         let msg = match rev_to_resolve {
             Some(rev) => format!("Repository initialized on top of {rev}."),
@@ -522,6 +553,13 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
             sandbox_path: None,
             write_orig_granted: false,
             write_path_grants: Default::default(),
+            root_thread_id: Some(
+                invocation
+                    .thread_ancestors
+                    .as_ref()
+                    .and_then(|a| a.first().cloned())
+                    .unwrap_or_else(|| invocation.group_id.clone()),
+            ),
         };
         let msg = match rev_to_resolve {
             Some(rev) => format!("Repository initialized on top of {rev}."),
@@ -556,6 +594,13 @@ async fn handle_open_sandbox_direct<B: SandboxBackend, M: MetadataStore, C: Call
         sandbox_path: None,
         write_orig_granted: false,
         write_path_grants: Default::default(),
+        root_thread_id: Some(
+            invocation
+                .thread_ancestors
+                .as_ref()
+                .and_then(|a| a.first().cloned())
+                .unwrap_or_else(|| invocation.group_id.clone()),
+        ),
     };
 
     state.metadata.put(&repo_state).await?;
@@ -581,6 +626,7 @@ async fn with_sandbox<B, M, C, F, Fut>(
     group_id: &str,
     jj_description: Option<&str>,
     action: F,
+    modifies: bool,
 ) -> DisplayResult
 where
     B: SandboxBackend,
@@ -608,10 +654,12 @@ where
 
     let result = action(sandbox_dir.clone()).await;
 
-    state
-        .backend
-        .push_sandbox(&sandbox_dir, group_id, description_ref)
-        .await?;
+    if modifies {
+        state
+            .backend
+            .push_sandbox(&sandbox_dir, group_id, description_ref)
+            .await?;
+    }
 
     if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
         tracing::warn!("failed to cleanup sandbox: {e}");
@@ -1238,6 +1286,7 @@ async fn handle_read_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
 
             Ok((text, Some(display)))
         },
+        false,
     )
     .await
 }
@@ -1354,6 +1403,7 @@ async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
 
             Ok((format!("Replaced text in {}", args.path), Some(display)))
         },
+        true,
     )
     .await
 }
@@ -1409,6 +1459,7 @@ async fn handle_create_file<B: SandboxBackend, M: MetadataStore, C: CallbackClie
 
             Ok((format!("Created file {}", args.path), Some(display)))
         },
+        true,
     )
     .await
 }
@@ -1513,6 +1564,7 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
             }
             Ok((output, Some(display)))
         },
+        false,
     )
     .await
 }
@@ -1529,6 +1581,7 @@ async fn handle_describe_overall_changes<B: SandboxBackend, M: MetadataStore, C:
         &invocation.group_id,
         Some(&args.message),
         |_sandbox_dir| async move { Ok(("Edits described.".to_string(), None)) },
+        true,
     )
     .await
 }
@@ -1584,6 +1637,7 @@ async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackC
                         ))]),
                     ))
                 },
+                true,
             )
             .await
         }
@@ -1611,11 +1665,294 @@ fn build_edit_diff(path: &str, old_str: &str, new_str: &str) -> Vec<DisplaySegme
     })]
 }
 
-fn build_manifest(endpoint: &str) -> ToolsetManifest {
+// ── Migration handlers ──
+
+#[derive(Debug, Deserialize)]
+struct MigrateRequest {
+    session_id: String,
+    destination_url: String,
+}
+
+/// Resolve the git directory for a repo path.
+/// For colocated jj repos (.jj + .git both exist): use the repo path itself.
+/// For non-colocated jj repos (.jj only): use `.jj/repo/store/git`.
+/// For plain git repos: use the repo path itself.
+fn git_dir_for(repo_path: &Path) -> PathBuf {
+    if repo_path.join(".jj").is_dir() && !repo_path.join(".git").exists() {
+        repo_path.join(".jj").join("repo").join("store").join("git")
+    } else {
+        repo_path.to_path_buf()
+    }
+}
+
+/// Source-side migration handler: bundles sandbox state and sends to destination.
+async fn migrate_handler<
+    B: SandboxBackend + 'static,
+    M: MetadataStore + 'static,
+    C: CallbackClient + 'static,
+>(
+    State(state): State<Arc<AppState<B, M, C>>>,
+    Json(request): Json<MigrateRequest>,
+) -> (StatusCode, String) {
+    tracing::info!(
+        session_id = %request.session_id,
+        destination = %request.destination_url,
+        "received migrate request"
+    );
+    match migrate_inner(&state, &request).await {
+        Ok(()) => (StatusCode::OK, "migration complete".to_string()),
+        Err(e) => {
+            tracing::error!("migration failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("migration failed: {e}"),
+            )
+        }
+    }
+}
+
+async fn migrate_inner<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
+    state: &AppState<B, M, C>,
+    request: &MigrateRequest,
+) -> Result<(), SandboxError> {
+    let all_states: Vec<RepoState> = state
+        .metadata
+        .list_all()
+        .await?
+        .into_iter()
+        .filter(|s| s.root_thread_id.as_deref() == Some(&request.session_id))
+        .collect();
+    if all_states.is_empty() {
+        return Err(SandboxError::Other(
+            "nothing to migrate: no sandboxes found for this session".into(),
+        ));
+    }
+
+    // Validate modes and collect unique repo URIs
+    let mut repo_uris = HashSet::new();
+    let mut is_jj = false;
+    for s in &all_states {
+        match &s.mode {
+            SandboxMode::Direct => {
+                return Err(SandboxError::Other(
+                    "cannot migrate Direct mode sandboxes".into(),
+                ));
+            }
+            SandboxMode::Jj { .. } => {
+                is_jj = true;
+            }
+            SandboxMode::Git { .. } => {}
+        }
+        repo_uris.insert(s.remote_uri.clone());
+    }
+    if repo_uris.len() > 1 {
+        return Err(SandboxError::Other(
+            "migration across multiple repositories is not supported".into(),
+        ));
+    }
+    let repo_uri = repo_uris
+        .into_iter()
+        .next()
+        .expect("bug: checked non-empty above");
+    let repo_path = PathBuf::from(&repo_uri);
+
+    // For jj repos, flush bookmarks to git refs
+    if is_jj {
+        run_jj(&repo_path, &["git", "export"]).await?;
+    }
+
+    // Collect bookmark names
+    let bookmarks: Vec<&str> = all_states.iter().map(|s| s.bookmark.as_str()).collect();
+
+    // Create git bundle
+    let tmp = tempfile::NamedTempFile::new().map_err(SandboxError::Io)?;
+    let bundle_path = tmp.path().to_string_lossy().to_string();
+    let git_dir = git_dir_for(&repo_path);
+    let mut args: Vec<&str> = vec!["bundle", "create", &bundle_path];
+    args.extend(bookmarks.iter());
+    git::run_git(&git_dir, &args).await?;
+
+    // Read bundle bytes
+    let bundle_bytes = tokio::fs::read(tmp.path())
+        .await
+        .map_err(SandboxError::Io)?;
+
+    // Serialize metadata
+    let metadata_json = serde_json::to_string(&all_states)
+        .map_err(|e| SandboxError::Other(format!("failed to serialize metadata: {e}")))?;
+
+    // POST multipart to destination with retries (destination server may still be starting)
+    let dest = format!(
+        "{}/migrate/import",
+        request.destination_url.trim_end_matches('/')
+    );
+    tracing::info!(destination = %dest, "sending migration bundle");
+
+    let mut last_err = None;
+    for attempt in 1..=5u32 {
+        let form = reqwest::multipart::Form::new()
+            .text("metadata", metadata_json.clone())
+            .part(
+                "bundle",
+                reqwest::multipart::Part::bytes(bundle_bytes.clone()).file_name("migrate.bundle"),
+            );
+
+        match state.http_client.post(&dest).multipart(form).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                last_err = None;
+                break;
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                last_err = Some(format!("destination returned {status}: {body}"));
+                break;
+            }
+            Err(e) if e.is_connect() && attempt < 5 => {
+                tracing::warn!(attempt, "connection refused, retrying in 5s");
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                last_err = Some(format!("failed to send bundle to destination: {e}"));
+            }
+            Err(e) => {
+                last_err = Some(format!("failed to send bundle to destination: {e}"));
+                break;
+            }
+        }
+    }
+
+    if let Some(err) = last_err {
+        return Err(SandboxError::Other(err));
+    }
+
+    tracing::info!("migration bundle sent successfully");
+    Ok(())
+}
+
+/// Destination-side import handler: receives bundle + metadata and applies them.
+async fn migrate_import_handler<
+    B: SandboxBackend + 'static,
+    M: MetadataStore + 'static,
+    C: CallbackClient + 'static,
+>(
+    State(state): State<Arc<AppState<B, M, C>>>,
+    mut multipart: Multipart,
+) -> (StatusCode, String) {
+    match migrate_import_inner(&state, &mut multipart).await {
+        Ok(()) => (StatusCode::OK, "import complete".to_string()),
+        Err(e) => {
+            tracing::error!("migration import failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("import failed: {e}"),
+            )
+        }
+    }
+}
+
+async fn migrate_import_inner<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
+    state: &AppState<B, M, C>,
+    multipart: &mut Multipart,
+) -> Result<(), SandboxError> {
+    let mut metadata_json: Option<String> = None;
+    let mut bundle_bytes: Option<Vec<u8>> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| SandboxError::Other(format!("multipart error: {e}")))?
+    {
+        match field.name() {
+            Some("metadata") => {
+                metadata_json = Some(field.text().await.map_err(|e| {
+                    SandboxError::Other(format!("failed to read metadata field: {e}"))
+                })?);
+            }
+            Some("bundle") => {
+                bundle_bytes = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|e| {
+                            SandboxError::Other(format!("failed to read bundle field: {e}"))
+                        })?
+                        .to_vec(),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    let metadata_json =
+        metadata_json.ok_or_else(|| SandboxError::Other("missing metadata field".into()))?;
+    let bundle_bytes =
+        bundle_bytes.ok_or_else(|| SandboxError::Other("missing bundle field".into()))?;
+
+    let states: Vec<RepoState> = serde_json::from_str(&metadata_json)
+        .map_err(|e| SandboxError::Other(format!("invalid metadata JSON: {e}")))?;
+
+    if states.is_empty() {
+        return Err(SandboxError::Other("no states in metadata".into()));
+    }
+
+    // Discover local repo from repo_root or cwd
+    let cwd = state.repo_root.clone().unwrap_or_else(|| {
+        std::env::current_dir()
+            .expect("bug: failed to get cwd")
+            .parent()
+            .expect("expected cwd to be inside .infinity")
+            .to_path_buf()
+    });
+    let local_repo = cwd
+        .canonicalize()
+        .map_err(|e| SandboxError::Other(format!("failed to canonicalize cwd: {e}")))?;
+
+    let is_jj = local_repo.join(".jj").is_dir();
+    if !is_jj && !local_repo.join(".git").exists() {
+        return Err(SandboxError::Other(
+            "cwd is not a git or jj repository".into(),
+        ));
+    }
+
+    // Write bundle to temp file
+    let tmp = tempfile::NamedTempFile::new().map_err(SandboxError::Io)?;
+    tokio::fs::write(tmp.path(), &bundle_bytes)
+        .await
+        .map_err(SandboxError::Io)?;
+    let bundle_path = tmp.path().to_string_lossy().to_string();
+
+    // Fetch from bundle into the local repo's git dir, mapping each bookmark to a local ref
+    let git_dir = git_dir_for(&local_repo);
+    let refspecs: Vec<String> = states
+        .iter()
+        .map(|s| format!("+{}:{}", s.bookmark, s.bookmark))
+        .collect();
+    let mut args: Vec<&str> = vec!["fetch", &bundle_path];
+    args.extend(refspecs.iter().map(|s| s.as_str()));
+    git::run_git(&git_dir, &args).await?;
+
+    // For jj repos, import the git refs
+    if is_jj {
+        run_jj(&local_repo, &["git", "import"]).await?;
+    }
+
+    // Write metadata with updated remote_uri
+    let local_uri = local_repo.to_string_lossy().to_string();
+    for mut s in states {
+        s.remote_uri = local_uri.clone();
+        s.sandbox_path = None;
+        state.metadata.put(&s).await?;
+    }
+
+    tracing::info!("migration import complete");
+    Ok(())
+}
+
+fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
     ToolsetManifest {
         name: "sandbox-tools".to_string(),
         description: Some("Sandboxed code editing and execution tools using jujutsu for filesystem versioning".to_string()),
         endpoint: endpoint.to_string(),
+        needs_migration,
         tools: vec![
             ToolDef {
                 name: "clone_repo".to_string(),
