@@ -7,3 +7,6 @@ edition = "2024"
 serde = { workspace = true }
 dirs = "6"
 rap-protocol = { path = "../rap-protocol" }
+
+[lints]
+workspace = true

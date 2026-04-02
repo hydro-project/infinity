@@ -1,0 +1,2 @@
+# clippy::unwrap_used is enforced via workspace lints in Cargo.toml.
+# This file provides additional clippy configuration.
