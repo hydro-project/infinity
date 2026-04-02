@@ -26,7 +26,8 @@ pub struct SessionPicker {
 
 impl SessionPicker {
     pub fn new(sessions: Vec<(String, SessionInfo)>, current_session_id: Option<String>) -> Self {
-        let selected = current_session_id.as_ref()
+        let selected = current_session_id
+            .as_ref()
             .and_then(|cid| sessions.iter().position(|s| &s.0 == cid))
             .unwrap_or(0);
         let scroll_offset = selected.saturating_sub(MAX_VISIBLE_ROWS as usize - 1);
@@ -166,7 +167,11 @@ impl SessionPicker {
                 }
                 let char_fg = if col >= status_start && col < status_end {
                     status_fg
-                } else if is_current && !is_selected && col >= current_label_start && col < current_label_end {
+                } else if is_current
+                    && !is_selected
+                    && col >= current_label_start
+                    && col < current_label_end
+                {
                     Color::Cyan
                 } else {
                     fg

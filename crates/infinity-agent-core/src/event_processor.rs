@@ -108,20 +108,20 @@ pub struct HistoryManager<C: ConversationStore, S: StateStore> {
     pub thread_id: String,
     pub root_thread_id: String,
     ancestor_chain: Vec<String>,
-    pub history: Vec<Message>,
-    processed_message_ids: HashSet<String>,
-    processed_tool_calls: HashSet<String>,
-    metadata: Option<serde_json::Value>,
-    pending_items: Vec<PendingItem>,
-    pending_complete_tool_calls: HashSet<String>,
+    pub history: RefCell<Vec<Message>>,
+    processed_message_ids: RefCell<HashSet<String>>,
+    processed_tool_calls: RefCell<HashSet<String>>,
+    metadata: RefCell<Option<serde_json::Value>>,
+    pending_items: RefCell<Vec<PendingItem>>,
+    pending_complete_tool_calls: RefCell<HashSet<String>>,
     /// Tool call IDs that were interrupted by a new user message during
     /// `handle_content`. Callers can drain this via `take_interrupted_tool_calls`
     /// to send best-effort cancellation notifications to RAP tool servers.
-    interrupted_tool_calls: Vec<String>,
+    interrupted_tool_calls: RefCell<Vec<String>>,
     /// Tracks the absolute store index that the current in-memory compaction
     /// summary covers up to. Used to compute the correct relative split
     /// position when a second compaction is applied on top of an existing one.
-    compacted_up_to: Option<i64>,
+    compacted_up_to: RefCell<Option<i64>>,
 }
 
 impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
@@ -163,23 +163,23 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             thread_id,
             root_thread_id,
             ancestor_chain,
-            history,
-            processed_message_ids,
-            processed_tool_calls,
-            metadata,
-            pending_items: Vec::new(),
-            pending_complete_tool_calls: HashSet::new(),
-            interrupted_tool_calls: Vec::new(),
-            compacted_up_to,
+            history: RefCell::new(history),
+            processed_message_ids: RefCell::new(processed_message_ids),
+            processed_tool_calls: RefCell::new(processed_tool_calls),
+            metadata: RefCell::new(metadata),
+            pending_items: RefCell::new(Vec::new()),
+            pending_complete_tool_calls: RefCell::new(HashSet::new()),
+            interrupted_tool_calls: RefCell::new(Vec::new()),
+            compacted_up_to: RefCell::new(compacted_up_to),
         })
     }
 
     pub async fn handle_content(
-        &mut self,
+        &self,
         message: Message,
         message_id: String,
     ) -> Result<bool, BoxError> {
-        if self.processed_message_ids.contains(&message_id) {
+        if self.processed_message_ids.borrow().contains(&message_id) {
             tracing::info!("Message {} already processed, skipping", message_id);
             return Ok(false);
         }
@@ -187,18 +187,24 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         if let Message::User { content } = &message
             && let UserContent::ToolResult(ref tool_result) = content.first()
         {
-            if self.processed_tool_calls.contains(tool_result.id.as_str()) {
+            if self
+                .processed_tool_calls
+                .borrow()
+                .contains(tool_result.id.as_str())
+            {
                 tracing::info!(
                     "Tool call {} already processed, ignoring duplicate",
                     tool_result.id
                 );
-                self.processed_message_ids.insert(message_id.clone());
+                self.processed_message_ids
+                    .borrow_mut()
+                    .insert(message_id.clone());
                 let _ = self
                     .state_store
                     .add_processed_message_ids(&self.thread_id, vec![message_id])
                     .await;
                 return Ok(false);
-            } else if !self.history.last().is_some_and(|l| {
+            } else if !self.history.borrow().last().is_some_and(|l| {
                 if let Message::Assistant { content, .. } = l
                     && let AssistantContent::ToolCall(c) = content.first()
                 {
@@ -213,36 +219,44 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 );
                 return Ok(false);
             }
-        } else if let Some(Message::Assistant { content, .. }) = self.history.last()
-            && let AssistantContent::ToolCall(tool_call) = content.first()
-            && !self.processed_tool_calls.contains(tool_call.id.as_str())
-        {
-            tracing::info!("Tool call {} interrupted by new user message", tool_call.id);
-            self.interrupted_tool_calls.push(tool_call.id.clone());
-            let synthetic_result = Message::User {
-                content: OneOrMany::one(UserContent::ToolResult(rig::message::ToolResult {
-                    id: tool_call.id.clone(),
-                    call_id: tool_call.call_id.clone(),
-                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                        text: "Tool call interrupted by user".to_string(),
+        } else {
+            let last_msg = self.history.borrow().last().cloned();
+            if let Some(Message::Assistant { content, .. }) = last_msg
+                && let AssistantContent::ToolCall(tool_call) = content.first()
+                && !self
+                    .processed_tool_calls
+                    .borrow()
+                    .contains(tool_call.id.as_str())
+            {
+                tracing::info!("Tool call {} interrupted by new user message", tool_call.id);
+                self.interrupted_tool_calls
+                    .borrow_mut()
+                    .push(tool_call.id.clone());
+                let synthetic_result = Message::User {
+                    content: OneOrMany::one(UserContent::ToolResult(rig::message::ToolResult {
+                        id: tool_call.id.clone(),
+                        call_id: tool_call.call_id.clone(),
+                        content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                            text: "Tool call interrupted by user".to_string(),
+                        })),
                     })),
-                })),
-            };
-            self.append_pending(synthetic_result, format!("{}-interrupted", tool_call.id));
-            self.mark_tool_call_complete(tool_call.id.clone());
+                };
+                self.append_pending(synthetic_result, format!("{}-interrupted", tool_call.id));
+                self.mark_tool_call_complete(tool_call.id.clone());
+            }
         }
 
         self.append_pending(message, message_id.clone());
-        self.processed_message_ids.insert(message_id);
+        self.processed_message_ids.borrow_mut().insert(message_id);
         Ok(true)
     }
 
     pub fn handle_completion<R>(
-        &mut self,
+        &self,
         completion: &StreamedAssistantContent<R>,
         completion_id: String,
     ) {
-        if self.processed_message_ids.contains(&completion_id) {
+        if self.processed_message_ids.borrow().contains(&completion_id) {
             return;
         }
         let message = match completion {
@@ -269,31 +283,37 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         self.append_pending(message, completion_id);
     }
 
-    fn append_pending(&mut self, message: Message, message_id: String) {
-        self.history.push(message.clone());
+    fn append_pending(&self, message: Message, message_id: String) {
+        self.history.borrow_mut().push(message.clone());
         if let Message::User { content } = &message
             && let UserContent::ToolResult(result) = content.first()
         {
             self.mark_tool_call_complete(result.id.clone());
         }
-        self.pending_items.push(PendingItem {
+        self.pending_items.borrow_mut().push(PendingItem {
             message,
             message_id,
         });
     }
 
-    fn mark_tool_call_complete(&mut self, call_id: String) {
-        self.processed_tool_calls.insert(call_id.clone());
-        self.pending_complete_tool_calls.insert(call_id);
+    fn mark_tool_call_complete(&self, call_id: String) {
+        self.processed_tool_calls
+            .borrow_mut()
+            .insert(call_id.clone());
+        self.pending_complete_tool_calls
+            .borrow_mut()
+            .insert(call_id);
     }
 
-    pub async fn sync(&mut self) -> Result<(), BoxError> {
-        if self.pending_items.is_empty() && self.pending_complete_tool_calls.is_empty() {
+    pub async fn sync(&self) -> Result<(), BoxError> {
+        let pending_items = std::mem::take(&mut *self.pending_items.borrow_mut());
+        let pending_complete_tool_calls =
+            std::mem::take(&mut *self.pending_complete_tool_calls.borrow_mut());
+        if pending_items.is_empty() && pending_complete_tool_calls.is_empty() {
             return Ok(());
         }
-        if !self.pending_items.is_empty() {
-            let msgs: Vec<(Message, String)> = self
-                .pending_items
+        if !pending_items.is_empty() {
+            let msgs: Vec<(Message, String)> = pending_items
                 .iter()
                 .map(|item| (item.message.clone(), item.message_id.clone()))
                 .collect();
@@ -302,12 +322,8 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 .await
                 .map_err(|e| Box::new(e) as BoxError)?;
         }
-        let msg_ids: Vec<String> = self
-            .pending_items
-            .iter()
-            .map(|i| i.message_id.clone())
-            .collect();
-        let tc_ids: Vec<String> = self.pending_complete_tool_calls.iter().cloned().collect();
+        let msg_ids: Vec<String> = pending_items.iter().map(|i| i.message_id.clone()).collect();
+        let tc_ids: Vec<String> = pending_complete_tool_calls.iter().cloned().collect();
         if !msg_ids.is_empty() {
             let _ = self
                 .state_store
@@ -320,13 +336,11 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 .add_processed_tool_calls(&self.thread_id, tc_ids)
                 .await;
         }
-        self.pending_items.clear();
-        self.pending_complete_tool_calls.clear();
         Ok(())
     }
 
-    pub async fn update_metadata(&mut self, metadata: serde_json::Value) -> Result<(), BoxError> {
-        self.metadata = Some(metadata.clone());
+    pub async fn update_metadata(&self, metadata: serde_json::Value) -> Result<(), BoxError> {
+        *self.metadata.borrow_mut() = Some(metadata.clone());
         self.state_store
             .set_metadata(&self.root_thread_id, metadata)
             .await
@@ -334,22 +348,24 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     }
 
     pub fn get_metadata(&self) -> Option<serde_json::Value> {
-        self.metadata.clone()
+        self.metadata.borrow().clone()
     }
     pub fn get_history(&self) -> OneOrMany<Message> {
-        OneOrMany::many(self.history.clone()).unwrap()
+        OneOrMany::many(self.history.borrow().clone()).unwrap()
     }
 
-    pub fn remove_trailing_reasoning(&mut self) {
-        while let Some(Message::Assistant { content, .. }) = self.history.last() {
+    pub fn remove_trailing_reasoning(&self) {
+        let mut history = self.history.borrow_mut();
+        let mut pending_items = self.pending_items.borrow_mut();
+        while let Some(Message::Assistant { content, .. }) = history.last() {
             match content.first() {
                 AssistantContent::Reasoning(_) => {
-                    self.history.pop();
-                    self.pending_items.pop();
+                    history.pop();
+                    pending_items.pop();
                 }
                 AssistantContent::Text(text) if text.text.trim().is_empty() => {
-                    self.history.pop();
-                    self.pending_items.pop();
+                    history.pop();
+                    pending_items.pop();
                 }
                 _ => break,
             }
@@ -373,7 +389,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
 
     /// Apply the latest compaction summary: reload from store, truncate
     /// in-memory history up to the compaction point, and prepend the summary.
-    pub async fn apply_compaction(&mut self) -> Result<bool, BoxError> {
+    pub async fn apply_compaction(&self) -> Result<bool, BoxError> {
         if let Ok(Some((summary, up_to_order))) = self
             .conversation_store
             .load_latest_compaction_summary_up_to(&self.thread_id, None)
@@ -384,19 +400,23 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             // single summary message, the in-memory index 0 corresponds to
             // absolute index (prev - 1) in the store (the -1 accounts for the
             // summary message itself occupying slot 0).
-            let offset = self.compacted_up_to.map_or(0, |prev| prev as usize - 1);
+            let offset = self
+                .compacted_up_to
+                .borrow()
+                .map_or(0, |prev| prev as usize - 1);
             let up_to = (up_to_order as usize).saturating_sub(offset);
-            if up_to <= self.history.len() {
-                let remaining = self.history.split_off(up_to);
-                self.history = vec![Message::Assistant {
+            let mut history = self.history.borrow_mut();
+            if up_to <= history.len() {
+                let remaining = history.split_off(up_to);
+                *history = vec![Message::Assistant {
                     id: None,
                     content: OneOrMany::one(AssistantContent::text(format!(
                         "[Compacted conversation summary]\n{}",
                         summary
                     ))),
                 }];
-                self.history.extend(remaining);
-                self.compacted_up_to = Some(up_to_order);
+                history.extend(remaining);
+                *self.compacted_up_to.borrow_mut() = Some(up_to_order);
                 return Ok(true);
             }
         }
@@ -406,15 +426,15 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     /// Drain and return tool call IDs that were interrupted by new user messages.
     /// Callers use this to send best-effort cancellation notifications to RAP
     /// tool servers so they can abort in-flight operations.
-    pub fn take_interrupted_tool_calls(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.interrupted_tool_calls)
+    pub fn take_interrupted_tool_calls(&self) -> Vec<String> {
+        std::mem::take(&mut *self.interrupted_tool_calls.borrow_mut())
     }
 
     /// Record a subscription in the current thread's metadata. The
     /// `tool_call_id` is the ID of the tool call whose result had
     /// `subscription: true`. Ownership is implicit — a subscription is
     /// stored in the thread that created it.
-    pub async fn track_subscription(&mut self, tool_call_id: &str) -> Result<(), BoxError> {
+    pub async fn track_subscription(&self, tool_call_id: &str) -> Result<(), BoxError> {
         self.state_store
             .add_active_subscription(&self.thread_id, tool_call_id)
             .await
@@ -422,7 +442,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     }
 
     /// Remove a subscription from the current thread's active tracking.
-    pub async fn remove_subscription(&mut self, tool_call_id: &str) -> Result<(), BoxError> {
+    pub async fn remove_subscription(&self, tool_call_id: &str) -> Result<(), BoxError> {
         self.state_store
             .remove_active_subscription(&self.thread_id, tool_call_id)
             .await
@@ -447,7 +467,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
 pub async fn prepare_input<C, S, M>(
     input_msg: InputMessage,
     message_id: String,
-    current_history: &mut HistoryManager<C, S>,
+    current_history: &HistoryManager<C, S>,
     conversation_store: &C,
     message_sender: &M,
 ) -> Result<PrepareResult, BoxError>
@@ -511,10 +531,12 @@ where
         // a synthetic "interrupted" result so the child doesn't have two
         // consecutive assistant tool calls without a tool_result in between.
         let mut child_messages: Vec<(Message, String)> = Vec::new();
-        if let Some(Message::Assistant { content, .. }) = current_history.history.last()
+        if let Some(Message::Assistant { content, .. }) =
+            current_history.history.borrow().last().cloned()
             && let AssistantContent::ToolCall(pending_call) = content.first()
             && !current_history
                 .processed_tool_calls
+                .borrow()
                 .contains(pending_call.id.as_str())
         {
             let interrupted_result = Message::User {
@@ -628,7 +650,7 @@ where
             original_tool_call_id
         );
 
-        let original_call = current_history.history.iter().find_map(|msg| {
+        let original_call = current_history.history.borrow().iter().find_map(|msg| {
             if let Message::Assistant { content, .. } = msg {
                 content.iter().find_map(|c| {
                     if let AssistantContent::ToolCall(call) = c {
@@ -731,10 +753,12 @@ where
             // two consecutive assistant tool calls without a tool_result in
             // between, which would cause a 400 Bad Request from the API.
             let mut child_messages: Vec<(Message, String)> = Vec::new();
-            if let Some(Message::Assistant { content, .. }) = current_history.history.last()
+            if let Some(Message::Assistant { content, .. }) =
+                current_history.history.borrow().last().cloned()
                 && let AssistantContent::ToolCall(pending_call) = content.first()
                 && !current_history
                     .processed_tool_calls
+                    .borrow()
                     .contains(pending_call.id.as_str())
             {
                 let interrupted_result = Message::User {
@@ -880,8 +904,7 @@ where
 
 pub fn run_completion<'a: 'b, 'b, Mdl, C, S, M>(
     model: &'a Mdl,
-    history: &'a RefCell<HistoryManager<C, S>>,
-    mut callback_with_history: impl AsyncFnMut(&HistoryManager<C, S>) + 'b,
+    history: &'a HistoryManager<C, S>,
     tool_names: &'a HashSet<String>,
     tools: &'a [ToolDefinition],
     tool_registry: &'a HashMap<String, &'a dyn Tool<M>>,
@@ -906,7 +929,6 @@ where
         let mut retry_count = 0;
 
         let preamble = {
-            let history = history.borrow();
             let base = include_str!("default_prompt.md");
             let thread_info = format!("\n\nYour current thread ID is `{}`. The root thread ID is `{}`.", history.thread_id, history.root_thread_id);
             match extra_system_prompt {
@@ -920,7 +942,7 @@ where
                 .stream(CompletionRequest {
                     model: model_id_override.map(|s| s.to_string()),
                     preamble: Some(preamble.clone()),
-                    chat_history: history.borrow().get_history(),
+                    chat_history: history.get_history(),
                     documents: vec![],
                     tools: tools.to_vec(),
                     temperature: None,
@@ -942,9 +964,6 @@ where
                     },
                     output_schema: None,
                 });
-
-            // here, the history is not borrowed, so we can run the callback
-            callback_with_history(&*history.borrow()).await;
 
             let stream_result = tokio::select! {
                 r = stream_result => {
@@ -1010,9 +1029,6 @@ where
             let mut should_loop_back = false;
 
             loop {
-                // here, the history is not borrowed, so we can run the callback
-                callback_with_history(&*history.borrow()).await;
-
                 // Race between LLM output and cancellation signal.
                 // We avoid `yield` inside `select!` (async_stream limitation)
                 // by capturing the result into locals first.
@@ -1025,7 +1041,7 @@ where
                         if retry_count < 10 {
                             yield CompletionEvent::Info("Stream error (timeout), retrying...".to_string());
                             tracing::warn!("Stream ended unexpectedly, removing trailing reasoning and retrying...");
-                            history.borrow_mut().remove_trailing_reasoning();
+                            history.remove_trailing_reasoning();
                             if is_thinking {
                                 is_thinking = false;
                                 yield CompletionEvent::ThinkingEnd;
@@ -1040,7 +1056,7 @@ where
 
                 if cancelled {
                     tracing::info!("Completion cancelled");
-                    history.borrow_mut().remove_trailing_reasoning();
+                    history.remove_trailing_reasoning();
                     if is_thinking {
                         yield CompletionEvent::ThinkingEnd;
                     }
@@ -1050,7 +1066,7 @@ where
                 let res = match llm_next {
                     Some(r) => r,
                     None => {
-                        history.borrow_mut().remove_trailing_reasoning();
+                        history.remove_trailing_reasoning();
                         if is_thinking {
                             is_thinking = false;
                             yield CompletionEvent::ThinkingEnd;
@@ -1074,7 +1090,7 @@ where
                         c
                     },
                     Err(e) => {
-                        history.borrow_mut().remove_trailing_reasoning();
+                        history.remove_trailing_reasoning();
                         if is_thinking {
                             is_thinking = false;
                             yield CompletionEvent::ThinkingEnd;
@@ -1103,7 +1119,7 @@ where
                 if let StreamedAssistantContent::ToolCall { .. } = chunk && has_emitted_tool_call {
 
                 } else {
-                    history.borrow_mut().handle_completion(&chunk, completion_id);
+                    history.handle_completion(&chunk, completion_id);
                     match chunk {
                         StreamedAssistantContent::Text(text) => {
                             if is_thinking {
@@ -1134,7 +1150,7 @@ where
                                             })),
                                         })),
                                     };
-                                    history.borrow_mut().handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
+                                    history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
                                     should_loop_back = true;
                                     continue;
                                 } else if !tool_names.contains(call.function.name.as_str()) {
@@ -1149,7 +1165,7 @@ where
                                             })),
                                         })),
                                     };
-                                    history.borrow_mut().handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
+                                    history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
                                     should_loop_back = true;
                                     continue;
                                 }
@@ -1161,7 +1177,7 @@ where
                                 // the tool call appear cancelled.
                                 let tool = tool_registry.get(call.function.name.as_str()).unwrap();
                                 if tool.supports_sync() {
-                                    history.borrow_mut().sync().await?; // we must sync the history so that thread spawning uses the correct state
+                                    history.sync().await?; // we must sync the history so that thread spawning uses the correct state
 
                                     let res = tool.execute_synchronous(
                                         &call.function.arguments,
@@ -1178,7 +1194,7 @@ where
 
                                     let sync_id = format!("{}-sync-result-{}", call.id, completion_counter);
                                     completion_counter += 1;
-                                    history.borrow_mut().handle_content(
+                                    history.handle_content(
                                         Message::User { content: OneOrMany::one(UserContent::ToolResult(res)) },
                                         sync_id,
                                     ).await?;
@@ -1473,13 +1489,13 @@ mod tests {
     async fn make_history(
         store: &StubConversationStore,
         initial_history: Vec<Message>,
-    ) -> RefCell<HistoryManager<StubConversationStore, StubStateStore>> {
-        let mut hm =
+    ) -> HistoryManager<StubConversationStore, StubStateStore> {
+        let hm =
             HistoryManager::new_with_history(store.clone(), StubStateStore, "thread-1".to_string())
                 .await
                 .unwrap();
-        hm.history = initial_history;
-        RefCell::new(hm)
+        *hm.history.borrow_mut() = initial_history;
+        hm
     }
 
     fn user_text_msg(group_id: &str, text: &str) -> InputMessage {
@@ -1541,7 +1557,7 @@ mod tests {
         let result = prepare_input(
             user_text_msg("thread-1", "hello"),
             "msg-1".to_string(),
-            &mut *hm.borrow_mut(),
+            &hm,
             &store,
             &StubSender,
         )
@@ -1549,7 +1565,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, PrepareResult::Ready);
-        insta::assert_json_snapshot!(hm.into_inner().history);
+        insta::assert_json_snapshot!(hm.history.into_inner());
     }
 
     #[tokio::test]
@@ -1562,7 +1578,7 @@ mod tests {
         let result = prepare_input(
             user_text_msg("thread-1", "hello"),
             "msg-1".to_string(),
-            &mut *hm.borrow_mut(),
+            &hm,
             &store,
             &StubSender,
         )
@@ -1570,7 +1586,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, PrepareResult::Handled);
-        assert!(hm.into_inner().history.is_empty());
+        assert!(hm.history.into_inner().is_empty());
     }
 
     #[tokio::test]
@@ -1592,18 +1608,12 @@ mod tests {
             subscription: false,
         };
 
-        let result = prepare_input(
-            input,
-            "msg-1".to_string(),
-            &mut *hm.borrow_mut(),
-            &store,
-            &StubSender,
-        )
-        .await
-        .unwrap();
+        let result = prepare_input(input, "msg-1".to_string(), &hm, &store, &StubSender)
+            .await
+            .unwrap();
 
         insta::assert_json_snapshot!(result);
-        assert!(hm.into_inner().history.is_empty());
+        assert!(hm.history.into_inner().is_empty());
     }
 
     #[tokio::test]
@@ -1615,7 +1625,7 @@ mod tests {
         let r1 = prepare_input(
             user_text_msg("thread-1", "hello"),
             "msg-1".to_string(),
-            &mut *hm.borrow_mut(),
+            &hm,
             &store,
             &StubSender,
         )
@@ -1627,7 +1637,7 @@ mod tests {
         let r2 = prepare_input(
             user_text_msg("thread-1", "hello"),
             "msg-1".to_string(),
-            &mut *hm.borrow_mut(),
+            &hm,
             &store,
             &StubSender,
         )
@@ -1636,7 +1646,7 @@ mod tests {
 
         assert_eq!(r2, PrepareResult::Handled);
         // History should still have only one user message
-        insta::assert_json_snapshot!(hm.into_inner().history);
+        insta::assert_json_snapshot!(hm.history.into_inner());
     }
 
     #[tokio::test]
@@ -1654,7 +1664,7 @@ mod tests {
         let result = prepare_input(
             user_text_msg("thread-1", "actually, never mind"),
             "msg-2".to_string(),
-            &mut *hm.borrow_mut(),
+            &hm,
             &store,
             &StubSender,
         )
@@ -1663,7 +1673,7 @@ mod tests {
 
         assert_eq!(result, PrepareResult::Ready);
         // Should have: original user, tool call, synthetic interrupted result, new user msg
-        insta::assert_json_snapshot!(hm.into_inner().history);
+        insta::assert_json_snapshot!(hm.history.into_inner());
     }
 
     #[tokio::test]
@@ -1679,18 +1689,12 @@ mod tests {
 
         let input = tool_result_input("thread-1", "tc-1", "tool output", None);
 
-        let result = prepare_input(
-            input,
-            "msg-2".to_string(),
-            &mut *hm.borrow_mut(),
-            &store,
-            &StubSender,
-        )
-        .await
-        .unwrap();
+        let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
+            .await
+            .unwrap();
 
         assert_eq!(result, PrepareResult::Ready);
-        insta::assert_json_snapshot!(hm.into_inner().history);
+        insta::assert_json_snapshot!(hm.history.into_inner());
     }
 
     #[tokio::test]
@@ -1717,8 +1721,8 @@ mod tests {
             },
         ];
         let hm = make_history(&store, initial).await;
-        hm.borrow_mut()
-            .processed_tool_calls
+        hm.processed_tool_calls
+            .borrow_mut()
             .insert("tc-sub".to_string());
 
         let input = tool_result_input(
@@ -1731,20 +1735,14 @@ mod tests {
             })),
         );
 
-        let result = prepare_input(
-            input,
-            "msg-2".to_string(),
-            &mut *hm.borrow_mut(),
-            &store,
-            &StubSender,
-        )
-        .await
-        .unwrap();
+        let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
+            .await
+            .unwrap();
 
         assert_eq!(result, PrepareResult::Ready);
         // Should have: original user, original tool call, original result, synthetic tool call, synthetic result
         insta::assert_json_snapshot!(
-            hm.into_inner().history,
+            hm.history.into_inner(),
             { "[3].content[0].id" => "[uuid]", "[4].content[0].id" => "[uuid]" }
         );
     }
@@ -1775,19 +1773,13 @@ mod tests {
             })),
         );
 
-        let result = prepare_input(
-            input,
-            "msg-2".to_string(),
-            &mut *hm.borrow_mut(),
-            &store,
-            &StubSender,
-        )
-        .await
-        .unwrap();
+        let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
+            .await
+            .unwrap();
 
         assert_eq!(result, PrepareResult::Ready);
         insta::assert_json_snapshot!(
-            hm.into_inner().history,
+            hm.history.into_inner(),
             { "[3].content[0].id" => "[uuid]", "[4].content[0].id" => "[uuid]" }
         );
     }
@@ -1830,18 +1822,12 @@ mod tests {
             )),
         );
 
-        let result = prepare_input(
-            input,
-            "msg-2".to_string(),
-            &mut *hm.borrow_mut(),
-            &store,
-            &StubSender,
-        )
-        .await
-        .unwrap();
+        let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
+            .await
+            .unwrap();
 
         assert_eq!(result, PrepareResult::Handled);
-        assert_eq!(hm.into_inner().thread_id, "thread-1");
+        assert_eq!(hm.thread_id, "thread-1");
     }
 
     #[tokio::test]
@@ -1873,18 +1859,12 @@ mod tests {
             )),
         );
 
-        let result = prepare_input(
-            input,
-            "msg-2".to_string(),
-            &mut *hm.borrow_mut(),
-            &store,
-            &StubSender,
-        )
-        .await
-        .unwrap();
+        let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
+            .await
+            .unwrap();
 
         assert_eq!(result, PrepareResult::Handled);
-        assert_eq!(hm.into_inner().thread_id, "thread-1");
+        assert_eq!(hm.thread_id, "thread-1");
     }
 
     #[tokio::test]
@@ -1906,25 +1886,19 @@ mod tests {
             )),
         );
 
-        let result = prepare_input(
-            input,
-            "msg-1".to_string(),
-            &mut *hm.borrow_mut(),
-            &store,
-            &StubSender,
-        )
-        .await
-        .unwrap();
+        let result = prepare_input(input, "msg-1".to_string(), &hm, &store, &StubSender)
+            .await
+            .unwrap();
 
         assert_eq!(result, PrepareResult::Handled);
-        assert!(hm.into_inner().history.is_empty());
+        assert!(hm.history.into_inner().is_empty());
     }
 
     #[tokio::test]
     async fn metadata_is_updated_before_processing() {
         let store = StubConversationStore::new();
         let hm = make_history(&store, vec![]).await;
-        assert!(hm.borrow().get_metadata().is_none());
+        assert!(hm.get_metadata().is_none());
 
         let input = InputMessage {
             content: InputMessageContent::User(UserContent::text("hi")),
@@ -1935,17 +1909,11 @@ mod tests {
             subscription: false,
         };
 
-        let _ = prepare_input(
-            input,
-            "msg-1".to_string(),
-            &mut *hm.borrow_mut(),
-            &store,
-            &StubSender,
-        )
-        .await
-        .unwrap();
+        let _ = prepare_input(input, "msg-1".to_string(), &hm, &store, &StubSender)
+            .await
+            .unwrap();
 
-        insta::assert_json_snapshot!(hm.into_inner().get_metadata());
+        insta::assert_json_snapshot!(hm.get_metadata());
     }
 
     #[tokio::test]
@@ -1972,8 +1940,8 @@ mod tests {
             },
         ];
         let hm = make_history(&store, initial).await;
-        hm.borrow_mut()
-            .processed_tool_calls
+        hm.processed_tool_calls
+            .borrow_mut()
             .insert("tc-cmd".to_string());
 
         let input = tool_result_input(
@@ -1989,22 +1957,16 @@ mod tests {
             )),
         );
 
-        let result = prepare_input(
-            input,
-            "msg-2".to_string(),
-            &mut *hm.borrow_mut(),
-            &store,
-            &StubSender,
-        )
-        .await
-        .unwrap();
+        let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
+            .await
+            .unwrap();
 
         assert_eq!(result, PrepareResult::Ready);
         // Should NOT spawn a subthread — stays in the same thread
-        assert_eq!(hm.borrow().thread_id, "thread-1");
+        assert_eq!(hm.thread_id, "thread-1");
         // Should have: original user, tool call, original result, synthetic tool call, event result
         insta::assert_json_snapshot!(
-            hm.into_inner().history,
+            hm.history.into_inner(),
             { "[3].content[0].id" => "[uuid]", "[4].content[0].id" => "[uuid]" }
         );
     }
@@ -2038,21 +2000,15 @@ mod tests {
             )),
         );
 
-        let result = prepare_input(
-            input,
-            "msg-2".to_string(),
-            &mut *hm.borrow_mut(),
-            &store,
-            &StubSender,
-        )
-        .await
-        .unwrap();
+        let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
+            .await
+            .unwrap();
 
         assert_eq!(result, PrepareResult::Ready);
         // Should NOT spawn a subthread — stays in the same thread
-        assert_eq!(hm.borrow().thread_id, "thread-1");
+        assert_eq!(hm.thread_id, "thread-1");
         insta::assert_json_snapshot!(
-            hm.into_inner().history,
+            hm.history.into_inner(),
             { "[3].content[0].id" => "[uuid]", "[4].content[0].id" => "[uuid]" }
         );
     }
@@ -2107,7 +2063,6 @@ mod tests {
             let stream = crate::event_processor::run_completion(
                 &model,
                 &hm,
-                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,
@@ -2164,7 +2119,6 @@ mod tests {
             let stream = super::run_completion(
                 &model,
                 &hm,
-                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,
@@ -2224,7 +2178,6 @@ mod tests {
             let stream = super::run_completion(
                 &model,
                 &hm,
-                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,
@@ -2298,7 +2251,6 @@ mod tests {
             let stream = super::run_completion(
                 &model,
                 &hm,
-                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,
@@ -2409,7 +2361,6 @@ mod tests {
             let stream = super::run_completion(
                 &model,
                 &hm,
-                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,
@@ -2487,7 +2438,6 @@ mod tests {
             let stream = super::run_completion(
                 &model,
                 &hm,
-                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,
@@ -2584,7 +2534,6 @@ mod tests {
             let stream = super::run_completion(
                 &model,
                 &hm,
-                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,
@@ -2638,7 +2587,6 @@ mod tests {
             let stream = super::run_completion(
                 &model,
                 &hm,
-                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,
@@ -2699,7 +2647,6 @@ mod tests {
             let stream = super::run_completion(
                 &model,
                 &hm,
-                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,
@@ -2772,7 +2719,6 @@ mod tests {
             let stream = super::run_completion(
                 &model,
                 &hm,
-                async |_| {},
                 &tool_names,
                 &tool_defs,
                 &tool_registry,

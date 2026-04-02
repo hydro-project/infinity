@@ -77,6 +77,7 @@ pub enum ClientMessage {
 pub enum DaemonMessage {
     Connected {
         session_id: String,
+        thread_id: String,
         model_name: String,
         context_window: usize,
         title: Option<String>,

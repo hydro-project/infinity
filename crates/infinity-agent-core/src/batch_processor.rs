@@ -5,7 +5,7 @@
 //! completion future the caller can store (CLI) or immediately `.await`
 //! (Lambda).
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -70,7 +70,7 @@ pub enum DisplayEvent<R> {
 async fn process_input_item<C, S, R, M>(
     input_msg: InputMessage,
     message_id: String,
-    current_history: &mut HistoryManager<C, S>,
+    current_history: &HistoryManager<C, S>,
     conversation_store: &C,
     display_tx: &mpsc::UnboundedSender<DisplayEvent<R>>,
     message_sender: &M,
@@ -186,8 +186,7 @@ where
 #[expect(clippy::too_many_arguments, reason = "shared entry point")]
 pub async fn process_batch<'a: 'b, 'b, Mdl, C, S, M, H>(
     inputs: impl Iterator<Item = (InputMessage, String)>,
-    current_history: &'a RefCell<HistoryManager<C, S>>,
-    callback_with_history: impl AsyncFnMut(&HistoryManager<C, S>) + 'b,
+    current_history: &'a HistoryManager<C, S>,
     conversation_store: &'a C,
     display_tx: &'a mpsc::UnboundedSender<DisplayEvent<Mdl::StreamingResponse>>,
     active_group_id: &'a str,
@@ -221,7 +220,7 @@ where
         if let Some(mid) = process_input_item(
             input_msg,
             message_id,
-            &mut *current_history.borrow_mut(),
+            current_history,
             conversation_store,
             display_tx,
             &tool_context.message_sender,
@@ -235,7 +234,7 @@ where
 
     // Best-effort: notify RAP tool servers about interrupted tool calls
     {
-        let interrupted = current_history.borrow_mut().take_interrupted_tool_calls();
+        let interrupted = current_history.take_interrupted_tool_calls();
         if !interrupted.is_empty()
             && let Some(notifier) = rap_notifier
         {
@@ -253,17 +252,14 @@ where
 
     let (cancel_tx, cancel_rx) = oneshot::channel();
 
-    let active_thread_id = current_history.borrow().thread_id.clone();
+    let active_thread_id = current_history.thread_id.clone();
     let completion_message_id = last_message_id;
 
     let fut = Box::pin(async move {
-        // Scope the stream so its &mut borrow of `hist` is released
-        // before we call sync / execute_action.
         let action = {
             let mut stream = std::pin::pin!(event_processor::run_completion(
                 model,
                 current_history,
-                callback_with_history,
                 tool_names,
                 tool_defs,
                 tool_registry,
@@ -363,9 +359,8 @@ where
 
             action
         };
-        // Stream dropped — hist is usable again.
 
-        current_history.borrow_mut().sync().await.ok();
+        current_history.sync().await.ok();
 
         if let Some(action) = action
             && let Err(e) =
@@ -380,7 +375,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+
     use std::collections::{HashMap, HashSet};
 
     use super::DisplayEvent;
@@ -583,11 +578,10 @@ mod tests {
         let s = StubConvo {
             closed: HashSet::from(["t1".into()]),
         };
-        let hm = RefCell::new(
-            HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
-                .await
-                .unwrap(),
-        );
+        let hm = HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
+            .await
+            .unwrap();
+
         let (m, _) = mock_model();
         let (dtx, _) = mpsc::unbounded_channel();
         let tn = HashSet::new();
@@ -596,7 +590,6 @@ mod tests {
         let r = super::process_batch(
             vec![user_input("hi")].into_iter(),
             &hm,
-            async |_| {},
             &s,
             &dtx,
             "t1",
@@ -618,11 +611,10 @@ mod tests {
     #[tokio::test]
     async fn oauth_returns_none_emits_event() {
         let s = StubConvo::new();
-        let hm = RefCell::new(
-            HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
-                .await
-                .unwrap(),
-        );
+        let hm = HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
+            .await
+            .unwrap();
+
         let (m, _) = mock_model();
         let (dtx, mut drx) = mpsc::unbounded_channel();
         let tn = HashSet::new();
@@ -647,7 +639,6 @@ mod tests {
         let r = super::process_batch(
             vec![input].into_iter(),
             &hm,
-            async |_| {},
             &s,
             &dtx,
             "t1",
@@ -670,11 +661,10 @@ mod tests {
     #[tokio::test]
     async fn user_choice_returns_none_emits_event() {
         let s = StubConvo::new();
-        let hm = RefCell::new(
-            HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
-                .await
-                .unwrap(),
-        );
+        let hm = HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
+            .await
+            .unwrap();
+
         let (m, _) = mock_model();
         let (dtx, mut drx) = mpsc::unbounded_channel();
         let tn = HashSet::new();
@@ -702,7 +692,6 @@ mod tests {
         let r = super::process_batch(
             vec![input].into_iter(),
             &hm,
-            async |_| {},
             &s,
             &dtx,
             "t1",
@@ -725,11 +714,10 @@ mod tests {
     #[tokio::test]
     async fn ready_input_returns_some() {
         let s = StubConvo::new();
-        let hm = RefCell::new(
-            HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
-                .await
-                .unwrap(),
-        );
+        let hm = HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
+            .await
+            .unwrap();
+
         let (m, _) = mock_model();
         let (dtx, mut drx) = mpsc::unbounded_channel();
         let tn = HashSet::new();
@@ -738,7 +726,6 @@ mod tests {
         let r = super::process_batch(
             vec![user_input("hi")].into_iter(),
             &hm,
-            async |_| {},
             &s,
             &dtx,
             "t1",
@@ -762,12 +749,11 @@ mod tests {
     #[tokio::test]
     async fn tool_result_echoed_in_display() {
         let s = StubConvo::new();
-        let hm = RefCell::new(
-            HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
-                .await
-                .unwrap(),
-        );
-        hm.borrow_mut().history = vec![
+        let hm = HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
+            .await
+            .unwrap();
+
+        *hm.history.borrow_mut() = vec![
             Message::User {
                 content: OneOrMany::one(UserContent::text("go")),
             },
@@ -812,7 +798,6 @@ mod tests {
         let r = super::process_batch(
             vec![input].into_iter(),
             &hm,
-            async |_| {},
             &s,
             &dtx,
             "t1",
@@ -839,11 +824,10 @@ mod tests {
     #[tokio::test]
     async fn duplicate_input_returns_none() {
         let s = StubConvo::new();
-        let hm = RefCell::new(
-            HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
-                .await
-                .unwrap(),
-        );
+        let hm = HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
+            .await
+            .unwrap();
+
         let (m, _) = mock_model();
         let (dtx, _) = mpsc::unbounded_channel();
         let tn = HashSet::new();
@@ -865,7 +849,6 @@ mod tests {
         let _ = super::process_batch(
             vec![input1].into_iter(),
             &hm,
-            async |_| {},
             &s,
             &dtx,
             "t1",
@@ -896,7 +879,6 @@ mod tests {
         let r = super::process_batch(
             vec![input2].into_iter(),
             &hm,
-            async |_| {},
             &s,
             &dtx,
             "t1",
@@ -918,11 +900,10 @@ mod tests {
     #[tokio::test]
     async fn mixed_batch_only_actionable_triggers_completion() {
         let s = StubConvo::new();
-        let hm = RefCell::new(
-            HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
-                .await
-                .unwrap(),
-        );
+        let hm = HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
+            .await
+            .unwrap();
+
         let (m, _) = mock_model();
         let (dtx, mut drx) = mpsc::unbounded_channel();
         let tn = HashSet::new();
@@ -949,7 +930,6 @@ mod tests {
         let r = super::process_batch(
             vec![oauth, text].into_iter(),
             &hm,
-            async |_| {},
             &s,
             &dtx,
             "t1",
