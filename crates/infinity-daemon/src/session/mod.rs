@@ -60,7 +60,6 @@ pub struct Session {
     pub active_threads: ActiveThreads,
     pub agent_tx: mpsc::UnboundedSender<AgentMessage>,
     pub agent_task: JoinHandle<()>,
-    pub total_tokens_used: usize,
     pub model_name: String,
     pub context_window: usize,
     /// Send to signal the agent loop to shut down.
@@ -84,6 +83,8 @@ pub struct SessionManager {
     pub available_models: Vec<model_picker::ModelEntry>,
     /// Connected clients that receive broadcast updates.
     broadcast_clients: Arc<std::sync::Mutex<Vec<mpsc::UnboundedSender<DaemonMessage>>>>,
+    /// Remote daemon connections.
+    pub remote_daemons: Option<crate::remote::RemoteDaemons>,
 }
 
 impl SessionManager {
@@ -119,11 +120,12 @@ impl SessionManager {
                     Some(e) => {
                         let threads = cs.get_open_subthreads(&session_id);
                         SessionInfo {
-                            title: e.title.clone(),
-                            last_updated: e.last_updated.clone(),
-                            total_tokens_used: e.total_tokens_used,
-                            status: e.status(),
+                            title: cs.get_thread_title(&session_id),
+                            last_updated: cs.get_last_updated(&session_id),
+                            total_tokens_used: cs.get_total_tokens_used(&session_id),
+                            status: e.status(cs.has_pending_choices(&session_id)),
                             threads,
+                            remote: None,
                         }
                     }
                     None => continue,
@@ -158,7 +160,23 @@ impl SessionManager {
             default_context_window,
             available_models,
             broadcast_clients,
+            remote_daemons: None,
         })
+    }
+
+    /// Initialize remote daemon connections from config.
+    pub fn init_remotes(&mut self, configs: Vec<crate::remote::RemoteConfig>) {
+        if configs.is_empty() {
+            return;
+        }
+        self.remote_daemons = Some(crate::remote::RemoteDaemons::new(
+            configs,
+            self.broadcast_clients.clone(),
+        ));
+    }
+
+    pub fn conversation_store(&self) -> &InMemoryConversationStore {
+        &self.conversation_store
     }
 
     /// Create a brand new session with the given working directory.
@@ -173,6 +191,8 @@ impl SessionManager {
             store.create(&session_id, cwd.to_path_buf());
             let _ = store.save();
         }
+        self.conversation_store
+            .set_last_updated(&session_id, &chrono::Utc::now().to_rfc3339());
         emit(self.build_connected(&session_id, &session_id).await).await;
         self.start_session(session_id.clone(), cwd, emit).await?;
         Ok(session_id)
@@ -192,15 +212,13 @@ impl SessionManager {
     }
 
     async fn build_connected(&self, session_id: &str, thread_id: &str) -> DaemonMessage {
-        let store = self.session_store.lock().await;
-        let entry = store.sessions.get(session_id);
         DaemonMessage::Connected {
             session_id: session_id.to_string(),
             thread_id: thread_id.to_string(),
             model_name: self.default_model_name.clone(),
             context_window: self.default_context_window,
-            title: entry.and_then(|e| e.title.clone()),
-            total_tokens_used: entry.map(|e| e.total_tokens_used).unwrap_or(0),
+            title: self.conversation_store.get_thread_title(session_id),
+            total_tokens_used: self.conversation_store.get_total_tokens_used(session_id),
         }
     }
 
@@ -407,7 +425,6 @@ impl SessionManager {
             active_threads,
             agent_tx,
             agent_task: agent_handle,
-            total_tokens_used: 0,
             model_name,
             context_window,
             shutdown_tx: Some(shutdown_tx),
@@ -457,19 +474,9 @@ impl SessionManager {
                     display::history_message_to_daemon(m, thread_id, &self.conversation_store)
                 })
                 .collect();
-            let choices: Vec<DaemonMessage> = self
-                .session_store
-                .lock()
-                .await
-                .sessions
-                .get(&session_id)
-                .map(|e| {
-                    e.pending_choices
-                        .iter()
-                        .map(|c| c.message.clone())
-                        .collect()
-                })
-                .unwrap_or_default();
+            let choices = self
+                .conversation_store
+                .get_pending_choice_messages(&session_id);
             if !history.is_empty() || !choices.is_empty() {
                 let _ = tx.send(DaemonMessage::Replay {
                     history,
@@ -563,13 +570,19 @@ impl SessionManager {
             result.insert(
                 id.clone(),
                 SessionInfo {
-                    title: entry.title.clone(),
-                    last_updated: entry.last_updated.clone(),
-                    total_tokens_used: entry.total_tokens_used,
-                    status: entry.status(),
+                    title: self.conversation_store.get_thread_title(id),
+                    last_updated: self.conversation_store.get_last_updated(id),
+                    total_tokens_used: self.conversation_store.get_total_tokens_used(id),
+                    status: entry.status(self.conversation_store.has_pending_choices(id)),
                     threads,
+                    remote: None,
                 },
             );
+        }
+
+        // Include remote sessions
+        if let Some(ref rd) = self.remote_daemons {
+            result.extend(rd.all_remote_sessions());
         }
 
         result
@@ -731,7 +744,6 @@ where
             },
         ),
         Box::new(set_title_tool::SetTitleTool {
-            session_store: session_store.clone(),
             conversation_store: conversation_store.clone(),
         }),
     ];
@@ -746,10 +758,9 @@ where
 
     let agent_fut = agent_loop(
         session_id.clone(),
-        session_store.clone(),
         agent_rx,
         model,
-        conversation_store,
+        conversation_store.clone(),
         state_store,
         sender,
         callback_url,
@@ -768,6 +779,7 @@ where
         agent_fut,
         session_id,
         session_store,
+        conversation_store,
         subscriber_map,
         active_threads,
         idle_rx,
@@ -786,6 +798,7 @@ async fn session_wrapper(
     agent_fut: impl Future<Output = ()>,
     session_id: String,
     session_store: SessionStoreHandle,
+    conversation_store: InMemoryConversationStore,
     subscriber_map: SubscriberMap,
     active_threads: ActiveThreads,
     mut idle_rx: mpsc::UnboundedReceiver<()>,
@@ -808,9 +821,7 @@ async fn session_wrapper(
             }
             _ = &mut shutdown_rx => {
                 tracing::info!("Received `shutdown_rx`.");
-                if let Some(entry) = session_store.lock().await.sessions.get_mut(&session_id) {
-                    entry.pending_choices.clear();
-                }
+                conversation_store.clear_pending_choices(&session_id);
                 idle_exited = false;
                 break;
             }

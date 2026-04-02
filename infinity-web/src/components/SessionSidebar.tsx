@@ -102,7 +102,8 @@ export function SessionSidebar({ sessions, activeSessionId, activeThreadId, open
               onClick={() => onSelect(id, null)}
             >
               <span className={css.itemTitle}>
-                {info.title || id.slice(0, 8)}
+                {info.title || (id.includes('/') ? id.split('/').pop()!.slice(0, 8) : id.slice(0, 8))}
+                {info.remote && <span className={css.remotePill}>{info.remote}</span>}
               </span>
               <span className={css.itemMeta}>
                 <span className={css.statusDot} data-status={info.status} />
