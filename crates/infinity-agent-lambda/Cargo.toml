@@ -37,3 +37,6 @@ aws-credential-types = { workspace = true }
 aws-smithy-runtime-api = { workspace = true }
 reqwest = { workspace = true }
 sqlx = { workspace = true }
+
+[lints]
+workspace = true

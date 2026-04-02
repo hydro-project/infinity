@@ -10,3 +10,6 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 futures-util = { workspace = true }
 async-stream = "0.3"
+
+[lints]
+workspace = true
