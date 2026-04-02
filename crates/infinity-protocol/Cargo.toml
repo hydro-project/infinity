@@ -5,6 +5,5 @@ edition = "2024"
 
 [dependencies]
 serde = { workspace = true }
-bincode = "1"
 dirs = "6"
 rap-protocol = { path = "../rap-protocol" }
