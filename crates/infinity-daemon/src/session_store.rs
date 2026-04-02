@@ -88,7 +88,8 @@ impl SessionStore {
                                     total_tokens_used: e.total_tokens_used,
                                     last_updated: e.last_updated,
                                     title: e.title,
-                                    cwd: std::env::current_dir().unwrap(),
+                                    cwd: std::env::current_dir()
+                                        .expect("failed to get current directory"),
                                     shut_down: false,
                                     idle: false,
                                     pending_choices: Vec::new(),
@@ -123,7 +124,10 @@ impl SessionStore {
 
     pub fn update(&mut self, session_id: &str, total_tokens_used: usize, title: Option<String>) {
         let now = Utc::now().to_rfc3339();
-        let entry = self.sessions.get_mut(session_id).unwrap();
+        let entry = self
+            .sessions
+            .get_mut(session_id)
+            .expect("bug: session not found in store");
         entry.total_tokens_used = total_tokens_used;
         entry.last_updated = now;
         if title.is_some() {
@@ -150,7 +154,11 @@ impl SessionStore {
     }
 
     pub fn get_cwd(&self, session_id: &str) -> &PathBuf {
-        &self.sessions.get(session_id).unwrap().cwd
+        &self
+            .sessions
+            .get(session_id)
+            .expect("bug: session not found in store")
+            .cwd
     }
 
     pub fn set_title(&mut self, session_id: &str, title: &str) {
@@ -182,20 +190,20 @@ impl SessionStore {
     }
 
     pub fn mark_idle(&mut self, session_id: &str) {
-        if let Some(entry) = self.sessions.get_mut(session_id) {
-            if !entry.idle {
-                entry.idle = true;
-                self.notify(session_id);
-            }
+        if let Some(entry) = self.sessions.get_mut(session_id)
+            && !entry.idle
+        {
+            entry.idle = true;
+            self.notify(session_id);
         }
     }
 
     pub fn clear_idle(&mut self, session_id: &str) {
-        if let Some(entry) = self.sessions.get_mut(session_id) {
-            if entry.idle {
-                entry.idle = false;
-                self.notify(session_id);
-            }
+        if let Some(entry) = self.sessions.get_mut(session_id)
+            && entry.idle
+        {
+            entry.idle = false;
+            self.notify(session_id);
         }
     }
 

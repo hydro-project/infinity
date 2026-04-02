@@ -30,3 +30,5 @@ feat(infinity-daemon): add session persistence via `sessions.json`
 ## Development
 
 - Run `./precheck.bash` to test your changes before finalizing.
+- Use `.expect("...")` with a descriptive message instead of `.unwrap()`. Prefix the message with "bug:" if a panic
+  would represent a logical bug in our code (rather than a runtime error out of our control).

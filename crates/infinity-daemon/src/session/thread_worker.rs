@@ -58,7 +58,7 @@ pub async fn thread_worker<Mdl>(
     let mut subscribe_rx = subscribe_rx;
     active_threads
         .lock()
-        .unwrap()
+        .expect("bug: mutex poisoned")
         .insert(active_group_id.clone());
     let _guard = WorkerGuard {
         active_group_id: active_group_id.clone(),
@@ -115,7 +115,7 @@ pub async fn thread_worker<Mdl>(
             }
 
             if let Some(dm) = display_event_to_daemon(&fwd_group_id, evt) {
-                let mut subs = fwd_subscribers.lock().unwrap();
+                let mut subs = fwd_subscribers.lock().expect("bug: mutex poisoned");
                 subs.retain(|tx| tx.send(dm.clone()).is_ok());
             }
         }
@@ -197,7 +197,7 @@ pub async fn thread_worker<Mdl>(
                 });
             }
         }
-        subscribers.lock().unwrap().push(tx);
+        subscribers.lock().expect("bug: mutex poisoned").push(tx);
     };
 
     loop {
@@ -205,7 +205,7 @@ pub async fn thread_worker<Mdl>(
             tokio::select! {
                 _ = mut_fut => {
                     #[expect(clippy::let_underscore_future, reason = "dropping completed future")]
-                    let _ = completion_fut.take().unwrap();
+                    let _ = completion_fut.take().expect("bug: completion_fut missing after poll");
 
                     // Background compaction: trigger if input tokens > 75% of context window
                     let input_tokens = input_tokens_cell.get() as usize;
@@ -241,8 +241,8 @@ pub async fn thread_worker<Mdl>(
 
                     if batch.iter().any(|(msg, _)| is_user_text_input(msg))
                     {
-                        let _ = completion_cancel_tx.take().unwrap().send(());
-                        let completion_fut_taken = completion_fut.take().unwrap();
+                        let _ = completion_cancel_tx.take().expect("bug: cancel_tx missing during interrupt").send(());
+                        let completion_fut_taken = completion_fut.take().expect("bug: completion_fut missing during interrupt");
                         completion_fut_taken.await;
 
                         let (mut user_inputs, non_user_inputs): (Vec<_>, Vec<_>) = batch
@@ -354,8 +354,14 @@ pub async fn thread_worker<Mdl>(
             }
         }
 
-        let params = additional_request_params.read().unwrap().clone();
-        let mid = active_model_id.read().unwrap().clone();
+        let params = additional_request_params
+            .read()
+            .expect("bug: rwlock poisoned")
+            .clone();
+        let mid = active_model_id
+            .read()
+            .expect("bug: rwlock poisoned")
+            .clone();
 
         let result = infinity_agent_core::batch_processor::process_batch(
             all_inputs.into_iter(),
@@ -391,7 +397,7 @@ struct WorkerGuard {
 
 impl Drop for WorkerGuard {
     fn drop(&mut self) {
-        let mut threads = self.active_threads.lock().unwrap();
+        let mut threads = self.active_threads.lock().expect("bug: mutex poisoned");
         threads.remove(&self.active_group_id);
         if threads.is_empty() {
             let _ = self.idle_tx.send(());
@@ -400,6 +406,7 @@ impl Drop for WorkerGuard {
 }
 
 #[cfg(test)]
+#[allow(clippy::collapsible_if, clippy::type_complexity)]
 mod tests {
     use super::*;
     use infinity_agent_core::traits::InputSender;
@@ -410,7 +417,7 @@ mod tests {
         InMemoryStateStore,
         tempfile::TempDir,
     ) {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let conv = InMemoryConversationStore::new_with_dir(dir.path().join("threads"));
         let state = InMemoryStateStore::new(dir.path().join("state"));
         (conv, state, dir)
@@ -525,7 +532,8 @@ mod tests {
                 let (model, mut ctrl) = mock_model();
                 let (tx, mut display_rx, mut idle_rx, workers) =
                     spawn_worker("t1", conv, state, model, vec![]);
-                tx.send(user_text_input("t1", "hello")).unwrap();
+                tx.send(user_text_input("t1", "hello"))
+                    .expect("send user input");
                 let _req = ctrl.next_request().await;
                 ctrl.send_text("hi there");
                 ctrl.finish();
@@ -533,7 +541,12 @@ mod tests {
                 tokio::time::timeout(std::time::Duration::from_secs(2), idle_rx.recv())
                     .await
                     .expect("should idle");
-                assert!(workers.lock().unwrap().is_empty());
+                assert!(
+                    workers
+                        .lock()
+                        .expect("bug: workers mutex poisoned")
+                        .is_empty()
+                );
             })
             .await;
     }
@@ -570,7 +583,8 @@ mod tests {
                 }
                 let (tx, mut display_rx, mut idle_rx, workers) =
                     spawn_worker("t1", conv, state, model, vec![Box::new(DummyTool)]);
-                tx.send(user_text_input("t1", "use tool")).unwrap();
+                tx.send(user_text_input("t1", "use tool"))
+                    .expect("send user input");
                 let _req = ctrl.next_request().await;
                 ctrl.send_tool_call("tc-1", "dummy", serde_json::json!({}));
                 ctrl.finish();
@@ -587,9 +601,14 @@ mod tests {
                     idle_rx.try_recv().is_err(),
                     "should not be idle while tool call pending"
                 );
-                assert!(workers.lock().unwrap().contains("t1"));
+                assert!(
+                    workers
+                        .lock()
+                        .expect("bug: workers mutex poisoned")
+                        .contains("t1")
+                );
                 tx.send(tool_result_input("t1", "tc-1", "tool done"))
-                    .unwrap();
+                    .expect("send tool result");
                 let _req2 = ctrl.next_request().await;
                 ctrl.send_text("ok");
                 ctrl.finish();
@@ -609,7 +628,8 @@ mod tests {
                 let (conv, state, _dir) = tmp_stores();
                 let (model, mut ctrl) = mock_model();
                 let (tx, mut display_rx, _, _) = spawn_worker("t1", conv, state, model, vec![]);
-                tx.send(user_text_input("t1", "first")).unwrap();
+                tx.send(user_text_input("t1", "first"))
+                    .expect("send first user input");
                 let _req = ctrl.next_request().await;
                 ctrl.send_text("partial...");
                 loop {
@@ -631,7 +651,8 @@ mod tests {
                         _ => panic!("timed out"),
                     }
                 }
-                tx.send(user_text_input("t1", "stop that")).unwrap();
+                tx.send(user_text_input("t1", "stop that"))
+                    .expect("send interrupt input");
                 let req2 = ctrl.next_request().await;
                 let has_interrupt = req2.chat_history.into_iter().any(|m| {
                     if let rig::message::Message::User { content } = &m {
@@ -681,7 +702,8 @@ mod tests {
                 }
                 let (tx, mut display_rx, _, _) =
                     spawn_worker("t1", conv, state, model, vec![Box::new(DummyTool)]);
-                tx.send(user_text_input("t1", "do stuff")).unwrap();
+                tx.send(user_text_input("t1", "do stuff"))
+                    .expect("send user input");
                 let _req = ctrl.next_request().await;
                 ctrl.send_tool_call("tc-1", "dummy", serde_json::json!({}));
                 ctrl.finish();
@@ -695,7 +717,7 @@ mod tests {
                     }
                 }
                 tx.send(tool_result_input("t1", "tc-1", "tool output"))
-                    .unwrap();
+                    .expect("send tool result");
                 let _req2 = ctrl.next_request().await;
                 ctrl.send_text("processing...");
                 loop {
@@ -708,7 +730,7 @@ mod tests {
                     }
                 }
                 tx.send(tool_result_input("t1", "tc-other", "stale event"))
-                    .unwrap();
+                    .expect("send stale tool result");
                 ctrl.send_text(" done");
                 ctrl.finish();
                 let texts = collect_until_done(&mut display_rx).await;
@@ -774,7 +796,8 @@ mod tests {
                 }
                 let (tx, mut display_rx, _, _) =
                     spawn_worker("t1", conv, state, model, vec![Box::new(SubTool)]);
-                tx.send(user_text_input("t1", "subscribe")).unwrap();
+                tx.send(user_text_input("t1", "subscribe"))
+                    .expect("send user input");
                 let _req = ctrl.next_request().await;
                 ctrl.send_tool_call("tc-sub", "subscribe_tool", serde_json::json!({}));
                 ctrl.finish();
@@ -825,7 +848,7 @@ mod tests {
                     },
                     uuid::Uuid::new_v4().to_string(),
                 ))
-                .unwrap();
+                .expect("send subscription event");
                 ctrl.send_text(" all good");
                 ctrl.finish();
                 let texts = collect_until_done(&mut display_rx).await;
@@ -884,7 +907,8 @@ mod tests {
                 }
                 let (tx, mut display_rx, mut idle_rx, workers) =
                     spawn_worker("t1", conv, state, model, vec![Box::new(CloseThreadStub)]);
-                tx.send(user_text_input("t1", "close")).unwrap();
+                tx.send(user_text_input("t1", "close"))
+                    .expect("send user input");
                 let _req = ctrl.next_request().await;
                 ctrl.send_tool_call(
                     "tc-1",
@@ -904,7 +928,12 @@ mod tests {
                 tokio::time::timeout(std::time::Duration::from_secs(2), idle_rx.recv())
                     .await
                     .expect("should idle after close_thread");
-                assert!(workers.lock().unwrap().is_empty());
+                assert!(
+                    workers
+                        .lock()
+                        .expect("bug: workers mutex poisoned")
+                        .is_empty()
+                );
             })
             .await;
     }

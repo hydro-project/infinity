@@ -32,7 +32,7 @@ pub async fn handle_ws_client(stream: TcpStream, session_manager: Arc<Mutex<Sess
         tokio::select! {
             msg = daemon_msg_rx.recv() => {
                 let Some(msg) = msg else { break };
-                let json = serde_json::to_string(&msg).unwrap();
+                let json = serde_json::to_string(&msg).expect("bug: failed to serialize DaemonMessage");
                 if ws_tx.send(Message::Text(json.into())).await.is_err() { break; }
             }
             _ = &mut handler => {
