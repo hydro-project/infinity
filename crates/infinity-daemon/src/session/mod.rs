@@ -483,15 +483,15 @@ impl SessionManager {
         let session_id = self.conversation_store.get_root_thread_id(thread_id);
         let session_id = session_id.as_str();
 
-        // If session task finished (idle-cleaned) or was never started, check if we need to restart.
+        // If session task finished or was never started, check if we need to restart.
         let needs_restart = if let Some(session) = self.sessions.get(session_id) {
             session.agent_task.is_finished()
         } else {
             let store = self.session_store.lock().await;
-            store.is_shut_down(session_id) || store.is_idle_cleaned(session_id)
+            store.is_shut_down(session_id)
         };
 
-        // if client_tx is None, that means this is for a RAP callback, but if the agent was shut down or idled,
+        // if client_tx is None, that means this is for a RAP callback, but if the agent was shut down,
         // we should ignore the callback (the agent will not idle if any tool calls or subscriptions are active)
         if needs_restart && client_tx.is_some() {
             // Remove stale session if present.
@@ -499,6 +499,7 @@ impl SessionManager {
             {
                 let mut store = self.session_store.lock().await;
                 store.clear_shut_down(session_id);
+                store.clear_idle(session_id);
                 let _ = store.save();
             }
             let cwd = self.session_store.lock().await.get_cwd(session_id).clone();
@@ -513,6 +514,12 @@ impl SessionManager {
         }
 
         if let Some(session) = self.sessions.get(session_id) {
+            // Clear idle since the agent is about to do work.
+            {
+                let mut store = self.session_store.lock().await;
+                store.clear_idle(session_id);
+                let _ = store.save();
+            }
             session
                 .agent_tx
                 .send(AgentMessage::Input(
@@ -567,7 +574,7 @@ impl SessionManager {
             }
             let _ = session.agent_task.await;
 
-            // Ensure shut_down is set (task may have already finished as idle_cleaned).
+            // Ensure shut_down is set (task may have already finished as idle).
             tracing::debug!("Setting `shut_down`");
             let mut store = self.session_store.lock().await;
             if !store.is_shut_down(session_id) {
@@ -778,7 +785,13 @@ async fn session_wrapper(
                 break;
             }
             _ = idle_rx.recv() => {
-                // Some worker is idle. If no client attached, exit.
+                // Mark idle in the store immediately so listing shows Idle status.
+                {
+                    let mut store = session_store.lock().await;
+                    store.mark_idle(&session_id);
+                    let _ = store.save();
+                }
+                // If no client attached, exit the loop entirely.
                 let has_clients = {
                     let smap = subscriber_map.lock().unwrap();
                     smap.values().any(|subs| subs.lock().unwrap().iter().any(|tx| !tx.is_closed()))
@@ -821,9 +834,7 @@ async fn session_wrapper(
 
     // Mark session store.
     let mut store = session_store.lock().await;
-    if idle_exited {
-        store.mark_idle_cleaned(&session_id);
-    } else {
+    if !idle_exited {
         store.mark_shut_down(&session_id);
     }
     let _ = store.save();

@@ -16,6 +16,7 @@
   --text-muted: #555;
   --accent: #0096ff;
   --accent-green: #0fdba2;
+  --accent-yellow: #f0d050;
   --accent-orange: #f0a040;
   --accent-red: #e04040;
   --glass-bg: rgba(20, 20, 20, 0.7);
@@ -47,6 +48,7 @@
   --text-muted: #999;
   --accent: #0071e3;
   --accent-green: #09b87e;
+  --accent-yellow: #e0c030;
   --accent-orange: #d48a20;
   --accent-red: #d03030;
   --glass-bg: rgba(255, 255, 255, 0.6);

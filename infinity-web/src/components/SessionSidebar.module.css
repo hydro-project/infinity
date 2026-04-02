@@ -131,7 +131,7 @@
   background: var(--accent-green);
 }
 .statusDot[data-status='Idle'] {
-  background: var(--text-muted);
+  background: var(--accent-yellow);
 }
 .statusDot[data-status='Stopped'] {
   background: var(--accent-red);
