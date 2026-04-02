@@ -7,6 +7,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::session_store::PendingChoice;
+
 // ── Error type ──
 
 #[derive(Debug)]
@@ -41,6 +43,8 @@ pub struct InMemoryConversationStore {
     metadata_loaded: Arc<Mutex<HashSet<String>>>,
     /// Optional sender to notify session store of changes (for SessionsUpdated broadcasts).
     change_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    /// Transient pending user choice requests, keyed by root thread id.
+    pending_choices: Arc<Mutex<HashMap<String, Vec<PendingChoice>>>>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -57,6 +61,10 @@ struct ThreadInfo {
     is_compaction: bool,
     #[serde(default)]
     children: Vec<String>,
+    #[serde(default)]
+    total_tokens_used: usize,
+    #[serde(default)]
+    last_updated: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -114,12 +122,59 @@ impl InMemoryConversationStore {
             loaded: Arc::new(Mutex::new(HashSet::new())),
             metadata_loaded: Arc::new(Mutex::new(HashSet::new())),
             change_tx: None,
+            pending_choices: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     /// Set the change notification sender. Called after construction.
     pub fn set_change_tx(&mut self, tx: tokio::sync::mpsc::UnboundedSender<String>) {
         self.change_tx = Some(tx);
+    }
+
+    /// Migration: if a thread's last_updated / total_tokens_used is empty, try to
+    /// restore them from the legacy `sessions.json` (parent of the threads dir).
+    fn migrate_from_session_store(&self, thread_id: &str, threads_dir: &Path) {
+        let threads = self.threads.lock().unwrap();
+        let Some(info) = threads.get(thread_id) else {
+            return;
+        };
+        if info.last_updated.is_empty() {
+            return;
+        }
+        drop(threads);
+
+        let sessions_path = threads_dir.join("../sessions.json");
+        let Ok(json) = std::fs::read_to_string(&sessions_path) else {
+            return;
+        };
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) else {
+            return;
+        };
+        let Some(entry) = val.get("sessions").and_then(|s| s.get(thread_id)) else {
+            return;
+        };
+
+        let last_updated = entry
+            .get("last_updated")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let total_tokens_used = entry
+            .get("total_tokens_used")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+
+        if last_updated.is_empty() && total_tokens_used == 0 {
+            return;
+        }
+
+        let mut threads = self.threads.lock().unwrap();
+        if let Some(info) = threads.get_mut(thread_id) {
+            info.last_updated = last_updated;
+            info.total_tokens_used = total_tokens_used;
+        }
+        drop(threads);
+        self.save_thread_metadata(thread_id);
     }
 
     /// Notify that a session's thread tree changed.
@@ -190,25 +245,26 @@ impl InMemoryConversationStore {
                 .expect("bug: mutex poisoned")
                 .entry(thread_id.to_string())
                 .or_insert(info);
-            meta_loaded.insert(thread_id.to_string());
-            return;
+        } else {
+            // Fall back: extract thread_info from the full snapshot file.
+            let full_path = dir.join(format!("{}.json", thread_id));
+            if let Ok(json) = std::fs::read_to_string(&full_path)
+                && let Ok(val) = serde_json::from_str::<serde_json::Value>(&json)
+                && let Some(info_val) = val.get("thread_info")
+                && let Ok(info) = serde_json::from_value::<ThreadInfo>(info_val.clone())
+            {
+                self.threads
+                    .lock()
+                    .expect("bug: mutex poisoned")
+                    .entry(thread_id.to_string())
+                    .or_insert(info);
+                // Migrate: write the .meta.json for next time.
+                self.save_thread_metadata(thread_id);
+            }
         }
 
-        // Fall back: extract thread_info from the full snapshot file.
-        let full_path = dir.join(format!("{}.json", thread_id));
-        if let Ok(json) = std::fs::read_to_string(&full_path)
-            && let Ok(val) = serde_json::from_str::<serde_json::Value>(&json)
-            && let Some(info_val) = val.get("thread_info")
-            && let Ok(info) = serde_json::from_value::<ThreadInfo>(info_val.clone())
-        {
-            self.threads
-                .lock()
-                .expect("bug: mutex poisoned")
-                .entry(thread_id.to_string())
-                .or_insert(info);
-            // Migrate: write the .meta.json for next time.
-            self.save_thread_metadata(thread_id);
-        }
+        // Migration: restore title/last_updated from legacy sessions.json
+        self.migrate_from_session_store(thread_id, dir);
 
         meta_loaded.insert(thread_id.to_string());
     }
@@ -349,6 +405,100 @@ impl InMemoryConversationStore {
         }
         result
     }
+
+    pub fn get_total_tokens_used(&self, thread_id: &str) -> usize {
+        self.ensure_thread_metadata_loaded(thread_id);
+        self.threads
+            .lock()
+            .unwrap()
+            .get(thread_id)
+            .map(|t| t.total_tokens_used)
+            .unwrap_or(0)
+    }
+
+    pub fn set_total_tokens_used(&self, thread_id: &str, tokens: usize) {
+        self.ensure_thread_metadata_loaded(thread_id);
+        if let Some(t) = self.threads.lock().unwrap().get_mut(thread_id) {
+            t.total_tokens_used = tokens;
+        }
+        self.save_thread_metadata(thread_id);
+        self.notify_session(thread_id);
+    }
+
+    pub fn get_last_updated(&self, thread_id: &str) -> String {
+        self.ensure_thread_metadata_loaded(thread_id);
+        self.threads
+            .lock()
+            .unwrap()
+            .get(thread_id)
+            .map(|t| t.last_updated.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn set_last_updated(&self, thread_id: &str, ts: &str) {
+        self.ensure_thread_metadata_loaded(thread_id);
+        if let Some(t) = self.threads.lock().unwrap().get_mut(thread_id) {
+            t.last_updated = ts.to_string();
+        }
+        self.save_thread_metadata(thread_id);
+    }
+
+    pub fn get_thread_title(&self, thread_id: &str) -> Option<String> {
+        self.ensure_thread_metadata_loaded(thread_id);
+        self.threads
+            .lock()
+            .unwrap()
+            .get(thread_id)
+            .and_then(|t| t.title.clone())
+    }
+
+    pub fn add_pending_choice(&self, root_thread_id: &str, choice: PendingChoice) {
+        self.pending_choices
+            .lock()
+            .unwrap()
+            .entry(root_thread_id.to_string())
+            .or_default()
+            .push(choice);
+        self.notify_session(root_thread_id);
+    }
+
+    pub fn remove_pending_choice(
+        &self,
+        root_thread_id: &str,
+        choice_id: &str,
+    ) -> Option<PendingChoice> {
+        let mut map = self.pending_choices.lock().unwrap();
+        if let Some(choices) = map.get_mut(root_thread_id) {
+            if let Some(pos) = choices.iter().position(|c| c.id == choice_id) {
+                return Some(choices.remove(pos));
+            }
+        }
+        None
+    }
+
+    pub fn get_pending_choice_messages(
+        &self,
+        root_thread_id: &str,
+    ) -> Vec<infinity_protocol::DaemonMessage> {
+        self.pending_choices
+            .lock()
+            .unwrap()
+            .get(root_thread_id)
+            .map(|v| v.iter().map(|c| c.message.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn has_pending_choices(&self, root_thread_id: &str) -> bool {
+        self.pending_choices
+            .lock()
+            .unwrap()
+            .get(root_thread_id)
+            .is_some_and(|v| !v.is_empty())
+    }
+
+    pub fn clear_pending_choices(&self, root_thread_id: &str) {
+        self.pending_choices.lock().unwrap().remove(root_thread_id);
+    }
 }
 
 #[async_trait]
@@ -374,6 +524,8 @@ impl ConversationStore for InMemoryConversationStore {
                         title: None,
                         is_compaction: false,
                         children: Vec::new(),
+                        total_tokens_used: 0,
+                        last_updated: String::new(),
                     },
                 );
                 true
@@ -464,6 +616,8 @@ impl ConversationStore for InMemoryConversationStore {
                         title: None,
                         is_compaction: false,
                         children: Vec::new(),
+                        total_tokens_used: 0,
+                        last_updated: String::new(),
                     },
                 );
                 // Add to parent's children list.

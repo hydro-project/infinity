@@ -13,6 +13,167 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use crate::session::SessionManager;
 
+/// Split "remote_name/real_id" into (remote_name, real_id).
+fn is_remote_session(session_id: &str) -> Option<(&str, &str)> {
+    session_id.split_once('/')
+}
+
+fn prefix_thread_id(thread_id: Option<String>, remote_name: &str) -> Option<String> {
+    thread_id.map(|id| format!("{remote_name}/{id}"))
+}
+
+fn prefix_daemon_message(msg: DaemonMessage, remote_name: &str) -> DaemonMessage {
+    match msg {
+        DaemonMessage::Connected {
+            session_id,
+            thread_id,
+            model_name,
+            context_window,
+            title,
+            total_tokens_used,
+        } => DaemonMessage::Connected {
+            session_id: format!("{remote_name}/{session_id}"),
+            thread_id: format!("{remote_name}/{thread_id}"),
+            model_name,
+            context_window,
+            title,
+            total_tokens_used,
+        },
+        DaemonMessage::StartOutput { thread_id } => DaemonMessage::StartOutput {
+            thread_id: prefix_thread_id(thread_id, remote_name),
+        },
+        DaemonMessage::TextChunk { thread_id, chunk } => DaemonMessage::TextChunk {
+            thread_id: prefix_thread_id(thread_id, remote_name),
+            chunk,
+        },
+        DaemonMessage::ToolCall {
+            name,
+            args,
+            thread_id,
+            display_as,
+        } => DaemonMessage::ToolCall {
+            name,
+            args,
+            thread_id: prefix_thread_id(thread_id, remote_name),
+            display_as,
+        },
+        DaemonMessage::ToolResult {
+            segments,
+            thread_id,
+        } => DaemonMessage::ToolResult {
+            segments,
+            thread_id: prefix_thread_id(thread_id, remote_name),
+        },
+        DaemonMessage::Info { thread_id, text } => DaemonMessage::Info {
+            thread_id: prefix_thread_id(thread_id, remote_name),
+            text,
+        },
+        DaemonMessage::ResponseDone {
+            thread_id,
+            token_usage,
+        } => DaemonMessage::ResponseDone {
+            thread_id: prefix_thread_id(thread_id, remote_name),
+            token_usage,
+        },
+        DaemonMessage::UserInputEcho { thread_id, text } => DaemonMessage::UserInputEcho {
+            thread_id: prefix_thread_id(thread_id, remote_name),
+            text,
+        },
+        DaemonMessage::SubscriptionEvent {
+            name,
+            text,
+            thread_id,
+        } => DaemonMessage::SubscriptionEvent {
+            name,
+            text,
+            thread_id: prefix_thread_id(thread_id, remote_name),
+        },
+        DaemonMessage::OAuthRequired {
+            thread_id,
+            auth_url,
+        } => DaemonMessage::OAuthRequired {
+            thread_id: prefix_thread_id(thread_id, remote_name),
+            auth_url,
+        },
+        DaemonMessage::UserChoiceRequired {
+            thread_id,
+            id,
+            prompt,
+            choices,
+            default,
+        } => DaemonMessage::UserChoiceRequired {
+            thread_id: prefix_thread_id(thread_id, remote_name),
+            id,
+            prompt,
+            choices,
+            default,
+        },
+        DaemonMessage::ThinkingStart { thread_id } => DaemonMessage::ThinkingStart {
+            thread_id: prefix_thread_id(thread_id, remote_name),
+        },
+        DaemonMessage::ThinkingEnd { thread_id } => DaemonMessage::ThinkingEnd {
+            thread_id: prefix_thread_id(thread_id, remote_name),
+        },
+        DaemonMessage::ThinkingChunk { thread_id, chunk } => DaemonMessage::ThinkingChunk {
+            thread_id: prefix_thread_id(thread_id, remote_name),
+            chunk,
+        },
+        DaemonMessage::CompactionApplied { thread_id } => DaemonMessage::CompactionApplied {
+            thread_id: prefix_thread_id(thread_id, remote_name),
+        },
+        DaemonMessage::Error { thread_id, text } => DaemonMessage::Error {
+            thread_id: prefix_thread_id(thread_id, remote_name),
+            text,
+        },
+        DaemonMessage::Replay {
+            history,
+            pending_choices,
+        } => DaemonMessage::Replay {
+            history: history
+                .into_iter()
+                .map(|m| prefix_daemon_message(m, remote_name))
+                .collect(),
+            pending_choices: pending_choices
+                .into_iter()
+                .map(|m| prefix_daemon_message(m, remote_name))
+                .collect(),
+        },
+        other => other,
+    }
+}
+
+fn strip_id(id: &str, remote_name: &str) -> String {
+    id.strip_prefix(&format!("{remote_name}/"))
+        .unwrap_or(id)
+        .to_string()
+}
+
+fn strip_client_message(msg: ClientMessage, remote_name: &str) -> ClientMessage {
+    match msg {
+        ClientMessage::UserInput { session_id, text } => ClientMessage::UserInput {
+            session_id: strip_id(&session_id, remote_name),
+            text,
+        },
+        ClientMessage::SoftDetach { session_id } => ClientMessage::SoftDetach {
+            session_id: strip_id(&session_id, remote_name),
+        },
+        ClientMessage::ShutdownSession { session_id } => ClientMessage::ShutdownSession {
+            session_id: strip_id(&session_id, remote_name),
+        },
+        ClientMessage::SwitchModel {
+            session_id,
+            model_id,
+        } => ClientMessage::SwitchModel {
+            session_id: strip_id(&session_id, remote_name),
+            model_id,
+        },
+        ClientMessage::TriggerCompaction { session_id } => ClientMessage::TriggerCompaction {
+            session_id: strip_id(&session_id, remote_name),
+        },
+        other => other,
+    }
+}
+
 /// Handle a client over a unix socket (serialized framing).
 pub async fn handle_client(stream: UnixStream, session_manager: Arc<Mutex<SessionManager>>) {
     let mut framed = Framed::new(stream, LengthDelimitedCodec::new());
@@ -58,6 +219,9 @@ pub async fn handle_client_channels(
 ) {
     let (mut client_tx, mut client_tx_rx) = mpsc::unbounded_channel::<DaemonMessage>();
     let mut attached_session_id: Option<String> = None;
+    let mut remote_proxy_tx: Option<mpsc::UnboundedSender<ClientMessage>> = None;
+    let mut remote_proxy_rx: Option<mpsc::UnboundedReceiver<DaemonMessage>> = None;
+    let mut active_remote_name: Option<String> = None;
 
     // Send Welcome immediately
     {
@@ -86,10 +250,64 @@ pub async fn handle_client_channels(
                 let Some(msg) = msg else { break };
                 if daemon_tx.send(msg).is_err() { break; }
             }
+            // Forward remote proxy messages to client (prefixed)
+            msg = async {
+                match remote_proxy_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let Some(msg) = msg else {
+                    remote_proxy_tx = None;
+                    remote_proxy_rx = None;
+                    let rn = active_remote_name.take().unwrap_or_default();
+                    let _ = daemon_tx.send(DaemonMessage::Error { thread_id: None, text: format!("Remote '{rn}' connection closed") });
+                    continue;
+                };
+                let rn = active_remote_name.as_deref().unwrap_or("");
+                if daemon_tx.send(prefix_daemon_message(msg, rn)).is_err() { break; }
+            }
             // Handle client messages
             msg = client_rx.recv() => {
                 let Some(msg) = msg else { break };
                 tracing::info!(?msg, "Received client message");
+
+                // If connected to a remote session, forward most messages there
+                if let Some(ref proxy_tx) = remote_proxy_tx {
+                    let rn = active_remote_name.as_deref().unwrap_or("");
+                    match &msg {
+                        ClientMessage::Disconnect => {
+                            // Disconnect from remote: drop proxy, also disconnect locally
+                            let _ = proxy_tx.send(ClientMessage::Disconnect);
+                            remote_proxy_tx = None;
+                            remote_proxy_rx = None;
+                            active_remote_name = None;
+                            attached_session_id = None;
+                        }
+                        ClientMessage::Connect { .. } => {
+                            // Switching sessions: tear down current remote proxy first
+                            let _ = proxy_tx.send(ClientMessage::Disconnect);
+                            remote_proxy_tx = None;
+                            remote_proxy_rx = None;
+                            active_remote_name = None;
+                            // Fall through to handle the new Connect below
+                        }
+                        ClientMessage::CreateSession { .. } => {
+                            // CreateSession is always local; tear down remote proxy
+                            let _ = proxy_tx.send(ClientMessage::Disconnect);
+                            remote_proxy_tx = None;
+                            remote_proxy_rx = None;
+                            active_remote_name = None;
+                            // Fall through to handle locally below
+                        }
+                        _ => {
+                            // Forward everything else to remote (stripped)
+                            let _ = proxy_tx.send(strip_client_message(msg, rn));
+                            continue;
+                        }
+                    }
+                }
+
                 match msg {
                     ClientMessage::CreateSession { cwd } => {
                         let mut mgr = session_manager.lock().await;
@@ -105,17 +323,47 @@ pub async fn handle_client_channels(
                         }
                     }
                     ClientMessage::Connect { session_id, thread_id } => {
-                        let mut mgr = session_manager.lock().await;
-                        let mut emit = async |msg: DaemonMessage| {
-                            let _ = daemon_tx.send(msg);
-                        };
-                        let target = thread_id.as_deref().unwrap_or(&session_id);
-                        match mgr.resume_session(&session_id, target, &mut emit).await {
-                            Ok(()) => {
-                                mgr.attach_client(target, client_tx.clone(), true).await;
-                                attached_session_id = Some(session_id);
+                        if let Some((rname, real_session_id)) = is_remote_session(&session_id) {
+                            let real_id = thread_id.as_deref().unwrap_or(real_session_id).to_string();
+                            let rname = rname.to_string();
+                            let rd = {
+                                let mgr = session_manager.lock().await;
+                                mgr.remote_daemons.clone()
+                            };
+                            if let Some(rd) = rd {
+                                match rd.connect_remote_session(&rname, &real_id).await {
+                                    Ok((tx, rx)) => {
+                                        remote_proxy_tx = Some(tx);
+                                        remote_proxy_rx = Some(rx);
+                                        active_remote_name = Some(rname);
+                                        attached_session_id = Some(session_id);
+                                    }
+                                    Err(e) => {
+                                        let _ = daemon_tx.send(DaemonMessage::Error {
+                                            thread_id: Some(session_id),
+                                            text: format!("failed to connect to remote: {e}"),
+                                        });
+                                    }
+                                }
+                            } else {
+                                let _ = daemon_tx.send(DaemonMessage::Error {
+                                    thread_id: Some(session_id),
+                                    text: "no remote daemons configured".into(),
+                                });
                             }
-                            Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error { thread_id: Some(session_id), text: format!("failed to resume session: {e}") }); }
+                        } else {
+                            let mut mgr = session_manager.lock().await;
+                            let mut emit = async |msg: DaemonMessage| {
+                                let _ = daemon_tx.send(msg);
+                            };
+                            let target = thread_id.as_deref().unwrap_or(&session_id);
+                            match mgr.resume_session(&session_id, &target, &mut emit).await {
+                                Ok(()) => {
+                                    mgr.attach_client(target, client_tx.clone(), true).await;
+                                    attached_session_id = Some(session_id);
+                                }
+                                Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error { thread_id: Some(session_id), text: format!("failed to resume session: {e}") }); }
+                            }
                         }
                     }
                     ClientMessage::UserInput { session_id: thread_id, text } => {
@@ -135,8 +383,6 @@ pub async fn handle_client_channels(
                         }
                     }
                     ClientMessage::Disconnect => {
-                        // Drop the receiver to invalidate all senders in subscriber lists.
-                        // Workers will prune them on next send via retain.
                         let (new_tx, new_rx) = mpsc::unbounded_channel::<DaemonMessage>();
                         client_tx = new_tx;
                         client_tx_rx = new_rx;
@@ -186,24 +432,21 @@ pub async fn handle_client_channels(
                     ClientMessage::UserChoiceAnswered { choice_id, selected } => {
                         if let Some(ref sid) = attached_session_id {
                             let mgr = session_manager.lock().await;
-                            let mut store = mgr.session_store.lock().await;
-                            if let Some(entry) = store.sessions.get_mut(sid)
-                                && let Some(pos) = entry.pending_choices.iter().position(|c| c.id == choice_id) {
-                                    let pending = entry.pending_choices.remove(pos);
-                                    let url = pending.response_url;
-                                    let id = pending.id;
-                                    tokio::spawn(async move {
-                                        let client = reqwest::Client::new();
-                                        let _ = client
-                                            .post(&url)
-                                            .json(&serde_json::json!({
-                                                "id": id,
-                                                "selected": selected
-                                            }))
-                                            .send()
-                                            .await;
-                                    });
-                                }
+                            if let Some(pending) = mgr.conversation_store().remove_pending_choice(sid, &choice_id) {
+                                let url = pending.response_url;
+                                let id = pending.id;
+                                tokio::spawn(async move {
+                                    let client = reqwest::Client::new();
+                                    let _ = client
+                                        .post(&url)
+                                        .json(&serde_json::json!({
+                                            "id": id,
+                                            "selected": selected
+                                        }))
+                                        .send()
+                                        .await;
+                                });
+                            }
                         }
                     }
                 }
@@ -213,10 +456,14 @@ pub async fn handle_client_channels(
 
     // Client stream ended — drop client_tx to invalidate subscriber senders,
     // then ping idle so the agent can shut down if it was already idle.
+    // Also tear down any active remote proxy.
+    drop(remote_proxy_tx);
     drop(client_tx);
     if let Some(ref sid) = attached_session_id {
-        let mgr = session_manager.lock().await;
-        mgr.send_idle_ping(sid);
+        if active_remote_name.is_none() {
+            let mgr = session_manager.lock().await;
+            mgr.send_idle_ping(sid);
+        }
     }
     tracing::trace!("Client stream ended");
 }

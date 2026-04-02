@@ -9,7 +9,6 @@ use rig::completion::CompletionModel;
 use rig::message::UserContent;
 use tokio::sync::{mpsc, oneshot};
 
-use super::SessionStoreHandle;
 use super::display::{display_event_to_daemon, history_message_to_daemon};
 use crate::memory_store::{InMemoryConversationStore, InMemoryMessageSender, InMemoryStateStore};
 use crate::rap_tools;
@@ -38,7 +37,6 @@ pub async fn thread_worker<Mdl>(
     subscribe_rx: mpsc::UnboundedReceiver<SubscribeRequest>,
     active_threads: ActiveThreads,
     subscribers: ThreadSubscribers,
-    session_store: SessionStoreHandle,
     root_session_id: String,
     model: Arc<Mdl>,
     conversation_store: InMemoryConversationStore,
@@ -71,7 +69,7 @@ pub async fn thread_worker<Mdl>(
         mpsc::unbounded_channel::<DisplayEvent<Mdl::StreamingResponse>>();
     let fwd_group_id = active_group_id.clone();
     let fwd_subscribers = subscribers.clone();
-    let fwd_session_store = session_store.clone();
+    let fwd_conversation_store = conversation_store.clone();
     let fwd_root_session_id = root_session_id.clone();
     tokio::task::spawn_local(async move {
         while let Some(evt) = display_fwd_rx.recv().await {
@@ -82,9 +80,9 @@ pub async fn thread_worker<Mdl>(
             {
                 use rig::completion::GetTokenUsage;
                 let tokens = r.token_usage().map_or(0, |u| u.total_tokens as usize);
-                let mut store = fwd_session_store.lock().await;
-                store.update(&fwd_root_session_id, tokens, None);
-                let _ = store.save();
+                fwd_conversation_store.set_total_tokens_used(&fwd_root_session_id, tokens);
+                fwd_conversation_store
+                    .set_last_updated(&fwd_root_session_id, &chrono::Utc::now().to_rfc3339());
             }
 
             // Store pending choices.
@@ -103,15 +101,14 @@ pub async fn thread_worker<Mdl>(
                     choices: choices.clone(),
                     default: *default,
                 };
-                let mut store = fwd_session_store.lock().await;
-                if let Some(entry) = store.sessions.get_mut(&fwd_root_session_id) {
-                    entry.pending_choices.push(session_store::PendingChoice {
+                fwd_conversation_store.add_pending_choice(
+                    &fwd_root_session_id,
+                    session_store::PendingChoice {
                         id: id.clone(),
                         message: dm,
                         response_url: response_url.clone(),
-                    });
-                    store.notify(&fwd_root_session_id);
-                }
+                    },
+                );
             }
 
             if let Some(dm) = display_event_to_daemon(&fwd_group_id, evt) {
@@ -178,18 +175,7 @@ pub async fn thread_worker<Mdl>(
                     })
                     .collect()
             };
-            let store = session_store.lock().await;
-            let choices: Vec<DaemonMessage> = store
-                .sessions
-                .get(&root_session_id)
-                .map(|e| {
-                    e.pending_choices
-                        .iter()
-                        .map(|c| c.message.clone())
-                        .collect()
-                })
-                .unwrap_or_default();
-            drop(store);
+            let choices = conversation_store.get_pending_choice_messages(&root_session_id);
             if !history.is_empty() || !choices.is_empty() {
                 let _ = tx.send(DaemonMessage::Replay {
                     history,
@@ -480,18 +466,12 @@ mod tests {
         let sender = InMemoryMessageSender::new(input_tx.clone());
         let subscribers: ThreadSubscribers = Arc::new(std::sync::Mutex::new(vec![client_tx]));
 
-        let (change_tx, _change_rx) = mpsc::unbounded_channel();
-        let mut store = session_store::SessionStore::load("/dev/null", change_tx);
-        store.create(group_id, std::path::PathBuf::from("/tmp"));
-        let session_store: SessionStoreHandle = Arc::new(tokio::sync::Mutex::new(store));
-
         tokio::task::spawn_local(thread_worker(
             group_id.into(),
             input_rx,
             subscribe_rx,
             active_threads.clone(),
             subscribers,
-            session_store,
             group_id.into(),
             Arc::new(model),
             conv,

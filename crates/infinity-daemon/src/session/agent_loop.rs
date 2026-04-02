@@ -6,7 +6,7 @@ use rig::completion::CompletionModel;
 use tokio::sync::mpsc;
 
 use super::thread_worker::{SubscribeRequest, thread_worker};
-use super::{AgentMessage, SessionStoreHandle, SubscriberMap};
+use super::{AgentMessage, SubscriberMap};
 use crate::memory_store::{InMemoryConversationStore, InMemoryMessageSender, InMemoryStateStore};
 use crate::rap_tools;
 use crate::session::ActiveThreads;
@@ -19,7 +19,6 @@ struct WorkerChannels {
 #[expect(clippy::too_many_arguments)]
 pub async fn agent_loop<Mdl>(
     session_id: String,
-    session_store: SessionStoreHandle,
     mut rx: mpsc::UnboundedReceiver<AgentMessage>,
     model: Arc<Mdl>,
     conversation_store: InMemoryConversationStore,
@@ -89,7 +88,6 @@ pub async fn agent_loop<Mdl>(
             subscribe_rx,
             active_threads.clone(),
             subscribers,
-            session_store.clone(),
             session_id.clone(),
             model.clone(),
             conversation_store.clone(),
@@ -187,15 +185,8 @@ mod tests {
         let subscriber_map: SubscriberMap = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let active_threads = Arc::new(std::sync::Mutex::new(HashSet::new()));
 
-        let (change_tx, _) = mpsc::unbounded_channel();
-        let tmp = tempfile::NamedTempFile::new().expect("create temp file");
-        let session_store = Arc::new(tokio::sync::Mutex::new(
-            crate::session_store::SessionStore::load(&tmp.path().to_string_lossy(), change_tx),
-        ));
-
         tokio::task::spawn_local(agent_loop(
             session_id.into(),
-            session_store,
             agent_rx,
             Arc::new(model),
             conv,

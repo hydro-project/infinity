@@ -116,24 +116,33 @@ impl SessionPicker {
             let is_current = self.current_session_id.as_deref() == Some(id.as_str());
             let current_suffix = if is_current { " (current)" } else { "" };
             let suffix_len = current_suffix.len();
+            let remote_label = info
+                .remote
+                .as_ref()
+                .map(|r| format!(" [{}]", r))
+                .unwrap_or_default();
+            let remote_len = remote_label.len();
+            let extra_len = suffix_len + remote_len;
 
             let name = if let Some(ref title) = info.title {
-                if title.len() + suffix_len > name_width {
-                    let trunc = name_width.saturating_sub(suffix_len + 1);
-                    format!("{}…{}", &title[..trunc], current_suffix)
+                if title.len() + extra_len > name_width {
+                    let trunc = name_width.saturating_sub(extra_len + 1);
+                    format!("{}…{}{}", &title[..trunc], remote_label, current_suffix)
                 } else {
-                    format!("{}{}", title, current_suffix)
+                    format!("{}{}{}", title, remote_label, current_suffix)
                 }
-            } else if id.len() + suffix_len > name_width {
-                let trunc = name_width.saturating_sub(suffix_len + 1);
-                format!("{}…{}", &id[..trunc], current_suffix)
+            } else if id.len() + extra_len > name_width {
+                let trunc = name_width.saturating_sub(extra_len + 1);
+                format!("{}…{}{}", &id[..trunc], remote_label, current_suffix)
             } else {
-                format!("{}{}", id, current_suffix)
+                format!("{}{}{}", id, remote_label, current_suffix)
             };
-            // Column range for the "(current)" suffix (1 for leading space)
+            // Column ranges for the "(current)" and "[remote]" labels (1 for leading space)
             let name_char_len = name.chars().count();
             let current_label_start = 1 + name_char_len - suffix_len;
             let current_label_end = 1 + name_char_len;
+            let remote_label_start = current_label_start - remote_len;
+            let remote_label_end = current_label_start;
 
             let status_str = match info.status {
                 SessionStatus::Running => "running",
@@ -167,6 +176,12 @@ impl SessionPicker {
                 }
                 let char_fg = if col >= status_start && col < status_end {
                     status_fg
+                } else if !is_selected
+                    && col >= remote_label_start
+                    && col < remote_label_end
+                    && info.remote.is_some()
+                {
+                    Color::Blue
                 } else if is_current
                     && !is_selected
                     && col >= current_label_start
