@@ -35,7 +35,6 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 tokio-util = { version = "0.7", features = ["codec"] }
 bytes = "1"
-bincode = "1"
 dirs = "6"
 tokio-tungstenite = "0.26"
 
