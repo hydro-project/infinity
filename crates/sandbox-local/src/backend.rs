@@ -92,7 +92,6 @@ impl LocalBackend {
         std::fs::create_dir_all(&base)?;
         tempfile::tempdir_in(&base)
     }
-
 }
 
 /// Check if a jj bookmark's commit is empty (no changes) using a synchronous command.

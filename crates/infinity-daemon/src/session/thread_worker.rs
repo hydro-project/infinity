@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::sync::Arc;
 
 use infinity_agent_core::batch_processor::DisplayEvent;
@@ -56,7 +55,7 @@ pub async fn thread_worker<Mdl>(
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
-    let held_subscribe_rx = RefCell::new(subscribe_rx);
+    let mut subscribe_rx = subscribe_rx;
     active_threads
         .lock()
         .unwrap()
@@ -122,21 +121,19 @@ pub async fn thread_worker<Mdl>(
         }
     });
 
-    let current_history = RefCell::new(
-        match event_processor::HistoryManager::new_with_history(
-            conversation_store.clone(),
-            state_store.clone(),
-            active_group_id.clone(),
-        )
-        .await
-        {
-            Ok(h) => h,
-            Err(e) => {
-                let _ = display_tx.send(DisplayEvent::Info(format!("Error: {e}")));
-                return;
-            }
-        },
-    );
+    let current_history = match event_processor::HistoryManager::new_with_history(
+        conversation_store.clone(),
+        state_store.clone(),
+        active_group_id.clone(),
+    )
+    .await
+    {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = display_tx.send(DisplayEvent::Info(format!("Error: {e}")));
+            return;
+        }
+    };
 
     let tool_names: std::collections::HashSet<String> =
         tool_impls.iter().map(|t| t.name().to_string()).collect();
@@ -155,7 +152,7 @@ pub async fn thread_worker<Mdl>(
         input_queue_arn: String::new(),
         callback_url,
         user_id: None,
-        thread_stack: current_history.borrow().get_thread_stack(),
+        thread_stack: current_history.get_thread_stack(),
     };
     let tool_registry: std::collections::HashMap<String, &dyn Tool<InMemoryMessageSender>> =
         tool_impls
@@ -172,8 +169,9 @@ pub async fn thread_worker<Mdl>(
     let handle_subscribe = async |tx: mpsc::UnboundedSender<DaemonMessage>, want_replay: bool| {
         if want_replay {
             let history: Vec<DaemonMessage> = {
-                let hist = current_history.borrow();
-                hist.history
+                current_history
+                    .history
+                    .borrow()
                     .iter()
                     .filter_map(|m| {
                         history_message_to_daemon(m, &active_group_id, &conversation_store)
@@ -264,14 +262,12 @@ pub async fn thread_worker<Mdl>(
                         continue;
                     }
                 },
-                // cannot handle subscribe here because the RefCell is borrowed across await
-                // instead we use the callback to handle them
-                // req = subscribe_rx.recv() => {
-                //     if let Some((tx, want_replay)) = req {
-                //         handle_subscribe(tx, want_replay).await;
-                //     }
-                //     continue;
-                // }
+                req = subscribe_rx.recv() => {
+                    if let Some((tx, want_replay)) = req {
+                        handle_subscribe(tx, want_replay).await;
+                    }
+                    continue;
+                }
             }
         } else {
             let mut batch = vec![];
@@ -282,9 +278,7 @@ pub async fn thread_worker<Mdl>(
                     Some(first_res)
                 } else {
                     let last_is_tool_call = {
-                        let hist = current_history.borrow();
-
-                        hist.history.last().is_some_and(|msg| matches!(
+                        current_history.history.borrow().last().is_some_and(|msg| matches!(
                             msg,
                             rig::message::Message::Assistant { content, .. }
                                 if matches!(content.first(), rig::message::AssistantContent::ToolCall(c) if c.function.name != "close_thread")
@@ -296,7 +290,7 @@ pub async fn thread_worker<Mdl>(
                         .map(|s| !s.is_empty())
                         .unwrap_or(false);
 
-                    while let Ok((tx, want_replay)) = held_subscribe_rx.borrow_mut().try_recv() {
+                    while let Ok((tx, want_replay)) = subscribe_rx.try_recv() {
                         // handle replays before idling
                         handle_subscribe(tx, want_replay).await;
                     }
@@ -310,7 +304,6 @@ pub async fn thread_worker<Mdl>(
                 };
 
                 if first.is_none() {
-                    let mut subscribe_rx = held_subscribe_rx.borrow_mut();
                     loop {
                         tokio::select! {
                             msg = rx.recv() => {
@@ -364,15 +357,9 @@ pub async fn thread_worker<Mdl>(
         let params = additional_request_params.read().unwrap().clone();
         let mid = active_model_id.read().unwrap().clone();
 
-        let held_subscribe_rx_ref = &held_subscribe_rx;
         let result = infinity_agent_core::batch_processor::process_batch(
             all_inputs.into_iter(),
             &current_history,
-            async move |_h| {
-                if let Ok((tx, want_replay)) = held_subscribe_rx_ref.borrow_mut().try_recv() {
-                    handle_subscribe(tx, want_replay).await;
-                }
-            },
             &conversation_store,
             &display_tx,
             &active_group_id,
