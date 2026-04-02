@@ -168,7 +168,7 @@ impl SessionManager {
             store.create(&session_id, cwd.to_path_buf());
             let _ = store.save();
         }
-        emit(self.build_connected(&session_id).await).await;
+        emit(self.build_connected(&session_id, &session_id).await).await;
         self.start_session(session_id.clone(), cwd, emit).await?;
         Ok(session_id)
     }
@@ -177,9 +177,10 @@ impl SessionManager {
     pub async fn resume_session(
         &mut self,
         session_id: &str,
+        thread_id: &str,
         emit: &mut impl AsyncFnMut(DaemonMessage),
     ) -> Result<(), BoxError> {
-        emit(self.build_connected(session_id).await).await;
+        emit(self.build_connected(session_id, thread_id).await).await;
 
         // Check if session is alive (in map with running task).
         let is_alive = self
@@ -197,11 +198,12 @@ impl SessionManager {
         self.start_session(session_id.to_string(), &cwd, emit).await
     }
 
-    async fn build_connected(&self, session_id: &str) -> DaemonMessage {
+    async fn build_connected(&self, session_id: &str, thread_id: &str) -> DaemonMessage {
         let store = self.session_store.lock().await;
         let entry = store.sessions.get(session_id);
         DaemonMessage::Connected {
             session_id: session_id.to_string(),
+            thread_id: thread_id.to_string(),
             model_name: self.default_model_name.clone(),
             context_window: self.default_context_window,
             title: entry.and_then(|e| e.title.clone()),
@@ -447,13 +449,13 @@ impl SessionManager {
     /// clears the shut_down flag and starts a new agent loop first.
     pub async fn send_input(
         &mut self,
-        session_id: &str,
+        thread_id: &str,
         msg: (InputMessage, Option<String>),
         client_tx: Option<mpsc::UnboundedSender<DaemonMessage>>,
         emit: &mut impl AsyncFnMut(DaemonMessage),
     ) -> bool {
         // Resolve thread ID to root session ID in case a child thread ID was provided.
-        let session_id = self.conversation_store.get_root_thread_id(session_id);
+        let session_id = self.conversation_store.get_root_thread_id(thread_id);
         let session_id = session_id.as_str();
 
         // If session task finished (idle-cleaned) or was never started, check if we need to restart.

@@ -48,6 +48,7 @@ export function App() {
   const threadStackRef = useRef<string[]>([]);
 
   const sessionRef = useRef<string | null>(null);
+  const threadRef = useRef<string | null>(null);
   const pendingInputRef = useRef<string[]>([]);
   const sendRef = useRef<(msg: ClientMessage) => void>(() => {});
   // Track whether we're currently accumulating assistant text
@@ -56,7 +57,7 @@ export function App() {
   /** Check if a message's thread_id matches the thread we're currently viewing. */
   const isForCurrentView = useCallback(
     (msgThreadId: string | null) => {
-      const viewing = viewThreadId ?? sessionRef.current;
+      const viewing = viewThreadId ?? threadRef.current;
       // null thread_id = root, session_id = root
       return msgThreadId === null || msgThreadId === viewing;
     },
@@ -128,19 +129,21 @@ export function App() {
           case "Connected": {
             const p = msgPayload<{
               session_id: string;
+              thread_id: string;
               model_name: string;
               context_window: number;
               title: string | null;
               total_tokens_used: number;
             }>(m);
             sessionRef.current = p.session_id;
+            threadRef.current = p.thread_id;
             setModelName(p.model_name);
             setContextWindow(p.context_window);
             setTotalTokens(p.total_tokens_used);
             // Flush pending inputs
             for (const text of pendingInputRef.current) {
               sendRef.current({
-                UserInput: { session_id: p.session_id, text },
+                UserInput: { session_id: p.thread_id, text },
               });
             }
             pendingInputRef.current = [];
@@ -393,8 +396,8 @@ export function App() {
 
   const handleSend = useCallback(
     (text: string) => {
-      if (sessionRef.current) {
-        send({ UserInput: { session_id: sessionRef.current, text } });
+      if (threadRef.current) {
+        send({ UserInput: { session_id: threadRef.current, text } });
       } else {
         pendingInputRef.current.push(text);
         setCwdPickerOpen(true);
@@ -406,7 +409,7 @@ export function App() {
   const navigateTo = useCallback(
     (sessionId: string, threadId: string | null) => {
       const switchingSession =
-        sessionRef.current !== null && sessionRef.current !== sessionId;
+        threadRef.current !== null && threadRef.current !== sessionId;
 
       // Disconnect from current view
       if (sessionRef.current) {
@@ -436,6 +439,7 @@ export function App() {
 
       if (switchingSession) {
         sessionRef.current = null;
+        threadRef.current = null;
       }
       send({ Connect: { session_id: sessionId, thread_id: threadId } });
     },
@@ -447,6 +451,7 @@ export function App() {
       send("Disconnect");
     }
     sessionRef.current = null;
+    threadRef.current = null;
     setViewThreadId(null);
     threadStackRef.current = [];
     setMessages([]);

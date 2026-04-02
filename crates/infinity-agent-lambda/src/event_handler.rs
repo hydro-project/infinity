@@ -190,15 +190,13 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     ));
 
     // Create history once for the batch
-    let current_history = std::cell::RefCell::new(
-        event_processor::HistoryManager::new_with_history(
-            conversation_store.clone(),
-            state_store.clone(),
-            group_id.clone(),
-        )
-        .await
-        .map_err(|e| Error::from(format!("{}", e)))?,
-    );
+    let current_history = event_processor::HistoryManager::new_with_history(
+        conversation_store.clone(),
+        state_store.clone(),
+        group_id.clone(),
+    )
+    .await
+    .map_err(|e| Error::from(format!("{}", e)))?;
 
     let tool_names: std::collections::HashSet<String> =
         tool_impls.iter().map(|t| t.name().to_string()).collect();
@@ -212,7 +210,6 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         .collect();
 
     let user_id = current_history
-        .borrow()
         .get_metadata()
         .and_then(|m| m.get("user_id").and_then(|v| v.as_str()).map(String::from));
 
@@ -222,7 +219,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         input_queue_arn: input_queue_arn.clone(),
         callback_url: callback_url.clone(),
         user_id,
-        thread_stack: current_history.borrow().get_thread_stack(),
+        thread_stack: current_history.get_thread_stack(),
     };
 
     let tool_registry: std::collections::HashMap<String, &dyn Tool<SqsMessageSender>> = tool_impls
@@ -237,7 +234,6 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         let batch_result = batch_processor::process_batch(
             inputs.into_iter(),
             &current_history,
-            async |_| {},
             &conversation_store,
             &display_tx,
             &group_id,
@@ -288,7 +284,6 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     // Send OAuth output if needed
     if let Some(auth_url) = oauth_auth_url {
         let metadata = current_history
-            .borrow()
             .get_metadata()
             .unwrap_or(serde_json::json!({}));
         let oauth_msg = event_processor::OAuthOutputMessage {
@@ -305,11 +300,10 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     // Send accumulated text to output queue
     if !accumulated_text.is_empty() {
         let metadata = current_history
-            .borrow()
             .get_metadata()
             .unwrap_or(serde_json::json!({}));
-        let thread_id = current_history.borrow().thread_id.clone();
-        let root_id = current_history.borrow().root_thread_id.clone();
+        let thread_id = current_history.thread_id.clone();
+        let root_id = current_history.root_thread_id.clone();
         let output_text = if thread_id != root_id {
             format!("[{}] {}", thread_id, accumulated_text)
         } else {
