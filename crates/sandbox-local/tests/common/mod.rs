@@ -17,7 +17,10 @@ pub async fn start_test_server(metadata_dir: &Path) -> String {
     std::fs::create_dir_all(metadata_dir).unwrap();
 
     unsafe {
-        std::env::set_var("XDG_CONFIG_HOME", std::env::temp_dir().join("xdg-config-home"));
+        std::env::set_var(
+            "XDG_CONFIG_HOME",
+            std::env::temp_dir().join("xdg-config-home"),
+        );
     }
 
     let backend = LocalBackend::new(false);
@@ -43,7 +46,10 @@ pub async fn invoke(
     let invocation = RapInvocation {
         operation: operation.to_string(),
         arguments,
-        id: format!("call-{operation}-{}", CALL_COUNTER.fetch_add(1, Ordering::Relaxed)),
+        id: format!(
+            "call-{operation}-{}",
+            CALL_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ),
         call_id: None,
         callback_url: callback_url.to_string(),
         group_id: group_id.to_string(),

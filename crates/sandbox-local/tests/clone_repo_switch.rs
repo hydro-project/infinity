@@ -11,26 +11,32 @@ use rap_client::callback_server::start_callback_channel;
 fn jj_init_with_file(filename: &str, content: &str) -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path();
-    assert!(std::process::Command::new("git")
-        .args(["-c", "init.defaultBranch=main", "init"])
-        .current_dir(path)
-        .status()
-        .unwrap()
-        .success());
-    assert!(std::process::Command::new("jj")
-        .args(["git", "init", "--colocate"])
-        .current_dir(path)
-        .status()
-        .unwrap()
-        .success());
+    assert!(
+        std::process::Command::new("git")
+            .args(["-c", "init.defaultBranch=main", "init"])
+            .current_dir(path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::process::Command::new("jj")
+            .args(["git", "init", "--colocate"])
+            .current_dir(path)
+            .status()
+            .unwrap()
+            .success()
+    );
     std::fs::write(path.join(filename), content).unwrap();
     // Commit the file so it appears in the base revision
-    assert!(std::process::Command::new("jj")
-        .args(["commit", "-m", "add marker file"])
-        .current_dir(path)
-        .status()
-        .unwrap()
-        .success());
+    assert!(
+        std::process::Command::new("jj")
+            .args(["commit", "-m", "add marker file"])
+            .current_dir(path)
+            .status()
+            .unwrap()
+            .success()
+    );
     tmp
 }
 
@@ -121,5 +127,8 @@ async fn clone_repo_allows_upgrade_from_direct() {
         &mut rx,
     )
     .await;
-    assert!(text.contains("hello"), "should read file from sandbox, got: {text}");
+    assert!(
+        text.contains("hello"),
+        "should read file from sandbox, got: {text}"
+    );
 }
