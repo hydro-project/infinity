@@ -235,7 +235,8 @@ async fn invoke_handler<
             subscription: None,
         });
 
-        let body = serde_json::to_string(&tool_result).unwrap();
+        let body =
+            serde_json::to_string(&tool_result).expect("bug: failed to serialize tool result");
         if let Err(e) = state_clone
             .callback_client
             .post_json(&invocation.callback_url, &body)
@@ -430,14 +431,14 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
     // Reject re-initialization unless upgrading from Direct mode.
-    if let Some(existing) = state.metadata.get(&invocation.group_id).await? {
-        if !matches!(existing.mode, SandboxMode::Direct) {
-            return Err(SandboxError::Other(
-                "A repository has already been initialized for this thread. \
-                 Re-initializing with a different repository is not supported."
-                    .to_string(),
-            ));
-        }
+    if let Some(existing) = state.metadata.get(&invocation.group_id).await?
+        && !matches!(existing.mode, SandboxMode::Direct)
+    {
+        return Err(SandboxError::Other(
+            "A repository has already been initialized for this thread. \
+             Re-initializing with a different repository is not supported."
+                .to_string(),
+        ));
     }
 
     let remote_uri = state
@@ -596,7 +597,7 @@ where
 
     let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;
 
-    let description_with_trailer = jj_description.map(|desc| append_co_author_trailer(desc));
+    let description_with_trailer = jj_description.map(append_co_author_trailer);
     let description_ref = description_with_trailer.as_deref();
 
     if let Some(description) = description_ref
@@ -645,14 +646,14 @@ fn detect_cd_to_original_repo(command: &str, remote_uri: &str) -> Option<String>
     let after_cd = trimmed[3..].trim_start();
 
     // Strip optional quotes around the path.
-    let (path_str, _rest) = if after_cd.starts_with('"') {
-        match after_cd[1..].find('"') {
-            Some(end) => (&after_cd[1..1 + end], &after_cd[2 + end..]),
+    let (path_str, _rest) = if let Some(stripped) = after_cd.strip_prefix('"') {
+        match stripped.find('"') {
+            Some(end) => (&stripped[..end], &after_cd[2 + end..]),
             None => return None,
         }
-    } else if after_cd.starts_with('\'') {
-        match after_cd[1..].find('\'') {
-            Some(end) => (&after_cd[1..1 + end], &after_cd[2 + end..]),
+    } else if let Some(stripped) = after_cd.strip_prefix('\'') {
+        match stripped.find('\'') {
+            Some(end) => (&stripped[..end], &after_cd[2 + end..]),
             None => return None,
         }
     } else {
@@ -1459,7 +1460,11 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
             if let Some(ref pattern) = args.exclude_pattern {
                 exclude_glob = Some(format!("!{pattern}"));
                 cmd_parts.push("--glob");
-                cmd_parts.push(exclude_glob.as_ref().unwrap());
+                cmd_parts.push(
+                    exclude_glob
+                        .as_ref()
+                        .expect("bug: exclude_glob was just set"),
+                );
             }
 
             cmd_parts.push("--");

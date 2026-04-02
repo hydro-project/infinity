@@ -117,7 +117,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     let mut inputs: Vec<(InputMessage, String)> = Vec::new();
     for record in payload.records {
         let message_id = record.message_id.unwrap_or_default();
-        let body = record.body.unwrap();
+        let body = record.body.expect("SQS record missing body");
         let input_msg: InputMessage = serde_json::from_str(&body)?;
         inputs.push((input_msg, message_id));
     }

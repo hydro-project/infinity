@@ -74,7 +74,7 @@ async fn run_cargo_install(
     let (line_tx, mut line_rx) = mpsc::unbounded_channel::<String>();
 
     std::thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().flatten() {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
             let _ = line_tx.send(line);
         }
     });
@@ -178,7 +178,7 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
         args.git.clone(),
         args.path.clone().map(|p| {
             std::fs::canonicalize(p)
-                .unwrap()
+                .expect("failed to canonicalize install path")
                 .to_string_lossy()
                 .to_string()
         }),

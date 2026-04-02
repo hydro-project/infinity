@@ -272,7 +272,7 @@ impl InlineViewport {
             queue!(stdout, cursor::RestorePosition)?;
 
             stdout.flush()?;
-            let cursor_position_here = cursor::position().unwrap();
+            let cursor_position_here = cursor::position().expect("failed to get cursor position");
             self.viewport_y = cursor_position_here.1 + 1;
 
             queue!(stdout, Clear(cterm::ClearType::FromCursorDown))?;

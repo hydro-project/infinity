@@ -68,9 +68,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let args = Args::parse();
 
-    let metadata_dir = args
-        .metadata_dir
-        .unwrap_or_else(|| std::env::current_dir().unwrap().join("sandbox"));
+    let metadata_dir = args.metadata_dir.unwrap_or_else(|| {
+        std::env::current_dir()
+            .expect("failed to get current directory")
+            .join("sandbox")
+    });
 
     // When RAP_EMBEDDED is set, log to the metadata dir; otherwise use CWD.
     let embedded = std::env::var("RAP_EMBEDDED").is_ok();

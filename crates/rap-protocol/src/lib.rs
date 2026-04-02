@@ -204,7 +204,7 @@ pub async fn send_tool_result<C: CallbackClient>(
         display_as,
         subscription: if subscription { Some(true) } else { None },
     });
-    let body = serde_json::to_string(&result).unwrap();
+    let body = serde_json::to_string(&result).expect("bug: failed to serialize tool result");
     if let Err(e) = client.post_json(&invocation.callback_url, &body).await {
         tracing::error!("failed to send tool result: {e}");
     }
@@ -228,7 +228,7 @@ pub async fn send_user_choice<C: CallbackClient>(
         default,
         response_url: response_url.to_string(),
     });
-    let body = serde_json::to_string(&msg).unwrap();
+    let body = serde_json::to_string(&msg).expect("bug: failed to serialize user_choice");
     if let Err(e) = client.post_json(&invocation.callback_url, &body).await {
         tracing::error!("failed to send user_choice: {e}");
     }
@@ -251,7 +251,7 @@ pub async fn send_subscription_event<C: CallbackClient>(
         associative,
         r#final: if r#final { Some(true) } else { None },
     });
-    let body = serde_json::to_string(&event).unwrap();
+    let body = serde_json::to_string(&event).expect("bug: failed to serialize subscription event");
     if let Err(e) = client.post_json(callback_url, &body).await {
         tracing::error!("failed to send subscription event: {e}");
     }

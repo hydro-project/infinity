@@ -592,7 +592,7 @@ mod tests {
         };
         let hm = HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
             .await
-            .unwrap();
+            .expect("create history manager");
 
         let (m, _) = mock_model();
         let (dtx, _) = mpsc::unbounded_channel();
@@ -625,7 +625,7 @@ mod tests {
         let s = StubConvo::new();
         let hm = HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
             .await
-            .unwrap();
+            .expect("create history manager");
 
         let (m, _) = mock_model();
         let (dtx, mut drx) = mpsc::unbounded_channel();
@@ -675,7 +675,7 @@ mod tests {
         let s = StubConvo::new();
         let hm = HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
             .await
-            .unwrap();
+            .expect("create history manager");
 
         let (m, _) = mock_model();
         let (dtx, mut drx) = mpsc::unbounded_channel();
@@ -728,7 +728,7 @@ mod tests {
         let s = StubConvo::new();
         let hm = HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
             .await
-            .unwrap();
+            .expect("create history manager");
 
         let (m, _) = mock_model();
         let (dtx, mut drx) = mpsc::unbounded_channel();
@@ -763,7 +763,7 @@ mod tests {
         let s = StubConvo::new();
         let hm = HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
             .await
-            .unwrap();
+            .expect("create history manager");
 
         *hm.history.borrow_mut() = vec![
             Message::User {
@@ -838,7 +838,7 @@ mod tests {
         let s = StubConvo::new();
         let hm = HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
             .await
-            .unwrap();
+            .expect("create history manager");
 
         let (m, _) = mock_model();
         let (dtx, _) = mpsc::unbounded_channel();
@@ -914,7 +914,7 @@ mod tests {
         let s = StubConvo::new();
         let hm = HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
             .await
-            .unwrap();
+            .expect("create history manager");
 
         let (m, _) = mock_model();
         let (dtx, mut drx) = mpsc::unbounded_channel();

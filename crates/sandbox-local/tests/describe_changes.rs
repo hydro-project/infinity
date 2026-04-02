@@ -15,27 +15,27 @@ use std::path::Path;
 fn redact_jj_log(text: &str) -> String {
     use regex::Regex;
     let text = Regex::new(r"Commit ID: [0-9a-f]+")
-        .unwrap()
+        .expect("compile commit id regex")
         .replace_all(text, "Commit ID: [COMMIT_ID]");
     let text = Regex::new(r"Change ID: [a-z]+")
-        .unwrap()
+        .expect("compile change id regex")
         .replace_all(&text, "Change ID: [CHANGE_ID]");
     Regex::new(r"\(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\)")
-        .unwrap()
+        .expect("compile timestamp regex")
         .replace_all(&text, "([TIMESTAMP])")
         .to_string()
 }
 
 /// Create a colocated jj+git repo in a new temp directory, returning the `TempDir` handle.
 fn jj_init() -> tempfile::TempDir {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir().expect("create temp dir");
     let path = tmp.path();
     assert!(
         std::process::Command::new("git")
             .args(["-c", "init.defaultBranch=main", "init"])
             .current_dir(path)
             .status()
-            .unwrap()
+            .expect("run git init")
             .success()
     );
     let mut cmd = std::process::Command::new("jj");
@@ -43,7 +43,7 @@ fn jj_init() -> tempfile::TempDir {
         cmd.args(["git", "init", "--colocate"])
             .current_dir(path)
             .status()
-            .unwrap()
+            .expect("run jj git init")
             .success()
     );
     tmp
@@ -59,10 +59,12 @@ fn jj_cmd(repo: &Path) -> std::process::Command {
 /// Clone repo, describe changes, return the redacted jj log of the sandbox bookmark.
 async fn describe_and_read_log(repo: &Path) -> String {
     let server_url = start_test_server(&repo.join(".test-metadata")).await;
-    let (callback_url, mut rx) = start_callback_channel().await.unwrap();
+    let (callback_url, mut rx) = start_callback_channel()
+        .await
+        .expect("start callback channel");
 
     let group_id = "test-thread";
-    let repo_str = repo.to_str().unwrap();
+    let repo_str = repo.to_str().expect("repo path to str");
 
     let text = invoke(
         &server_url,
@@ -90,14 +92,14 @@ async fn describe_and_read_log(repo: &Path) -> String {
             "builtin_log_detailed",
         ])
         .output()
-        .unwrap();
+        .expect("run jj log");
     assert!(
         output.status.success(),
         "jj log failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
-    redact_jj_log(&String::from_utf8(output.stdout).unwrap())
+    redact_jj_log(&String::from_utf8(output.stdout).expect("jj log output as utf8"))
 }
 
 #[tokio::test]
@@ -107,12 +109,12 @@ async fn jj_describe_with_repo_user() {
     let tmp = jj_init();
     let repo = tmp.path();
 
-    std::fs::write(repo.join("README.md"), "hello\n").unwrap();
+    std::fs::write(repo.join("README.md"), "hello\n").expect("write README.md");
     std::fs::write(
         repo.join(".jj/repo/config.toml"),
         "user.name = \"Test User\"\nuser.email = \"test@example.com\"\n",
     )
-    .unwrap();
+    .expect("write jj config.toml");
 
     insta::assert_snapshot!(describe_and_read_log(repo).await);
 }
@@ -124,7 +126,7 @@ async fn jj_describe_without_user() {
     let tmp = jj_init();
     let repo = tmp.path();
 
-    std::fs::write(repo.join("README.md"), "hello\n").unwrap();
+    std::fs::write(repo.join("README.md"), "hello\n").expect("write README.md");
 
     insta::assert_snapshot!(describe_and_read_log(repo).await);
 }
@@ -136,7 +138,7 @@ async fn jj_describe_without_user() {
 /// The global config provides the default sandbox identity for sandbox operations,
 /// but no repo-level user is configured.
 fn git_init() -> tempfile::TempDir {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir().expect("create temp dir");
     let path = tmp.path();
 
     let git = |args: &[&str]| {
@@ -148,13 +150,13 @@ fn git_init() -> tempfile::TempDir {
                 .args(args)
                 .current_dir(path)
                 .status()
-                .unwrap()
+                .expect("run git command")
                 .success()
         );
     };
 
     git(&["init"]);
-    std::fs::write(path.join("README.md"), "hello\n").unwrap();
+    std::fs::write(path.join("README.md"), "hello\n").expect("write README.md");
     git(&["add", "-A"]);
     git(&["commit", "-m", "initial"]);
     tmp
@@ -163,10 +165,10 @@ fn git_init() -> tempfile::TempDir {
 fn redact_git_log(text: &str) -> String {
     use regex::Regex;
     let text = Regex::new(r"(?m)^commit [0-9a-f]+")
-        .unwrap()
+        .expect("compile commit id regex")
         .replace_all(text, "commit [COMMIT_ID]");
     Regex::new(r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) \w+ \d+ \d{2}:\d{2}:\d{2} \d{4} [+-]\d{4}")
-        .unwrap()
+        .expect("compile timestamp regex")
         .replace_all(&text, "[TIMESTAMP]")
         .to_string()
 }
@@ -180,10 +182,12 @@ async fn git_describe_and_read_log(repo: &Path) -> String {
     }
 
     let server_url = start_test_server(&repo.join(".test-metadata")).await;
-    let (callback_url, mut rx) = start_callback_channel().await.unwrap();
+    let (callback_url, mut rx) = start_callback_channel()
+        .await
+        .expect("start callback channel");
 
     let group_id = "test-thread";
-    let repo_str = repo.to_str().unwrap();
+    let repo_str = repo.to_str().expect("repo path to str");
 
     let text = invoke(
         &server_url,
@@ -205,14 +209,14 @@ async fn git_describe_and_read_log(repo: &Path) -> String {
         .args(["log", "-1", "sandbox-test-thread", "--pretty=fuller"])
         .current_dir(repo)
         .output()
-        .unwrap();
+        .expect("run git log");
     assert!(
         output.status.success(),
         "git log failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
-    redact_git_log(&String::from_utf8(output.stdout).unwrap())
+    redact_git_log(&String::from_utf8(output.stdout).expect("git log output as utf8"))
 }
 
 #[tokio::test]
@@ -227,7 +231,7 @@ async fn git_describe_with_repo_user() {
             .args(["config", "user.name", "Test User"])
             .current_dir(repo)
             .status()
-            .unwrap()
+            .expect("set git user.name")
             .success()
     );
     assert!(
@@ -235,7 +239,7 @@ async fn git_describe_with_repo_user() {
             .args(["config", "user.email", "test@example.com"])
             .current_dir(repo)
             .status()
-            .unwrap()
+            .expect("set git user.email")
             .success()
     );
 

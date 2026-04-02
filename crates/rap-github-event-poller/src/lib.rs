@@ -86,10 +86,25 @@ pub struct Poller<C: CallbackClient> {
 impl<C: CallbackClient> Poller<C> {
     pub fn new(callback_client: C, github_token: Option<String>) -> Self {
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert("Accept", "application/vnd.github+json".parse().unwrap());
-        headers.insert("X-GitHub-Api-Version", "2022-11-28".parse().unwrap());
+        headers.insert(
+            "Accept",
+            "application/vnd.github+json"
+                .parse()
+                .expect("bug: invalid Accept header"),
+        );
+        headers.insert(
+            "X-GitHub-Api-Version",
+            "2022-11-28"
+                .parse()
+                .expect("bug: invalid API version header"),
+        );
         if let Some(ref token) = github_token {
-            headers.insert("Authorization", format!("Bearer {token}").parse().unwrap());
+            headers.insert(
+                "Authorization",
+                format!("Bearer {token}")
+                    .parse()
+                    .expect("bug: invalid Authorization header"),
+            );
         }
 
         let http = reqwest::Client::builder()

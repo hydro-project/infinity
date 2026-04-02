@@ -130,13 +130,18 @@ impl ToolsetCache for InMemoryToolsetCache {
     type Error = CacheError;
 
     async fn get_cached(&self, key: &str) -> Result<Option<String>, CacheError> {
-        Ok(self.store.lock().unwrap().get(key).cloned())
+        Ok(self
+            .store
+            .lock()
+            .expect("bug: cache mutex poisoned")
+            .get(key)
+            .cloned())
     }
 
     async fn put_cache(&self, key: &str, json: &str) -> Result<(), CacheError> {
         self.store
             .lock()
-            .unwrap()
+            .expect("bug: cache mutex poisoned")
             .insert(key.to_string(), json.to_string());
         Ok(())
     }
