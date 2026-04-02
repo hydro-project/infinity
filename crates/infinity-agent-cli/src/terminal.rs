@@ -733,6 +733,7 @@ where
                                             }
                                             Some("/load") => {
                                                 let mut all_sessions: Vec<(String, infinity_protocol::SessionInfo)> = sessions.iter()
+                                                    .filter(|(_, info)| info.status != infinity_protocol::SessionStatus::Archived)
                                                     .map(|(id, info)| (id.clone(), info.clone()))
                                                     .collect();
                                                 all_sessions.sort_by(|a, b| b.1.last_updated.cmp(&a.1.last_updated));

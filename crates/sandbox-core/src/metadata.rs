@@ -9,4 +9,7 @@ use crate::types::RepoState;
 pub trait MetadataStore: Send + Sync {
     async fn get(&self, group_id: &str) -> Result<Option<RepoState>, SandboxError>;
     async fn put(&self, state: &RepoState) -> Result<(), SandboxError>;
+    async fn list_all(&self) -> Result<Vec<RepoState>, SandboxError> {
+        Ok(Vec::new())
+    }
 }

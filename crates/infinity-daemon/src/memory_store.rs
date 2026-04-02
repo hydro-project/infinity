@@ -48,7 +48,7 @@ pub struct InMemoryConversationStore {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct ThreadInfo {
+pub(crate) struct ThreadInfo {
     parent_thread_id: Option<String>,
     root_thread_id: String,
     spawn_message_order: Option<i64>,
@@ -75,12 +75,18 @@ struct CompactionSummary {
 
 /// Per-thread snapshot written to `{dir}/{thread_id}.json`.
 #[derive(Serialize, Deserialize)]
-struct ThreadSnapshot {
+pub(crate) struct ThreadSnapshot {
     messages: Vec<(Message, String)>,
     #[serde(default, deserialize_with = "deserialize_display_as_map")]
     display_as: HashMap<String, Vec<rap_protocol::DisplaySegment>>,
     #[serde(default)]
     compaction_summaries: Vec<CompactionSummary>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct SerializedThread {
+    pub metadata: ThreadInfo,
+    pub snapshot: ThreadSnapshot,
 }
 
 /// Deserialize display_as map, handling both the old `String` format and the
@@ -511,6 +517,73 @@ impl InMemoryConversationStore {
             .lock()
             .expect("bug: mutex poisoned")
             .remove(root_thread_id);
+    }
+
+    /// Serialize all threads in a session tree to a JSON string.
+    pub fn serialize_session(&self, root_thread_id: &str) -> String {
+        let mut threads: HashMap<String, SerializedThread> = HashMap::new();
+        let mut queue = vec![root_thread_id.to_string()];
+        while let Some(tid) = queue.pop() {
+            self.ensure_thread_loaded(&tid);
+            let metadata = {
+                self.threads
+                    .lock()
+                    .expect("bug: mutex poisoned")
+                    .get(&tid)
+                    .cloned()
+            };
+            let Some(metadata) = metadata else { continue };
+            queue.extend(metadata.children.clone());
+            let snapshot = {
+                let msgs = self.messages.lock().expect("bug: mutex poisoned");
+                let da = self.display_as_map.lock().expect("bug: mutex poisoned");
+                let cs = self
+                    .compaction_summaries
+                    .lock()
+                    .expect("bug: mutex poisoned");
+                ThreadSnapshot {
+                    messages: msgs.get(&tid).cloned().unwrap_or_default(),
+                    display_as: da.get(&tid).cloned().unwrap_or_default(),
+                    compaction_summaries: cs.get(&tid).cloned().unwrap_or_default(),
+                }
+            };
+            threads.insert(tid, SerializedThread { metadata, snapshot });
+        }
+        serde_json::to_string(&threads).expect("bug: serde serialization failed")
+    }
+
+    /// Import a serialized session into the store.
+    pub fn import_session(&self, data: &str) -> Result<(), MemoryError> {
+        let threads: HashMap<String, SerializedThread> = serde_json::from_str(data)
+            .map_err(|e| MemoryError(format!("failed to deserialize session: {e}")))?;
+        for (tid, st) in threads {
+            self.threads
+                .lock()
+                .expect("bug: mutex poisoned")
+                .insert(tid.clone(), st.metadata);
+            self.messages
+                .lock()
+                .expect("bug: mutex poisoned")
+                .insert(tid.clone(), st.snapshot.messages);
+            self.display_as_map
+                .lock()
+                .expect("bug: mutex poisoned")
+                .insert(tid.clone(), st.snapshot.display_as);
+            self.compaction_summaries
+                .lock()
+                .expect("bug: mutex poisoned")
+                .insert(tid.clone(), st.snapshot.compaction_summaries);
+            self.loaded
+                .lock()
+                .expect("bug: mutex poisoned")
+                .insert(tid.clone());
+            self.metadata_loaded
+                .lock()
+                .expect("bug: mutex poisoned")
+                .insert(tid.clone());
+            self.save_thread(&tid);
+        }
+        Ok(())
     }
 }
 

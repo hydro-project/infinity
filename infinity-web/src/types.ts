@@ -1,6 +1,6 @@
 /* ── Protocol types matching crates/infinity-protocol/src/lib.rs ── */
 
-export type SessionStatus = "Running" | "Idle" | "Stopped" | "WaitingForChoice";
+export type SessionStatus = "Running" | "Idle" | "Stopped" | "WaitingForChoice" | "Migrating" | "Archived";
 
 export interface SubthreadInfo {
   thread_id: string;
@@ -21,6 +21,11 @@ export interface ModelInfo {
   display_name: string;
   model_id: string;
   context_window: number;
+}
+
+export interface RemoteInfo {
+  name: string;
+  status: string;
 }
 
 export interface TokenUsage {
@@ -44,6 +49,7 @@ export type DaemonMessage =
         default_model_name: string;
         default_context_window: number;
         provider_name: string;
+        remotes: RemoteInfo[];
       };
     }
   | {
@@ -103,8 +109,13 @@ export type DaemonMessage =
   | { Error: { thread_id: string | null; text: string } }
   | { Replay: { history: DaemonMessage[]; pending_choices: DaemonMessage[] } }
   | { SessionsUpdated: { sessions: Record<string, SessionInfo> } }
+  | { RemotesUpdated: { remotes: RemoteInfo[] } }
   | "DisconnectNotIdle"
-  | "DetachedIdle";
+  | "DetachedIdle"
+  | { EmigrateResult: { session_id: string; session_data: string } }
+  | { MigrateStarted: { session_id: string } }
+  | { MigrateComplete: { session_id: string; to: string } }
+  | { MigrateError: { session_id: string; error: string } };
 
 /* ── Client → Daemon messages ── */
 
@@ -118,7 +129,10 @@ export type ClientMessage =
   | { LoadSession: { target_session_id: string } }
   | { SwitchModel: { session_id: string; model_id: string } }
   | { UserChoiceAnswered: { choice_id: string; selected: number } }
-  | { TriggerCompaction: { session_id: string } };
+  | { TriggerCompaction: { session_id: string } }
+  | { RequestMigrate: { session_id: string; to: string; dest_cwd: string } }
+  | { Emigrate: { session_id: string; dest_rap_urls: Record<string, string> } }
+  | { EmigrateDone: { session_id: string } };
 
 /* ── Spinner states (matching terminal) ── */
 

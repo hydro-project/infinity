@@ -4,12 +4,14 @@ import { msgTag, msgPayload } from "./protocol";
 import { MessageList } from "./components/MessageList";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { CwdPicker } from "./components/CwdPicker";
+import { MigratePicker } from "./components/MigratePicker";
 import type {
   ClientMessage,
   DaemonMessage,
   DisplaySegment,
   SessionInfo,
   ModelInfo,
+  RemoteInfo,
   SpinnerState,
   MessageItem,
   TokenUsage,
@@ -39,6 +41,8 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const [cwdPickerOpen, setCwdPickerOpen] = useState(false);
+  const [migratePickerOpen, setMigratePickerOpen] = useState(false);
+  const [remotes, setRemotes] = useState<RemoteInfo[]>([]);
   const [pendingChoices, setPendingChoices] = useState<
     { id: string; prompt: string; choices: string[]; default: number }[]
   >([]);
@@ -116,11 +120,13 @@ export function App() {
               default_model_name: string;
               default_context_window: number;
               provider_name: string;
+              remotes: RemoteInfo[];
             }>(m);
             setSessions(p.sessions);
             setModels(p.available_models);
             setModelName(p.default_model_name);
             setContextWindow(p.default_context_window);
+            setRemotes(p.remotes ?? []);
             appendMessage({
               type: "info",
               text: `Using provider ${p.provider_name} (${p.default_model_name})`,
@@ -378,6 +384,24 @@ export function App() {
           case "DisconnectNotIdle":
           case "DetachedIdle":
             break;
+          case "RemotesUpdated": {
+            const p = msgPayload<{ remotes: RemoteInfo[] }>(m);
+            setRemotes(p.remotes);
+            break;
+          }
+          case "MigrateStarted": {
+            appendMessage({ type: "info", text: "Migrating session\u2026" });
+            break;
+          }
+          case "MigrateComplete": {
+            appendMessage({ type: "info", text: "Migration complete" });
+            break;
+          }
+          case "MigrateError": {
+            const p = msgPayload<{ session_id: string; error: string }>(m);
+            appendMessage({ type: "error", text: `Migration failed: ${p.error}` });
+            break;
+          }
         }
       };
       processOne(msg);
@@ -481,6 +505,29 @@ export function App() {
     });
   }, []);
 
+  const currentHost =
+    (sessionRef.current && sessions[sessionRef.current]?.remote) || "local";
+
+  const handleMigrateConfirm = useCallback(
+    (destination: string, cwd: string) => {
+      setMigratePickerOpen(false);
+      if (sessionRef.current) {
+        send({
+          RequestMigrate: {
+            session_id: sessionRef.current,
+            to: destination,
+            dest_cwd: cwd,
+          },
+        });
+      }
+    },
+    [send],
+  );
+
+  const handleMigrateCancel = useCallback(() => {
+    setMigratePickerOpen(false);
+  }, []);
+
   const contextPct =
     contextWindow > 0 ? Math.min(100, (totalTokens / contextWindow) * 100) : 0;
 
@@ -503,6 +550,15 @@ export function App() {
         {"\u2630"}
       </button>
       <div className={css.topRight}>
+        {sessionRef.current && (
+          <button
+            className={css.hostPill}
+            onClick={() => setMigratePickerOpen(true)}
+            aria-label="Migrate session"
+          >
+            {currentHost}
+          </button>
+        )}
         <span className={css.infoPill}>
           {status !== "connected" && (
             <span className={css.dot} data-status={status} />
@@ -530,6 +586,14 @@ export function App() {
       />
       {cwdPickerOpen && (
         <CwdPicker onConfirm={handleCwdConfirm} onCancel={handleCwdCancel} />
+      )}
+      {migratePickerOpen && (
+        <MigratePicker
+          remotes={remotes}
+          currentHost={currentHost}
+          onConfirm={handleMigrateConfirm}
+          onCancel={handleMigrateCancel}
+        />
       )}
     </div>
   );

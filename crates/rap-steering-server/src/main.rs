@@ -31,6 +31,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
         name: "steering-tools".to_string(),
         description: Some("Discover and load project steering files (CLAUDE.md, AGENTS.md, .kiro/steering/, etc.)".to_string()),
         endpoint: endpoint.to_string(),
+        needs_migration: false,
         tools: vec![
             ToolDef {
                 name: "list_steering".to_string(),

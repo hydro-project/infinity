@@ -164,6 +164,26 @@
   background: var(--bg-hover);
 }
 
+.hostPill {
+  background: var(--glass-bg);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 4px 16px var(--glass-shadow);
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.hostPill:hover {
+  background: var(--bg-hover);
+}
+
 .dot {
   width: 8px;
   height: 8px;

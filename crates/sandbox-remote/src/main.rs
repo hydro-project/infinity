@@ -72,7 +72,7 @@ async fn main() -> Result<(), lambda_extension::Error> {
     let metadata = DynamoMetadataStore::new(ddb_client, table_name);
     let callback_client = SigV4CallbackClient::new(&aws_config);
 
-    let (app, tracker) = build_router(backend, metadata, callback_client);
+    let (app, tracker) = build_router(backend, metadata, callback_client, false, None);
 
     let (request_done_sender, request_done_receiver) = unbounded_channel::<()>();
 
