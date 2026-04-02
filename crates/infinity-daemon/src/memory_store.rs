@@ -134,7 +134,7 @@ impl InMemoryConversationStore {
     /// Migration: if a thread's last_updated / total_tokens_used is empty, try to
     /// restore them from the legacy `sessions.json` (parent of the threads dir).
     fn migrate_from_session_store(&self, thread_id: &str, threads_dir: &Path) {
-        let threads = self.threads.lock().unwrap();
+        let threads = self.threads.lock().expect("bug: mutex poisoned");
         let Some(info) = threads.get(thread_id) else {
             return;
         };
@@ -168,7 +168,7 @@ impl InMemoryConversationStore {
             return;
         }
 
-        let mut threads = self.threads.lock().unwrap();
+        let mut threads = self.threads.lock().expect("bug: mutex poisoned");
         if let Some(info) = threads.get_mut(thread_id) {
             info.last_updated = last_updated;
             info.total_tokens_used = total_tokens_used;
@@ -410,7 +410,7 @@ impl InMemoryConversationStore {
         self.ensure_thread_metadata_loaded(thread_id);
         self.threads
             .lock()
-            .unwrap()
+            .expect("bug: mutex poisoned")
             .get(thread_id)
             .map(|t| t.total_tokens_used)
             .unwrap_or(0)
@@ -418,7 +418,12 @@ impl InMemoryConversationStore {
 
     pub fn set_total_tokens_used(&self, thread_id: &str, tokens: usize) {
         self.ensure_thread_metadata_loaded(thread_id);
-        if let Some(t) = self.threads.lock().unwrap().get_mut(thread_id) {
+        if let Some(t) = self
+            .threads
+            .lock()
+            .expect("bug: mutex poisoned")
+            .get_mut(thread_id)
+        {
             t.total_tokens_used = tokens;
         }
         self.save_thread_metadata(thread_id);
@@ -429,7 +434,7 @@ impl InMemoryConversationStore {
         self.ensure_thread_metadata_loaded(thread_id);
         self.threads
             .lock()
-            .unwrap()
+            .expect("bug: mutex poisoned")
             .get(thread_id)
             .map(|t| t.last_updated.clone())
             .unwrap_or_default()
@@ -437,7 +442,12 @@ impl InMemoryConversationStore {
 
     pub fn set_last_updated(&self, thread_id: &str, ts: &str) {
         self.ensure_thread_metadata_loaded(thread_id);
-        if let Some(t) = self.threads.lock().unwrap().get_mut(thread_id) {
+        if let Some(t) = self
+            .threads
+            .lock()
+            .expect("bug: mutex poisoned")
+            .get_mut(thread_id)
+        {
             t.last_updated = ts.to_string();
         }
         self.save_thread_metadata(thread_id);
@@ -447,7 +457,7 @@ impl InMemoryConversationStore {
         self.ensure_thread_metadata_loaded(thread_id);
         self.threads
             .lock()
-            .unwrap()
+            .expect("bug: mutex poisoned")
             .get(thread_id)
             .and_then(|t| t.title.clone())
     }
@@ -455,7 +465,7 @@ impl InMemoryConversationStore {
     pub fn add_pending_choice(&self, root_thread_id: &str, choice: PendingChoice) {
         self.pending_choices
             .lock()
-            .unwrap()
+            .expect("bug: mutex poisoned")
             .entry(root_thread_id.to_string())
             .or_default()
             .push(choice);
@@ -467,11 +477,11 @@ impl InMemoryConversationStore {
         root_thread_id: &str,
         choice_id: &str,
     ) -> Option<PendingChoice> {
-        let mut map = self.pending_choices.lock().unwrap();
-        if let Some(choices) = map.get_mut(root_thread_id) {
-            if let Some(pos) = choices.iter().position(|c| c.id == choice_id) {
-                return Some(choices.remove(pos));
-            }
+        let mut map = self.pending_choices.lock().expect("bug: mutex poisoned");
+        if let Some(choices) = map.get_mut(root_thread_id)
+            && let Some(pos) = choices.iter().position(|c| c.id == choice_id)
+        {
+            return Some(choices.remove(pos));
         }
         None
     }
@@ -482,7 +492,7 @@ impl InMemoryConversationStore {
     ) -> Vec<infinity_protocol::DaemonMessage> {
         self.pending_choices
             .lock()
-            .unwrap()
+            .expect("bug: mutex poisoned")
             .get(root_thread_id)
             .map(|v| v.iter().map(|c| c.message.clone()).collect())
             .unwrap_or_default()
@@ -491,13 +501,16 @@ impl InMemoryConversationStore {
     pub fn has_pending_choices(&self, root_thread_id: &str) -> bool {
         self.pending_choices
             .lock()
-            .unwrap()
+            .expect("bug: mutex poisoned")
             .get(root_thread_id)
             .is_some_and(|v| !v.is_empty())
     }
 
     pub fn clear_pending_choices(&self, root_thread_id: &str) {
-        self.pending_choices.lock().unwrap().remove(root_thread_id);
+        self.pending_choices
+            .lock()
+            .expect("bug: mutex poisoned")
+            .remove(root_thread_id);
     }
 }
 

@@ -89,20 +89,23 @@ async fn invoke_handler(
     State(state): State<Arc<AppState>>,
     Json(invocation): Json<RapInvocation>,
 ) -> StatusCode {
-    tokio::spawn(async move {
-        let text = match invocation.operation.as_str() {
-            "list_steering" => handle_list_steering(&invocation).await,
-            "load_steering" => handle_load_steering(&invocation).await,
-            _ => Err(format!("unknown operation: {}", invocation.operation)),
-        };
+    tokio::spawn(rap_protocol::log_panic(
+        "steering_server_invoke",
+        async move {
+            let text = match invocation.operation.as_str() {
+                "list_steering" => handle_list_steering(&invocation).await,
+                "load_steering" => handle_load_steering(&invocation).await,
+                _ => Err(format!("unknown operation: {}", invocation.operation)),
+            };
 
-        let text = match text {
-            Ok(t) => t,
-            Err(e) => format!("Error: {e}"),
-        };
+            let text = match text {
+                Ok(t) => t,
+                Err(e) => format!("Error: {e}"),
+            };
 
-        send_tool_result(&state.callback_client, &invocation, &text, None, false).await;
-    });
+            send_tool_result(&state.callback_client, &invocation, &text, None, false).await;
+        },
+    ));
 
     StatusCode::OK
 }

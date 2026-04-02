@@ -45,7 +45,7 @@ impl<M: InputSender + 'static> Tool<M> for SleepTool {
         let group_id = context.group_id.clone();
         let sender = context.message_sender.clone();
 
-        tokio::spawn(async move {
+        tokio::spawn(rap_protocol::log_panic("sleep_tool", async move {
             if seconds > 0.0 {
                 tokio::time::sleep(std::time::Duration::from_secs_f64(seconds)).await;
             }
@@ -66,7 +66,7 @@ impl<M: InputSender + 'static> Tool<M> for SleepTool {
             if let Err(e) = sender.send_to_input_queue(msg, &group_id, &id).await {
                 tracing::error!("Failed to deliver sleep result: {}", e);
             }
-        });
+        }));
 
         tracing::info!("Sleep scheduled for {} seconds", seconds);
         Ok(())
@@ -139,7 +139,7 @@ impl<M: InputSender + 'static> Tool<M> for SleepUntilTool {
         let group_id = context.group_id.clone();
         let sender = context.message_sender.clone();
 
-        tokio::spawn(async move {
+        tokio::spawn(rap_protocol::log_panic("sleep_until_tool", async move {
             if !is_past {
                 let duration = (target_utc - now).to_std().unwrap_or_default();
                 tokio::time::sleep(duration).await;
@@ -159,7 +159,7 @@ impl<M: InputSender + 'static> Tool<M> for SleepUntilTool {
             if let Err(e) = sender.send_to_input_queue(msg, &group_id, &id).await {
                 tracing::error!("Failed to deliver sleep_until result: {}", e);
             }
-        });
+        }));
 
         Ok(())
     }

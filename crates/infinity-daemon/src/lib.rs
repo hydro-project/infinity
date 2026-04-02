@@ -64,7 +64,10 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>
             match ws_listener.accept().await {
                 Ok((stream, _)) => {
                     let mgr = ws_session_manager.clone();
-                    tokio::task::spawn_local(ws_handler::handle_ws_client(stream, mgr));
+                    tokio::task::spawn_local(rap_protocol::log_panic(
+                        "ws_client_handler",
+                        ws_handler::handle_ws_client(stream, mgr),
+                    ));
                 }
                 Err(e) => {
                     tracing::warn!("ws accept error: {e}");
@@ -91,7 +94,7 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>
                 match listener.accept().await {
                     Ok((stream, _)) => {
                         let mgr = session_manager.clone();
-                        tokio::task::spawn_local(client_handler::handle_client(stream, mgr));
+                        tokio::task::spawn_local(rap_protocol::log_panic("client_handler", client_handler::handle_client(stream, mgr)));
                     }
                     Err(e) => {
                         tracing::warn!("accept error: {e}");
