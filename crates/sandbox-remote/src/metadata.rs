@@ -24,7 +24,7 @@ impl MetadataStore for DynamoMetadataStore {
             .client
             .get_item()
             .table_name(&self.table_name)
-            .key("group_id", AttributeValue::S(group_id.to_string()))
+            .key("group_id", AttributeValue::S(group_id.to_owned()))
             .send()
             .await
             .map_err(|e| SandboxError::MetadataError(format!("DynamoDB get failed: {e}")))?;
@@ -52,7 +52,7 @@ impl MetadataStore for DynamoMetadataStore {
             .unwrap_or_default();
 
         Ok(Some(RepoState {
-            group_id: group_id.to_string(),
+            group_id: group_id.to_owned(),
             remote_uri,
             bookmark,
             mode: SandboxMode::Jj { base_revision },
@@ -87,7 +87,7 @@ impl MetadataStore for DynamoMetadataStore {
         self.client
             .delete_item()
             .table_name(&self.table_name)
-            .key("group_id", AttributeValue::S(group_id.to_string()))
+            .key("group_id", AttributeValue::S(group_id.to_owned()))
             .send()
             .await
             .map_err(|e| SandboxError::MetadataError(format!("DynamoDB delete failed: {e}")))?;

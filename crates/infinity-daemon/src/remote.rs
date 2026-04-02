@@ -114,8 +114,8 @@ impl RemoteDaemons {
 
         res.0
             .send(ClientMessage::Connect {
-                session_id: session_id.to_string(),
-                thread_id: thread_id.map(|t| t.to_string()),
+                session_id: session_id.to_owned(),
+                thread_id: thread_id.map(|t| t.to_owned()),
             })
             .map_err(|e| format!("send Connect failed: {e}"))?;
 
@@ -324,7 +324,7 @@ fn prefix_sessions(
     sessions
         .into_iter()
         .map(|(id, mut info)| {
-            info.remote = Some(name.to_string());
+            info.remote = Some(name.to_owned());
             for t in &mut info.threads {
                 t.thread_id = format!("{name}/{}", t.thread_id);
                 t.parent_thread_id = format!("{name}/{}", t.parent_thread_id);
@@ -363,7 +363,7 @@ async fn resolve_remote_sock(ssh_args: &[String]) -> Result<String, BoxError> {
         )
         .into());
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 /// Open an SSH `-L` tunnel to the remote daemon's unix socket and connect.
@@ -487,9 +487,8 @@ async fn control_worker_inner(
     let welcome: DaemonMessage =
         serde_json::from_slice(&first).map_err(|e| format!("invalid Welcome: {e}"))?;
 
-    let sessions = match welcome {
-        DaemonMessage::Welcome { sessions, .. } => sessions,
-        _ => return Err("expected Welcome as first message".into()),
+    let DaemonMessage::Welcome { sessions, .. } = welcome else {
+        return Err("expected Welcome as first message".into());
     };
 
     tracing::debug!("Received remote sessions {:?}", &sessions);
@@ -546,8 +545,8 @@ fn build_remote_info_list(remotes: &RemoteMap) -> Vec<infinity_protocol::RemoteI
         .map(|(name, state)| infinity_protocol::RemoteInfo {
             name: name.clone(),
             status: match &state.status {
-                RemoteStatus::Connecting => "connecting".to_string(),
-                RemoteStatus::Connected => "connected".to_string(),
+                RemoteStatus::Connecting => "connecting".to_owned(),
+                RemoteStatus::Connected => "connected".to_owned(),
                 RemoteStatus::Disconnected(reason) => format!("disconnected: {reason}"),
             },
         })

@@ -36,7 +36,7 @@ fn mock_factory() -> McpClientFactory {
 async fn list_tools_callback_deserializes() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    let port = start_proxy_server("mock".to_string(), mock_factory())
+    let port = start_proxy_server("mock".to_owned(), mock_factory())
         .await
         .expect("start proxy server");
     let proxy_url = format!("http://127.0.0.1:{port}");
@@ -46,12 +46,12 @@ async fn list_tools_callback_deserializes() {
         .expect("start callback channel");
 
     let inv = RapInvocation {
-        operation: "mock_list_tools".to_string(),
+        operation: "mock_list_tools".to_owned(),
         arguments: serde_json::json!({}),
-        id: "test-1".to_string(),
+        id: "test-1".to_owned(),
         call_id: None,
         callback_url,
-        group_id: "g1".to_string(),
+        group_id: "g1".to_owned(),
         user_id: None,
         thread_ancestors: None,
     };

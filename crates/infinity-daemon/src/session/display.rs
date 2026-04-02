@@ -9,7 +9,7 @@ pub(crate) fn display_event_to_daemon<R: GetTokenUsage>(
     thread_id: &str,
     evt: DisplayEvent<R>,
 ) -> Option<DaemonMessage> {
-    let tid = Some(thread_id.to_string());
+    let tid = Some(thread_id.to_owned());
     Some(match evt {
         DisplayEvent::StartOutput => DaemonMessage::StartOutput { thread_id: tid },
         DisplayEvent::TextChunk { chunk } => DaemonMessage::TextChunk {
@@ -85,13 +85,13 @@ pub(crate) fn history_message_to_daemon(
     tid: &str,
     store: &InMemoryConversationStore,
 ) -> Option<DaemonMessage> {
-    let thread_id = Some(tid.to_string());
+    let thread_id = Some(tid.to_owned());
     use rig::message::{AssistantContent, Message};
     match msg {
         Message::User { content } => match content.first() {
             UserContent::Text(text) => Some(DaemonMessage::UserInputEcho {
                 thread_id,
-                text: text.text.clone(),
+                text: text.text,
             }),
             UserContent::ToolResult(res) => {
                 if let ToolResultContent::Text(t) = res.content.first() {
@@ -112,7 +112,7 @@ pub(crate) fn history_message_to_daemon(
         Message::Assistant { content, .. } => match content.first() {
             AssistantContent::Text(text) => Some(DaemonMessage::TextChunk {
                 thread_id,
-                chunk: text.text.clone(),
+                chunk: text.text,
             }),
             AssistantContent::ToolCall(call) => Some(DaemonMessage::ToolCall {
                 name: call.function.name.clone(),

@@ -16,7 +16,10 @@ struct WorkerChannels {
     subscribe_tx: mpsc::UnboundedSender<SubscribeRequest>,
 }
 
-#[expect(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "agent loop requires many dependencies"
+)]
 pub async fn agent_loop<Mdl>(
     session_id: String,
     mut rx: mpsc::UnboundedReceiver<AgentMessage>,
@@ -125,7 +128,7 @@ pub async fn agent_loop<Mdl>(
 }
 
 #[cfg(test)]
-#[allow(clippy::collapsible_if)]
+#[expect(clippy::collapsible_if, reason = "readability")]
 mod tests {
     use std::collections::HashSet;
 
@@ -201,7 +204,7 @@ mod tests {
             None,
             Arc::new(std::sync::RwLock::new(None)),
             Arc::new(std::sync::RwLock::new(None)),
-            subscriber_map.clone(),
+            subscriber_map,
             active_threads.clone(),
             idle_tx,
             0,

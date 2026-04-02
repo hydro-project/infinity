@@ -36,12 +36,12 @@ async fn invoke_fire(
         LOCAL_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
     let invocation = RapInvocation {
-        operation: operation.to_string(),
+        operation: operation.to_owned(),
         arguments,
         id: id.clone(),
         call_id: None,
-        callback_url: callback_url.to_string(),
-        group_id: group_id.to_string(),
+        callback_url: callback_url.to_owned(),
+        group_id: group_id.to_owned(),
         user_id: None,
         thread_ancestors,
     };
@@ -139,7 +139,7 @@ async fn stale_workspace_after_parent_describe_during_child_command() {
         "clone_repo",
         serde_json::json!({ "repo": repo_str, "base_thread_id": parent_id }),
         &mut rx,
-        Some(vec![parent_id.to_string()]),
+        Some(vec![parent_id.to_owned()]),
     )
     .await;
     assert!(text.contains("Repository initialized"), "got: {text}");
@@ -152,7 +152,7 @@ async fn stale_workspace_after_parent_describe_during_child_command() {
         "read_file",
         serde_json::json!({ "path": "README.md" }),
         &mut rx,
-        Some(vec![parent_id.to_string()]),
+        Some(vec![parent_id.to_owned()]),
     )
     .await;
     assert!(text.contains("hello"), "got: {text}");
@@ -164,7 +164,7 @@ async fn stale_workspace_after_parent_describe_during_child_command() {
         child_id,
         "execute_command",
         serde_json::json!({ "command": "sleep 300" }),
-        Some(vec![parent_id.to_string()]),
+        Some(vec![parent_id.to_owned()]),
     )
     .await;
 

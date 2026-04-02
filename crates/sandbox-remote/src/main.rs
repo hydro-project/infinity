@@ -60,10 +60,10 @@ async fn main() -> Result<(), lambda_extension::Error> {
     lambda_http::lambda_runtime::tracing::init_default_subscriber();
 
     let efs_mount =
-        std::env::var("EFS_MOUNT_PATH").unwrap_or_else(|_| "/mnt/efs/sandbox-repos".to_string());
+        std::env::var("EFS_MOUNT_PATH").unwrap_or_else(|_| "/mnt/efs/sandbox-repos".to_owned());
 
     let table_name =
-        std::env::var("DYNAMODB_TABLE").unwrap_or_else(|_| "sandbox-metadata".to_string());
+        std::env::var("DYNAMODB_TABLE").unwrap_or_else(|_| "sandbox-metadata".to_owned());
 
     let aws_config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
     let ddb_client = aws_sdk_dynamodb::Client::new(&aws_config);

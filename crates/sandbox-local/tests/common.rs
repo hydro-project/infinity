@@ -1,4 +1,9 @@
 //! Shared test utilities for sandbox-local integration tests.
+#![allow(dead_code, reason = "not all test binaries use every helper")]
+#![allow(
+    clippy::allow_attributes,
+    reason = "need allow(dead_code) for shared test helpers"
+)]
 
 use std::path::Path;
 use std::process::Command;
@@ -12,7 +17,6 @@ use sandbox_local::metadata::FileMetadataStore;
 
 static CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-#[allow(unused)]
 /// Start the RAP server on an OS-assigned port, returning the base URL.
 /// `metadata_dir` is where per-group JSON state files are stored.
 pub async fn start_test_server(metadata_dir: &Path) -> String {
@@ -49,15 +53,15 @@ pub async fn invoke(
     thread_ancestors: Option<Vec<String>>,
 ) -> String {
     let invocation = RapInvocation {
-        operation: operation.to_string(),
+        operation: operation.to_owned(),
         arguments,
         id: format!(
             "call-{operation}-{}",
             CALL_COUNTER.fetch_add(1, Ordering::Relaxed)
         ),
         call_id: None,
-        callback_url: callback_url.to_string(),
-        group_id: group_id.to_string(),
+        callback_url: callback_url.to_owned(),
+        group_id: group_id.to_owned(),
         user_id: None,
         thread_ancestors,
     };
@@ -85,7 +89,6 @@ pub async fn invoke(
 }
 
 /// Create a colocated jj+git repo with an initial commit containing one file.
-#[allow(unused)]
 pub fn jj_init_with_file(filename: &str, content: &str) -> tempfile::TempDir {
     let tmp = tempfile::tempdir().expect("create temp dir");
     let path = tmp.path();
@@ -121,7 +124,6 @@ pub fn jj_init_with_file(filename: &str, content: &str) -> tempfile::TempDir {
 /// final result text. `expected_views` is the number of ViewUpdates to
 /// wait for after the result. Handles both fast (ToolResult) and streaming
 /// (ToolResult + SubscriptionEvents) responses.
-#[allow(unused)]
 pub async fn invoke_collecting_views(
     server_url: &str,
     callback_url: &str,
@@ -132,15 +134,15 @@ pub async fn invoke_collecting_views(
     expected_views: usize,
 ) -> (String, Vec<RapViewUpdate>) {
     let invocation = RapInvocation {
-        operation: operation.to_string(),
+        operation: operation.to_owned(),
         arguments,
         id: format!(
             "call-{operation}-{}",
             CALL_COUNTER.fetch_add(1, Ordering::Relaxed)
         ),
         call_id: None,
-        callback_url: callback_url.to_string(),
-        group_id: group_id.to_string(),
+        callback_url: callback_url.to_owned(),
+        group_id: group_id.to_owned(),
         user_id: None,
         thread_ancestors: None,
     };

@@ -36,7 +36,7 @@ impl StateStore for DynamoDbStateStore {
             .client
             .get_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(thread_id.to_string()))
+            .key("session", AttributeValue::S(thread_id.to_owned()))
             .send()
             .await
             .map_err(|e| DynamoError(format!("Failed to get processed IDs: {}", e)))?;
@@ -71,7 +71,7 @@ impl StateStore for DynamoDbStateStore {
         self.client
             .update_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(thread_id.to_string()))
+            .key("session", AttributeValue::S(thread_id.to_owned()))
             .update_expression("ADD processed_message_ids :ids")
             .expression_attribute_values(":ids", AttributeValue::Ss(message_ids))
             .send()
@@ -91,7 +91,7 @@ impl StateStore for DynamoDbStateStore {
         self.client
             .update_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(thread_id.to_string()))
+            .key("session", AttributeValue::S(thread_id.to_owned()))
             .update_expression("ADD processed_tool_calls :ids")
             .expression_attribute_values(":ids", AttributeValue::Ss(tool_call_ids))
             .send()
@@ -108,7 +108,7 @@ impl StateStore for DynamoDbStateStore {
             .client
             .get_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(root_thread_id.to_string()))
+            .key("session", AttributeValue::S(root_thread_id.to_owned()))
             .send()
             .await
             .map_err(|e| DynamoError(format!("Failed to get metadata: {}", e)))?;
@@ -134,7 +134,7 @@ impl StateStore for DynamoDbStateStore {
         self.client
             .update_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(root_thread_id.to_string()))
+            .key("session", AttributeValue::S(root_thread_id.to_owned()))
             .update_expression("SET metadata = :metadata")
             .expression_attribute_values(":metadata", AttributeValue::S(json))
             .send()
@@ -148,7 +148,7 @@ impl StateStore for DynamoDbStateStore {
             .client
             .get_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(thread_id.to_string()))
+            .key("session", AttributeValue::S(thread_id.to_owned()))
             .send()
             .await
             .map_err(|e| DynamoError(format!("Failed to get active subscriptions: {}", e)))?;
@@ -173,9 +173,9 @@ impl StateStore for DynamoDbStateStore {
         self.client
             .update_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(thread_id.to_string()))
+            .key("session", AttributeValue::S(thread_id.to_owned()))
             .update_expression("ADD active_subscriptions :id")
-            .expression_attribute_values(":id", AttributeValue::Ss(vec![tool_call_id.to_string()]))
+            .expression_attribute_values(":id", AttributeValue::Ss(vec![tool_call_id.to_owned()]))
             .send()
             .await
             .map_err(|e| DynamoError(format!("Failed to add active subscription: {}", e)))?;
@@ -190,9 +190,9 @@ impl StateStore for DynamoDbStateStore {
         self.client
             .update_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(thread_id.to_string()))
+            .key("session", AttributeValue::S(thread_id.to_owned()))
             .update_expression("DELETE active_subscriptions :id")
-            .expression_attribute_values(":id", AttributeValue::Ss(vec![tool_call_id.to_string()]))
+            .expression_attribute_values(":id", AttributeValue::Ss(vec![tool_call_id.to_owned()]))
             .send()
             .await
             .map_err(|e| DynamoError(format!("Failed to remove active subscription: {}", e)))?;

@@ -72,28 +72,22 @@ impl<M: InputSender + 'static, S: StateStore + 'static, H: HttpClient + 'static>
         call_id: Option<&str>,
         context: &ToolContext<M>,
     ) -> Option<ToolResult> {
-        let tool_call_id = match args.get("tool_call_id").and_then(|v| v.as_str()) {
-            Some(id) => id,
-            None => {
-                return Some(error_result(id, call_id, "Error: tool_call_id is required"));
-            }
+        let Some(tool_call_id) = args.get("tool_call_id").and_then(|v| v.as_str()) else {
+            return Some(error_result(id, call_id, "Error: tool_call_id is required"));
         };
 
         // Check that the subscription exists in this thread's active subscriptions.
         // Ownership is implicit — each thread only tracks its own subscriptions.
-        let active = match self
+        let Ok(active) = self
             .state_store
             .get_active_subscriptions(&context.group_id)
             .await
-        {
-            Ok(subs) => subs,
-            Err(_) => {
-                return Some(error_result(
-                    id,
-                    call_id,
-                    "Error: failed to read thread subscriptions",
-                ));
-            }
+        else {
+            return Some(error_result(
+                id,
+                call_id,
+                "Error: failed to read thread subscriptions",
+            ));
         };
 
         if !active.iter().any(|s| s == tool_call_id) {
@@ -134,7 +128,7 @@ impl<M: InputSender + 'static, S: StateStore + 'static, H: HttpClient + 'static>
         );
 
         Some(ToolResult {
-            id: id.to_string(),
+            id: id.to_owned(),
             call_id: call_id.map(String::from),
             content: OneOrMany::one(ToolResultContent::Text(Text {
                 text: format!("Subscription '{}' cancelled successfully.", tool_call_id),
@@ -145,10 +139,10 @@ impl<M: InputSender + 'static, S: StateStore + 'static, H: HttpClient + 'static>
 
 fn error_result(id: &str, call_id: Option<&str>, text: &str) -> ToolResult {
     ToolResult {
-        id: id.to_string(),
+        id: id.to_owned(),
         call_id: call_id.map(String::from),
         content: OneOrMany::one(ToolResultContent::Text(Text {
-            text: text.to_string(),
+            text: text.to_owned(),
         })),
     }
 }

@@ -121,7 +121,7 @@ impl SandboxBackend for EfsBackend {
             SandboxMode::Jj { base_revision } => base_revision.as_str(),
             _ => {
                 return Err(SandboxError::Other(
-                    "EFS backend only supports Jj mode".to_string(),
+                    "EFS backend only supports Jj mode".to_owned(),
                 ));
             }
         };

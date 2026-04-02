@@ -23,16 +23,14 @@ type AppState = Poller<PlainCallbackClient>;
 
 fn build_manifest(endpoint: &str) -> ToolsetManifest {
     ToolsetManifest {
-        name: "github-events".to_string(),
-        description: Some("Subscribe to GitHub repository events via polling (no webhooks required)"
-            .to_string()),
-        endpoint: endpoint.to_string(),
+        name: "github-events".to_owned(),
+        description: Some("Subscribe to GitHub repository events via polling (no webhooks required)".to_owned()),
+        endpoint: endpoint.to_owned(),
         needs_migration: false,
         tools: vec![ToolDef {
-            name: "subscribe_github_events".to_string(),
+            name: "subscribe_github_events".to_owned(),
             description:
-                "Subscribes to GitHub events on a repository via polling. Use filters to match specific events. If there is nothing to do until an event arrives, you may want to use the sleep tool to hibernate until you are woken up by an event. DO NOT re-subscribe after an `interrupt`, the subscription remains active automatically."
-                    .to_string(),
+                "Subscribes to GitHub events on a repository via polling. Use filters to match specific events. If there is nothing to do until an event arrives, you may want to use the sleep tool to hibernate until you are woken up by an event. DO NOT re-subscribe after an `interrupt`, the subscription remains active automatically.".to_owned(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

@@ -48,7 +48,7 @@ impl<M: InputSender + 'static> Tool<M> for SetTitleTool {
         call_id: Option<String>,
         context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let title = args["title"].as_str().unwrap_or("").to_string();
+        let title = args["title"].as_str().unwrap_or("").to_owned();
 
         self.conversation_store
             .set_thread_title(&context.group_id, &title);

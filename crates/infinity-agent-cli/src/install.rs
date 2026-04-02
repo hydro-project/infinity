@@ -342,9 +342,9 @@ fn detect_install_source() -> Result<(Option<String>, Option<String>), BoxError>
     if let Some(url) = source.strip_prefix("git+") {
         // Strip #commit-hash if present
         let url = url.split_once('#').map_or(url, |(u, _)| u);
-        Ok((Some(url.to_string()), None))
+        Ok((Some(url.to_owned()), None))
     } else if let Some(path) = source.strip_prefix("path+file://") {
-        Ok((None, Some(path.to_string())))
+        Ok((None, Some(path.to_owned())))
     } else {
         // registry install
         Ok((None, None))

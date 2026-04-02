@@ -21,12 +21,11 @@ impl SigV4CallbackClient {
     pub fn new(config: &aws_config::SdkConfig) -> Self {
         let credentials_provider = config
             .credentials_provider()
-            .expect("credentials provider required")
-            .clone();
+            .expect("credentials provider required");
         let region = config
             .region()
             .map(|r| r.to_string())
-            .unwrap_or_else(|| "us-east-1".to_string());
+            .unwrap_or_else(|| "us-east-1".to_owned());
         Self {
             http_client: reqwest::Client::new(),
             credentials_provider,
@@ -46,7 +45,7 @@ impl CallbackClient for SigV4CallbackClient {
         let host = parsed
             .host_str()
             .ok_or("callback URL missing host")?
-            .to_string();
+            .to_owned();
 
         let creds = self.credentials_provider.provide_credentials().await?;
         let identity = Identity::new(creds, None);
@@ -83,7 +82,7 @@ impl CallbackClient for SigV4CallbackClient {
             req = req.header(name, value);
         }
 
-        req.body(body.to_string()).send().await?;
+        req.body(body.to_owned()).send().await?;
 
         Ok(())
     }
