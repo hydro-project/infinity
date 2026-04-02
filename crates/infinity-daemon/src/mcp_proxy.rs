@@ -9,7 +9,7 @@ use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use rap_protocol::RapInvocation;
+use rap_protocol::{DisplaySegment, RapCallback, RapInvocation, RapToolResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -305,7 +305,7 @@ impl ProxyState {
         Ok(())
     }
 
-    async fn list_tools(&self) -> Result<(String, Option<String>), BoxError> {
+    async fn list_tools(&self) -> Result<(String, Option<Vec<DisplaySegment>>), BoxError> {
         self.ensure_client().await?;
         let mut guard = self.client.lock().await;
         let client = guard.as_mut().unwrap();
@@ -336,7 +336,7 @@ impl ProxyState {
             }
             out.push('\n');
         }
-        Ok((out, Some(format!("Loaded {} tools", tools.len()))))
+        Ok((out, Some(vec![DisplaySegment::Text(format!("Loaded {} tools", tools.len()))])))
     }
 
     async fn invoke_tool(
@@ -484,19 +484,20 @@ async fn handle(req: Request<Incoming>, state: Arc<ProxyState>) -> Response<Full
             Err(e) => (format!("MCP tool error: {e}"), None),
         };
 
-        let callback_body = serde_json::json!({
-            "type": "tool_result",
-            "group_id": inv.group_id,
-            "id": inv.id,
-            "call_id": inv.call_id,
-            "text": text,
-            "display_as": display_as,
-        });
+        let callback_body = serde_json::to_string(&RapCallback::ToolResult(RapToolResult {
+            group_id: inv.group_id,
+            id: inv.id,
+            call_id: inv.call_id,
+            text,
+            display_as,
+            subscription: None,
+        }))
+        .unwrap();
 
         if let Err(e) = reqwest::Client::new()
             .post(&inv.callback_url)
             .header("content-type", "application/json")
-            .body(callback_body.to_string())
+            .body(callback_body)
             .send()
             .await
         {
