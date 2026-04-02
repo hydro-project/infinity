@@ -97,17 +97,20 @@ async fn invoke_handler(
     State(state): State<Arc<AppState>>,
     Json(invocation): Json<RapInvocation>,
 ) -> StatusCode {
-    tokio::spawn(async move {
-        let text = state.subscribe(&invocation).await;
-        send_tool_result(
-            &PlainCallbackClient::new(),
-            &invocation,
-            &text,
-            None,
-            true, // this is a subscription
-        )
-        .await;
-    });
+    tokio::spawn(rap_protocol::log_panic(
+        "github_event_poller_invoke",
+        async move {
+            let text = state.subscribe(&invocation).await;
+            send_tool_result(
+                &PlainCallbackClient::new(),
+                &invocation,
+                &text,
+                None,
+                true, // this is a subscription
+            )
+            .await;
+        },
+    ));
     StatusCode::OK
 }
 
@@ -149,9 +152,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             // Spawn the background polling loop
             let poller_bg = Arc::clone(&poller);
-            tokio::spawn(async move {
-                poller_bg.run().await;
-            });
+            tokio::spawn(rap_protocol::log_panic(
+                "github_event_poller_bg",
+                async move {
+                    poller_bg.run().await;
+                },
+            ));
 
             let app = Router::new()
                 .route("/.well-known/rap-toolset", get(toolset_handler))

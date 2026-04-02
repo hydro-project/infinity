@@ -410,6 +410,13 @@ async fn run_client(
         Some(r) => r,
         None => terminal_handle.await,
     };
+    if let Err(ref e) = result {
+        if e.is_panic() {
+            tracing::error!("terminal task panicked: {e}");
+        } else {
+            tracing::warn!("terminal task cancelled: {e}");
+        }
+    }
     let keep_running = matches!(result, Ok(Ok(true)));
 
     if let Some(sid) = active_session {

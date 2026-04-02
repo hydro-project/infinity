@@ -52,7 +52,7 @@ impl RemoteDaemons {
     pub fn new(configs: Vec<RemoteConfig>, broadcast_clients: BroadcastClients) -> Self {
         let remotes: RemoteMap = Arc::new(std::sync::Mutex::new(HashMap::new()));
         for cfg in &configs {
-            remotes.lock().unwrap().insert(
+            remotes.lock().expect("bug: mutex poisoned").insert(
                 cfg.name.clone(),
                 RemoteState {
                     status: RemoteStatus::Connecting,
@@ -64,14 +64,17 @@ impl RemoteDaemons {
             let ssh_args = cfg.ssh_args.clone();
             let map = remotes.clone();
             let bc = broadcast_clients.clone();
-            tokio::task::spawn_local(control_worker(name, ssh_args, map, bc));
+            tokio::task::spawn_local(rap_protocol::log_panic(
+                "remote_control_worker",
+                control_worker(name, ssh_args, map, bc),
+            ));
         }
         Self { remotes }
     }
 
     /// Collect all remote sessions with prefixed IDs (used for initial Welcome).
     pub fn all_remote_sessions(&self) -> HashMap<String, SessionInfo> {
-        let map = self.remotes.lock().unwrap();
+        let map = self.remotes.lock().expect("bug: mutex poisoned");
         let mut result = HashMap::new();
         for (remote_name, state) in map.iter() {
             if !matches!(state.status, RemoteStatus::Connected) {
@@ -101,7 +104,7 @@ impl RemoteDaemons {
     > {
         // Reuse the existing tunnel socket from the control worker.
         let local_sock = {
-            let map = self.remotes.lock().unwrap();
+            let map = self.remotes.lock().expect("bug: mutex poisoned");
             map.get(remote_name)
                 .and_then(|s| s.local_sock.clone())
                 .ok_or_else(|| format!("remote '{remote_name}' is not connected"))?
@@ -126,7 +129,8 @@ impl RemoteDaemons {
             session_id: thread_id.to_string(),
             thread_id: None,
         };
-        let bytes = Bytes::from(serde_json::to_vec(&connect_msg).unwrap());
+        let bytes =
+            Bytes::from(serde_json::to_vec(&connect_msg).expect("bug: serialization failed"));
         framed
             .send(bytes)
             .await
@@ -149,7 +153,7 @@ impl RemoteDaemons {
                     }
                     msg = client_rx.recv() => {
                         let Some(msg) = msg else { break };
-                        let bytes = Bytes::from(serde_json::to_vec(&msg).unwrap());
+                        let bytes = Bytes::from(serde_json::to_vec(&msg).expect("bug: serialization failed"));
                         if sink.send(bytes).await.is_err() { break; }
                     }
                 }
@@ -260,7 +264,7 @@ async fn control_worker(
 ) {
     loop {
         {
-            let mut map = remotes.lock().unwrap();
+            let mut map = remotes.lock().expect("bug: mutex poisoned");
             if let Some(state) = map.get_mut(&name) {
                 state.status = RemoteStatus::Connecting;
             }
@@ -272,7 +276,7 @@ async fn control_worker(
             }
             Err(e) => {
                 tracing::warn!("Remote '{}' control connection failed: {e}", name);
-                let mut map = remotes.lock().unwrap();
+                let mut map = remotes.lock().expect("bug: mutex poisoned");
                 if let Some(state) = map.get_mut(&name) {
                     state.status = RemoteStatus::Disconnected(e.to_string());
                     state.sessions.clear();
@@ -297,7 +301,7 @@ async fn control_worker_inner(
 
     // Store the tunnel's local socket path so connect_remote_session can reuse it.
     {
-        let mut map = remotes.lock().unwrap();
+        let mut map = remotes.lock().expect("bug: mutex poisoned");
         if let Some(state) = map.get_mut(name) {
             state.local_sock = Some(_tunnel.local_sock.clone());
         }
@@ -322,7 +326,7 @@ async fn control_worker_inner(
     // Update state and broadcast prefixed sessions
     let prefixed = prefix_sessions(name, sessions.clone());
     {
-        let mut map = remotes.lock().unwrap();
+        let mut map = remotes.lock().expect("bug: mutex poisoned");
         if let Some(state) = map.get_mut(name) {
             state.status = RemoteStatus::Connected;
             state.sessions = sessions;
@@ -342,7 +346,7 @@ async fn control_worker_inner(
 
         if let DaemonMessage::SessionsUpdated { sessions } = msg {
             let prefixed = prefix_sessions(name, sessions.clone());
-            let mut map = remotes.lock().unwrap();
+            let mut map = remotes.lock().expect("bug: mutex poisoned");
             if let Some(state) = map.get_mut(name) {
                 for (id, info) in sessions {
                     state.sessions.insert(id, info);
@@ -360,5 +364,7 @@ async fn control_worker_inner(
 }
 
 fn broadcast(bc: &BroadcastClients, msg: DaemonMessage) {
-    bc.lock().unwrap().retain(|tx| tx.send(msg.clone()).is_ok());
+    bc.lock()
+        .expect("bug: mutex poisoned")
+        .retain(|tx| tx.send(msg.clone()).is_ok());
 }

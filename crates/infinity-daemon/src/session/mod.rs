@@ -113,32 +113,35 @@ impl SessionManager {
         let bc = broadcast_clients.clone();
         let ss = session_store.clone();
         let cs = conversation_store.clone();
-        tokio::task::spawn_local(async move {
-            while let Some(session_id) = change_rx.recv().await {
-                let store = ss.lock().await;
-                let info = match store.sessions.get(&session_id) {
-                    Some(e) => {
-                        let threads = cs.get_open_subthreads(&session_id);
-                        SessionInfo {
-                            title: cs.get_thread_title(&session_id),
-                            last_updated: cs.get_last_updated(&session_id),
-                            total_tokens_used: cs.get_total_tokens_used(&session_id),
-                            status: e.status(cs.has_pending_choices(&session_id)),
-                            threads,
-                            remote: None,
+        tokio::task::spawn_local(rap_protocol::log_panic(
+            "session_change_broadcaster",
+            async move {
+                while let Some(session_id) = change_rx.recv().await {
+                    let store = ss.lock().await;
+                    let info = match store.sessions.get(&session_id) {
+                        Some(e) => {
+                            let threads = cs.get_open_subthreads(&session_id);
+                            SessionInfo {
+                                title: cs.get_thread_title(&session_id),
+                                last_updated: cs.get_last_updated(&session_id),
+                                total_tokens_used: cs.get_total_tokens_used(&session_id),
+                                status: e.status(cs.has_pending_choices(&session_id)),
+                                threads,
+                                remote: None,
+                            }
                         }
-                    }
-                    None => continue,
-                };
-                drop(store);
-                let mut sessions = std::collections::HashMap::new();
-                sessions.insert(session_id, info);
-                let msg = DaemonMessage::SessionsUpdated { sessions };
-                bc.lock()
-                    .expect("bug: mutex poisoned")
-                    .retain(|tx| tx.send(msg.clone()).is_ok());
-            }
-        });
+                        None => continue,
+                    };
+                    drop(store);
+                    let mut sessions = std::collections::HashMap::new();
+                    sessions.insert(session_id, info);
+                    let msg = DaemonMessage::SessionsUpdated { sessions };
+                    bc.lock()
+                        .expect("bug: mutex poisoned")
+                        .retain(|tx| tx.send(msg.clone()).is_ok());
+                }
+            },
+        ));
 
         // Detect model provider
         let provider = model_picker::BedrockProvider;
@@ -240,7 +243,7 @@ impl SessionManager {
         // Create one that wraps into AgentMessage::Input.
         let (input_tx, mut input_adapter_rx) = mpsc::unbounded_channel::<(InputMessage, String)>();
         let agent_tx_for_adapter = agent_tx.clone();
-        tokio::task::spawn_local(async move {
+        tokio::task::spawn_local(rap_protocol::log_panic("input_adapter", async move {
             while let Some((msg, id)) = input_adapter_rx.recv().await {
                 if agent_tx_for_adapter
                     .send(AgentMessage::Input(Box::new(msg), id))
@@ -249,7 +252,7 @@ impl SessionManager {
                     break;
                 }
             }
-        });
+        }));
         let sender = InMemoryMessageSender::new(input_tx.clone());
 
         // Load RAP config
@@ -598,7 +601,13 @@ impl SessionManager {
             if let Some(tx) = session.shutdown_tx.take() {
                 let _ = tx.send(());
             }
-            let _ = session.agent_task.await;
+            if let Err(ref e) = session.agent_task.await {
+                if e.is_panic() {
+                    tracing::error!("session agent task panicked: {e}");
+                } else {
+                    tracing::warn!("session agent task cancelled: {e}");
+                }
+            }
 
             // Ensure shut_down is set (task may have already finished as idle).
             tracing::debug!("Setting `shut_down`");
