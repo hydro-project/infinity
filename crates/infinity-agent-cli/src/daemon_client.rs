@@ -55,10 +55,9 @@ fn daemon_msg_to_display(
             },
         ),
         DaemonMessage::ToolResult {
-            text,
-            display_as,
+            segments,
             thread_id,
-        } => (thread_id, DisplayEvent::ToolResult { text, display_as }),
+        } => (thread_id, DisplayEvent::ToolResult { segments }),
         DaemonMessage::Info { thread_id, text } => (thread_id, DisplayEvent::Info(text)),
         DaemonMessage::ResponseDone {
             thread_id,

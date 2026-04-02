@@ -37,8 +37,10 @@ pub enum DisplayEvent<R> {
         display_as: Option<String>,
     },
     ToolResult {
-        text: String,
-        display_as: Option<String>,
+        /// Prioritized display segments. Clients should use the first type they
+        /// support. The raw tool output is always included as a trailing `Text`
+        /// segment so every client has a fallback.
+        segments: Vec<rap_protocol::DisplaySegment>,
     },
     Info(String),
     ResponseDone(Option<R>),
@@ -160,8 +162,10 @@ where
                 && let ToolResultContent::Text(text) = res.content.first()
             {
                 let _ = display_tx.send(DisplayEvent::ToolResult {
-                    text: text.text,
-                    display_as: input_msg.display_as.clone(),
+                    segments: rap_protocol::build_display_segments(
+                        input_msg.display_as.as_deref(),
+                        &text.text,
+                    ),
                 });
             } else if let InputMessageContent::User(UserContent::Text(ref text)) = input_msg.content
             {
@@ -297,8 +301,9 @@ where
                     Ok(event_processor::CompletionEvent::SyncToolResult(res)) => {
                         if let ToolResultContent::Text(text) = res.content.first() {
                             let _ = display_tx.send(DisplayEvent::ToolResult {
-                                text: text.text,
-                                display_as: None,
+                                segments: vec![rap_protocol::DisplaySegment::Text(
+                                    text.text.clone(),
+                                )],
                             });
                         }
                     }
@@ -556,7 +561,14 @@ mod tests {
                 DisplayEvent::StartOutput => "StartOutput".into(),
                 DisplayEvent::TextChunk { chunk, .. } => format!("Text:{chunk}"),
                 DisplayEvent::ToolCall { name, .. } => format!("ToolCall:{name}"),
-                DisplayEvent::ToolResult { text, .. } => {
+                DisplayEvent::ToolResult { ref segments, .. } => {
+                    let text = segments
+                        .iter()
+                        .find_map(|s| match s {
+                            rap_protocol::DisplaySegment::Text(t) => Some(t.as_str()),
+                            _ => None,
+                        })
+                        .unwrap_or("");
                     format!("ToolResult:{}", &text[..text.len().min(40)])
                 }
                 DisplayEvent::Info(s) => format!("Info:{}", &s[..s.len().min(40)]),

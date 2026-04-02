@@ -26,9 +26,8 @@ pub(crate) fn display_event_to_daemon<R: GetTokenUsage>(
             thread_id: tid,
             display_as,
         },
-        DisplayEvent::ToolResult { text, display_as } => DaemonMessage::ToolResult {
-            text,
-            display_as,
+        DisplayEvent::ToolResult { segments } => DaemonMessage::ToolResult {
+            segments,
             thread_id: tid,
         },
         DisplayEvent::Info(s) => DaemonMessage::Info {
@@ -98,8 +97,10 @@ pub(crate) fn history_message_to_daemon(
                 if let ToolResultContent::Text(t) = res.content.first() {
                     let display_as = store.get_display_as(tid, &res.id);
                     Some(DaemonMessage::ToolResult {
-                        text: t.to_string(),
-                        display_as,
+                        segments: rap_protocol::build_display_segments(
+                            display_as.as_deref(),
+                            &t.to_string(),
+                        ),
                         thread_id,
                     })
                 } else {
