@@ -115,7 +115,8 @@ where
     let cb: RapCallback = match serde_json::from_slice(&body) {
         Ok(c) => c,
         Err(e) => {
-            tracing::warn!("Invalid callback payload: {}", e);
+            let raw = String::from_utf8_lossy(&body);
+            tracing::error!("Invalid callback payload: {e}\nRaw body: {raw}");
             return ok_response(StatusCode::BAD_REQUEST, &format!("Bad request: {}", e));
         }
     };
