@@ -89,7 +89,9 @@ impl SandboxBackend for EfsBackend {
                 "clone",
                 "--no-colocate",
                 repo,
-                bare_path.to_str().unwrap(),
+                bare_path
+                    .to_str()
+                    .expect("bug: bare repo path is not valid UTF-8"),
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

@@ -92,7 +92,7 @@ fn ok_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
         .body(Full::new(Bytes::from(body.to_string())))
-        .unwrap()
+        .expect("bug: failed to build HTTP response")
 }
 
 async fn handle<F, Fut>(req: Request<Incoming>, handler: Arc<F>) -> Response<Full<Bytes>>

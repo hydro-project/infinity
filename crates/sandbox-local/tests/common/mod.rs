@@ -14,7 +14,7 @@ static CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Start the RAP server on an OS-assigned port, returning the base URL.
 /// `metadata_dir` is where per-group JSON state files are stored.
 pub async fn start_test_server(metadata_dir: &Path) -> String {
-    std::fs::create_dir_all(metadata_dir).unwrap();
+    std::fs::create_dir_all(metadata_dir).expect("create metadata dir");
 
     unsafe {
         std::env::set_var(
@@ -27,9 +27,11 @@ pub async fn start_test_server(metadata_dir: &Path) -> String {
     let metadata = FileMetadataStore::new(metadata_dir.to_path_buf());
     let (app, _tracker) = build_router(backend, metadata, PlainCallbackClient::new());
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test server");
+    let port = listener.local_addr().expect("get local addr").port();
+    tokio::spawn(async move { axum::serve(listener, app).await.expect("serve test server") });
 
     format!("http://127.0.0.1:{port}")
 }
@@ -62,7 +64,7 @@ pub async fn invoke(
         .json(&invocation)
         .send()
         .await
-        .unwrap();
+        .expect("send invoke request");
 
     let cb = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
         .await

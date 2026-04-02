@@ -50,7 +50,8 @@ fn daemon_msg_to_display(
             thread_id,
             DisplayEvent::ToolCall {
                 name,
-                args: serde_json::from_str(&args).unwrap(),
+                args: serde_json::from_str(&args)
+                    .expect("bug: tool call args should be valid JSON"),
                 display_as,
             },
         ),
@@ -162,7 +163,7 @@ pub async fn run_with_daemon(initial_message: Option<String>) -> Result<(), BoxE
                     drop(from_daemon_tx);
                     return client_fut.await;
                 };
-                let bytes = Bytes::from(serde_json::to_vec(&msg).unwrap());
+                let bytes = Bytes::from(serde_json::to_vec(&msg).expect("bug: failed to serialize daemon message"));
                 if framed.send(bytes).await.is_err() {
                     drop(from_daemon_tx);
                     return client_fut.await;
@@ -174,7 +175,7 @@ pub async fn run_with_daemon(initial_message: Option<String>) -> Result<(), BoxE
                 // TODO(shadaj): maybe use join to simplify the state management?
                 // Drain any remaining messages (e.g. Disconnect) before closing the socket.
                 while let Some(msg) = to_daemon_rx.recv().await {
-                    let bytes = Bytes::from(serde_json::to_vec(&msg).unwrap());
+                    let bytes = Bytes::from(serde_json::to_vec(&msg).expect("bug: failed to serialize daemon message"));
                     let _ = framed.send(bytes).await;
                 }
                 return client_res;
@@ -182,7 +183,7 @@ pub async fn run_with_daemon(initial_message: Option<String>) -> Result<(), BoxE
             frame = framed.next() => {
                 match frame {
                     Some(Ok(bytes)) => {
-                        let msg = serde_json::from_slice::<DaemonMessage>(&bytes).unwrap();
+                        let msg = serde_json::from_slice::<DaemonMessage>(&bytes).expect("bug: failed to deserialize daemon message");
                         let _ = from_daemon_tx.send(msg);
                     }
                     _ => {
@@ -304,7 +305,7 @@ async fn run_client(
                         active_session = Some(session_id.clone());
                         let _ = session_tx.send(SessionChanged { session_id, title, total_tokens_used });
                         for text in pending_input.drain(..) {
-                            let sid = active_session.as_ref().unwrap().clone();
+                            let sid = active_session.as_ref().expect("bug: active_session should be set after Connected").clone();
                             let _ = to_daemon.send(ClientMessage::UserInput { session_id: sid, text });
                         }
                     }

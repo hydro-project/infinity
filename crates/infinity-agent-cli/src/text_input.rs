@@ -74,7 +74,12 @@ impl TextInput {
 
     pub fn delete(&mut self) {
         if self.cursor < self.buf.len() {
-            let next = self.cursor + self.buf[self.cursor..].chars().next().unwrap().len_utf8();
+            let next = self.cursor
+                + self.buf[self.cursor..]
+                    .chars()
+                    .next()
+                    .expect("bug: cursor within bounds but no char found")
+                    .len_utf8();
             self.buf.drain(self.cursor..next);
         }
     }
@@ -91,7 +96,11 @@ impl TextInput {
 
     pub fn move_right(&mut self) {
         if self.cursor < self.buf.len() {
-            self.cursor += self.buf[self.cursor..].chars().next().unwrap().len_utf8();
+            self.cursor += self.buf[self.cursor..]
+                .chars()
+                .next()
+                .expect("bug: cursor within bounds but no char found")
+                .len_utf8();
         }
     }
 
@@ -230,7 +239,11 @@ impl TextInput {
             .find(|(_, c)| c.is_whitespace())
         {
             // `i` is the byte index of the space; skip past it
-            self.cursor = i + trimmed[i..].chars().next().unwrap().len_utf8();
+            self.cursor = i + trimmed[i..]
+                .chars()
+                .next()
+                .expect("bug: whitespace char index valid but no char found")
+                .len_utf8();
         } else {
             self.cursor = 0;
         }

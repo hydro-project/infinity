@@ -90,7 +90,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             .spawn_thread(&context.group_id, id, false)
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-            .unwrap();
+            .expect("failed to spawn thread in conversation store");
 
         tracing::info!(
             "Spawned new thread {} from parent {}",
@@ -109,7 +109,11 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             })),
         };
 
-        let instructions = args.get("instructions").unwrap().as_str().unwrap();
+        let instructions = args
+            .get("instructions")
+            .expect("bug: missing 'instructions' arg")
+            .as_str()
+            .expect("bug: 'instructions' arg is not a string");
 
         let child_result = InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
@@ -134,7 +138,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             .message_sender
             .send_to_input_queue(child_result, &child_group_id, id)
             .await
-            .unwrap();
+            .expect("failed to send child thread message to input queue");
 
         Some(parent_result)
     }

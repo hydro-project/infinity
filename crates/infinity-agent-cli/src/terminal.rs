@@ -94,6 +94,7 @@ struct PendingChoice {
     default: usize,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run<R>(
     input_tx: mpsc::UnboundedSender<String>,
     mut display_rx: mpsc::UnboundedReceiver<(Option<String>, DisplayEvent<R>)>,
@@ -877,6 +878,7 @@ fn show_help(viewport: &mut InlineViewport) -> Result<(), BoxError> {
 
 // ── Viewport drawing ────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn draw_viewport(
     viewport: &mut InlineViewport,
     input: &TextInput,
