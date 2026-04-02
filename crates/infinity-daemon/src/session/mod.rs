@@ -10,6 +10,7 @@ use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
 use infinity_agent_core::tools::thread::{
     CloseThreadTool, ReportToParentTool, SendMessageToChildTool, SpawnThreadTool,
 };
+use infinity_agent_core::traits::ConversationStore;
 use infinity_protocol::{DaemonMessage, SessionInfo};
 use rig::client::{CompletionClient, ProviderClient};
 use rig::completion::CompletionModel;
@@ -174,6 +175,8 @@ impl SessionManager {
     }
 
     /// Resume a persisted session, recovering its cwd from the session store.
+    /// Does NOT boot the agent loop — that happens lazily on first user input
+    /// via `send_input`. This just emits `Connected` so the client can attach.
     pub async fn resume_session(
         &mut self,
         session_id: &str,
@@ -181,21 +184,7 @@ impl SessionManager {
         emit: &mut impl AsyncFnMut(DaemonMessage),
     ) -> Result<(), BoxError> {
         emit(self.build_connected(session_id, thread_id).await).await;
-
-        // Check if session is alive (in map with running task).
-        let is_alive = self
-            .sessions
-            .get(session_id)
-            .is_some_and(|s| !s.agent_task.is_finished());
-
-        if is_alive {
-            tracing::debug!("Session is already alive");
-            return Ok(());
-        }
-
-        let cwd = self.session_store.lock().await.get_cwd(session_id).clone();
-        self.session_store.lock().await.clear_shut_down(session_id);
-        self.start_session(session_id.to_string(), &cwd, emit).await
+        Ok(())
     }
 
     async fn build_connected(&self, session_id: &str, thread_id: &str) -> DaemonMessage {
@@ -424,9 +413,9 @@ impl SessionManager {
     }
 
     /// Attach a client's message sender to a thread for receiving display events.
-    /// Sends a subscribe request through the agent loop to the thread's worker.
-    /// The worker handles replay from its live HistoryManager.
-    /// Also subscribes to all open descendant threads.
+    /// If the session is alive, sends a subscribe request through the agent loop.
+    /// Otherwise, loads history directly from the conversation store and sends
+    /// a Replay message to the client.
     pub async fn attach_client(
         &mut self,
         thread_id: &str,
@@ -434,14 +423,50 @@ impl SessionManager {
         wants_replay: bool,
     ) {
         let session_id = self.conversation_store.get_root_thread_id(thread_id);
-        let session = self.sessions.get(&session_id).unwrap();
-        let agent_tx = session.agent_tx.clone();
 
-        // Subscribe to the target thread with replay.
-        let _ = agent_tx.send(AgentMessage::Subscribe {
-            thread_id: thread_id.to_string(),
-            request: (tx.clone(), wants_replay),
-        });
+        let is_alive = self
+            .sessions
+            .get(&session_id)
+            .is_some_and(|s| !s.agent_task.is_finished());
+
+        if is_alive {
+            let agent_tx = self.sessions.get(&session_id).unwrap().agent_tx.clone();
+            let _ = agent_tx.send(AgentMessage::Subscribe {
+                thread_id: thread_id.to_string(),
+                request: (tx.clone(), wants_replay),
+            });
+        } else if wants_replay {
+            // Session not alive — load history from the conversation store directly.
+            let history: Vec<DaemonMessage> = self
+                .conversation_store
+                .load_history_up_to(thread_id, None, None)
+                .await
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|m| {
+                    display::history_message_to_daemon(m, thread_id, &self.conversation_store)
+                })
+                .collect();
+            let choices: Vec<DaemonMessage> = self
+                .session_store
+                .lock()
+                .await
+                .sessions
+                .get(&session_id)
+                .map(|e| {
+                    e.pending_choices
+                        .iter()
+                        .map(|c| c.message.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !history.is_empty() || !choices.is_empty() {
+                let _ = tx.send(DaemonMessage::Replay {
+                    history,
+                    pending_choices: choices,
+                });
+            }
+        }
     }
 
     /// Send user input text to a session's agent loop.
