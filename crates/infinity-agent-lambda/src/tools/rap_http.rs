@@ -31,12 +31,11 @@ impl RapHttpClient {
         let http_client = reqwest::Client::new();
         let credentials_provider = config
             .credentials_provider()
-            .expect("credentials provider required")
-            .clone();
+            .expect("credentials provider required");
         let region = config
             .region()
             .map(|r| r.to_string())
-            .unwrap_or_else(|| "us-east-1".to_string());
+            .unwrap_or_else(|| "us-east-1".to_owned());
         Self {
             http_client,
             credentials_provider,
@@ -80,7 +79,7 @@ impl RapHttpClient {
 
         let signed_headers: Vec<(String, String)> = signing_instructions
             .headers()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
             .collect();
 
         Ok(signed_headers)
@@ -96,7 +95,7 @@ impl HttpClient for RapHttpClient {
         let host = parsed
             .host_str()
             .ok_or(HttpError("missing host".into()))?
-            .to_string();
+            .to_owned();
 
         let signed_headers = self
             .sign_request(
@@ -119,7 +118,7 @@ impl HttpClient for RapHttpClient {
         }
 
         let response = request
-            .body(body.to_string())
+            .body(body.to_owned())
             .send()
             .await
             .map_err(|e| HttpError(e.to_string()))?;
@@ -132,7 +131,7 @@ impl HttpClient for RapHttpClient {
         let host = parsed
             .host_str()
             .ok_or(HttpError("missing host".into()))?
-            .to_string();
+            .to_owned();
 
         let signed_headers = self
             .sign_request(

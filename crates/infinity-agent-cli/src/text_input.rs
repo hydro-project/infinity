@@ -407,7 +407,7 @@ impl TextInput {
     }
 
     pub fn set_text(&mut self, s: &str) {
-        self.buf = s.to_string();
+        self.buf = s.to_owned();
         self.cursor = self.buf.len();
     }
 

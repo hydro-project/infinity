@@ -233,16 +233,16 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                     .borrow_mut()
                     .push(tool_call.id.clone());
                 let synthetic_result = Message::User {
-                    content: OneOrMany::one(UserContent::ToolResult(rig::message::ToolResult {
+                    content: OneOrMany::one(UserContent::ToolResult(ToolResult {
                         id: tool_call.id.clone(),
                         call_id: tool_call.call_id.clone(),
                         content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                            text: "Tool call interrupted by user".to_string(),
+                            text: "Tool call interrupted by user".to_owned(),
                         })),
                     })),
                 };
                 self.append_pending(synthetic_result, format!("{}-interrupted", tool_call.id));
-                self.mark_tool_call_complete(tool_call.id.clone());
+                self.mark_tool_call_complete(tool_call.id);
             }
         }
 
@@ -288,7 +288,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         if let Message::User { content } = &message
             && let UserContent::ToolResult(result) = content.first()
         {
-            self.mark_tool_call_complete(result.id.clone());
+            self.mark_tool_call_complete(result.id);
         }
         self.pending_items.borrow_mut().push(PendingItem {
             message,
@@ -544,7 +544,7 @@ where
                     id: pending_call.id.clone(),
                     call_id: pending_call.call_id.clone(),
                     content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                        text: "Tool call interrupted by compaction".to_string(),
+                        text: "Tool call interrupted by compaction".to_owned(),
                     })),
                 })),
             };
@@ -560,7 +560,7 @@ where
                 id: spawn_call_id.clone(),
                 call_id: None,
                 function: rig::message::ToolFunction {
-                    name: "__harness_begin_compaction__".to_string(),
+                    name: "__harness_begin_compaction__".to_owned(),
                     arguments: serde_json::json!({}),
                 },
                 additional_params: None,
@@ -643,7 +643,7 @@ where
 
     // Handle synthetic tool results (subscription events / thread reports)
     let content = if let Some(synthetic_kind) = input_msg.synthetic {
-        let original_tool_call_id = synthetic_kind.tool_call_id().to_string();
+        let original_tool_call_id = synthetic_kind.tool_call_id().to_owned();
         let is_final_subscription = synthetic_kind.is_final();
         tracing::info!(
             "Processing synthetic tool result for tool call: {}",
@@ -688,7 +688,7 @@ where
                         id: new_tool_call_id.clone(),
                         call_id: None,
                         function: rig::message::ToolFunction {
-                            name: "receive_event__injected".to_string(),
+                            name: "receive_event__injected".to_owned(),
                             arguments: serde_json::json!({
                                 "original_tool_name": original_call.function.name,
                                 "original_tool_call_id": original_tool_call_id,
@@ -766,7 +766,7 @@ where
                         id: pending_call.id.clone(),
                         call_id: pending_call.call_id.clone(),
                         content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                            text: "Tool call interrupted by subscription event".to_string(),
+                            text: "Tool call interrupted by subscription event".to_owned(),
                         })),
                     })),
                 };
@@ -783,7 +783,7 @@ where
                     id: event_call_id.clone(),
                     call_id: None,
                     function: rig::message::ToolFunction {
-                        name: "receive_event__injected".to_string(),
+                        name: "receive_event__injected".to_owned(),
                         arguments: serde_json::json!({
                             "original_tool_name": original_call.function.name,
                             "original_tool_call_id": original_tool_call_id,
@@ -800,7 +800,7 @@ where
                     id: spawn_call_id.clone(),
                     call_id: None,
                     function: rig::message::ToolFunction {
-                        name: "spawn_thread".to_string(),
+                        name: "spawn_thread".to_owned(),
                         arguments: serde_json::json!({
                             "instructions": "Spawning thread to process incoming event."
                         }),
@@ -902,7 +902,10 @@ where
 //     terminal Action). Handles stream errors and unknown tools internally.
 // ═══════════════════════════════════════════════════════════════════════
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "completion orchestration requires many parameters"
+)]
 pub fn run_completion<'a: 'b, 'b, Mdl, C, S, M>(
     model: &'a Mdl,
     history: &'a HistoryManager<C, S>,
@@ -941,7 +944,7 @@ where
         'outer: loop {
             let stream_result = model
                 .stream(CompletionRequest {
-                    model: model_id_override.map(|s| s.to_string()),
+                    model: model_id_override.map(|s| s.to_owned()),
                     preamble: Some(preamble.clone()),
                     chat_history: history.get_history(),
                     documents: vec![],
@@ -977,7 +980,7 @@ where
                 }
                 _ = tokio::time::sleep(Duration::from_secs(30)) => {
                     if retry_count < 10 {
-                        yield CompletionEvent::Info("Stream error (timeout initiating request), retrying...".to_string());
+                        yield CompletionEvent::Info("Stream error (timeout initiating request), retrying...".to_owned());
                         retry_count += 1;
                         continue 'outer;
                     } else {
@@ -996,7 +999,7 @@ where
                     if (err_str.contains("please wait before trying again") || err_str.contains("please try again")) && retry_count < 10 {
                         tracing::warn!("Stream error (rate limit), retrying...");
 
-                        yield CompletionEvent::Info("Stream error (rate limit), retrying after 30 seconds...".to_string());
+                        yield CompletionEvent::Info("Stream error (rate limit), retrying after 30 seconds...".to_owned());
                         tokio::select! {
                             _ = tokio::time::sleep(Duration::from_secs(30)) => {}
                             _ = &mut cancel_rx => {
@@ -1009,7 +1012,7 @@ where
                     } else if (err_str.contains("unexpected end of stream") || err_str.contains("unexpected error when processing the request")) && retry_count < 10 {
                         tracing::warn!("Stream error (unexpected end), retrying...");
 
-                        yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_string());
+                        yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_owned());
                         tokio::select! {
                             _ = tokio::time::sleep(Duration::from_secs(5)) => {}
                             _ = &mut cancel_rx => {
@@ -1040,7 +1043,7 @@ where
                     _ = tokio::time::sleep(Duration::from_secs(120)) => {
                         cancelled = false;
                         if retry_count < 10 {
-                            yield CompletionEvent::Info("Stream error (timeout), retrying...".to_string());
+                            yield CompletionEvent::Info("Stream error (timeout), retrying...".to_owned());
                             tracing::warn!("Stream ended unexpectedly, removing trailing reasoning and retrying...");
                             history.remove_trailing_reasoning();
                             if is_thinking {
@@ -1064,24 +1067,21 @@ where
                     return;
                 }
 
-                let res = match llm_next {
-                    Some(r) => r,
-                    None => {
-                        history.remove_trailing_reasoning();
-                        if is_thinking {
-                            is_thinking = false;
-                            yield CompletionEvent::ThinkingEnd;
-                        }
-                        if retry_count < 10 {
-                            yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_string());
-                            tracing::warn!("Stream ended unexpectedly, removing trailing reasoning and retrying...");
-                            tokio::time::sleep(Duration::from_secs(1)).await;
-                            retry_count += 1;
-                            continue 'outer;
-                        } else {
-                            Err(Into::<BoxError>::into("Stream timed out"))?;
-                            unreachable!()
-                        }
+                let Some(res) = llm_next else {
+                    history.remove_trailing_reasoning();
+                    if is_thinking {
+                        is_thinking = false;
+                        yield CompletionEvent::ThinkingEnd;
+                    }
+                    if retry_count < 10 {
+                        yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_owned());
+                        tracing::warn!("Stream ended unexpectedly, removing trailing reasoning and retrying...");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        retry_count += 1;
+                        continue 'outer;
+                    } else {
+                        Err(Into::<BoxError>::into("Stream timed out"))?;
+                        unreachable!()
                     }
                 };
 
@@ -1098,7 +1098,7 @@ where
                         }
                         let err_str = format!("{}", e);
                         if (err_str.contains("unexpected end of stream") || err_str.contains("unexpected error when processing the request")) && retry_count < 10 {
-                            yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_string());
+                            yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_owned());
                             tracing::warn!("Stream error (unexpected end), retrying...");
                             tokio::time::sleep(Duration::from_secs(1)).await;
                             retry_count += 1;
@@ -1143,7 +1143,7 @@ where
                                 has_emitted_tool_call = true;
                                 if call.function.name == "receive_event__injected" {
                                     let tool_result = Message::User {
-                                        content: OneOrMany::one(UserContent::ToolResult(rig::message::ToolResult {
+                                        content: OneOrMany::one(UserContent::ToolResult(ToolResult {
                                             id: call.id.clone(),
                                             call_id: call.call_id.clone(),
                                             content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
@@ -1158,7 +1158,7 @@ where
                                     // Unknown tool — inject error and retry the whole completion
                                     tracing::warn!("Unknown tool '{}' called, injecting error and retrying", call.function.name);
                                     let tool_result = Message::User {
-                                        content: OneOrMany::one(UserContent::ToolResult(rig::message::ToolResult {
+                                        content: OneOrMany::one(UserContent::ToolResult(ToolResult {
                                             id: call.id.clone(),
                                             call_id: call.call_id.clone(),
                                             content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
@@ -1286,7 +1286,11 @@ where
 }
 
 #[cfg(test)]
-#[allow(clippy::collapsible_if, clippy::type_complexity)]
+#[expect(
+    clippy::collapsible_if,
+    clippy::type_complexity,
+    reason = "test readability"
+)]
 mod tests {
     use super::*;
     use crate::message::{
@@ -1373,7 +1377,7 @@ mod tests {
             _spawn_tool_call_id: &str,
             _is_for_subscription_event: bool,
         ) -> Result<String, TestError> {
-            Ok("sub-thread-1".to_string())
+            Ok("sub-thread-1".to_owned())
         }
         async fn is_thread_closed(&self, thread_id: &str) -> Result<bool, TestError> {
             Ok(self.closed_threads.contains(thread_id))
@@ -1493,7 +1497,7 @@ mod tests {
         initial_history: Vec<Message>,
     ) -> HistoryManager<StubConversationStore, StubStateStore> {
         let hm =
-            HistoryManager::new_with_history(store.clone(), StubStateStore, "thread-1".to_string())
+            HistoryManager::new_with_history(store.clone(), StubStateStore, "thread-1".to_owned())
                 .await
                 .expect("create history manager");
         *hm.history.borrow_mut() = initial_history;
@@ -1503,7 +1507,7 @@ mod tests {
     fn user_text_msg(group_id: &str, text: &str) -> InputMessage {
         InputMessage {
             content: InputMessageContent::User(UserContent::text(text)),
-            group_id: group_id.to_string(),
+            group_id: group_id.to_owned(),
             metadata: None,
             synthetic: None,
             display_as: None,
@@ -1515,10 +1519,10 @@ mod tests {
         Message::Assistant {
             id: None,
             content: OneOrMany::one(AssistantContent::ToolCall(ToolCall {
-                id: id.to_string(),
+                id: id.to_owned(),
                 call_id: None,
                 function: ToolFunction {
-                    name: name.to_string(),
+                    name: name.to_owned(),
                     arguments: args,
                 },
                 additional_params: None,
@@ -1535,13 +1539,13 @@ mod tests {
     ) -> InputMessage {
         InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                id: tool_call_id.to_string(),
+                id: tool_call_id.to_owned(),
                 call_id: None,
                 content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                    text: result_text.to_string(),
+                    text: result_text.to_owned(),
                 })),
             })),
-            group_id: group_id.to_string(),
+            group_id: group_id.to_owned(),
             metadata: None,
             synthetic,
             display_as: None,
@@ -1558,7 +1562,7 @@ mod tests {
 
         let result = prepare_input(
             user_text_msg("thread-1", "hello"),
-            "msg-1".to_string(),
+            "msg-1".to_owned(),
             &hm,
             &store,
             &StubSender,
@@ -1573,13 +1577,13 @@ mod tests {
     #[tokio::test]
     async fn closed_thread_ignores() {
         let store = StubConversationStore {
-            closed_threads: HashSet::from(["thread-1".to_string()]),
+            closed_threads: HashSet::from(["thread-1".to_owned()]),
         };
         let hm = make_history(&store, vec![]).await;
 
         let result = prepare_input(
             user_text_msg("thread-1", "hello"),
-            "msg-1".to_string(),
+            "msg-1".to_owned(),
             &hm,
             &store,
             &StubSender,
@@ -1598,19 +1602,19 @@ mod tests {
 
         let input = InputMessage {
             content: InputMessageContent::OAuth(OAuthRequired {
-                content_type: "oauth_required".to_string(),
-                id: "oauth-1".to_string(),
+                content_type: "oauth_required".to_owned(),
+                id: "oauth-1".to_owned(),
                 call_id: None,
-                auth_url: "https://example.com/auth".to_string(),
+                auth_url: "https://example.com/auth".to_owned(),
             }),
-            group_id: "thread-1".to_string(),
+            group_id: "thread-1".to_owned(),
             metadata: None,
             synthetic: None,
             display_as: None,
             subscription: false,
         };
 
-        let result = prepare_input(input, "msg-1".to_string(), &hm, &store, &StubSender)
+        let result = prepare_input(input, "msg-1".to_owned(), &hm, &store, &StubSender)
             .await
             .expect("prepare input");
 
@@ -1626,7 +1630,7 @@ mod tests {
         // First call succeeds
         let r1 = prepare_input(
             user_text_msg("thread-1", "hello"),
-            "msg-1".to_string(),
+            "msg-1".to_owned(),
             &hm,
             &store,
             &StubSender,
@@ -1638,7 +1642,7 @@ mod tests {
         // Same message_id again
         let r2 = prepare_input(
             user_text_msg("thread-1", "hello"),
-            "msg-1".to_string(),
+            "msg-1".to_owned(),
             &hm,
             &store,
             &StubSender,
@@ -1665,7 +1669,7 @@ mod tests {
 
         let result = prepare_input(
             user_text_msg("thread-1", "actually, never mind"),
-            "msg-2".to_string(),
+            "msg-2".to_owned(),
             &hm,
             &store,
             &StubSender,
@@ -1691,7 +1695,7 @@ mod tests {
 
         let input = tool_result_input("thread-1", "tc-1", "tool output", None);
 
-        let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
+        let result = prepare_input(input, "msg-2".to_owned(), &hm, &store, &StubSender)
             .await
             .expect("prepare input");
 
@@ -1714,10 +1718,10 @@ mod tests {
             ),
             Message::User {
                 content: OneOrMany::one(UserContent::ToolResult(ToolResult {
-                    id: "tc-sub".to_string(),
+                    id: "tc-sub".to_owned(),
                     call_id: None,
                     content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                        text: "subscribed successfully".to_string(),
+                        text: "subscribed successfully".to_owned(),
                     })),
                 })),
             },
@@ -1725,19 +1729,19 @@ mod tests {
         let hm = make_history(&store, initial).await;
         hm.processed_tool_calls
             .borrow_mut()
-            .insert("tc-sub".to_string());
+            .insert("tc-sub".to_owned());
 
         let input = tool_result_input(
             "thread-1",
             "tc-sub",
             "thread report data",
             Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
-                tool_call_id: "tc-sub".to_string(),
-                child_thread_id: "thread-1".to_string(),
+                tool_call_id: "tc-sub".to_owned(),
+                child_thread_id: "thread-1".to_owned(),
             })),
         );
 
-        let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
+        let result = prepare_input(input, "msg-2".to_owned(), &hm, &store, &StubSender)
             .await
             .expect("prepare input");
 
@@ -1770,12 +1774,12 @@ mod tests {
             "tc-sub",
             "thread report data",
             Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
-                tool_call_id: "tc-sub".to_string(),
-                child_thread_id: "thread-1".to_string(),
+                tool_call_id: "tc-sub".to_owned(),
+                child_thread_id: "thread-1".to_owned(),
             })),
         );
 
-        let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
+        let result = prepare_input(input, "msg-2".to_owned(), &hm, &store, &StubSender)
             .await
             .expect("prepare input");
 
@@ -1801,10 +1805,10 @@ mod tests {
             ),
             Message::User {
                 content: OneOrMany::one(UserContent::ToolResult(ToolResult {
-                    id: "tc-sub".to_string(),
+                    id: "tc-sub".to_owned(),
                     call_id: None,
                     content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                        text: "subscribed successfully".to_string(),
+                        text: "subscribed successfully".to_owned(),
                     })),
                 })),
             },
@@ -1817,14 +1821,14 @@ mod tests {
             "event payload",
             Some(SyntheticKind::Tagged(
                 TaggedSyntheticKind::SubscriptionEvent {
-                    tool_call_id: "tc-sub".to_string(),
+                    tool_call_id: "tc-sub".to_owned(),
                     associative: false,
                     r#final: false,
                 },
             )),
         );
 
-        let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
+        let result = prepare_input(input, "msg-2".to_owned(), &hm, &store, &StubSender)
             .await
             .expect("prepare input");
 
@@ -1854,14 +1858,14 @@ mod tests {
             "event payload",
             Some(SyntheticKind::Tagged(
                 TaggedSyntheticKind::SubscriptionEvent {
-                    tool_call_id: "tc-sub".to_string(),
+                    tool_call_id: "tc-sub".to_owned(),
                     associative: false,
                     r#final: false,
                 },
             )),
         );
 
-        let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
+        let result = prepare_input(input, "msg-2".to_owned(), &hm, &store, &StubSender)
             .await
             .expect("prepare input");
 
@@ -1881,14 +1885,14 @@ mod tests {
             "some data",
             Some(SyntheticKind::Tagged(
                 TaggedSyntheticKind::SubscriptionEvent {
-                    tool_call_id: "nonexistent-tc".to_string(),
+                    tool_call_id: "nonexistent-tc".to_owned(),
                     associative: false,
                     r#final: false,
                 },
             )),
         );
 
-        let result = prepare_input(input, "msg-1".to_string(), &hm, &store, &StubSender)
+        let result = prepare_input(input, "msg-1".to_owned(), &hm, &store, &StubSender)
             .await
             .expect("prepare input");
 
@@ -1904,14 +1908,14 @@ mod tests {
 
         let input = InputMessage {
             content: InputMessageContent::User(UserContent::text("hi")),
-            group_id: "thread-1".to_string(),
+            group_id: "thread-1".to_owned(),
             metadata: Some(serde_json::json!({"user_id": "u-123"})),
             synthetic: None,
             display_as: None,
             subscription: false,
         };
 
-        let _ = prepare_input(input, "msg-1".to_string(), &hm, &store, &StubSender)
+        let _ = prepare_input(input, "msg-1".to_owned(), &hm, &store, &StubSender)
             .await
             .expect("prepare input");
 
@@ -1933,10 +1937,10 @@ mod tests {
             ),
             Message::User {
                 content: OneOrMany::one(UserContent::ToolResult(ToolResult {
-                    id: "tc-cmd".to_string(),
+                    id: "tc-cmd".to_owned(),
                     call_id: None,
                     content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                        text: "Command is still running. Output will be streamed via subscription events.".to_string(),
+                        text: "Command is still running. Output will be streamed via subscription events.".to_owned(),
                     })),
                 })),
             },
@@ -1944,7 +1948,7 @@ mod tests {
         let hm = make_history(&store, initial).await;
         hm.processed_tool_calls
             .borrow_mut()
-            .insert("tc-cmd".to_string());
+            .insert("tc-cmd".to_owned());
 
         let input = tool_result_input(
             "thread-1",
@@ -1952,14 +1956,14 @@ mod tests {
             "build output chunk\n[exit code: 0]",
             Some(SyntheticKind::Tagged(
                 TaggedSyntheticKind::SubscriptionEvent {
-                    tool_call_id: "tc-cmd".to_string(),
+                    tool_call_id: "tc-cmd".to_owned(),
                     associative: true,
                     r#final: false,
                 },
             )),
         );
 
-        let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
+        let result = prepare_input(input, "msg-2".to_owned(), &hm, &store, &StubSender)
             .await
             .expect("prepare input");
 
@@ -1995,14 +1999,14 @@ mod tests {
             "build output chunk\n[exit code: 0]",
             Some(SyntheticKind::Tagged(
                 TaggedSyntheticKind::SubscriptionEvent {
-                    tool_call_id: "tc-cmd".to_string(),
+                    tool_call_id: "tc-cmd".to_owned(),
                     associative: true,
                     r#final: false,
                 },
             )),
         );
 
-        let result = prepare_input(input, "msg-2".to_string(), &hm, &store, &StubSender)
+        let result = prepare_input(input, "msg-2".to_owned(), &hm, &store, &StubSender)
             .await
             .expect("prepare input");
 
@@ -2065,7 +2069,7 @@ mod tests {
 
                 // Spawn the stream consumer
                 let handle = tokio::task::spawn_local(async move {
-                    let stream = crate::event_processor::run_completion(
+                    let stream = run_completion(
                         &model,
                         &hm,
                         &tool_names,
@@ -2126,7 +2130,7 @@ mod tests {
                 let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let stream = super::run_completion(
+                    let stream = run_completion(
                         &model,
                         &hm,
                         &tool_names,
@@ -2190,7 +2194,7 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let stream = super::run_completion(
+                    let stream = run_completion(
                         &model,
                         &hm,
                         &tool_names,
@@ -2272,7 +2276,7 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let stream = super::run_completion(
+                    let stream = run_completion(
                         &model,
                         &hm,
                         &tool_names,
@@ -2348,7 +2352,7 @@ mod tests {
         ) -> Option<ToolResult> {
             let text = args["text"].as_str().unwrap_or("?");
             Some(ToolResult {
-                id: id.to_string(),
+                id: id.to_owned(),
                 call_id: call_id.map(String::from),
                 content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
                     text: format!("echo: {}", text),
@@ -2375,7 +2379,7 @@ mod tests {
                 .await;
 
                 let mut tool_names = HashSet::new();
-                tool_names.insert("echo_sync".to_string());
+                tool_names.insert("echo_sync".to_owned());
                 let tool_defs = vec![ToolDefinition {
                     name: "echo_sync".into(),
                     description: "echoes".into(),
@@ -2387,7 +2391,7 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let stream = super::run_completion(
+                    let stream = run_completion(
                         &model,
                         &hm,
                         &tool_names,
@@ -2469,7 +2473,7 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let stream = super::run_completion(
+                    let stream = run_completion(
                         &model,
                         &hm,
                         &tool_names,
@@ -2487,8 +2491,8 @@ mod tests {
                     let mut events = Vec::new();
                     while let Some(ev) = stream.next().await {
                         match ev.expect("receive stream event") {
-                            CompletionEvent::ThinkingStart => events.push("start".to_string()),
-                            CompletionEvent::ThinkingEnd => events.push("end".to_string()),
+                            CompletionEvent::ThinkingStart => events.push("start".to_owned()),
+                            CompletionEvent::ThinkingEnd => events.push("end".to_owned()),
                             CompletionEvent::ThinkingChunk(c) => {
                                 events.push(format!("think:{}", c))
                             }
@@ -2560,7 +2564,7 @@ mod tests {
                 static ASYNC_TOOL: AsyncTool = AsyncTool;
 
                 let mut tool_names = HashSet::new();
-                tool_names.insert("async_tool".to_string());
+                tool_names.insert("async_tool".to_owned());
                 let tool_defs = vec![ToolDefinition {
                     name: "async_tool".into(),
                     description: "async".into(),
@@ -2572,7 +2576,7 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let stream = super::run_completion(
+                    let stream = run_completion(
                         &model,
                         &hm,
                         &tool_names,
@@ -2605,7 +2609,7 @@ mod tests {
                 ctrl.finish();
 
                 let name = handle.await.expect("await task handle");
-                assert_eq!(name, Some("async_tool".to_string()));
+                assert_eq!(name, Some("async_tool".to_owned()));
             })
             .await;
     }
@@ -2630,7 +2634,7 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let stream = super::run_completion(
+                    let stream = run_completion(
                         &model,
                         &hm,
                         &tool_names,
@@ -2695,7 +2699,7 @@ mod tests {
                 let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let stream = super::run_completion(
+                    let stream = run_completion(
                         &model,
                         &hm,
                         &tool_names,
@@ -2760,7 +2764,7 @@ mod tests {
                 .await;
 
                 let mut tool_names = HashSet::new();
-                tool_names.insert("echo_sync".to_string());
+                tool_names.insert("echo_sync".to_owned());
                 let tool_defs = vec![ToolDefinition {
                     name: "echo_sync".into(),
                     description: "echoes".into(),
@@ -2772,7 +2776,7 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let stream = super::run_completion(
+                    let stream = run_completion(
                         &model,
                         &hm,
                         &tool_names,

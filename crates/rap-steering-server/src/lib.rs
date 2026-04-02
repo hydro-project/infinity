@@ -35,9 +35,8 @@ async fn collect_files_recursive(root: &Path, dir: &Path) -> Vec<PathBuf> {
     let mut result = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(current) = stack.pop() {
-        let mut entries = match fs::read_dir(&current).await {
-            Ok(e) => e,
-            Err(_) => continue,
+        let Ok(mut entries) = fs::read_dir(&current).await else {
+            continue;
         };
         while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
@@ -80,9 +79,8 @@ pub async fn list_steering_files(root: &Path) -> Result<Vec<String>, String> {
         if !abs.exists() {
             continue;
         }
-        let canonical = match fs::canonicalize(&abs).await {
-            Ok(c) => c,
-            Err(_) => continue,
+        let Ok(canonical) = fs::canonicalize(&abs).await else {
+            continue;
         };
         // Verify it's under root (safety check)
         if !canonical.starts_with(&canon_root) {
@@ -109,7 +107,7 @@ pub async fn load_steering_file(root: &Path, rel_path: &str) -> Result<String, S
         .map_err(|e| format!("file not found: {e}"))?;
 
     if !canonical.starts_with(&canon_root) {
-        return Err("path traversal denied".to_string());
+        return Err("path traversal denied".to_owned());
     }
 
     fs::read_to_string(&canonical)

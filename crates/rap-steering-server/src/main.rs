@@ -28,14 +28,14 @@ struct AppState {
 
 fn build_manifest(endpoint: &str) -> ToolsetManifest {
     ToolsetManifest {
-        name: "steering-tools".to_string(),
-        description: Some("Discover and load project steering files (CLAUDE.md, AGENTS.md, .kiro/steering/, etc.)".to_string()),
-        endpoint: endpoint.to_string(),
+        name: "steering-tools".to_owned(),
+        description: Some("Discover and load project steering files (CLAUDE.md, AGENTS.md, .kiro/steering/, etc.)".to_owned()),
+        endpoint: endpoint.to_owned(),
         needs_migration: false,
         tools: vec![
             ToolDef {
-                name: "list_steering".to_string(),
-                description: "List all known steering/instruction files found in a project root. Scans for CLAUDE.md, AGENTS.md, .kiro/steering/, .cursorrules, .github/copilot-instructions.md, .windsurfrules, CONVENTIONS.md, .cursor/rules/, .ai/rules/, etc. Returns deduplicated relative paths (symlinks resolved).".to_string(),
+                name: "list_steering".to_owned(),
+                description: "List all known steering/instruction files found in a project root. Scans for CLAUDE.md, AGENTS.md, .kiro/steering/, .cursorrules, .github/copilot-instructions.md, .windsurfrules, CONVENTIONS.md, .cursor/rules/, .ai/rules/, etc. Returns deduplicated relative paths (symlinks resolved).".to_owned(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -50,8 +50,8 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                 display_script: None,
             },
             ToolDef {
-                name: "load_steering".to_string(),
-                description: "Load the content of a steering file. The path must be relative to the project root and must be a file discoverable by list_steering.".to_string(),
+                name: "load_steering".to_owned(),
+                description: "Load the content of a steering file. The path must be relative to the project root and must be a file discoverable by list_steering.".to_owned(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -67,7 +67,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
                     "required": ["root", "path"]
                 }),
                 annotations: None,
-                display_script: Some(r#""Load " + args.path"#.to_string()),
+                display_script: Some(r#""Load " + args.path"#.to_owned()),
             },
         ],
     }
@@ -118,7 +118,7 @@ async fn handle_list_steering(invocation: &RapInvocation) -> Result<String, Stri
     let files = list_steering_files(Path::new(&args.root)).await?;
 
     if files.is_empty() {
-        return Ok("No steering files found.".to_string());
+        return Ok("No steering files found.".to_owned());
     }
 
     Ok(files.join("\n"))

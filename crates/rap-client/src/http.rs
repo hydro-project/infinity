@@ -69,7 +69,7 @@ impl HttpClient for SimpleHttpClient {
             .client
             .post(url)
             .header("content-type", "application/json")
-            .body(body.to_string())
+            .body(body.to_owned())
             .send()
             .await
             .map_err(|e| SimpleHttpError(e.to_string()))?;
@@ -142,7 +142,7 @@ impl ToolsetCache for InMemoryToolsetCache {
         self.store
             .lock()
             .expect("bug: cache mutex poisoned")
-            .insert(key.to_string(), json.to_string());
+            .insert(key.to_owned(), json.to_owned());
         Ok(())
     }
 }

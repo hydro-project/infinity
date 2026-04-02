@@ -248,7 +248,7 @@ impl<C: CallbackClient> Poller<C> {
             .headers()
             .get("etag")
             .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
+            .map(|s| s.to_owned());
 
         let status = resp.status();
 
@@ -439,7 +439,7 @@ fn extract_event_data(event: &GitHubEvent) -> EventData {
     d.branch = p
         .get("ref")
         .and_then(|v| v.as_str())
-        .map(|s| s.strip_prefix("refs/heads/").unwrap_or(s).to_string());
+        .map(|s| s.strip_prefix("refs/heads/").unwrap_or(s).to_owned());
     d.head_branch = p
         .pointer("/pull_request/head/ref")
         .and_then(|v| v.as_str())
@@ -517,7 +517,7 @@ fn describe_filters(f: &Filters) -> String {
         parts.push(format!("actor={v}"));
     }
     if parts.is_empty() {
-        "No filters (will match all events).".to_string()
+        "No filters (will match all events).".to_owned()
     } else {
         format!("Filters: {}", parts.join(", "))
     }

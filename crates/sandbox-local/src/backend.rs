@@ -266,7 +266,7 @@ impl SandboxBackend for LocalBackend {
     ) -> Result<ExecResult, SandboxError> {
         let (program, args) = argv
             .split_first()
-            .ok_or_else(|| SandboxError::Other("argv must not be empty".to_string()))?;
+            .ok_or_else(|| SandboxError::Other("argv must not be empty".to_owned()))?;
 
         let output = if cfg!(target_os = "macos") && self.sandbox_enabled {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
@@ -386,7 +386,7 @@ impl SandboxBackend for LocalBackend {
     ) -> Result<SpawnedCommand, SandboxError> {
         let (program, args) = argv
             .split_first()
-            .ok_or_else(|| SandboxError::Other("argv must not be empty".to_string()))?;
+            .ok_or_else(|| SandboxError::Other("argv must not be empty".to_owned()))?;
 
         if cfg!(target_os = "macos") && self.sandbox_enabled {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
@@ -423,7 +423,7 @@ impl SandboxBackend for LocalBackend {
                      (require-all\n\
                          (path \"/dev/null\")\n\
                          (vnode-type CHARACTER-DEVICE)))"
-                    .to_string()
+                    .to_owned()
             } else {
                 format!(
                     "(version 1)\n\

@@ -156,7 +156,7 @@ fn prefix_daemon_message(msg: DaemonMessage, remote_name: &str) -> DaemonMessage
 fn strip_id(id: &str, remote_name: &str) -> String {
     id.strip_prefix(&format!("{remote_name}/"))
         .unwrap_or(id)
-        .to_string()
+        .to_owned()
 }
 
 fn strip_client_message(msg: ClientMessage, remote_name: &str) -> ClientMessage {
@@ -346,7 +346,7 @@ pub async fn handle_client_channels(
                     ClientMessage::Connect { session_id, thread_id } => {
                         if let Some((rname, real_session_id)) = is_remote_session(&session_id) {
                             let real_thread_id = thread_id.as_deref().map(|t| strip_id(t, rname));
-                            let rname = rname.to_string();
+                            let rname = rname.to_owned();
                             let rd = {
                                 let mgr = session_manager.lock().await;
                                 mgr.remote_daemons.clone()

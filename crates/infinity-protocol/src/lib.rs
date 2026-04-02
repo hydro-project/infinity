@@ -193,7 +193,7 @@ pub enum DaemonMessage {
         history: Vec<DaemonMessage>,
         pending_choices: Vec<DaemonMessage>,
         #[serde(default)]
-        views: std::collections::HashMap<String, serde_json::Value>,
+        views: HashMap<String, serde_json::Value>,
     },
     /// Sent immediately on socket connection with session list and default model info.
     Welcome {

@@ -170,7 +170,7 @@ where
             } else if let InputMessageContent::User(UserContent::Text(ref text)) = input_msg.content
             {
                 let display_text = text.text.strip_prefix("<interrupt>").unwrap_or(&text.text);
-                let _ = display_tx.send(DisplayEvent::UserInput(display_text.to_string()));
+                let _ = display_tx.send(DisplayEvent::UserInput(display_text.to_owned()));
             }
 
             Some(message_id)
@@ -332,7 +332,7 @@ where
                         });
                     }
                     Ok(event_processor::CompletionEvent::Action(a)) => {
-                        if let event_processor::CompletionAction::ExecuteToolCall {
+                        if let CompletionAction::ExecuteToolCall {
                             ref tool_name,
                             ref tool_args,
                             ..
@@ -846,7 +846,7 @@ mod tests {
         let td: Vec<ToolDefinition> = vec![];
         let tr: HashMap<String, &dyn Tool<StubSender>> = HashMap::new();
         // First call — actionable
-        let msg_id = "same-id".to_string();
+        let msg_id = "same-id".to_owned();
         let input1 = (
             InputMessage {
                 content: InputMessageContent::User(UserContent::text("hi")),

@@ -60,8 +60,8 @@ pub async fn git_worktree_add(
         run_git(repo_dir, &args).await?;
         let (name, email) = git_configured_user(repo_dir).await.unwrap_or_else(|| {
             (
-                crate::DEFAULT_SANDBOX_NAME.to_string(),
-                crate::DEFAULT_SANDBOX_EMAIL.to_string(),
+                crate::DEFAULT_SANDBOX_NAME.to_owned(),
+                crate::DEFAULT_SANDBOX_EMAIL.to_owned(),
             )
         });
 
@@ -146,5 +146,5 @@ pub async fn git_branch_top_is_empty(dir: &Path) -> bool {
 pub async fn git_configured_user(dir: &Path) -> Option<(String, String)> {
     let name = run_git(dir, &["config", "user.name"]).await.ok()?;
     let email = run_git(dir, &["config", "user.email"]).await.ok()?;
-    Some((name.trim().to_string(), email.trim().to_string()))
+    Some((name.trim().to_owned(), email.trim().to_owned()))
 }
