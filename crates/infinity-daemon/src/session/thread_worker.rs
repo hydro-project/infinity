@@ -474,9 +474,9 @@ mod tests {
         let subscribers: ThreadSubscribers = Arc::new(std::sync::Mutex::new(vec![client_tx]));
 
         let (change_tx, _change_rx) = mpsc::unbounded_channel();
-        let session_store: SessionStoreHandle = Arc::new(tokio::sync::Mutex::new(
-            session_store::SessionStore::load("/dev/null", change_tx),
-        ));
+        let mut store = session_store::SessionStore::load("/dev/null", change_tx);
+        store.create(group_id, std::path::PathBuf::from("/tmp"));
+        let session_store: SessionStoreHandle = Arc::new(tokio::sync::Mutex::new(store));
 
         tokio::task::spawn_local(thread_worker(
             group_id.into(),

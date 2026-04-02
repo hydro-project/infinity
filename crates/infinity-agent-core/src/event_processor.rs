@@ -2043,247 +2043,267 @@ mod tests {
 
     // ── Tests ──
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn basic_text_completion() {
-        let (model, mut ctrl) = mock_model();
-        let convo_store = StubConversationStore::new();
-        let hm = make_history(
-            &convo_store,
-            vec![Message::User {
-                content: OneOrMany::one(UserContent::text("hello")),
-            }],
-        )
-        .await;
-        let (tool_names, tool_defs, tool_registry) = no_tools();
-        let ctx = tool_context();
-        let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (model, mut ctrl) = mock_model();
+                let convo_store = StubConversationStore::new();
+                let hm = make_history(
+                    &convo_store,
+                    vec![Message::User {
+                        content: OneOrMany::one(UserContent::text("hello")),
+                    }],
+                )
+                .await;
+                let (tool_names, tool_defs, tool_registry) = no_tools();
+                let ctx = tool_context();
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
-        // Spawn the stream consumer
-        let handle = tokio::task::spawn_local(async move {
-            let stream = crate::event_processor::run_completion(
-                &model,
-                &hm,
-                &tool_names,
-                &tool_defs,
-                &tool_registry,
-                &ctx,
-                "thread-1",
-                "msg-1",
-                None,
-                None,
-                None,
-                cancel_rx,
-            );
-            tokio::pin!(stream);
-            let mut texts = Vec::new();
-            let mut got_done = false;
-            while let Some(ev) = stream.next().await {
-                match ev.unwrap() {
-                    CompletionEvent::TextChunk(t) => texts.push(t),
-                    CompletionEvent::Action(CompletionAction::Done(_)) => {
-                        got_done = true;
-                    }
-                    _ => {}
-                }
-            }
-            (texts, got_done)
-        });
-
-        // Feed the model
-        let _req = ctrl.next_request().await;
-        ctrl.send_text("Hello ");
-        ctrl.send_text("world!");
-        ctrl.finish();
-
-        let (texts, got_done) = handle.await.unwrap();
-        assert_eq!(texts, vec!["Hello ", "world!"]);
-        assert!(got_done);
-    }
-
-    #[tokio::test]
-    async fn cancellation_mid_stream() {
-        let (model, mut ctrl) = mock_model();
-        let convo_store = StubConversationStore::new();
-        let hm = make_history(
-            &convo_store,
-            vec![Message::User {
-                content: OneOrMany::one(UserContent::text("hello")),
-            }],
-        )
-        .await;
-        let (tool_names, tool_defs, tool_registry) = no_tools();
-        let ctx = tool_context();
-        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
-
-        let handle = tokio::task::spawn_local(async move {
-            let stream = super::run_completion(
-                &model,
-                &hm,
-                &tool_names,
-                &tool_defs,
-                &tool_registry,
-                &ctx,
-                "thread-1",
-                "msg-1",
-                None,
-                None,
-                None,
-                cancel_rx,
-            );
-            tokio::pin!(stream);
-            let mut texts = Vec::new();
-            let mut got_done = false;
-            while let Some(ev) = stream.next().await {
-                match ev.unwrap() {
-                    CompletionEvent::TextChunk(t) => texts.push(t),
-                    CompletionEvent::Action(CompletionAction::Done(_)) => {
-                        got_done = true;
-                    }
-                    _ => {}
-                }
-            }
-            (texts, got_done)
-        });
-
-        let _req = ctrl.next_request().await;
-        ctrl.send_text("partial");
-        // Give the stream a moment to process the chunk
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
-        // Cancel before finishing
-        cancel_tx.send(()).unwrap();
-
-        let (texts, got_done) = handle.await.unwrap();
-        assert_eq!(texts, vec!["partial"]);
-        // Should NOT get Done — stream was cancelled
-        assert!(!got_done);
-    }
-
-    #[tokio::test]
-    async fn unknown_tool_injects_error_and_retries() {
-        let (model, mut ctrl) = mock_model();
-        let convo_store = StubConversationStore::new();
-        let hm = make_history(
-            &convo_store,
-            vec![Message::User {
-                content: OneOrMany::one(UserContent::text("do it")),
-            }],
-        )
-        .await;
-        let (tool_names, tool_defs, tool_registry) = no_tools();
-        let ctx = tool_context();
-        let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
-
-        let handle = tokio::task::spawn_local(async move {
-            let stream = super::run_completion(
-                &model,
-                &hm,
-                &tool_names,
-                &tool_defs,
-                &tool_registry,
-                &ctx,
-                "thread-1",
-                "msg-1",
-                None,
-                None,
-                None,
-                cancel_rx,
-            );
-            tokio::pin!(stream);
-            let mut texts = Vec::new();
-            let mut got_done = false;
-            while let Some(ev) = stream.next().await {
-                match ev.unwrap() {
-                    CompletionEvent::TextChunk(t) => texts.push(t),
-                    CompletionEvent::Action(CompletionAction::Done(_)) => {
-                        got_done = true;
-                    }
-                    _ => {}
-                }
-            }
-            (texts, got_done)
-        });
-
-        // Round 1: model calls unknown tool
-        let _req = ctrl.next_request().await;
-        ctrl.send_tool_call("tc-1", "nonexistent_tool", serde_json::json!({}));
-        ctrl.finish();
-
-        // Round 2: after error injection, model retries and returns text
-        let req2 = ctrl.next_request().await;
-        // The history should now contain the error tool result
-        let last_msg = req2.chat_history.into_iter().last().unwrap();
-        if let Message::User { content } = &last_msg {
-            if let UserContent::ToolResult(res) = content.first() {
-                if let rig::message::ToolResultContent::Text(t) = res.content.first() {
-                    assert!(
-                        t.text.contains("does not exist"),
-                        "Expected error about nonexistent tool, got: {}",
-                        t.text
+                // Spawn the stream consumer
+                let handle = tokio::task::spawn_local(async move {
+                    let stream = crate::event_processor::run_completion(
+                        &model,
+                        &hm,
+                        &tool_names,
+                        &tool_defs,
+                        &tool_registry,
+                        &ctx,
+                        "thread-1",
+                        "msg-1",
+                        None,
+                        None,
+                        None,
+                        cancel_rx,
                     );
-                }
-            }
-        }
-        ctrl.send_text("ok, done");
-        ctrl.finish();
+                    tokio::pin!(stream);
+                    let mut texts = Vec::new();
+                    let mut got_done = false;
+                    while let Some(ev) = stream.next().await {
+                        match ev.unwrap() {
+                            CompletionEvent::TextChunk(t) => texts.push(t),
+                            CompletionEvent::Action(CompletionAction::Done(_)) => {
+                                got_done = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    (texts, got_done)
+                });
 
-        let (texts, got_done) = handle.await.unwrap();
-        assert_eq!(texts, vec!["ok, done"]);
-        assert!(got_done);
+                // Feed the model
+                let _req = ctrl.next_request().await;
+                ctrl.send_text("Hello ");
+                ctrl.send_text("world!");
+                ctrl.finish();
+
+                let (texts, got_done) = handle.await.unwrap();
+                assert_eq!(texts, vec!["Hello ", "world!"]);
+                assert!(got_done);
+            })
+            .await;
     }
 
-    #[tokio::test]
-    async fn receive_event_injected_tool_rejected() {
-        let (model, mut ctrl) = mock_model();
-        let convo_store = StubConversationStore::new();
-        let hm = make_history(
-            &convo_store,
-            vec![Message::User {
-                content: OneOrMany::one(UserContent::text("do it")),
-            }],
-        )
-        .await;
-        let (tool_names, tool_defs, tool_registry) = no_tools();
-        let ctx = tool_context();
-        let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_mid_stream() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (model, mut ctrl) = mock_model();
+                let convo_store = StubConversationStore::new();
+                let hm = make_history(
+                    &convo_store,
+                    vec![Message::User {
+                        content: OneOrMany::one(UserContent::text("hello")),
+                    }],
+                )
+                .await;
+                let (tool_names, tool_defs, tool_registry) = no_tools();
+                let ctx = tool_context();
+                let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
-        let handle = tokio::task::spawn_local(async move {
-            let stream = super::run_completion(
-                &model,
-                &hm,
-                &tool_names,
-                &tool_defs,
-                &tool_registry,
-                &ctx,
-                "thread-1",
-                "msg-1",
-                None,
-                None,
-                None,
-                cancel_rx,
-            );
-            tokio::pin!(stream);
-            let mut got_done = false;
-            while let Some(ev) = stream.next().await {
-                if let Ok(CompletionEvent::Action(CompletionAction::Done(_))) = ev {
-                    got_done = true;
+                let handle = tokio::task::spawn_local(async move {
+                    let stream = super::run_completion(
+                        &model,
+                        &hm,
+                        &tool_names,
+                        &tool_defs,
+                        &tool_registry,
+                        &ctx,
+                        "thread-1",
+                        "msg-1",
+                        None,
+                        None,
+                        None,
+                        cancel_rx,
+                    );
+                    tokio::pin!(stream);
+                    let mut texts = Vec::new();
+                    let mut got_done = false;
+                    while let Some(ev) = stream.next().await {
+                        match ev.unwrap() {
+                            CompletionEvent::TextChunk(t) => texts.push(t),
+                            CompletionEvent::Action(CompletionAction::Done(_)) => {
+                                got_done = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    (texts, got_done)
+                });
+
+                let _req = ctrl.next_request().await;
+                ctrl.send_text("partial");
+                // Give the stream a moment to process the chunk
+                tokio::task::yield_now().await;
+                tokio::task::yield_now().await;
+                // Cancel before finishing
+                cancel_tx.send(()).unwrap();
+
+                let (texts, got_done) = handle.await.unwrap();
+                assert_eq!(texts, vec!["partial"]);
+                // Should NOT get Done — stream was cancelled
+                assert!(!got_done);
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unknown_tool_injects_error_and_retries() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (model, mut ctrl) = mock_model();
+                let convo_store = StubConversationStore::new();
+                let hm = make_history(
+                    &convo_store,
+                    vec![Message::User {
+                        content: OneOrMany::one(UserContent::text("do it")),
+                    }],
+                )
+                .await;
+                let (tool_names, tool_defs, tool_registry) = no_tools();
+                let ctx = tool_context();
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let handle = tokio::task::spawn_local(async move {
+                    let stream = super::run_completion(
+                        &model,
+                        &hm,
+                        &tool_names,
+                        &tool_defs,
+                        &tool_registry,
+                        &ctx,
+                        "thread-1",
+                        "msg-1",
+                        None,
+                        None,
+                        None,
+                        cancel_rx,
+                    );
+                    tokio::pin!(stream);
+                    let mut texts = Vec::new();
+                    let mut got_done = false;
+                    while let Some(ev) = stream.next().await {
+                        match ev.unwrap() {
+                            CompletionEvent::TextChunk(t) => texts.push(t),
+                            CompletionEvent::Action(CompletionAction::Done(_)) => {
+                                got_done = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    (texts, got_done)
+                });
+
+                // Round 1: model calls unknown tool
+                let _req = ctrl.next_request().await;
+                ctrl.send_tool_call("tc-1", "nonexistent_tool", serde_json::json!({}));
+                ctrl.finish();
+
+                // Round 2: after error injection, model retries and returns text
+                let req2 = ctrl.next_request().await;
+                // The history should now contain the error tool result
+                let last_msg = req2.chat_history.into_iter().last().unwrap();
+                if let Message::User { content } = &last_msg {
+                    if let UserContent::ToolResult(res) = content.first() {
+                        if let rig::message::ToolResultContent::Text(t) = res.content.first() {
+                            assert!(
+                                t.text.contains("does not exist"),
+                                "Expected error about nonexistent tool, got: {}",
+                                t.text
+                            );
+                        }
+                    }
                 }
-            }
-            got_done
-        });
+                ctrl.send_text("ok, done");
+                ctrl.finish();
 
-        // Round 1: model tries to call the injected-only tool
-        let _req = ctrl.next_request().await;
-        ctrl.send_tool_call("tc-1", "receive_event__injected", serde_json::json!({}));
-        ctrl.finish();
+                let (texts, got_done) = handle.await.unwrap();
+                assert_eq!(texts, vec!["ok, done"]);
+                assert!(got_done);
+            })
+            .await;
+    }
 
-        // Round 2: model should get error and retry
-        let _req2 = ctrl.next_request().await;
-        ctrl.send_text("understood");
-        ctrl.finish();
+    #[tokio::test(flavor = "current_thread")]
+    async fn receive_event_injected_tool_rejected() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (model, mut ctrl) = mock_model();
+                let convo_store = StubConversationStore::new();
+                let hm = make_history(
+                    &convo_store,
+                    vec![Message::User {
+                        content: OneOrMany::one(UserContent::text("do it")),
+                    }],
+                )
+                .await;
+                let (tool_names, tool_defs, tool_registry) = no_tools();
+                let ctx = tool_context();
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
-        let got_done = handle.await.unwrap();
-        assert!(got_done);
+                let handle = tokio::task::spawn_local(async move {
+                    let stream = super::run_completion(
+                        &model,
+                        &hm,
+                        &tool_names,
+                        &tool_defs,
+                        &tool_registry,
+                        &ctx,
+                        "thread-1",
+                        "msg-1",
+                        None,
+                        None,
+                        None,
+                        cancel_rx,
+                    );
+                    tokio::pin!(stream);
+                    let mut got_done = false;
+                    while let Some(ev) = stream.next().await {
+                        if let Ok(CompletionEvent::Action(CompletionAction::Done(_))) = ev {
+                            got_done = true;
+                        }
+                    }
+                    got_done
+                });
+
+                // Round 1: model tries to call the injected-only tool
+                let _req = ctrl.next_request().await;
+                ctrl.send_tool_call("tc-1", "receive_event__injected", serde_json::json!({}));
+                ctrl.finish();
+
+                // Round 2: model should get error and retry
+                let _req2 = ctrl.next_request().await;
+                ctrl.send_text("understood");
+                ctrl.finish();
+
+                let got_done = handle.await.unwrap();
+                assert!(got_done);
+            })
+            .await;
     }
 
     // ── Sync tool for testing ──
@@ -2333,433 +2353,465 @@ mod tests {
 
     static ECHO_TOOL: EchoSyncTool = EchoSyncTool;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn sync_tool_loops_back_without_new_stream() {
-        let (model, mut ctrl) = mock_model();
-        let convo_store = StubConversationStore::new();
-        let hm = make_history(
-            &convo_store,
-            vec![Message::User {
-                content: OneOrMany::one(UserContent::text("echo something")),
-            }],
-        )
-        .await;
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (model, mut ctrl) = mock_model();
+                let convo_store = StubConversationStore::new();
+                let hm = make_history(
+                    &convo_store,
+                    vec![Message::User {
+                        content: OneOrMany::one(UserContent::text("echo something")),
+                    }],
+                )
+                .await;
 
-        let mut tool_names = HashSet::new();
-        tool_names.insert("echo_sync".to_string());
-        let tool_defs = vec![ToolDefinition {
-            name: "echo_sync".into(),
-            description: "echoes".into(),
-            parameters: serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}}),
-        }];
-        let mut tool_registry: HashMap<String, &dyn Tool<StubSender>> = HashMap::new();
-        tool_registry.insert("echo_sync".into(), &ECHO_TOOL);
-        let ctx = tool_context();
-        let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+                let mut tool_names = HashSet::new();
+                tool_names.insert("echo_sync".to_string());
+                let tool_defs = vec![ToolDefinition {
+                    name: "echo_sync".into(),
+                    description: "echoes".into(),
+                    parameters: serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}}),
+                }];
+                let mut tool_registry: HashMap<String, &dyn Tool<StubSender>> = HashMap::new();
+                tool_registry.insert("echo_sync".into(), &ECHO_TOOL);
+                let ctx = tool_context();
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
-        let handle = tokio::task::spawn_local(async move {
-            let stream = super::run_completion(
-                &model,
-                &hm,
-                &tool_names,
-                &tool_defs,
-                &tool_registry,
-                &ctx,
-                "thread-1",
-                "msg-1",
-                None,
-                None,
-                None,
-                cancel_rx,
-            );
-            tokio::pin!(stream);
-            let mut sync_calls = Vec::new();
-            let mut sync_results = Vec::new();
-            let mut texts = Vec::new();
-            while let Some(ev) = stream.next().await {
-                match ev.unwrap() {
-                    CompletionEvent::SyncToolCall { tool_name, .. } => sync_calls.push(tool_name),
-                    CompletionEvent::SyncToolResult(res) => {
-                        if let ToolResultContent::Text(t) = res.content.first() {
-                            sync_results.push(t.text.clone());
+                let handle = tokio::task::spawn_local(async move {
+                    let stream = super::run_completion(
+                        &model,
+                        &hm,
+                        &tool_names,
+                        &tool_defs,
+                        &tool_registry,
+                        &ctx,
+                        "thread-1",
+                        "msg-1",
+                        None,
+                        None,
+                        None,
+                        cancel_rx,
+                    );
+                    tokio::pin!(stream);
+                    let mut sync_calls = Vec::new();
+                    let mut sync_results = Vec::new();
+                    let mut texts = Vec::new();
+                    while let Some(ev) = stream.next().await {
+                        match ev.unwrap() {
+                            CompletionEvent::SyncToolCall { tool_name, .. } => sync_calls.push(tool_name),
+                            CompletionEvent::SyncToolResult(res) => {
+                                if let ToolResultContent::Text(t) = res.content.first() {
+                                    sync_results.push(t.text.clone());
+                                }
+                            }
+                            CompletionEvent::TextChunk(t) => texts.push(t),
+                            _ => {}
                         }
                     }
-                    CompletionEvent::TextChunk(t) => texts.push(t),
-                    _ => {}
-                }
-            }
-            (sync_calls, sync_results, texts)
-        });
+                    (sync_calls, sync_results, texts)
+                });
 
-        // Round 1: model calls sync tool
-        let _req = ctrl.next_request().await;
-        ctrl.send_tool_call("tc-1", "echo_sync", serde_json::json!({"text": "hi"}));
-        ctrl.finish();
+                // Round 1: model calls sync tool
+                let _req = ctrl.next_request().await;
+                ctrl.send_tool_call("tc-1", "echo_sync", serde_json::json!({"text": "hi"}));
+                ctrl.finish();
 
-        // Round 2: model sees the tool result in history and responds with text
-        let req2 = ctrl.next_request().await;
-        // Verify the tool result is in the history
-        let has_echo = req2.chat_history.into_iter().any(|m| {
-            if let Message::User { content } = &m {
-                if let UserContent::ToolResult(res) = content.first() {
-                    if let ToolResultContent::Text(t) = res.content.first() {
-                        return t.text.contains("echo: hi");
+                // Round 2: model sees the tool result in history and responds with text
+                let req2 = ctrl.next_request().await;
+                // Verify the tool result is in the history
+                let has_echo = req2.chat_history.into_iter().any(|m| {
+                    if let Message::User { content } = &m {
+                        if let UserContent::ToolResult(res) = content.first() {
+                            if let ToolResultContent::Text(t) = res.content.first() {
+                                return t.text.contains("echo: hi");
+                            }
+                        }
+                    }
+                    false
+                });
+                assert!(has_echo, "Tool result should be in history for round 2");
+                ctrl.send_text("done");
+                ctrl.finish();
+
+                let (sync_calls, sync_results, texts) = handle.await.unwrap();
+                assert_eq!(sync_calls, vec!["echo_sync"]);
+                assert_eq!(sync_results, vec!["echo: hi"]);
+                assert_eq!(texts, vec!["done"]);
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn thinking_chunks_emitted() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (model, mut ctrl) = mock_model();
+                let convo_store = StubConversationStore::new();
+                let hm = make_history(
+                    &convo_store,
+                    vec![Message::User {
+                        content: OneOrMany::one(UserContent::text("think hard")),
+                    }],
+                )
+                .await;
+                let (tool_names, tool_defs, tool_registry) = no_tools();
+                let ctx = tool_context();
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let handle = tokio::task::spawn_local(async move {
+                    let stream = super::run_completion(
+                        &model,
+                        &hm,
+                        &tool_names,
+                        &tool_defs,
+                        &tool_registry,
+                        &ctx,
+                        "thread-1",
+                        "msg-1",
+                        None,
+                        None,
+                        None,
+                        cancel_rx,
+                    );
+                    tokio::pin!(stream);
+                    let mut events = Vec::new();
+                    while let Some(ev) = stream.next().await {
+                        match ev.unwrap() {
+                            CompletionEvent::ThinkingStart => events.push("start".to_string()),
+                            CompletionEvent::ThinkingEnd => events.push("end".to_string()),
+                            CompletionEvent::ThinkingChunk(c) => {
+                                events.push(format!("think:{}", c))
+                            }
+                            CompletionEvent::TextChunk(t) => events.push(format!("text:{}", t)),
+                            _ => {}
+                        }
+                    }
+                    events
+                });
+
+                let _req = ctrl.next_request().await;
+                ctrl.send_chunk(rig::streaming::RawStreamingChoice::ReasoningDelta {
+                    id: None,
+                    reasoning: "hmm".into(),
+                });
+                ctrl.send_chunk(rig::streaming::RawStreamingChoice::ReasoningDelta {
+                    id: None,
+                    reasoning: "...".into(),
+                });
+                ctrl.send_text("answer");
+                ctrl.finish();
+
+                let events = handle.await.unwrap();
+                assert_eq!(
+                    events,
+                    vec!["start", "think:hmm", "think:...", "end", "text:answer"]
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn async_tool_call_yields_execute_action() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (model, mut ctrl) = mock_model();
+                let convo_store = StubConversationStore::new();
+                let hm = make_history(
+                    &convo_store,
+                    vec![Message::User {
+                        content: OneOrMany::one(UserContent::text("run tool")),
+                    }],
+                )
+                .await;
+
+                struct AsyncTool;
+                #[async_trait]
+                impl Tool<StubSender> for AsyncTool {
+                    fn name(&self) -> &str {
+                        "async_tool"
+                    }
+                    fn description(&self) -> &str {
+                        "async"
+                    }
+                    fn parameters(&self) -> serde_json::Value {
+                        serde_json::json!({"type": "object", "properties": {}})
+                    }
+                    async fn execute(
+                        &self,
+                        _: serde_json::Value,
+                        _: String,
+                        _: Option<String>,
+                        _: &ToolContext<StubSender>,
+                    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                        Ok(())
                     }
                 }
-            }
-            false
-        });
-        assert!(has_echo, "Tool result should be in history for round 2");
-        ctrl.send_text("done");
-        ctrl.finish();
+                static ASYNC_TOOL: AsyncTool = AsyncTool;
 
-        let (sync_calls, sync_results, texts) = handle.await.unwrap();
-        assert_eq!(sync_calls, vec!["echo_sync"]);
-        assert_eq!(sync_results, vec!["echo: hi"]);
-        assert_eq!(texts, vec!["done"]);
+                let mut tool_names = HashSet::new();
+                tool_names.insert("async_tool".to_string());
+                let tool_defs = vec![ToolDefinition {
+                    name: "async_tool".into(),
+                    description: "async".into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                }];
+                let mut tool_registry: HashMap<String, &dyn Tool<StubSender>> = HashMap::new();
+                tool_registry.insert("async_tool".into(), &ASYNC_TOOL);
+                let ctx = tool_context();
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let handle = tokio::task::spawn_local(async move {
+                    let stream = super::run_completion(
+                        &model,
+                        &hm,
+                        &tool_names,
+                        &tool_defs,
+                        &tool_registry,
+                        &ctx,
+                        "thread-1",
+                        "msg-1",
+                        None,
+                        None,
+                        None,
+                        cancel_rx,
+                    );
+                    tokio::pin!(stream);
+                    let mut tool_call_name = None;
+                    while let Some(ev) = stream.next().await {
+                        if let Ok(CompletionEvent::Action(CompletionAction::ExecuteToolCall {
+                            tool_name,
+                            ..
+                        })) = ev
+                        {
+                            tool_call_name = Some(tool_name);
+                        }
+                    }
+                    tool_call_name
+                });
+
+                let _req = ctrl.next_request().await;
+                ctrl.send_tool_call("tc-1", "async_tool", serde_json::json!({"x": 1}));
+                ctrl.finish();
+
+                let name = handle.await.unwrap();
+                assert_eq!(name, Some("async_tool".to_string()));
+            })
+            .await;
     }
 
-    #[tokio::test]
-    async fn thinking_chunks_emitted() {
-        let (model, mut ctrl) = mock_model();
-        let convo_store = StubConversationStore::new();
-        let hm = make_history(
-            &convo_store,
-            vec![Message::User {
-                content: OneOrMany::one(UserContent::text("think hard")),
-            }],
-        )
-        .await;
-        let (tool_names, tool_defs, tool_registry) = no_tools();
-        let ctx = tool_context();
-        let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
-
-        let handle = tokio::task::spawn_local(async move {
-            let stream = super::run_completion(
-                &model,
-                &hm,
-                &tool_names,
-                &tool_defs,
-                &tool_registry,
-                &ctx,
-                "thread-1",
-                "msg-1",
-                None,
-                None,
-                None,
-                cancel_rx,
-            );
-            tokio::pin!(stream);
-            let mut events = Vec::new();
-            while let Some(ev) = stream.next().await {
-                match ev.unwrap() {
-                    CompletionEvent::ThinkingStart => events.push("start".to_string()),
-                    CompletionEvent::ThinkingEnd => events.push("end".to_string()),
-                    CompletionEvent::ThinkingChunk(c) => events.push(format!("think:{}", c)),
-                    CompletionEvent::TextChunk(t) => events.push(format!("text:{}", t)),
-                    _ => {}
-                }
-            }
-            events
-        });
-
-        let _req = ctrl.next_request().await;
-        ctrl.send_chunk(rig::streaming::RawStreamingChoice::ReasoningDelta {
-            id: None,
-            reasoning: "hmm".into(),
-        });
-        ctrl.send_chunk(rig::streaming::RawStreamingChoice::ReasoningDelta {
-            id: None,
-            reasoning: "...".into(),
-        });
-        ctrl.send_text("answer");
-        ctrl.finish();
-
-        let events = handle.await.unwrap();
-        assert_eq!(
-            events,
-            vec!["start", "think:hmm", "think:...", "end", "text:answer"]
-        );
-    }
-
-    #[tokio::test]
-    async fn async_tool_call_yields_execute_action() {
-        let (model, mut ctrl) = mock_model();
-        let convo_store = StubConversationStore::new();
-        let hm = make_history(
-            &convo_store,
-            vec![Message::User {
-                content: OneOrMany::one(UserContent::text("run tool")),
-            }],
-        )
-        .await;
-
-        struct AsyncTool;
-        #[async_trait]
-        impl Tool<StubSender> for AsyncTool {
-            fn name(&self) -> &str {
-                "async_tool"
-            }
-            fn description(&self) -> &str {
-                "async"
-            }
-            fn parameters(&self) -> serde_json::Value {
-                serde_json::json!({"type": "object", "properties": {}})
-            }
-            async fn execute(
-                &self,
-                _: serde_json::Value,
-                _: String,
-                _: Option<String>,
-                _: &ToolContext<StubSender>,
-            ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-                Ok(())
-            }
-        }
-        static ASYNC_TOOL: AsyncTool = AsyncTool;
-
-        let mut tool_names = HashSet::new();
-        tool_names.insert("async_tool".to_string());
-        let tool_defs = vec![ToolDefinition {
-            name: "async_tool".into(),
-            description: "async".into(),
-            parameters: serde_json::json!({"type": "object"}),
-        }];
-        let mut tool_registry: HashMap<String, &dyn Tool<StubSender>> = HashMap::new();
-        tool_registry.insert("async_tool".into(), &ASYNC_TOOL);
-        let ctx = tool_context();
-        let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
-
-        let handle = tokio::task::spawn_local(async move {
-            let stream = super::run_completion(
-                &model,
-                &hm,
-                &tool_names,
-                &tool_defs,
-                &tool_registry,
-                &ctx,
-                "thread-1",
-                "msg-1",
-                None,
-                None,
-                None,
-                cancel_rx,
-            );
-            tokio::pin!(stream);
-            let mut tool_call_name = None;
-            while let Some(ev) = stream.next().await {
-                if let Ok(CompletionEvent::Action(CompletionAction::ExecuteToolCall {
-                    tool_name,
-                    ..
-                })) = ev
-                {
-                    tool_call_name = Some(tool_name);
-                }
-            }
-            tool_call_name
-        });
-
-        let _req = ctrl.next_request().await;
-        ctrl.send_tool_call("tc-1", "async_tool", serde_json::json!({"x": 1}));
-        ctrl.finish();
-
-        let name = handle.await.unwrap();
-        assert_eq!(name, Some("async_tool".to_string()));
-    }
-
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn stream_drop_triggers_retry() {
-        // When the model stream ends unexpectedly (None from next()), the loop retries.
-        let (model, mut ctrl) = mock_model();
-        let convo_store = StubConversationStore::new();
-        let hm = make_history(
-            &convo_store,
-            vec![Message::User {
-                content: OneOrMany::one(UserContent::text("go")),
-            }],
-        )
-        .await;
-        let (tool_names, tool_defs, tool_registry) = no_tools();
-        let ctx = tool_context();
-        let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                // When the model stream ends unexpectedly (None from next()), the loop retries.
+                let (model, mut ctrl) = mock_model();
+                let convo_store = StubConversationStore::new();
+                let hm = make_history(
+                    &convo_store,
+                    vec![Message::User {
+                        content: OneOrMany::one(UserContent::text("go")),
+                    }],
+                )
+                .await;
+                let (tool_names, tool_defs, tool_registry) = no_tools();
+                let ctx = tool_context();
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
-        let handle = tokio::task::spawn_local(async move {
-            let stream = super::run_completion(
-                &model,
-                &hm,
-                &tool_names,
-                &tool_defs,
-                &tool_registry,
-                &ctx,
-                "thread-1",
-                "msg-1",
-                None,
-                None,
-                None,
-                cancel_rx,
-            );
-            tokio::pin!(stream);
-            let mut texts = Vec::new();
-            let mut info_count = 0;
-            while let Some(ev) = stream.next().await {
-                match ev.unwrap() {
-                    CompletionEvent::TextChunk(t) => texts.push(t),
-                    CompletionEvent::Info(_) => info_count += 1,
-                    _ => {}
-                }
-            }
-            (texts, info_count)
-        });
+                let handle = tokio::task::spawn_local(async move {
+                    let stream = super::run_completion(
+                        &model,
+                        &hm,
+                        &tool_names,
+                        &tool_defs,
+                        &tool_registry,
+                        &ctx,
+                        "thread-1",
+                        "msg-1",
+                        None,
+                        None,
+                        None,
+                        cancel_rx,
+                    );
+                    tokio::pin!(stream);
+                    let mut texts = Vec::new();
+                    let mut info_count = 0;
+                    while let Some(ev) = stream.next().await {
+                        match ev.unwrap() {
+                            CompletionEvent::TextChunk(t) => texts.push(t),
+                            CompletionEvent::Info(_) => info_count += 1,
+                            _ => {}
+                        }
+                    }
+                    (texts, info_count)
+                });
 
-        // Round 1: drop the stream without sending Final (simulates unexpected end)
-        let _req = ctrl.next_request().await;
-        ctrl.drop_stream();
+                // Round 1: drop the stream without sending Final (simulates unexpected end)
+                let _req = ctrl.next_request().await;
+                ctrl.drop_stream();
 
-        // Round 2: retry should happen, model responds normally
-        let _req2 = ctrl.next_request().await;
-        ctrl.send_text("recovered");
-        ctrl.finish();
+                // Round 2: retry should happen, model responds normally
+                let _req2 = ctrl.next_request().await;
+                ctrl.send_text("recovered");
+                ctrl.finish();
 
-        let (texts, info_count) = handle.await.unwrap();
-        assert_eq!(texts, vec!["recovered"]);
-        assert!(
-            info_count >= 1,
-            "Should have emitted at least one Info about retry"
-        );
+                let (texts, info_count) = handle.await.unwrap();
+                assert_eq!(texts, vec!["recovered"]);
+                assert!(
+                    info_count >= 1,
+                    "Should have emitted at least one Info about retry"
+                );
+            })
+            .await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn cancellation_during_thinking_emits_thinking_end() {
-        let (model, mut ctrl) = mock_model();
-        let convo_store = StubConversationStore::new();
-        let hm = make_history(
-            &convo_store,
-            vec![Message::User {
-                content: OneOrMany::one(UserContent::text("think")),
-            }],
-        )
-        .await;
-        let (tool_names, tool_defs, tool_registry) = no_tools();
-        let ctx = tool_context();
-        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (model, mut ctrl) = mock_model();
+                let convo_store = StubConversationStore::new();
+                let hm = make_history(
+                    &convo_store,
+                    vec![Message::User {
+                        content: OneOrMany::one(UserContent::text("think")),
+                    }],
+                )
+                .await;
+                let (tool_names, tool_defs, tool_registry) = no_tools();
+                let ctx = tool_context();
+                let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
-        let handle = tokio::task::spawn_local(async move {
-            let stream = super::run_completion(
-                &model,
-                &hm,
-                &tool_names,
-                &tool_defs,
-                &tool_registry,
-                &ctx,
-                "thread-1",
-                "msg-1",
-                None,
-                None,
-                None,
-                cancel_rx,
-            );
-            tokio::pin!(stream);
-            let mut events = Vec::new();
-            while let Some(ev) = stream.next().await {
-                match ev.unwrap() {
-                    CompletionEvent::ThinkingStart => events.push("start"),
-                    CompletionEvent::ThinkingEnd => events.push("end"),
-                    CompletionEvent::ThinkingChunk(_) => events.push("chunk"),
-                    _ => {}
-                }
-            }
-            events
-        });
+                let handle = tokio::task::spawn_local(async move {
+                    let stream = super::run_completion(
+                        &model,
+                        &hm,
+                        &tool_names,
+                        &tool_defs,
+                        &tool_registry,
+                        &ctx,
+                        "thread-1",
+                        "msg-1",
+                        None,
+                        None,
+                        None,
+                        cancel_rx,
+                    );
+                    tokio::pin!(stream);
+                    let mut events = Vec::new();
+                    while let Some(ev) = stream.next().await {
+                        match ev.unwrap() {
+                            CompletionEvent::ThinkingStart => events.push("start"),
+                            CompletionEvent::ThinkingEnd => events.push("end"),
+                            CompletionEvent::ThinkingChunk(_) => events.push("chunk"),
+                            _ => {}
+                        }
+                    }
+                    events
+                });
 
-        let _req = ctrl.next_request().await;
-        ctrl.send_chunk(rig::streaming::RawStreamingChoice::ReasoningDelta {
-            id: None,
-            reasoning: "deep thought".into(),
-        });
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
-        cancel_tx.send(()).unwrap();
+                let _req = ctrl.next_request().await;
+                ctrl.send_chunk(rig::streaming::RawStreamingChoice::ReasoningDelta {
+                    id: None,
+                    reasoning: "deep thought".into(),
+                });
+                tokio::task::yield_now().await;
+                tokio::task::yield_now().await;
+                cancel_tx.send(()).unwrap();
 
-        let events = handle.await.unwrap();
-        // Should have: start, chunk, end (end emitted on cancellation)
-        assert!(events.contains(&"start"));
-        assert!(
-            events.last() == Some(&"end"),
-            "ThinkingEnd should be emitted on cancel, got: {:?}",
-            events
-        );
+                let events = handle.await.unwrap();
+                // Should have: start, chunk, end (end emitted on cancellation)
+                assert!(events.contains(&"start"));
+                assert!(
+                    events.last() == Some(&"end"),
+                    "ThinkingEnd should be emitted on cancel, got: {:?}",
+                    events
+                );
+            })
+            .await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn multiple_sync_tool_calls_chain() {
-        // Model calls sync tool twice in sequence (two completion rounds), then responds.
-        let (model, mut ctrl) = mock_model();
-        let convo_store = StubConversationStore::new();
-        let hm = make_history(
-            &convo_store,
-            vec![Message::User {
-                content: OneOrMany::one(UserContent::text("echo twice")),
-            }],
-        )
-        .await;
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                // Model calls sync tool twice in sequence (two completion rounds), then responds.
+                let (model, mut ctrl) = mock_model();
+                let convo_store = StubConversationStore::new();
+                let hm = make_history(
+                    &convo_store,
+                    vec![Message::User {
+                        content: OneOrMany::one(UserContent::text("echo twice")),
+                    }],
+                )
+                .await;
 
-        let mut tool_names = HashSet::new();
-        tool_names.insert("echo_sync".to_string());
-        let tool_defs = vec![ToolDefinition {
-            name: "echo_sync".into(),
-            description: "echoes".into(),
-            parameters: serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}}),
-        }];
-        let mut tool_registry: HashMap<String, &dyn Tool<StubSender>> = HashMap::new();
-        tool_registry.insert("echo_sync".into(), &ECHO_TOOL);
-        let ctx = tool_context();
-        let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+                let mut tool_names = HashSet::new();
+                tool_names.insert("echo_sync".to_string());
+                let tool_defs = vec![ToolDefinition {
+                    name: "echo_sync".into(),
+                    description: "echoes".into(),
+                    parameters: serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}}),
+                }];
+                let mut tool_registry: HashMap<String, &dyn Tool<StubSender>> = HashMap::new();
+                tool_registry.insert("echo_sync".into(), &ECHO_TOOL);
+                let ctx = tool_context();
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
-        let handle = tokio::task::spawn_local(async move {
-            let stream = super::run_completion(
-                &model,
-                &hm,
-                &tool_names,
-                &tool_defs,
-                &tool_registry,
-                &ctx,
-                "thread-1",
-                "msg-1",
-                None,
-                None,
-                None,
-                cancel_rx,
-            );
-            tokio::pin!(stream);
-            let mut sync_calls = 0;
-            let mut texts = Vec::new();
-            while let Some(ev) = stream.next().await {
-                match ev.unwrap() {
-                    CompletionEvent::SyncToolCall { .. } => sync_calls += 1,
-                    CompletionEvent::TextChunk(t) => texts.push(t),
-                    _ => {}
-                }
-            }
-            (sync_calls, texts)
-        });
+                let handle = tokio::task::spawn_local(async move {
+                    let stream = super::run_completion(
+                        &model,
+                        &hm,
+                        &tool_names,
+                        &tool_defs,
+                        &tool_registry,
+                        &ctx,
+                        "thread-1",
+                        "msg-1",
+                        None,
+                        None,
+                        None,
+                        cancel_rx,
+                    );
+                    tokio::pin!(stream);
+                    let mut sync_calls = 0;
+                    let mut texts = Vec::new();
+                    while let Some(ev) = stream.next().await {
+                        match ev.unwrap() {
+                            CompletionEvent::SyncToolCall { .. } => sync_calls += 1,
+                            CompletionEvent::TextChunk(t) => texts.push(t),
+                            _ => {}
+                        }
+                    }
+                    (sync_calls, texts)
+                });
 
-        // Round 1: first sync tool call
-        let _req = ctrl.next_request().await;
-        ctrl.send_tool_call("tc-1", "echo_sync", serde_json::json!({"text": "first"}));
-        ctrl.finish();
+                // Round 1: first sync tool call
+                let _req = ctrl.next_request().await;
+                ctrl.send_tool_call("tc-1", "echo_sync", serde_json::json!({"text": "first"}));
+                ctrl.finish();
 
-        // Round 2: second sync tool call
-        let _req2 = ctrl.next_request().await;
-        ctrl.send_tool_call("tc-2", "echo_sync", serde_json::json!({"text": "second"}));
-        ctrl.finish();
+                // Round 2: second sync tool call
+                let _req2 = ctrl.next_request().await;
+                ctrl.send_tool_call("tc-2", "echo_sync", serde_json::json!({"text": "second"}));
+                ctrl.finish();
 
-        // Round 3: final text response
-        let _req3 = ctrl.next_request().await;
-        ctrl.send_text("all done");
-        ctrl.finish();
+                // Round 3: final text response
+                let _req3 = ctrl.next_request().await;
+                ctrl.send_text("all done");
+                ctrl.finish();
 
-        let (sync_calls, texts) = handle.await.unwrap();
-        assert_eq!(sync_calls, 2);
-        assert_eq!(texts, vec!["all done"]);
+                let (sync_calls, texts) = handle.await.unwrap();
+                assert_eq!(sync_calls, 2);
+                assert_eq!(texts, vec!["all done"]);
+            })
+            .await;
     }
 }
