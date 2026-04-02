@@ -494,14 +494,22 @@ async fn handle(req: Request<Incoming>, state: Arc<ProxyState>) -> Response<Full
         }))
         .unwrap();
 
-        if let Err(e) = reqwest::Client::new()
+        match reqwest::Client::new()
             .post(&inv.callback_url)
             .header("content-type", "application/json")
             .body(callback_body)
             .send()
             .await
         {
-            tracing::warn!("Failed to send MCP result to callback: {e}");
+            Ok(resp) if !resp.status().is_success() => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                tracing::error!("Callback rejected MCP result (HTTP {status}): {body}");
+            }
+            Err(e) => {
+                tracing::warn!("Failed to send MCP result to callback: {e}");
+            }
+            _ => {}
         }
     });
 
