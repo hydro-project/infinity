@@ -30,7 +30,7 @@ pub async fn handle_client(stream: UnixStream, session_manager: Arc<Mutex<Sessio
         tokio::select! {
             msg = daemon_msg_rx.recv() => {
                 let Some(msg) = msg else { break };
-                let bytes = Bytes::from(bincode::serialize(&msg).unwrap());
+                let bytes = Bytes::from(serde_json::to_vec(&msg).unwrap());
                 if framed.send(bytes).await.is_err() { break; }
             }
             _ = &mut handler => {
@@ -38,7 +38,7 @@ pub async fn handle_client(stream: UnixStream, session_manager: Arc<Mutex<Sessio
             }
             frame = framed.next() => {
                 let Some(Ok(bytes)) = frame else { break };
-                let Ok(msg) = bincode::deserialize::<ClientMessage>(&bytes) else { continue };
+                let Ok(msg) = serde_json::from_slice::<ClientMessage>(&bytes) else { continue };
                 client_msg_tx.send(msg).unwrap();
             }
         }
