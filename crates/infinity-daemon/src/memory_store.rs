@@ -27,9 +27,9 @@ pub struct InMemoryConversationStore {
     messages: Arc<Mutex<HashMap<String, Vec<(Message, String)>>>>,
     /// thread_id -> ThreadInfo
     threads: Arc<Mutex<HashMap<String, ThreadInfo>>>,
-    /// thread_id -> tool_result_id -> display_as text.
+    /// thread_id -> tool_result_id -> display_as segments.
     /// Persisted separately because rig's `Message` type does not carry display_as.
-    display_as_map: Arc<Mutex<HashMap<String, HashMap<String, String>>>>,
+    display_as_map: Arc<Mutex<HashMap<String, HashMap<String, Vec<rap_protocol::DisplaySegment>>>>>,
     /// thread_id -> compaction summaries
     compaction_summaries: Arc<Mutex<HashMap<String, Vec<CompactionSummary>>>>,
     /// Directory where per-thread JSON files are stored. `None` disables persistence.
@@ -68,10 +68,35 @@ struct CompactionSummary {
 #[derive(Serialize, Deserialize)]
 struct ThreadSnapshot {
     messages: Vec<(Message, String)>,
-    #[serde(default)]
-    display_as: HashMap<String, String>,
+    #[serde(default, deserialize_with = "deserialize_display_as_map")]
+    display_as: HashMap<String, Vec<rap_protocol::DisplaySegment>>,
     #[serde(default)]
     compaction_summaries: Vec<CompactionSummary>,
+}
+
+/// Deserialize display_as map, handling both the old `String` format and the
+/// new `Vec<DisplaySegment>` format for backward compatibility.
+fn deserialize_display_as_map<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<String, Vec<rap_protocol::DisplaySegment>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde_json::Value;
+
+    let raw: HashMap<String, Value> = HashMap::deserialize(deserializer)?;
+    let mut result = HashMap::new();
+    for (k, v) in raw {
+        let segments = match v {
+            // Old format: plain string → wrap in a single Text segment
+            Value::String(s) => vec![rap_protocol::DisplaySegment::Text(s)],
+            // New format: array of segments
+            Value::Array(_) => serde_json::from_value(v).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        result.insert(k, segments);
+    }
+    Ok(result)
 }
 
 impl InMemoryConversationStore {
@@ -224,20 +249,29 @@ impl InMemoryConversationStore {
         loaded.insert(thread_id.to_string());
     }
 
-    /// Record the display_as text for a tool result so it survives persistence.
-    pub fn save_display_as(&self, thread_id: &str, tool_result_id: &str, display_as: &str) {
+    /// Record the display_as segments for a tool result so it survives persistence.
+    pub fn save_display_as(
+        &self,
+        thread_id: &str,
+        tool_result_id: &str,
+        display_as: &[rap_protocol::DisplaySegment],
+    ) {
         self.ensure_thread_loaded(thread_id);
         {
             let mut map = self.display_as_map.lock().unwrap();
             map.entry(thread_id.to_string())
                 .or_default()
-                .insert(tool_result_id.to_string(), display_as.to_string());
+                .insert(tool_result_id.to_string(), display_as.to_vec());
         }
         self.save_thread(thread_id);
     }
 
-    /// Look up a previously stored display_as for a tool result.
-    pub fn get_display_as(&self, thread_id: &str, tool_result_id: &str) -> Option<String> {
+    /// Look up previously stored display_as segments for a tool result.
+    pub fn get_display_as(
+        &self,
+        thread_id: &str,
+        tool_result_id: &str,
+    ) -> Option<Vec<rap_protocol::DisplaySegment>> {
         self.ensure_thread_loaded(thread_id);
         let map = self.display_as_map.lock().unwrap();
         map.get(thread_id)

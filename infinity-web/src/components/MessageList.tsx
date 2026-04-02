@@ -18,13 +18,14 @@ interface Props {
   inputDisabled: boolean;
   pendingChoice: PendingChoice | null;
   onChoiceSelect: (index: number) => void;
+  theme?: "light" | "dark";
 }
 
 function isAtBottom(el: HTMLElement) {
   return el.scrollHeight - el.scrollTop - el.clientHeight < 40;
 }
 
-export function MessageList({ messages, spinner, onSend, inputDisabled, pendingChoice, onChoiceSelect }: Props) {
+export function MessageList({ messages, spinner, onSend, inputDisabled, pendingChoice, onChoiceSelect, theme }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldStickRef = useRef(true);
 
@@ -73,21 +74,21 @@ export function MessageList({ messages, spinner, onSend, inputDisabled, pendingC
             const next = messages[i + 1];
             if (next?.type === 'tool_result') return (
               <div key={i} className={css.toolBox}>
-                <MessageItem item={msg} isFirst={i === 0} />
+                <MessageItem item={msg} isFirst={i === 0} theme={theme} />
                 <hr className={css.toolDivider} />
-                <MessageItem item={next} />
+                <MessageItem item={next} theme={theme} />
               </div>
             );
             return (
               <div key={i} className={css.toolBox}>
-                <MessageItem item={msg} isFirst={i === 0} />
+                <MessageItem item={msg} isFirst={i === 0} theme={theme} />
               </div>
             );
           }
           if (msg.type === 'subscription') {
             return (
               <div key={i} className={css.toolBox}>
-                <MessageItem item={msg} isFirst={i === 0} />
+                <MessageItem item={msg} isFirst={i === 0} theme={theme} />
               </div>
             );
           }
@@ -95,9 +96,9 @@ export function MessageList({ messages, spinner, onSend, inputDisabled, pendingC
             return null;
           }
           if (msg.type === 'thinking') {
-            return <MessageItem key={i} item={msg} isFirst={i === 0} defaultCollapsed={thinkingDefaultCollapsed.has(i)} />;
+            return <MessageItem key={i} item={msg} isFirst={i === 0} defaultCollapsed={thinkingDefaultCollapsed.has(i)} theme={theme} />;
           }
-          return <MessageItem key={i} item={msg} isFirst={i === 0} />;
+          return <MessageItem key={i} item={msg} isFirst={i === 0} theme={theme} />;
         })}
       </div>
       <div className={css.inputArea}>

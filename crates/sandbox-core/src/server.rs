@@ -12,9 +12,11 @@ use tokio::task::JoinHandle;
 use tracing;
 
 use rap_protocol::{
-    CallbackClient, RapCallback, RapInvocation, RapToolResult, ToolDef, ToolsetManifest,
-    send_subscription_event, send_tool_result, send_user_choice,
+    CallbackClient, DiffContent, DisplaySegment, RapCallback, RapInvocation, RapToolResult,
+    ToolDef, ToolsetManifest, send_subscription_event, send_tool_result, send_user_choice,
 };
+
+type DisplayResult = Result<(String, Option<Vec<DisplaySegment>>), SandboxError>;
 
 use crate::error::SandboxError;
 use crate::git;
@@ -567,13 +569,13 @@ async fn with_sandbox<B, M, C, F, Fut>(
     group_id: &str,
     jj_description: Option<&str>,
     action: F,
-) -> Result<(String, Option<String>), SandboxError>
+) -> DisplayResult
 where
     B: SandboxBackend,
     M: MetadataStore,
     C: CallbackClient,
     F: FnOnce(std::path::PathBuf) -> Fut,
-    Fut: std::future::Future<Output = Result<(String, Option<String>), SandboxError>>,
+    Fut: std::future::Future<Output = DisplayResult>,
 {
     let repo_state = state
         .metadata
@@ -1182,7 +1184,7 @@ async fn handle_execute_command_streaming_inner<
 async fn handle_read_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
-) -> Result<(String, Option<String>), SandboxError> {
+) -> DisplayResult {
     let args: ReadFileArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
@@ -1204,7 +1206,7 @@ async fn handle_read_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
 
             if start > total_lines {
                 let msg = format!("File has {total_lines} lines, but start_line is {start}");
-                return Ok((msg.clone(), Some(msg)));
+                return Ok((msg.clone(), Some(vec![DisplaySegment::Text(msg)])));
             }
 
             let selected: Vec<String> = lines[start - 1..end]
@@ -1214,7 +1216,7 @@ async fn handle_read_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
                 .collect();
 
             let read_count = end - start + 1;
-            let display = format!("Read {} lines;", read_count);
+            let display = vec![DisplaySegment::Text(format!("Read {} lines;", read_count))];
 
             let text = format!(
                 "<file name=\"{}\" lines=\"{total_lines}\">\n{}\n</file>",
@@ -1290,7 +1292,7 @@ async fn request_direct_write_approval<B: SandboxBackend, M: MetadataStore, C: C
 async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
-) -> Result<(String, Option<String>), SandboxError> {
+) -> DisplayResult {
     let args: EditFileArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
@@ -1347,7 +1349,7 @@ async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
 async fn handle_create_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
-) -> Result<(String, Option<String>), SandboxError> {
+) -> DisplayResult {
     let args: CreateFileArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
@@ -1388,7 +1390,10 @@ async fn handle_create_file<B: SandboxBackend, M: MetadataStore, C: CallbackClie
                 .map_err(SandboxError::Io)?;
 
             let line_count = args.content.lines().count();
-            let display = format!("Created {} ({} lines)", args.path, line_count);
+            let display = vec![DisplaySegment::Text(format!(
+                "Created {} ({} lines)",
+                args.path, line_count
+            ))];
 
             Ok((format!("Created file {}", args.path), Some(display)))
         },
@@ -1399,7 +1404,7 @@ async fn handle_create_file<B: SandboxBackend, M: MetadataStore, C: CallbackClie
 async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
-) -> Result<(String, Option<String>), SandboxError> {
+) -> DisplayResult {
     let args: GrepArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
@@ -1452,7 +1457,10 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
             let exec_result = backend.execute_command(&sandbox_dir, &cmd_parts).await?;
 
             if exec_result.stdout.is_empty() && exec_result.exit_code == 1 {
-                let display = format!("Searched for '{}' — no matches", query_for_display);
+                let display = vec![DisplaySegment::Text(format!(
+                    "Searched for '{}' — no matches",
+                    query_for_display
+                ))];
                 return Ok(("No matches found.".to_string(), Some(display)));
             }
 
@@ -1475,12 +1483,12 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
                 }
             }
 
-            let display = format!(
+            let display = vec![DisplaySegment::Text(format!(
                 "Searched for '{}' — {} match(es) across {} file(s)",
                 query_for_display,
                 match_count,
                 files.len()
-            );
+            ))];
 
             let mut output = exec_result.stdout;
             if !exec_result.stderr.is_empty() {
@@ -1496,7 +1504,7 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
 async fn handle_describe_overall_changes<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
-) -> Result<(String, Option<String>), SandboxError> {
+) -> DisplayResult {
     let args: DescribeOverallChangesArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
@@ -1512,7 +1520,7 @@ async fn handle_describe_overall_changes<B: SandboxBackend, M: MetadataStore, C:
 async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
-) -> Result<(String, Option<String>), SandboxError> {
+) -> DisplayResult {
     let args: SquashSandboxArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
@@ -1531,7 +1539,9 @@ async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackC
             let _ = git::git_delete_branch(&sandbox_dir, &from_bookmark).await;
             Ok((
                 format!("Squashed changes from {from_bookmark}."),
-                Some(format!("Squashed from {from_bookmark}")),
+                Some(vec![DisplaySegment::Text(format!(
+                    "Squashed from {from_bookmark}"
+                ))]),
             ))
         }
         SandboxMode::Jj { .. } => {
@@ -1553,7 +1563,9 @@ async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackC
                     run_jj(&sandbox_dir, &["bookmark", "delete", &from_bookmark]).await?;
                     Ok((
                         format!("Squashed changes from {from_bookmark}."),
-                        Some(format!("Squashed from {from_bookmark}")),
+                        Some(vec![DisplaySegment::Text(format!(
+                            "Squashed from {from_bookmark}"
+                        ))]),
                     ))
                 },
             )
@@ -1566,29 +1578,21 @@ async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackC
 }
 
 /// Build a pretty-printed unified diff for display in the CLI.
-fn build_edit_diff(path: &str, old_str: &str, new_str: &str) -> String {
-    use similar::{ChangeTag, TextDiff};
+fn build_edit_diff(path: &str, old_str: &str, new_str: &str) -> Vec<DisplaySegment> {
+    use similar::TextDiff;
 
     let diff = TextDiff::from_lines(old_str, new_str);
-    let mut out = format!("--- {}\n+++ {}", path, path);
-
-    for hunk in diff.unified_diff().context_radius(3).iter_hunks() {
-        out.push_str(&format!("\n{}", hunk.header()));
-        for change in hunk.iter_changes() {
-            let sign = match change.tag() {
-                ChangeTag::Delete => "-",
-                ChangeTag::Insert => "+",
-                ChangeTag::Equal => " ",
-            };
-            out.push_str(&format!("{} {}", sign, change));
-            if change.missing_newline() {
-                out.push('\n');
-            }
-        }
-    }
-
-    out.truncate(out.trim_end().len());
-    out
+    let mut patch = diff
+        .unified_diff()
+        .context_radius(3)
+        .header(path, path)
+        .to_string();
+    // Trim trailing whitespace but keep the structure intact
+    patch.truncate(patch.trim_end().len());
+    vec![DisplaySegment::Diff(DiffContent {
+        path: path.to_string(),
+        patch,
+    })]
 }
 
 fn build_manifest(endpoint: &str) -> ToolsetManifest {

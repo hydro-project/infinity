@@ -133,11 +133,11 @@ pub struct InputMessage {
     pub metadata: Option<serde_json::Value>,
     #[serde(default)]
     pub synthetic: Option<SyntheticKind>,
-    /// Optional short display text for the CLI. When present, the CLI shows
-    /// this instead of the full tool result text. The model still sees the
-    /// full text.
+    /// Optional structured display segments for the CLI/UI. When present,
+    /// the UI shows these instead of the full tool result text. The model
+    /// still sees the full text.
     #[serde(default)]
-    pub display_as: Option<String>,
+    pub display_as: Option<Vec<rap_protocol::DisplaySegment>>,
     /// When true, indicates this tool result started a subscription — the
     /// runtime should track the tool call ID as an active subscription so
     /// the agent can later cancel it via `cancel_subscription`.
