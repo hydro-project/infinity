@@ -111,6 +111,20 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.remotePill {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  background: rgba(0, 150, 255, 0.15);
+  color: var(--accent);
+  margin-left: auto;
 }
 
 .itemMeta {
