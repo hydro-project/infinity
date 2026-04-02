@@ -798,16 +798,18 @@ async fn session_wrapper(
                 break;
             }
             _ = idle_rx.recv() => {
+                // idle_tx means "might be idle" — check active threads.
+                if !active_threads.lock().unwrap().is_empty() {
+                    continue;
+                }
+
                 // Mark idle in the store immediately so listing shows Idle status.
                 {
                     let mut store = session_store.lock().await;
                     store.mark_idle(&session_id);
                     let _ = store.save();
                 }
-                // idle_tx means "might be idle" — check active threads.
-                if !active_threads.lock().unwrap().is_empty() {
-                    continue;
-                }
+
                 // If no client attached, exit the loop entirely.
                 let has_clients = {
                     let smap = subscriber_map.lock().unwrap();
