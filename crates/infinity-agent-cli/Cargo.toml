@@ -42,3 +42,6 @@ bytes = "1"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["signal"] }
+
+[lints]
+workspace = true

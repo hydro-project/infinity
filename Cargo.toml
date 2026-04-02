@@ -54,5 +54,8 @@ tempfile = "3"
 axum = "0.8"
 insta = { version = "1", features = ["json", "redactions"] }
 
+[workspace.lints.clippy]
+unwrap_used = "warn"
+
 [patch.crates-io]
 rig-bedrock = { path = "crates/rig-bedrock-patched" }
