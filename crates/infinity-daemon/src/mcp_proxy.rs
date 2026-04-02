@@ -134,7 +134,8 @@ impl StdioMcpClient {
 // ── MCP transport trait ──
 
 #[async_trait]
-trait McpTransport: Send {
+#[doc(hidden)]
+pub trait McpTransport: Send {
     async fn request(
         &mut self,
         method: &str,
@@ -566,7 +567,8 @@ pub async fn start_http_mcp_proxy(
     start_proxy_server(name, factory).await
 }
 
-async fn start_proxy_server(
+#[doc(hidden)]
+pub async fn start_proxy_server(
     name: String,
     factory: Box<
         dyn Fn() -> std::pin::Pin<
