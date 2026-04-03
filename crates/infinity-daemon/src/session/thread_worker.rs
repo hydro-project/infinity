@@ -75,14 +75,13 @@ pub async fn thread_worker<Mdl>(
         while let Some(evt) = display_fwd_rx.recv().await {
             // Update token usage for root thread responses.
             if let DisplayEvent::ResponseDone(ref r) = evt
-                && fwd_group_id == fwd_root_session_id
                 && let Some(r) = r
             {
                 use rig::completion::GetTokenUsage;
                 let tokens = r.token_usage().map_or(0, |u| u.total_tokens as usize);
-                fwd_conversation_store.set_total_tokens_used(&fwd_root_session_id, tokens);
+                fwd_conversation_store.set_total_tokens_used(&fwd_group_id, tokens);
                 fwd_conversation_store
-                    .set_last_updated(&fwd_root_session_id, &chrono::Utc::now().to_rfc3339());
+                    .set_last_updated(&fwd_group_id, &chrono::Utc::now().to_rfc3339());
             }
 
             // Store pending choices.
