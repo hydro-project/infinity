@@ -108,12 +108,17 @@
 .itemTitle {
   font-size: 13px;
   font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+}
+
+.itemTitleText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .remotePill {
