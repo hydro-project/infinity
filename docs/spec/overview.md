@@ -76,6 +76,7 @@ The protocol defines four message types that cover the full range of communicati
 | [Subscription Event](/spec/server/subscription-events) | Tool → Runtime | Deliver an event from an active subscription. References the original subscription tool call so the runtime can associate the event with the correct context. |
 | [OAuth](/spec/server/oauth) | Tool → Runtime | Initiate a user authorization flow. Contains an authorization URL that the runtime surfaces to the user. The tool retries the original operation after authorization completes. |
 | [User Choice](/spec/server/user-choice) | Tool → Runtime | Request a choice from the user among several options. Contains a prompt, choices array, and response URL. The tool acts on the selection and returns a normal tool result. |
+| [View Update](/spec/server/view-updates) | Tool → Runtime | Push a named view update to connected clients. Contains a view type and arbitrary content payload that the runtime stores and forwards without interpretation. |
 
 ### Toolset Definition
 
@@ -125,3 +126,4 @@ Explore the detailed specification for each protocol component:
   - [Subscription Events](/spec/server/subscription-events) — Event-driven subscriptions
   - [OAuth](/spec/server/oauth) — User authorization flows
   - [User Choice](/spec/server/user-choice) — User confirmation flows
+  - [View Updates](/spec/server/view-updates) — Tool-pushed view updates for client rendering

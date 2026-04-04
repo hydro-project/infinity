@@ -107,7 +107,8 @@ export type DaemonMessage =
   | { ThinkingChunk: { thread_id: string | null; chunk: string } }
   | { CompactionApplied: { thread_id: string | null } }
   | { Error: { thread_id: string | null; text: string } }
-  | { Replay: { history: DaemonMessage[]; pending_choices: DaemonMessage[] } }
+  | { Replay: { history: DaemonMessage[]; pending_choices: DaemonMessage[]; views: Record<string, any> } }
+  | { ViewUpdate: { thread_id: string | null; view_type: string; content: any } }
   | { SessionsUpdated: { sessions: Record<string, SessionInfo> } }
   | { RemotesUpdated: { remotes: RemoteInfo[] } }
   | "DisconnectNotIdle"

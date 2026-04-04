@@ -5,6 +5,7 @@ import { MessageList } from "./components/MessageList";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { CwdPicker } from "./components/CwdPicker";
 import { MigratePicker } from "./components/MigratePicker";
+import { DiffView } from "./components/DiffView";
 import type {
   ClientMessage,
   DaemonMessage,
@@ -46,6 +47,8 @@ export function App() {
   const [pendingChoices, setPendingChoices] = useState<
     { id: string; prompt: string; choices: string[]; default: number }[]
   >([]);
+  const [views, setViews] = useState<Record<string, any>>({});
+  const [activeTab, setActiveTab] = useState<string>("chat");
   // Thread navigation: viewThreadId is the currently viewed thread (null = root).
   // threadStack tracks the path from root so we can pop back when threads close.
   // e.g. [childA, grandchildB] means we navigated root → childA → grandchildB.
@@ -344,6 +347,8 @@ export function App() {
                   setMessages([]);
                   setSpinner(null);
                   setPendingChoices([]);
+                  setViews({});
+                  setActiveTab("chat");
                   streamingRef.current = false;
                   sendRef.current({
                     Connect: { session_id: sid, thread_id: newView },
@@ -358,12 +363,27 @@ export function App() {
             const p = msgPayload<{
               history: DaemonMessage[];
               pending_choices: DaemonMessage[];
+              views: Record<string, any>;
             }>(m);
             for (const h of p.history) processOne(h);
             // After replay, mark any open assistant as done
             finishAssistant();
             setSpinner(null);
             for (const c of p.pending_choices) processOne(c);
+            if (p.views && Object.keys(p.views).length > 0) {
+              setViews(p.views);
+            }
+            break;
+          }
+          case "ViewUpdate": {
+            const p = msgPayload<{
+              thread_id: string | null;
+              view_type: string;
+              content: any;
+            }>(m);
+            if (isForCurrentView(p.thread_id)) {
+              setViews((prev) => ({ ...prev, [p.view_type]: p.content }));
+            }
             break;
           }
           case "UserChoiceRequired": {
@@ -399,7 +419,10 @@ export function App() {
           }
           case "MigrateError": {
             const p = msgPayload<{ session_id: string; error: string }>(m);
-            appendMessage({ type: "error", text: `Migration failed: ${p.error}` });
+            appendMessage({
+              type: "error",
+              text: `Migration failed: ${p.error}`,
+            });
             break;
           }
         }
@@ -456,6 +479,8 @@ export function App() {
       setMessages([]);
       setSpinner(null);
       setPendingChoices([]);
+      setViews({});
+      setActiveTab("chat");
       streamingRef.current = false;
 
       if (switchingSession) {
@@ -478,6 +503,8 @@ export function App() {
     setMessages([]);
     setSpinner(null);
     setPendingChoices([]);
+    setViews({});
+    setActiveTab("chat");
     streamingRef.current = false;
     setCwdPickerOpen(true);
   }, [send]);
@@ -531,6 +558,9 @@ export function App() {
   const contextPct =
     contextWindow > 0 ? Math.min(100, (totalTokens / contextWindow) * 100) : 0;
 
+  const viewKeys = Object.keys(views);
+  const hasViews = viewKeys.length > 0;
+
   return (
     <div className={css.root}>
       <SessionSidebar
@@ -575,15 +605,51 @@ export function App() {
           {theme === "dark" ? "\u2600" : "\u263E"}
         </button>
       </div>
-      <MessageList
-        messages={messages}
-        spinner={spinner}
-        onSend={handleSend}
-        inputDisabled={status !== "connected"}
-        pendingChoice={pendingChoices[0] ?? null}
-        onChoiceSelect={handleChoiceSelect}
-        theme={theme}
-      />
+      <div className={css.mainContent}>
+        {hasViews && (
+          <nav
+            className={css.viewNav}
+            style={{
+              paddingLeft: sidebarOpen ? undefined : "56px",
+            }}
+          >
+            <button
+              className={activeTab === "chat" ? css.viewTabActive : css.viewTab}
+              onClick={() => setActiveTab("chat")}
+            >
+              Chat
+            </button>
+            {viewKeys.map((key) => (
+              <button
+                key={key}
+                className={activeTab === key ? css.viewTabActive : css.viewTab}
+                onClick={() => setActiveTab(key)}
+              >
+                {key.charAt(0).toUpperCase() + key.slice(1)}
+              </button>
+            ))}
+          </nav>
+        )}
+        <div className={css.mainBody}>
+          {activeTab === "chat" || !hasViews ? (
+            <MessageList
+              messages={messages}
+              spinner={spinner}
+              onSend={handleSend}
+              inputDisabled={status !== "connected"}
+              pendingChoice={pendingChoices[0] ?? null}
+              onChoiceSelect={handleChoiceSelect}
+              theme={theme}
+            />
+          ) : activeTab === "diff" && views.diff ? (
+            <DiffView diff={views.diff.diff} theme={theme} />
+          ) : (
+            <div style={{ padding: 24, color: "var(--text-muted)" }}>
+              Unsupported view: {activeTab}
+            </div>
+          )}
+        </div>
+      </div>
       {cwdPickerOpen && (
         <CwdPicker onConfirm={handleCwdConfirm} onCancel={handleCwdCancel} />
       )}

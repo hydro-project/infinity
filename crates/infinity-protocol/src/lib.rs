@@ -182,10 +182,18 @@ pub enum DaemonMessage {
         thread_id: Option<String>,
         text: String,
     },
+    /// A view update pushed by a RAP tool server.
+    ViewUpdate {
+        thread_id: Option<String>,
+        view_type: String,
+        content: serde_json::Value,
+    },
     /// Batch replay of history messages, sent on connect/load.
     Replay {
         history: Vec<DaemonMessage>,
         pending_choices: Vec<DaemonMessage>,
+        #[serde(default)]
+        views: std::collections::HashMap<String, serde_json::Value>,
     },
     /// Sent immediately on socket connection with session list and default model info.
     Welcome {

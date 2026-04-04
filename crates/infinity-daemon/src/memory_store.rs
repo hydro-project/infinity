@@ -45,6 +45,9 @@ pub struct InMemoryConversationStore {
     change_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     /// Transient pending user choice requests, keyed by root thread id.
     pending_choices: Arc<Mutex<HashMap<String, Vec<PendingChoice>>>>,
+    /// Per-thread active views, keyed by thread_id → (view_type → content).
+    /// Persisted separately to `{thread_id}.views.json`.
+    views: Arc<Mutex<HashMap<String, HashMap<String, serde_json::Value>>>>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -129,6 +132,7 @@ impl InMemoryConversationStore {
             metadata_loaded: Arc::new(Mutex::new(HashSet::new())),
             change_tx: None,
             pending_choices: Arc::new(Mutex::new(HashMap::new())),
+            views: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -316,6 +320,8 @@ impl InMemoryConversationStore {
         }
 
         loaded.insert(thread_id.to_string());
+
+        self.load_views(thread_id);
     }
 
     /// Record the display_as segments for a tool result so it survives persistence.
@@ -457,6 +463,60 @@ impl InMemoryConversationStore {
             t.last_updated = ts.to_string();
         }
         self.save_thread_metadata(thread_id);
+    }
+
+    /// Write views to `{dir}/{thread_id}.views.json`.
+    fn save_views(&self, thread_id: &str) {
+        let Some(ref dir) = self.dir else { return };
+        let views = self.views.lock().expect("bug: mutex poisoned");
+        let path = dir.join(format!("{}.views.json", thread_id));
+        match views.get(thread_id) {
+            Some(v) if !v.is_empty() => {
+                if let Ok(json) = serde_json::to_string_pretty(v) {
+                    std::fs::write(path, json).ok();
+                }
+            }
+            _ => {
+                std::fs::remove_file(path).ok();
+            }
+        }
+    }
+
+    /// Load views from `{dir}/{thread_id}.views.json`.
+    fn load_views(&self, thread_id: &str) {
+        let Some(ref dir) = self.dir else { return };
+        let path = dir.join(format!("{}.views.json", thread_id));
+        if let Ok(json) = std::fs::read_to_string(&path)
+            && let Ok(v) = serde_json::from_str::<HashMap<String, serde_json::Value>>(&json)
+        {
+            self.views
+                .lock()
+                .expect("bug: mutex poisoned")
+                .insert(thread_id.to_string(), v);
+        }
+    }
+
+    /// Update a view for a thread and persist.
+    pub fn set_view(&self, thread_id: &str, view_type: &str, content: serde_json::Value) {
+        {
+            let mut views = self.views.lock().expect("bug: mutex poisoned");
+            views
+                .entry(thread_id.to_string())
+                .or_default()
+                .insert(view_type.to_string(), content);
+        }
+        self.save_views(thread_id);
+    }
+
+    /// Get all views for a thread.
+    pub fn get_views(&self, thread_id: &str) -> HashMap<String, serde_json::Value> {
+        self.ensure_thread_loaded(thread_id);
+        self.views
+            .lock()
+            .expect("bug: mutex poisoned")
+            .get(thread_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn get_thread_title(&self, thread_id: &str) -> Option<String> {
