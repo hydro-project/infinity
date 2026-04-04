@@ -93,6 +93,15 @@ pub struct RapSubscriptionEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RapViewUpdate {
+    pub group_id: String,
+    /// The type of view being updated (e.g. "diff").
+    pub view_type: String,
+    /// View-specific payload. The runtime passes this through to clients without interpretation.
+    pub content: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RapOAuth {
     pub group_id: String,
     pub id: String,
@@ -113,6 +122,8 @@ pub enum RapCallback {
     OAuth(RapOAuth),
     #[serde(rename = "user_choice")]
     UserChoice(RapUserChoice),
+    #[serde(rename = "view_update")]
+    ViewUpdate(RapViewUpdate),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -258,6 +269,25 @@ pub async fn send_subscription_event<C: CallbackClient>(
     let body = serde_json::to_string(&event).expect("bug: failed to serialize subscription event");
     if let Err(e) = client.post_json(callback_url, &body).await {
         tracing::error!("failed to send subscription event: {e}");
+    }
+}
+
+/// Send a `view_update` callback.
+pub async fn send_view_update<C: CallbackClient>(
+    client: &C,
+    callback_url: &str,
+    group_id: String,
+    view_type: &str,
+    content: serde_json::Value,
+) {
+    let msg = RapCallback::ViewUpdate(RapViewUpdate {
+        group_id,
+        view_type: view_type.to_string(),
+        content,
+    });
+    let body = serde_json::to_string(&msg).expect("bug: failed to serialize view_update");
+    if let Err(e) = client.post_json(callback_url, &body).await {
+        tracing::error!("failed to send view_update: {e}");
     }
 }
 

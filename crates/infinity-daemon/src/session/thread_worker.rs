@@ -178,10 +178,12 @@ pub async fn thread_worker<Mdl>(
                     .collect()
             };
             let choices = conversation_store.get_pending_choice_messages(&root_session_id);
-            if !history.is_empty() || !choices.is_empty() {
+            let views = conversation_store.get_views(&active_group_id);
+            if !history.is_empty() || !choices.is_empty() || !views.is_empty() {
                 let _ = tx.send(DaemonMessage::Replay {
                     history,
                     pending_choices: choices,
+                    views,
                 });
             }
         }
