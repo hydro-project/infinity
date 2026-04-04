@@ -1,210 +1,215 @@
 .sidebar {
-  position: fixed;
-  top: 12px;
-  left: 12px;
-  bottom: 12px;
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  border-radius: 16px;
-  overflow: visible;
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-              opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    bottom: 12px;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    border-radius: 16px;
+    overflow: visible;
+    transition:
+        transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+        opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 
-  /* Liquid glass */
-  background: var(--glass-bg);
-  backdrop-filter: blur(24px) saturate(1.4);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
-  border: 1px solid var(--glass-border);
-  box-shadow:
-    0 8px 32px var(--glass-shadow),
-    inset 0 0.5px 0 rgba(255, 255, 255, 0.06);
+    /* Liquid glass */
+    background: var(--glass-bg);
+    backdrop-filter: blur(24px) saturate(1.4);
+    -webkit-backdrop-filter: blur(24px) saturate(1.4);
+    border: 1px solid var(--glass-border);
+    box-shadow:
+        0 8px 32px var(--glass-shadow),
+        inset 0 0.5px 0 rgba(255, 255, 255, 0.06);
 }
 
 .resizeHandle {
-  position: absolute;
-  top: 0;
-  right: -4px;
-  bottom: 0;
-  width: 8px;
-  cursor: col-resize;
+    position: absolute;
+    top: 0;
+    right: -4px;
+    bottom: 0;
+    width: 8px;
+    cursor: col-resize;
 }
 .resizeHandle:hover {
-  background: var(--accent);
-  opacity: 0.2;
-  border-radius: 4px;
+    background: var(--accent);
+    opacity: 0.2;
+    border-radius: 4px;
 }
 
 .sidebar.hidden {
-  transform: translateX(-110%);
-  opacity: 0;
-  pointer-events: none;
+    transform: translateX(-110%);
+    opacity: 0;
+    pointer-events: none;
 }
 
 .header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--glass-border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--glass-border);
 }
 
 .title {
-  font-weight: 600;
-  font-size: 14px;
+    font-weight: 600;
+    font-size: 14px;
 }
 
 .headerActions {
-  display: flex;
-  gap: 6px;
+    display: flex;
+    gap: 6px;
 }
 
-.newBtn, .collapseBtn {
-  background: none;
-  border: 1px solid var(--glass-border);
-  color: var(--accent);
-  font-size: 12px;
-  padding: 4px 10px;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background 0.15s;
+.newBtn,
+.collapseBtn {
+    background: none;
+    border: 1px solid var(--glass-border);
+    color: var(--accent);
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s;
 }
-.newBtn:hover, .collapseBtn:hover {
-  background: var(--bg-hover);
+.newBtn:hover,
+.collapseBtn:hover {
+    background: var(--bg-hover);
 }
 .collapseBtn {
-  color: var(--text-dim);
-  padding: 4px 8px;
+    color: var(--text-dim);
+    padding: 4px 8px;
 }
 
 .list {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 8px;
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 8px;
 }
 
 .item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  width: 100%;
-  text-align: left;
-  background: none;
-  border: none;
-  color: var(--text);
-  padding: 10px 12px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.15s;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    color: var(--text);
+    padding: 10px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s;
 }
 .item:hover {
-  background: rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.06);
 }
 .item.active {
-  background: rgba(0, 150, 255, 0.12);
+    background: rgba(0, 150, 255, 0.12);
 }
 
 .itemTitle {
-  font-size: 13px;
-  font-weight: 500;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
+    font-size: 13px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
 }
 
 .itemTitleText {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
 }
 
 .remotePill {
-  flex-shrink: 0;
-  font-size: 10px;
-  font-weight: 500;
-  padding: 1px 6px;
-  border-radius: 9999px;
-  background: rgba(0, 150, 255, 0.15);
-  color: var(--accent);
-  margin-left: auto;
+    flex-shrink: 0;
+    font-size: 10px;
+    font-weight: 500;
+    padding: 1px 6px;
+    border-radius: 9999px;
+    background: rgba(0, 150, 255, 0.15);
+    color: var(--accent);
+    margin-left: auto;
 }
 
 .itemMeta {
-  font-size: 11px;
-  color: var(--text-muted);
-  display: flex;
-  align-items: center;
-  gap: 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 6px;
 }
 
 .statusDot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
 }
-.statusDot[data-status='Running'] {
-  background: var(--accent-green);
+.statusDot[data-status="Running"] {
+    background: var(--accent-green);
 }
-.statusDot[data-status='Idle'] {
-  background: var(--accent-yellow);
+.statusDot[data-status="Idle"] {
+    background: var(--accent-yellow);
 }
-.statusDot[data-status='Stopped'] {
-  background: var(--accent-red);
+.statusDot[data-status="Stopped"] {
+    background: var(--accent-red);
 }
-.statusDot[data-status='WaitingForChoice'] {
-  background: var(--accent-orange);
+.statusDot[data-status="WaitingForChoice"] {
+    background: var(--accent-orange);
 }
 
 .empty {
-  padding: 20px;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: 13px;
+    padding: 20px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
 }
 
 .threadList {
-  padding-left: 16px;
-  margin: 2px 0 4px;
+    padding-left: 16px;
+    margin: 2px 0 4px;
 }
 
 .threadItem {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  text-align: left;
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  padding: 5px 10px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 12px;
-  transition: background 0.15s, color 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    padding: 5px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    transition:
+        background 0.15s,
+        color 0.15s;
 }
 .threadItem:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--text);
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text);
 }
 .threadItem.active {
-  background: rgba(0, 150, 255, 0.12);
-  color: var(--text);
+    background: rgba(0, 150, 255, 0.12);
+    color: var(--text);
 }
 
 .threadLine {
-  width: 8px;
-  height: 1px;
-  background: var(--text-muted);
-  opacity: 0.4;
-  flex-shrink: 0;
+    width: 8px;
+    height: 1px;
+    background: var(--text-muted);
+    opacity: 0.4;
+    flex-shrink: 0;
 }
 
 .threadTitle {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }

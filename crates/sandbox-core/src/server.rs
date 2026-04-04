@@ -623,7 +623,7 @@ fn append_co_author_trailer(description: &str) -> String {
 /// summary shown in the CLI instead of the full text.
 async fn with_sandbox<B, M, C, F, Fut>(
     state: &AppState<B, M, C>,
-    group_id: &str,
+    invocation: &RapInvocation,
     jj_description: Option<&str>,
     action: F,
     modifies: bool,
@@ -635,6 +635,7 @@ where
     F: FnOnce(std::path::PathBuf) -> Fut,
     Fut: std::future::Future<Output = DisplayResult>,
 {
+    let group_id = &invocation.group_id;
     let repo_state = state
         .metadata
         .get(group_id)
@@ -663,6 +664,10 @@ where
 
     if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
         tracing::warn!("failed to cleanup sandbox: {e}");
+    }
+
+    if modifies {
+        push_diff_view(state, invocation).await;
     }
 
     tracing::info!(group_id = %group_id, "sandbox operation complete");
@@ -1088,6 +1093,7 @@ async fn handle_execute_command_streaming_inner<
             .push_sandbox(&sandbox_dir, &invocation.group_id, None)
             .await;
         send_tool_result(&state.callback_client, invocation, &text, None, false).await;
+        push_diff_view(state, invocation).await;
         if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
             tracing::warn!("failed to cleanup sandbox: {e}");
         }
@@ -1144,6 +1150,7 @@ async fn handle_execute_command_streaming_inner<
                     None,
                 )
                 .await;
+                push_diff_view(state, invocation).await;
                 send_subscription_event(
                     &state.callback_client,
                     &invocation.callback_url,
@@ -1194,6 +1201,7 @@ async fn handle_execute_command_streaming_inner<
                             None,
                         )
                         .await;
+                        push_diff_view(state, invocation).await;
                         send_subscription_event(
                             &state.callback_client,
                             &invocation.callback_url,
@@ -1218,6 +1226,7 @@ async fn handle_execute_command_streaming_inner<
                             None,
                         )
                         .await;
+                        push_diff_view(state, invocation).await;
                         if !accumulated.is_empty() {
                             send_subscription_event(
                                 &state.callback_client,
@@ -1250,7 +1259,7 @@ async fn handle_read_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
 
     with_sandbox(
         state,
-        &invocation.group_id,
+        invocation,
         None,
         |sandbox_dir| async move {
             let file_path = sandbox_dir.join(&args.path);
@@ -1369,7 +1378,7 @@ async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
 
     with_sandbox(
         state,
-        &invocation.group_id,
+        invocation,
         None,
         |sandbox_dir| async move {
             let file_path = sandbox_dir.join(&args.path);
@@ -1427,7 +1436,7 @@ async fn handle_create_file<B: SandboxBackend, M: MetadataStore, C: CallbackClie
 
     with_sandbox(
         state,
-        &invocation.group_id,
+        invocation,
         None,
         |sandbox_dir| async move {
             let file_path = sandbox_dir.join(&args.path);
@@ -1485,7 +1494,7 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
 
     with_sandbox(
         state,
-        &invocation.group_id,
+        invocation,
         None,
         |sandbox_dir| async move {
             let exclude_glob: Option<String>;
@@ -1578,7 +1587,7 @@ async fn handle_describe_overall_changes<B: SandboxBackend, M: MetadataStore, C:
 
     with_sandbox(
         state,
-        &invocation.group_id,
+        invocation,
         Some(&args.message),
         |_sandbox_dir| async move { Ok(("Edits described.".to_string(), None)) },
         true,
@@ -1616,7 +1625,7 @@ async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackC
         SandboxMode::Jj { .. } => {
             with_sandbox(
                 state,
-                &invocation.group_id,
+                invocation,
                 None,
                 |sandbox_dir| async move {
                     run_jj(
@@ -1644,6 +1653,50 @@ async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackC
         SandboxMode::Direct => Err(SandboxError::Other(
             "squash_sandbox is not supported in Direct mode".to_string(),
         )),
+    }
+}
+
+/// Compute the overall diff for a sandbox and send a `view_update` callback.
+async fn push_diff_view<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
+    state: &AppState<B, M, C>,
+    invocation: &RapInvocation,
+) {
+    let Ok(Some(repo_state)) = state.metadata.get(&invocation.group_id).await else {
+        return;
+    };
+    let repo_path = std::path::PathBuf::from(&repo_state.remote_uri);
+    let diff = match &repo_state.mode {
+        SandboxMode::Jj { base_revision } => run_jj(
+            &repo_path,
+            &[
+                "diff",
+                "--from",
+                base_revision,
+                "--to",
+                &repo_state.bookmark,
+                "--git",
+            ],
+        )
+        .await
+        .ok(),
+        SandboxMode::Git { base_revision } => {
+            git::run_git(&repo_path, &["diff", base_revision, &repo_state.bookmark])
+                .await
+                .ok()
+        }
+        _ => None,
+    };
+    if let Some(diff) = diff
+        && !diff.trim().is_empty()
+    {
+        rap_protocol::send_view_update(
+            &state.callback_client,
+            &invocation.callback_url,
+            invocation.group_id.clone(),
+            "diff",
+            serde_json::json!({ "diff": diff }),
+        )
+        .await;
     }
 }
 

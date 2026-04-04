@@ -118,7 +118,8 @@ fn daemon_msg_to_display(
         | DaemonMessage::MigrateError { .. }
         | DaemonMessage::ImportComplete { .. }
         | DaemonMessage::RapServersBooted { .. }
-        | DaemonMessage::RemotesUpdated { .. } => return None,
+        | DaemonMessage::RemotesUpdated { .. }
+        | DaemonMessage::ViewUpdate { .. } => return None,
     })
 }
 
@@ -317,7 +318,7 @@ async fn run_client(
                             let _ = to_daemon.send(ClientMessage::UserInput { session_id: sid, text });
                         }
                     }
-                    DaemonMessage::Replay { history, pending_choices } => {
+                    DaemonMessage::Replay { history, pending_choices, .. } => {
                         for m in history {
                             if let Some(evt) = daemon_msg_to_display(m) {
                                 let _ = display_tx.send(evt);

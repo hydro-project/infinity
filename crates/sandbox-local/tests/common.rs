@@ -68,13 +68,17 @@ pub async fn invoke(
         .await
         .expect("send invoke request");
 
-    let cb = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
-        .await
-        .expect("timed out waiting for callback")
-        .expect("channel closed");
+    // Loop to skip ViewUpdate callbacks and find the ToolResult.
+    loop {
+        let cb = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+            .await
+            .expect("timed out waiting for callback")
+            .expect("channel closed");
 
-    match cb {
-        RapCallback::ToolResult(r) => r.text,
-        other => panic!("expected ToolResult, got: {other:?}"),
+        match cb {
+            RapCallback::ToolResult(r) => return r.text,
+            RapCallback::ViewUpdate(_) => continue,
+            other => panic!("expected ToolResult, got: {other:?}"),
+        }
     }
 }

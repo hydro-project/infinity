@@ -44,6 +44,18 @@ pub async fn start_callback_server(
     let sm = session_manager.clone();
     tokio::task::spawn_local(async move {
         while let Some(cb) = cb_rx.recv().await {
+            // ViewUpdate is a side-channel — store and broadcast without going through the agent loop.
+            if let RapCallback::ViewUpdate(vu) = &cb {
+                tracing::info!(
+                    "RAP view_update: type={} group={}",
+                    vu.view_type,
+                    vu.group_id
+                );
+                let mgr = sm.lock().await;
+                mgr.handle_view_update(&vu.group_id, &vu.view_type, vu.content.clone());
+                continue;
+            }
+
             let input_msg = convert_callback(cb);
             let group_id = input_msg.group_id.clone();
             let dedup = uuid::Uuid::new_v4().to_string();
@@ -128,5 +140,8 @@ fn convert_callback(cb: RapCallback) -> InputMessage {
             display_as: None,
             subscription: false,
         },
+        RapCallback::ViewUpdate(_) => {
+            unreachable!("bug: ViewUpdate should be handled before convert_callback")
+        }
     }
 }

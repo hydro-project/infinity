@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true }
 dirs = "6"
 rap-protocol = { path = "../rap-protocol" }
 
