@@ -125,9 +125,19 @@ fn prefix_daemon_message(msg: DaemonMessage, remote_name: &str) -> DaemonMessage
             thread_id: prefix_thread_id(thread_id, remote_name),
             text,
         },
+        DaemonMessage::ViewUpdate {
+            thread_id,
+            view_type,
+            content,
+        } => DaemonMessage::ViewUpdate {
+            thread_id: prefix_thread_id(thread_id, remote_name),
+            view_type,
+            content,
+        },
         DaemonMessage::Replay {
             history,
             pending_choices,
+            views,
         } => DaemonMessage::Replay {
             history: history
                 .into_iter()
@@ -137,6 +147,7 @@ fn prefix_daemon_message(msg: DaemonMessage, remote_name: &str) -> DaemonMessage
                 .into_iter()
                 .map(|m| prefix_daemon_message(m, remote_name))
                 .collect(),
+            views,
         },
         other => other,
     }

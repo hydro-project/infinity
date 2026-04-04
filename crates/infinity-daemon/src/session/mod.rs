@@ -65,6 +65,8 @@ pub struct Session {
     pub shutdown_tx: Option<oneshot::Sender<()>>,
     /// Send to ping the agent to attempt to idle.
     pub idle_tx: mpsc::UnboundedSender<()>,
+    /// Per-thread subscriber lists for broadcasting display events.
+    pub subscriber_map: SubscriberMap,
 }
 
 pub type SessionStoreHandle = Arc<tokio::sync::Mutex<session_store::SessionStore>>;
@@ -179,6 +181,29 @@ impl SessionManager {
 
     pub fn conversation_store(&self) -> &InMemoryConversationStore {
         &self.conversation_store
+    }
+
+    /// Handle a view_update RAP callback: persist the view and broadcast to subscribers.
+    pub fn handle_view_update(&self, group_id: &str, view_type: &str, content: serde_json::Value) {
+        self.conversation_store
+            .set_view(group_id, view_type, content.clone());
+
+        let session_id = self.conversation_store.get_root_thread_id(group_id);
+        let msg = DaemonMessage::ViewUpdate {
+            thread_id: Some(group_id.to_string()),
+            view_type: view_type.to_string(),
+            content,
+        };
+
+        if let Some(session) = self.sessions.get(&session_id) {
+            let smap = session.subscriber_map.lock().expect("bug: mutex poisoned");
+            if let Some(subs) = smap.get(group_id) {
+                let subs = subs.lock().expect("bug: mutex poisoned");
+                for tx in subs.iter() {
+                    let _ = tx.send(msg.clone());
+                }
+            }
+        }
     }
 
     /// Create a brand new session with the given working directory.
@@ -317,7 +342,7 @@ impl SessionManager {
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-        let (model_name, context_window, idle_tx, agent_handle) = self
+        let (model_name, context_window, idle_tx, agent_handle, subscriber_map) = self
             .start_agent_loop(
                 session_id.clone(),
                 agent_rx,
@@ -344,6 +369,7 @@ impl SessionManager {
             context_window,
             shutdown_tx: Some(shutdown_tx),
             idle_tx,
+            subscriber_map,
         };
         self.sessions.insert(session_id.clone(), session);
         Ok(())
@@ -392,10 +418,12 @@ impl SessionManager {
             let choices = self
                 .conversation_store
                 .get_pending_choice_messages(&session_id);
-            if !history.is_empty() || !choices.is_empty() {
+            let views = self.conversation_store.get_views(thread_id);
+            if !history.is_empty() || !choices.is_empty() || !views.is_empty() {
                 let _ = tx.send(DaemonMessage::Replay {
                     history,
                     pending_choices: choices,
+                    views,
                 });
             }
         }
@@ -572,12 +600,21 @@ impl SessionManager {
         active_threads: ActiveThreads,
         shutdown_rx: oneshot::Receiver<()>,
         spawned_servers: Vec<tokio::process::Child>,
-    ) -> Result<(String, usize, mpsc::UnboundedSender<()>, JoinHandle<()>), BoxError> {
+    ) -> Result<
+        (
+            String,
+            usize,
+            mpsc::UnboundedSender<()>,
+            JoinHandle<()>,
+            SubscriberMap,
+        ),
+        BoxError,
+    > {
         let default = &self.available_models[0]; // already validated in new()
         let model_name = default.display_name.clone();
         let context_window = default.context_window;
 
-        let (idle_tx, handle) = {
+        let (idle_tx, handle, subscriber_map) = {
             let client = rig_bedrock::client::Client::from_env();
             let model = client.completion_model(&default.model_id);
 
@@ -600,7 +637,7 @@ impl SessionManager {
                 context_window,
             )
         };
-        Ok((model_name, context_window, idle_tx, handle))
+        Ok((model_name, context_window, idle_tx, handle, subscriber_map))
     }
 }
 
@@ -624,7 +661,7 @@ fn spawn_agent_loop<Mdl>(
     shutdown_rx: oneshot::Receiver<()>,
     spawned_servers: Vec<tokio::process::Child>,
     context_window: usize,
-) -> (mpsc::UnboundedSender<()>, JoinHandle<()>)
+) -> (mpsc::UnboundedSender<()>, JoinHandle<()>, SubscriberMap)
 where
     Mdl: CompletionModel + 'static,
 {
@@ -701,13 +738,13 @@ where
         session_id,
         session_store,
         conversation_store,
-        subscriber_map,
+        subscriber_map.clone(),
         active_threads,
         idle_rx,
         shutdown_rx,
         spawned_servers,
     ));
-    (idle_tx, handle)
+    (idle_tx, handle, subscriber_map)
 }
 
 /// Wrapper that owns the RAP servers and handles cleanup.

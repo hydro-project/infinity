@@ -22,6 +22,8 @@ const sidebars: SidebarsConfig = {
       items: [
         'server/subscription-events',
         'server/oauth',
+        'server/user-choice',
+        'server/view-updates',
       ],
     },
   ],
