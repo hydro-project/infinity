@@ -1756,8 +1756,13 @@ async fn migrate_inner<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
         .expect("bug: checked non-empty above");
     let repo_path = PathBuf::from(&repo_uri);
 
-    // For jj repos, flush bookmarks to git refs
+    // For jj repos, ensure all sandbox workspaces are loaded so their
+    // bookmarks exist before exporting. Without this, empty sandboxes
+    // (no changes yet) won't have their bookmark in git after export.
     if is_jj {
+        for s in &all_states {
+            state.backend.create_sandbox(s).await?;
+        }
         run_jj(&repo_path, &["git", "export"]).await?;
     }
 
