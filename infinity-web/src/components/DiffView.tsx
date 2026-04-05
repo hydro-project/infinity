@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useRef } from "react";
+import { useMemo, useCallback, useRef, useState } from "react";
 import { PatchDiff } from "@pierre/diffs/react";
 import { FileTree } from "@pierre/trees/react";
 import type { GitStatusEntry } from "@pierre/trees";
@@ -75,6 +75,8 @@ export function DiffView({ diff, theme }: DiffViewProps) {
     [patches],
   );
 
+  const [expandedItems, setExpandedItems] = useState<string[]>();
+
   const handleSelect = useCallback((paths: string[]) => {
     const el = paths[0] && fileRefs.current.get(paths[0]);
     if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -100,6 +102,8 @@ export function DiffView({ diff, theme }: DiffViewProps) {
           files={filePaths}
           gitStatus={gitStatus}
           options={{ flattenEmptyDirectories: true }}
+          expandedItems={expandedItems}
+          onExpandedItemsChange={setExpandedItems}
           onSelectedItemsChange={handleSelect}
         />
       </div>
