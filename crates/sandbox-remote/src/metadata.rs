@@ -82,4 +82,15 @@ impl MetadataStore for DynamoMetadataStore {
 
         Ok(())
     }
+
+    async fn delete(&self, group_id: &str) -> Result<(), SandboxError> {
+        self.client
+            .delete_item()
+            .table_name(&self.table_name)
+            .key("group_id", AttributeValue::S(group_id.to_string()))
+            .send()
+            .await
+            .map_err(|e| SandboxError::MetadataError(format!("DynamoDB delete failed: {e}")))?;
+        Ok(())
+    }
 }
