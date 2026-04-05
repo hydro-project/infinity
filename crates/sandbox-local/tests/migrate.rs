@@ -674,3 +674,104 @@ async fn migrate_destination_behind() {
         "expected parent commit's file, got: {text}"
     );
 }
+
+/// Migration succeeds after a child thread's sandbox has been squashed into its
+/// parent. Previously the squashed child's metadata was left behind, causing
+/// `migrate` to try bundling a deleted bookmark.
+#[tokio::test]
+async fn migrate_after_squash_child() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let source_repo = jj_init_with_file("README.md", "base\n");
+    let source_path = source_repo.path();
+    let dest_repo = jj_clone(source_path);
+    let dest_path = dest_repo.path();
+
+    let source_meta = tempfile::tempdir().expect("source metadata dir");
+    let source_url = start_migration_server(source_meta.path(), None).await;
+    let (callback_url, mut rx) = start_callback_channel()
+        .await
+        .expect("start callback channel");
+
+    let dest_meta = tempfile::tempdir().expect("dest metadata dir");
+    let dest_url = start_migration_server(dest_meta.path(), Some(dest_path.to_path_buf())).await;
+
+    // Set up parent and child threads (both under session-root)
+    let parent_id = "parent-thread";
+    let child_id = "child-thread";
+    for gid in [parent_id, child_id] {
+        let text = invoke(
+            &source_url,
+            &callback_url,
+            gid,
+            "clone_repo",
+            serde_json::json!({ "repo": source_path.to_str().expect("path") }),
+            &mut rx,
+            Some(vec!["session-root".to_string()]),
+        )
+        .await;
+        assert!(text.contains("Repository initialized"), "got: {text}");
+    }
+
+    // Create a file in the child
+    let text = invoke(
+        &source_url,
+        &callback_url,
+        child_id,
+        "create_file",
+        serde_json::json!({ "path": "child.txt", "content": "from child\n" }),
+        &mut rx,
+        None,
+    )
+    .await;
+    assert!(text.contains("Created file"), "got: {text}");
+
+    // Squash child into parent — this deletes the child's bookmark
+    let text = invoke(
+        &source_url,
+        &callback_url,
+        parent_id,
+        "squash_sandbox",
+        serde_json::json!({ "from_thread_id": child_id }),
+        &mut rx,
+        None,
+    )
+    .await;
+    assert!(text.contains("Squashed"), "got: {text}");
+
+    // Migrate — should succeed even though child was squashed
+    let resp = reqwest::Client::new()
+        .post(format!("{source_url}/migrate"))
+        .json(&serde_json::json!({
+            "session_id": "session-root",
+            "destination_url": dest_url,
+        }))
+        .send()
+        .await
+        .expect("send migrate request");
+    assert!(
+        resp.status().is_success(),
+        "migrate failed: {} {}",
+        resp.status(),
+        resp.text().await.unwrap_or_default()
+    );
+
+    // Verify the parent's content (including squashed child file) arrived
+    let (dest_cb_url, mut dest_rx) = start_callback_channel()
+        .await
+        .expect("start dest callback channel");
+    let text = invoke(
+        &dest_url,
+        &dest_cb_url,
+        parent_id,
+        "read_file",
+        serde_json::json!({ "path": "child.txt" }),
+        &mut dest_rx,
+        None,
+    )
+    .await;
+    assert!(
+        text.contains("from child"),
+        "expected squashed child content, got: {text}"
+    );
+}

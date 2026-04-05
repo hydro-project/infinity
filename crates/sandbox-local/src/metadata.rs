@@ -51,6 +51,15 @@ impl MetadataStore for FileMetadataStore {
         Ok(())
     }
 
+    async fn delete(&self, group_id: &str) -> Result<(), SandboxError> {
+        let path = self.path_for(group_id);
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(SandboxError::Io(e)),
+        }
+    }
+
     async fn list_all(&self) -> Result<Vec<RepoState>, SandboxError> {
         let entries = match std::fs::read_dir(&self.base_dir) {
             Ok(e) => e,
