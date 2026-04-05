@@ -345,7 +345,7 @@ pub async fn handle_client_channels(
                     }
                     ClientMessage::Connect { session_id, thread_id } => {
                         if let Some((rname, real_session_id)) = is_remote_session(&session_id) {
-                            let real_id = thread_id.as_deref().unwrap_or(real_session_id).to_string();
+                            let real_id = thread_id.as_deref().map(|t| strip_id(t, rname)).unwrap_or_else(|| real_session_id.to_string());
                             let rname = rname.to_string();
                             let rd = {
                                 let mgr = session_manager.lock().await;
