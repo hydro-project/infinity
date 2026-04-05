@@ -90,6 +90,8 @@ pub(crate) struct ThreadSnapshot {
 pub(crate) struct SerializedThread {
     pub metadata: ThreadInfo,
     pub snapshot: ThreadSnapshot,
+    #[serde(default)]
+    pub views: HashMap<String, serde_json::Value>,
 }
 
 /// Deserialize display_as map, handling both the old `String` format and the
@@ -607,7 +609,21 @@ impl InMemoryConversationStore {
                     compaction_summaries: cs.get(&tid).cloned().unwrap_or_default(),
                 }
             };
-            threads.insert(tid, SerializedThread { metadata, snapshot });
+            let views = self
+                .views
+                .lock()
+                .expect("bug: mutex poisoned")
+                .get(&tid)
+                .cloned()
+                .unwrap_or_default();
+            threads.insert(
+                tid,
+                SerializedThread {
+                    metadata,
+                    snapshot,
+                    views,
+                },
+            );
         }
         serde_json::to_string(&threads).expect("bug: serde serialization failed")
     }
@@ -633,6 +649,12 @@ impl InMemoryConversationStore {
                 .lock()
                 .expect("bug: mutex poisoned")
                 .insert(tid.clone(), st.snapshot.compaction_summaries);
+            if !st.views.is_empty() {
+                self.views
+                    .lock()
+                    .expect("bug: mutex poisoned")
+                    .insert(tid.clone(), st.views);
+            }
             self.loaded
                 .lock()
                 .expect("bug: mutex poisoned")
@@ -642,6 +664,7 @@ impl InMemoryConversationStore {
                 .expect("bug: mutex poisoned")
                 .insert(tid.clone());
             self.save_thread(&tid);
+            self.save_views(&tid);
         }
         Ok(())
     }
