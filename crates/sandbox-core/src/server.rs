@@ -1610,7 +1610,7 @@ async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackC
         .await?
         .ok_or_else(|| SandboxError::RepoNotFound(invocation.group_id.clone()))?;
 
-    match &repo_state.mode {
+    let result = match &repo_state.mode {
         SandboxMode::Git { .. } => {
             let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;
             git::git_merge_branch(&sandbox_dir, &from_bookmark).await?;
@@ -1653,7 +1653,14 @@ async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackC
         SandboxMode::Direct => Err(SandboxError::Other(
             "squash_sandbox is not supported in Direct mode".to_string(),
         )),
+    };
+
+    // Remove the child's metadata so migration doesn't try to bundle a deleted bookmark.
+    if result.is_ok() {
+        let _ = state.metadata.delete(&args.from_thread_id).await;
     }
+
+    result
 }
 
 /// Compute the overall diff for a sandbox and send a `view_update` callback.
