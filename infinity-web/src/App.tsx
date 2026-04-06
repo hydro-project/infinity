@@ -645,7 +645,7 @@ export function App() {
           </nav>
         )}
         <div className={css.mainBody}>
-          {activeTab === "chat" || !hasViews ? (
+          <div style={{ display: activeTab === "chat" || !hasViews ? undefined : "none", height: "100%" }}>
             <MessageList
               messages={messages}
               spinner={spinner}
@@ -655,9 +655,13 @@ export function App() {
               onChoiceSelect={handleChoiceSelect}
               theme={theme}
             />
-          ) : activeTab === "diff" && views.diff ? (
-            <DiffView diff={views.diff.diff} theme={theme} />
-          ) : (
+          </div>
+          {views.diff && (
+            <div style={{ display: activeTab === "diff" ? undefined : "none", height: "100%" }}>
+              <DiffView diff={views.diff.diff} theme={theme} />
+            </div>
+          )}
+          {activeTab !== "chat" && activeTab !== "diff" && hasViews && (
             <div style={{ padding: 24, color: "var(--text-muted)" }}>
               Unsupported view: {activeTab}
             </div>
