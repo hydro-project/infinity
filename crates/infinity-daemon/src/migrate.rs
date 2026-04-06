@@ -29,9 +29,21 @@ pub async fn orchestrate_migration(
         session_id: session_id.clone(),
     });
 
+    let real_session_id = session_id
+        .split_once('/')
+        .map_or(session_id.as_str(), |(_, s)| s);
+    let new_session_id = if to == "local" {
+        real_session_id.to_string()
+    } else {
+        format!("{to}/{real_session_id}")
+    };
+
     match run_migration(&session_id, &to, &dest_cwd, &session_manager).await {
         Ok(()) => {
-            let _ = daemon_tx.send(DaemonMessage::MigrateComplete { session_id, to });
+            let _ = daemon_tx.send(DaemonMessage::MigrateComplete {
+                session_id,
+                new_session_id,
+            });
         }
         Err(e) => {
             let _ = daemon_tx.send(DaemonMessage::MigrateError {

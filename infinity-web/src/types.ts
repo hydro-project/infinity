@@ -115,7 +115,7 @@ export type DaemonMessage =
   | "DetachedIdle"
   | { EmigrateResult: { session_id: string; session_data: string } }
   | { MigrateStarted: { session_id: string } }
-  | { MigrateComplete: { session_id: string; to: string } }
+  | { MigrateComplete: { session_id: string; new_session_id: string } }
   | { MigrateError: { session_id: string; error: string } };
 
 /* ── Client → Daemon messages ── */
