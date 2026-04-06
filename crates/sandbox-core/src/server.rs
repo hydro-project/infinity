@@ -23,7 +23,7 @@ type DisplayResult = Result<(String, Option<Vec<DisplaySegment>>), SandboxError>
 
 use crate::error::SandboxError;
 use crate::git;
-use crate::jj::run_jj;
+use crate::jj::{self, run_jj};
 use crate::metadata::MetadataStore;
 use crate::sandbox::SandboxBackend;
 use crate::types::{
@@ -924,12 +924,17 @@ async fn handle_execute_command_streaming_inner<
     }
 
     let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;
-    if matches!(repo_state.mode, SandboxMode::Jj { .. }) {
+    let is_jj = matches!(repo_state.mode, SandboxMode::Jj { .. });
+    if is_jj {
+        run_jj(&sandbox_dir, &["new"]).await?;
         run_jj(&sandbox_dir, &["describe", "-m", &args.command]).await?;
     }
 
     // Check for early cancellation before spawning the process.
     if cancel_rx.try_recv().is_ok() {
+        if is_jj {
+            let _ = jj::jj_squash_stacked(&sandbox_dir).await;
+        }
         let _ = state
             .backend
             .push_sandbox(&sandbox_dir, &invocation.group_id, None)
@@ -974,6 +979,9 @@ async fn handle_execute_command_streaming_inner<
         Ok(s) => s,
         Err(e) => {
             state.in_flight.lock().await.remove(&invocation.id);
+            if is_jj {
+                let _ = jj::jj_squash_stacked(&sandbox_dir).await;
+            }
             let _ = state
                 .backend
                 .push_sandbox(&sandbox_dir, &invocation.group_id, None)
@@ -1059,6 +1067,9 @@ async fn handle_execute_command_streaming_inner<
                 #[cfg(unix)]
                 kill_process(child_pid);
                 // let text = format_cancel_output(&stdout_buf, &stderr_buf);
+                if is_jj {
+                    let _ = jj::jj_squash_stacked(&sandbox_dir).await;
+                }
                 let _ = state.backend.push_sandbox(&sandbox_dir, &invocation.group_id, None).await;
                 // TODO: determine if sending this would be in-spec
                 // send_subscription_event(&state.callback_client, invocation, &text, true).await;
@@ -1088,6 +1099,9 @@ async fn handle_execute_command_streaming_inner<
         // Process finished within 5 seconds — return a normal tool_result.
         state.in_flight.lock().await.remove(&invocation.id);
         let text = format_exec_output(&stdout_buf, &stderr_buf, code);
+        if is_jj {
+            let _ = jj::jj_squash_stacked(&sandbox_dir).await;
+        }
         let _ = state
             .backend
             .push_sandbox(&sandbox_dir, &invocation.group_id, None)
@@ -1144,6 +1158,9 @@ async fn handle_execute_command_streaming_inner<
                     accumulated.push_str("[cancelled]");
                 }
 
+                if is_jj {
+                    let _ = jj::jj_squash_stacked(&sandbox_dir).await;
+                }
                 let _ = state.backend.push_sandbox(
                     &sandbox_dir,
                     &invocation.group_id,
@@ -1195,6 +1212,9 @@ async fn handle_execute_command_streaming_inner<
                             accumulated.push_str(&format!("\n[exit code: {code}]"));
                         }
 
+                        if is_jj {
+                            let _ = jj::jj_squash_stacked(&sandbox_dir).await;
+                        }
                         let _ = state.backend.push_sandbox(
                             &sandbox_dir,
                             &invocation.group_id,
@@ -1220,6 +1240,9 @@ async fn handle_execute_command_streaming_inner<
                     None => {
                         state.in_flight.lock().await.remove(&invocation.id);
 
+                        if is_jj {
+                            let _ = jj::jj_squash_stacked(&sandbox_dir).await;
+                        }
                         let _ = state.backend.push_sandbox(
                             &sandbox_dir,
                             &invocation.group_id,
@@ -2057,7 +2080,7 @@ fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
             },
             ToolDef {
                 name: "execute_command".to_string(),
-                description: "Execute a bash command in a sandboxed copy of the repository. The sandbox is an isolated temporary directory with the repo's current state. There is no need to cd to folders like /tmp before running commands. This overwrites `describe_overall_changes`, so after you complete the task you should update it again.".to_string(),
+                description: "Execute a bash command in a sandboxed copy of the repository. The sandbox is an isolated temporary directory with the repo's current state. There is no need to cd to folders like /tmp before running commands.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
