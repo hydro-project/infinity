@@ -345,14 +345,14 @@ pub async fn handle_client_channels(
                     }
                     ClientMessage::Connect { session_id, thread_id } => {
                         if let Some((rname, real_session_id)) = is_remote_session(&session_id) {
-                            let real_id = thread_id.as_deref().map(|t| strip_id(t, rname)).unwrap_or_else(|| real_session_id.to_string());
+                            let real_thread_id = thread_id.as_deref().map(|t| strip_id(t, rname));
                             let rname = rname.to_string();
                             let rd = {
                                 let mgr = session_manager.lock().await;
                                 mgr.remote_daemons.clone()
                             };
                             if let Some(rd) = rd {
-                                match rd.connect_remote_session(&rname, &real_id).await {
+                                match rd.connect_remote_session(&rname, real_session_id, real_thread_id.as_deref()).await {
                                     Ok((tx, rx)) => {
                                         remote_proxy_tx = Some(tx);
                                         remote_proxy_rx = Some(rx);

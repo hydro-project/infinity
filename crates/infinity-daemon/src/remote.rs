@@ -101,7 +101,8 @@ impl RemoteDaemons {
     pub async fn connect_remote_session(
         &self,
         remote_name: &str,
-        thread_id: &str,
+        session_id: &str,
+        thread_id: Option<&str>,
     ) -> Result<
         (
             mpsc::UnboundedSender<ClientMessage>,
@@ -113,8 +114,8 @@ impl RemoteDaemons {
 
         res.0
             .send(ClientMessage::Connect {
-                session_id: thread_id.to_string(),
-                thread_id: None,
+                session_id: session_id.to_string(),
+                thread_id: thread_id.map(|t| t.to_string()),
             })
             .map_err(|e| format!("send Connect failed: {e}"))?;
 
