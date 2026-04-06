@@ -117,6 +117,19 @@ pub async fn jj_git_clone(
 
     Ok(())
 }
+/// Squash a stacked commit (created by `jj new`) back into its parent,
+/// preserving the parent's description. The stacked commit should already
+/// be described so it remains visible in `jj evolog`.
+pub async fn jj_squash_stacked(dir: &Path) -> Result<(), SandboxError> {
+    run_jj(
+        dir,
+        &["squash", "--into", "@-", "--use-destination-message"],
+    )
+    .await?;
+    run_jj(dir, &["edit", "@-"]).await?;
+    Ok(())
+}
+
 /// Push the current working copy to the remote.
 pub async fn jj_push_working_copy(dir: &Path, bookmark_name: &str) -> Result<(), SandboxError> {
     run_jj(dir, &["bookmark", "set", bookmark_name]).await?;

@@ -5,43 +5,11 @@
 
 mod common;
 
-use common::invoke;
+use common::{invoke, jj_init_with_file};
 use rap_client::callback_server::start_callback_channel;
 
 use std::path::Path;
 use std::process::Command;
-
-/// Create a colocated jj+git repo with an initial commit.
-fn jj_init_with_file(filename: &str, content: &str) -> tempfile::TempDir {
-    let tmp = tempfile::tempdir().expect("create temp dir");
-    let path = tmp.path();
-    assert!(
-        Command::new("git")
-            .args(["-c", "init.defaultBranch=main", "init"])
-            .current_dir(path)
-            .status()
-            .expect("run git init")
-            .success()
-    );
-    assert!(
-        Command::new("jj")
-            .args(["git", "init", "--colocate"])
-            .current_dir(path)
-            .status()
-            .expect("run jj git init")
-            .success()
-    );
-    std::fs::write(path.join(filename), content).expect("write file");
-    assert!(
-        Command::new("jj")
-            .args(["commit", "-m", "initial"])
-            .current_dir(path)
-            .status()
-            .expect("run jj commit")
-            .success()
-    );
-    tmp
-}
 
 /// Clone a jj repo via git clone + jj git init --colocate.
 fn jj_clone(source: &Path) -> tempfile::TempDir {

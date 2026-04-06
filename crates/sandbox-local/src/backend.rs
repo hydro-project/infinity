@@ -388,14 +388,6 @@ impl SandboxBackend for LocalBackend {
             .split_first()
             .ok_or_else(|| SandboxError::Other("argv must not be empty".to_string()))?;
 
-        // Resolve the current binary so we can use its `exec` sub-entrypoint
-        // to create a new process group (PGID = PID) before exec-ing the
-        // actual command.  This lets the server send SIGTERM to -pid to kill
-        // the entire process tree.
-        let current_exe = std::env::current_exe().map_err(|e| {
-            SandboxError::Other(format!("failed to resolve current executable: {e}"))
-        })?;
-
         if cfg!(target_os = "macos") && self.sandbox_enabled {
             let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
@@ -445,11 +437,8 @@ impl SandboxBackend for LocalBackend {
                              (vnode-type CHARACTER-DEVICE)))"
                 )
             };
-            let child = tokio::process::Command::new("sandbox-exec")
-                .args(["-p", &profile])
-                .arg(&current_exe)
-                .arg("exec")
-                .arg("--")
+            let mut cmd = tokio::process::Command::new("sandbox-exec");
+            cmd.args(["-p", &profile])
                 .arg(program)
                 .args(args)
                 .env("TMPDIR", abs_tmp.as_os_str())
@@ -457,6 +446,9 @@ impl SandboxBackend for LocalBackend {
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
+                .process_group(0);
+
+            let child = cmd
                 .spawn()
                 .map_err(|e| SandboxError::CommandError(format!("failed to spawn command: {e}")))?;
 
@@ -503,11 +495,8 @@ impl SandboxBackend for LocalBackend {
                 bwrap_args.extend(["--bind", p.as_str(), p.as_str()]);
             }
             bwrap_args.push("--");
-            let child = tokio::process::Command::new("bwrap")
-                .args(&bwrap_args)
-                .arg(&current_exe)
-                .arg("exec")
-                .arg("--")
+            let mut cmd = tokio::process::Command::new("bwrap");
+            cmd.args(&bwrap_args)
                 .arg(program)
                 .args(args)
                 .env("TMPDIR", abs_tmp.as_os_str())
@@ -515,6 +504,9 @@ impl SandboxBackend for LocalBackend {
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
+                .process_group(0);
+
+            let child = cmd
                 .spawn()
                 .map_err(|e| SandboxError::CommandError(format!("failed to spawn command: {e}")))?;
 
@@ -523,15 +515,15 @@ impl SandboxBackend for LocalBackend {
                 _keepalive: Some(Box::new(tmp)),
             })
         } else {
-            let child = tokio::process::Command::new(&current_exe)
-                .arg("exec")
-                .arg("--")
-                .arg(program)
-                .args(args)
+            let mut cmd = tokio::process::Command::new(program);
+            cmd.args(args)
                 .current_dir(sandbox_dir)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
+                .process_group(0);
+
+            let child = cmd
                 .spawn()
                 .map_err(|e| SandboxError::CommandError(format!("failed to spawn command: {e}")))?;
 
