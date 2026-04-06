@@ -228,7 +228,7 @@ pub enum DaemonMessage {
     },
     MigrateComplete {
         session_id: String,
-        to: String,
+        new_session_id: String,
     },
     MigrateError {
         session_id: String,
