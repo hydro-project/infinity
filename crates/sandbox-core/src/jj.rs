@@ -121,6 +121,7 @@ pub async fn jj_git_clone(
 /// preserving the parent's description. The stacked commit should already
 /// be described so it remains visible in `jj evolog`.
 pub async fn jj_squash_stacked(dir: &Path) -> Result<(), SandboxError> {
+    run_jj(dir, &["workspace", "update-stale"]).await?;
     run_jj(
         dir,
         &["squash", "--into", "@-", "--use-destination-message"],
