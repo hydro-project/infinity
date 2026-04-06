@@ -10,3 +10,5 @@ jj-layer/
 /.infinity/
 
 ._*
+
+/rust-toolchain.toml
