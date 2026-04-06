@@ -1483,11 +1483,7 @@ async fn handle_create_file<B: SandboxBackend, M: MetadataStore, C: CallbackClie
                 .await
                 .map_err(SandboxError::Io)?;
 
-            let line_count = args.content.lines().count();
-            let display = vec![DisplaySegment::Text(format!(
-                "Created {} ({} lines)",
-                args.path, line_count
-            ))];
+            let display = build_edit_diff(&args.path, "", &args.content);
 
             Ok((format!("Created file {}", args.path), Some(display)))
         },
