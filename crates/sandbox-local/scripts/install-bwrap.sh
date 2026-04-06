@@ -5,7 +5,7 @@
 set -euo pipefail
 
 PREFIX="/usr/local"
-BWRAP_VERSION="v0.11.0"
+BWRAP_VERSION="v0.11.1"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in

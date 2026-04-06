@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+BOLD='\033[1m'
+RESET='\033[0m'
+
+pass() { echo -e "${GREEN}✓${RESET} $1"; }
+fail() { echo -e "${RED}✗${RESET} $1"; exit 1; }
+step() { echo -e "\n${BOLD}▸ $1${RESET}"; }
+
+step 'Prerequisites'
+command -v git > /dev/null 2>&1 || fail 'Cannot find `git`'
+command -v jj > /dev/null 2>&1 || fail 'Cannot find jujutsu `jj`. To install, run `cargo install --locked jj-cli --bin jj`'
+command -v bwrap > /dev/null 2>&1 || command -v sandbox-exec > /dev/null 2>&1 || fail 'Cannot find bubblewrap `bwrap` or `sandbox-exec`'
+pass 'All prerequisite executables found'
+
+# Set all local crates to DEBUG, keeping any existing RUST_LOG.
+export RUST_LOG="${RUST_LOG:-warn},$(cargo tree --workspace --depth 0 | grep -oE '^[a-z][a-z0-9_-]+' | sed 's/-/_/g' | sed 's/$/=debug/' | paste -sd, -)"
+export RUST_BACKTRACE=1
+
+step "Formatting"
+cargo fmt --all --check || fail "formatting issues found (run 'cargo fmt --all' to fix)"
+pass "All code is formatted"
+
+step "Clippy (warnings denied)"
+cargo clippy --all-targets --all-features -- -D warnings || fail "clippy warnings found"
+pass "No clippy warnings"
+
+step "Check"
+cargo check --all-targets --all-features || fail "test targets failed to compile"
+pass "Test targets compile"
+
+step "Tests"
+cargo test --all-targets --all-features || fail "tests failed"
+pass "All tests passed"
+
+echo -e "\n${GREEN}${BOLD}All checks passed.${RESET}"
