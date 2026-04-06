@@ -23,49 +23,7 @@ struct Args {
     metadata_dir: Option<std::path::PathBuf>,
 }
 
-/// Internal entrypoint used when the binary is re-invoked inside a sandbox to
-/// run a user command.  Sets PGID = PID so the whole process tree can be
-/// signalled as a group, then `exec()`s the given command.
-///
-/// Usage: `rap-sandbox-local exec -- <program> [args...]`
-#[cfg(unix)]
-fn exec_mode(args: &[String]) -> ! {
-    // Skip "--" separator if present.
-    let args = if args.first().map(|s| s.as_str()) == Some("--") {
-        &args[1..]
-    } else {
-        args
-    };
-
-    if args.is_empty() {
-        eprintln!("exec mode: no command specified");
-        std::process::exit(1);
-    }
-
-    // Create a new process group with PGID = our PID so that
-    // kill(-pid, SIGTERM) reaches this process and all its children.
-    use nix::unistd::{Pid, setpgid};
-    let _ = setpgid(Pid::from_raw(0), Pid::from_raw(0));
-
-    // Replace this process with the requested command.
-    use std::os::unix::process::CommandExt;
-    let err = std::process::Command::new(&args[0]).args(&args[1..]).exec();
-
-    eprintln!("exec mode: failed to exec '{}': {err}", args[0]);
-    std::process::exit(1);
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Fast-path: if invoked as `rap-sandbox-local exec ...`, enter exec mode
-    // without starting the tokio runtime or any other server infrastructure.
-    #[cfg(unix)]
-    {
-        let raw_args: Vec<String> = std::env::args().collect();
-        if raw_args.get(1).map(|s| s.as_str()) == Some("exec") {
-            exec_mode(&raw_args[2..]);
-        }
-    }
-
     let args = Args::parse();
 
     let metadata_dir = args.metadata_dir.unwrap_or_else(|| {
