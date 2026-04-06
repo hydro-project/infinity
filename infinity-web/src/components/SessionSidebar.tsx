@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState, useEffect } from "react";
 import type { SessionInfo, SubthreadInfo, RemoteInfo } from "../types";
+import type { ConnectionStatus } from "../useSocket";
 import css from "./SessionSidebar.module.css";
 
 interface Props {
@@ -8,6 +9,7 @@ interface Props {
   activeThreadId: string | null;
   open: boolean;
   remotes: RemoteInfo[];
+  localStatus: ConnectionStatus;
   onSelect: (sessionId: string, threadId: string | null) => void;
   onNew: () => void;
   onClose: () => void;
@@ -73,6 +75,7 @@ export function SessionSidebar({
   activeThreadId,
   open,
   remotes,
+  localStatus,
   onSelect,
   onNew,
   onClose,
@@ -135,6 +138,20 @@ export function SessionSidebar({
           </button>
         </div>
       </div>
+      {localStatus !== "connected" && (
+        <div className={css.remoteBanner}>
+          <div
+            className={css.remoteBannerItem}
+            data-status={localStatus === "connecting" ? "connecting" : "disconnected"}
+          >
+            <span
+              className={css.remoteBannerDot}
+              data-status={localStatus === "connecting" ? "connecting" : "disconnected"}
+            />
+            local: {localStatus}
+          </div>
+        </div>
+      )}
       {remotes.some((r) => r.status !== "connected") && (
         <div className={css.remoteBanner}>
           {remotes
