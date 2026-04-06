@@ -414,6 +414,21 @@ export function App() {
             break;
           }
           case "MigrateComplete": {
+            const p = msgPayload<{ session_id: string; new_session_id: string }>(m);
+            if (sessionRef.current === p.session_id) {
+              sendRef.current("Disconnect");
+              sessionRef.current = null;
+              threadRef.current = null;
+              threadStackRef.current = [];
+              setViewThreadId(null);
+              setMessages([]);
+              setSpinner(null);
+              setPendingChoices([]);
+              setViews({});
+              setActiveTab("chat");
+              streamingRef.current = false;
+              sendRef.current({ Connect: { session_id: p.new_session_id, thread_id: null } });
+            }
             appendMessage({ type: "info", text: "Migration complete" });
             break;
           }
