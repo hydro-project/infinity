@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState, useEffect } from "react";
-import type { SessionInfo, SubthreadInfo } from "../types";
+import type { SessionInfo, SubthreadInfo, RemoteInfo } from "../types";
 import css from "./SessionSidebar.module.css";
 
 interface Props {
@@ -7,6 +7,7 @@ interface Props {
   activeSessionId: string | null;
   activeThreadId: string | null;
   open: boolean;
+  remotes: RemoteInfo[];
   onSelect: (sessionId: string, threadId: string | null) => void;
   onNew: () => void;
   onClose: () => void;
@@ -71,6 +72,7 @@ export function SessionSidebar({
   activeSessionId,
   activeThreadId,
   open,
+  remotes,
   onSelect,
   onNew,
   onClose,
@@ -133,6 +135,25 @@ export function SessionSidebar({
           </button>
         </div>
       </div>
+      {remotes.some((r) => r.status !== "connected") && (
+        <div className={css.remoteBanner}>
+          {remotes
+            .filter((r) => r.status !== "connected")
+            .map((r) => (
+              <div
+                key={r.name}
+                className={css.remoteBannerItem}
+                data-status={r.status === "connecting" ? "connecting" : "disconnected"}
+              >
+                <span
+                  className={css.remoteBannerDot}
+                  data-status={r.status === "connecting" ? "connecting" : "disconnected"}
+                />
+                {r.name}: {r.status}
+              </div>
+            ))}
+        </div>
+      )}
       <div className={css.list}>
         {sorted.map(([id, info]) => (
           <div key={id}>

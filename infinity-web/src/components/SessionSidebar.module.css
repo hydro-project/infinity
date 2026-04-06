@@ -169,6 +169,39 @@
     font-size: 13px;
 }
 
+.remoteBanner {
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--glass-border);
+}
+
+.remoteBannerItem {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    padding: 3px 0;
+    color: var(--text-muted);
+}
+.remoteBannerItem[data-status="disconnected"] {
+    color: var(--accent-red);
+}
+.remoteBannerItem[data-status="connecting"] {
+    color: var(--accent-yellow);
+}
+
+.remoteBannerDot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.remoteBannerDot[data-status="disconnected"] {
+    background: var(--accent-red);
+}
+.remoteBannerDot[data-status="connecting"] {
+    background: var(--accent-yellow);
+}
+
 .threadList {
     padding-left: 16px;
     margin: 2px 0 4px;

@@ -568,6 +568,7 @@ export function App() {
         activeSessionId={sessionRef.current}
         activeThreadId={viewThreadId}
         open={sidebarOpen}
+        remotes={remotes}
         onSelect={navigateTo}
         onNew={handleNewSession}
         onClose={() => setSidebarOpen(false)}
