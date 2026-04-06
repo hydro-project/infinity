@@ -188,30 +188,6 @@
     background: var(--bg-hover);
 }
 
-.dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    display: inline-block;
-}
-.dot[data-status="connecting"] {
-    background: var(--accent-orange);
-    animation: pulse 1s ease-in-out infinite;
-}
-.dot[data-status="disconnected"] {
-    background: var(--accent-red);
-}
-
-@keyframes pulse {
-    0%,
-    100% {
-        opacity: 0.4;
-    }
-    50% {
-        opacity: 1;
-    }
-}
-
 /* ── View tab navbar ── */
 
 .viewNav {

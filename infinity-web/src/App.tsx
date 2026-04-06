@@ -584,6 +584,7 @@ export function App() {
         activeThreadId={viewThreadId}
         open={sidebarOpen}
         remotes={remotes}
+        localStatus={status}
         onSelect={navigateTo}
         onNew={handleNewSession}
         onClose={() => setSidebarOpen(false)}
@@ -606,9 +607,6 @@ export function App() {
           </button>
         )}
         <span className={css.infoPill}>
-          {status !== "connected" && (
-            <span className={css.dot} data-status={status} />
-          )}
           {modelName}
           {modelName && " \u00b7 "}
           {Math.round(contextPct)}% context
