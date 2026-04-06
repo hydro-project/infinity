@@ -76,8 +76,10 @@ export function DiffView({ diff, theme }: DiffViewProps) {
   );
 
   const [expandedItems, setExpandedItems] = useState<string[]>();
+  const [selectedItems, setSelectedItems] = useState<string[]>([]);
 
   const handleSelect = useCallback((paths: string[]) => {
+    setSelectedItems(paths);
     const el = paths[0] && fileRefs.current.get(paths[0]);
     if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
   }, []);
@@ -102,6 +104,7 @@ export function DiffView({ diff, theme }: DiffViewProps) {
           files={filePaths}
           gitStatus={gitStatus}
           options={{ flattenEmptyDirectories: true }}
+          selectedItems={selectedItems}
           expandedItems={expandedItems}
           onExpandedItemsChange={setExpandedItems}
           onSelectedItemsChange={handleSelect}
