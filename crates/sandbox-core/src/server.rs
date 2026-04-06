@@ -1913,6 +1913,18 @@ async fn migrate_inner<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     }
 
     tracing::info!("migration bundle sent successfully");
+
+    // Clean up cached sandbox worktrees/workspaces on the source side —
+    // they are no longer needed after a successful migration.
+    for s in &all_states {
+        if let Err(e) = state.backend.cleanup_sandbox_permanently(&s.group_id).await {
+            tracing::warn!(
+                group_id = %s.group_id,
+                "failed to clean up sandbox after migration: {e}"
+            );
+        }
+    }
+
     Ok(())
 }
 
