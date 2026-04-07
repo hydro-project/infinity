@@ -3,6 +3,26 @@ import type { SessionInfo, SubthreadInfo, RemoteInfo } from "../types";
 import type { ConnectionStatus } from "../useSocket";
 import css from "./SessionSidebar.module.css";
 
+function CopyThreadId({ id }: { id: string }) {
+  const bare = id.includes("/") ? id.split("/").pop()! : id;
+  const short = bare.slice(0, 8);
+  const [copied, setCopied] = useState(false);
+  const copy = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(bare);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  };
+  return (
+    <span className={css.threadId}>
+      <code className={css.threadIdText}>{short}</code>
+      <button className={css.threadIdCopy} onClick={copy} aria-label="Copy thread ID">
+        {copied ? "✓" : "⧉"}
+      </button>
+    </span>
+  );
+}
+
 interface Props {
   sessions: Record<string, SessionInfo>;
   activeSessionId: string | null;
@@ -192,6 +212,7 @@ export function SessionSidebar({
               <span className={css.itemMeta}>
                 <span className={css.statusDot} data-status={info.status} />
                 {info.total_tokens_used.toLocaleString()} tokens
+                <CopyThreadId id={id} />
               </span>
             </button>
             {info.threads && info.threads.length > 0 && (
