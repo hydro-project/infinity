@@ -637,7 +637,7 @@ export function App() {
           <nav
             className={css.viewNav}
             style={{
-              paddingLeft: sidebarOpen ? undefined : "48px",
+              paddingLeft: sidebarOpen ? undefined : "60px",
             }}
           >
             <button
