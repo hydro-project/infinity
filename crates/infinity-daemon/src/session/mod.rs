@@ -215,6 +215,13 @@ impl SessionManager {
             store.create(&session_id, cwd.to_path_buf());
             let _ = store.save();
         }
+        // Ensure the root thread metadata exists before setting last_updated,
+        // otherwise set_last_updated is a no-op and the session broadcasts with
+        // an empty timestamp (sorting it to the bottom of the session list).
+        self.conversation_store
+            .ensure_root_thread(&session_id)
+            .await
+            .map_err(|e| format!("failed to ensure root thread: {e}"))?;
         self.conversation_store
             .set_last_updated(&session_id, &chrono::Utc::now().to_rfc3339());
         emit(self.build_connected(&session_id, &session_id)).await;
