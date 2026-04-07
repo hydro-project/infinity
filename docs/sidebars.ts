@@ -37,13 +37,14 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Infinity Code',
       items: [
-        'infinity-code/quickstart',
+        'infinity-code/overview',
         'infinity-code/coding-with-jj',
         'infinity-code/coding-with-git',
 
         'infinity-code/background-agents',
         'infinity-code/configuring-mcp',
         'infinity-code/rap-servers',
+        'infinity-code/configuring-remotes',
       ],
     },
   ],
