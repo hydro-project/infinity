@@ -40,6 +40,10 @@ pub enum ClientMessage {
     /// Create a new session with the given working directory.
     CreateSession {
         cwd: PathBuf,
+        /// Optional target location. `None` means local.
+        /// Otherwise, the name of a remote.
+        #[serde(default)]
+        location: Option<String>,
     },
     /// Connect to an existing session (optionally a specific thread).
     Connect {
@@ -80,8 +84,9 @@ pub enum ClientMessage {
     /// Request migration of a session to a different host.
     RequestMigrate {
         session_id: String,
-        /// "local" or a remote name.
-        to: String,
+        /// `None` means local, `Some(name)` means a remote.
+        #[serde(default)]
+        to: Option<String>,
         dest_cwd: PathBuf,
     },
     /// Daemon-to-daemon: request a session to emigrate. Includes destination RAP URLs
