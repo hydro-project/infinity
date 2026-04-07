@@ -1,0 +1,79 @@
+---
+sidebar_position: 8
+title: Configuring Remotes
+---
+
+# Configuring Remotes
+
+Infinity Code can connect to Infinity daemons running on other machines over SSH. This lets you run agents on a powerful remote dev server while interacting with them from your laptop — remote sessions appear alongside local ones in the session picker.
+
+## Configuration
+
+Create `~/.infinity/remotes.json` with an array of remote entries:
+
+```json
+[
+  {
+    "name": "devbox",
+    "ssh_args": ["my-devbox.example.com"]
+  }
+]
+```
+
+Each entry has two fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | A short label for this remote. Shows as a prefix in the session picker. |
+| `ssh_args` | string[] | Arguments passed directly to `ssh`. Can be a hostname, user@host, or any combination of SSH flags. |
+
+The daemon reads this file on startup and establishes an SSH tunnel to each remote's `~/.infinity/daemon.sock`.
+
+## SSH Setup
+
+The `ssh_args` array is passed directly to the `ssh` command, so you can use anything your SSH client supports — host aliases from `~/.ssh/config`, custom ports, jump hosts, etc.
+
+```json
+[
+  {
+    "name": "devbox",
+    "ssh_args": ["devbox"]
+  },
+  {
+    "name": "gpu-server",
+    "ssh_args": ["-J", "bastion.example.com", "gpu.internal"]
+  }
+]
+```
+
+Make sure you can `ssh <your-args>` without a password prompt (use SSH keys or an agent).
+
+## Using Remote Sessions
+
+Once configured, remote sessions appear in the session picker (`/load` or Ctrl+L) prefixed with the remote name:
+
+```
+  Local sessions
+    abc123  my-project  2 min ago
+  devbox (connected)
+    devbox/def456  api-service  5 min ago
+    devbox/ghi789  frontend  1 hour ago
+```
+
+Select a remote session and interact with it exactly like a local one — the daemon proxies all communication through the SSH tunnel transparently.
+
+You can also start new sessions on a remote by SSHing in and running `infinity` there. The session will show up in your local picker automatically.
+
+## Connection Status
+
+The daemon auto-reconnects if an SSH tunnel drops, retrying every 5 seconds. Connection status for each remote is visible in the UI:
+
+- **connecting** — establishing the SSH tunnel
+- **connected** — tunnel is active, remote sessions are available
+- **disconnected** — tunnel failed (hover or check logs for the reason)
+
+## Requirements
+
+- Infinity Code must be installed on the remote machine
+- The remote daemon must be running (it starts automatically on the first `infinity` run)
+- SSH access to the remote with key-based authentication
