@@ -311,12 +311,11 @@ pub async fn handle_client_channels(
                             // Fall through to handle the new Connect below
                         }
                         ClientMessage::CreateSession { .. } => {
-                            // CreateSession is always local; tear down remote proxy
+                            // Tear down current remote proxy; fall through to handle below
                             let _ = proxy_tx.send(ClientMessage::Disconnect);
                             remote_proxy_tx = None;
                             remote_proxy_rx = None;
                             active_remote_name = None;
-                            // Fall through to handle locally below
                         }
                         ClientMessage::RequestMigrate { .. } => {
                             // Always handled locally; fall through without tearing down proxy
@@ -330,17 +329,46 @@ pub async fn handle_client_channels(
                 }
 
                 match msg {
-                    ClientMessage::CreateSession { cwd } => {
-                        let mut mgr = session_manager.lock().await;
-                        let mut emit = async |msg: DaemonMessage| {
-                            let _ = daemon_tx.send(msg);
-                        };
-                        match mgr.create_session(&cwd, &mut emit).await {
-                            Ok(sid) => {
-                                mgr.attach_client(&sid, client_tx.clone(), false).await;
-                                attached_session_id = Some(sid);
+                    ClientMessage::CreateSession { cwd, location } => {
+                        if let Some(rname) = location {
+                            let rd = {
+                                let mgr = session_manager.lock().await;
+                                mgr.remote_daemons.clone()
+                            };
+                            if let Some(rd) = rd {
+                                match rd.open_raw_connection(&rname).await {
+                                    Ok((tx, rx)) => {
+                                        let _ = tx.send(ClientMessage::CreateSession { cwd, location: None });
+                                        remote_proxy_tx = Some(tx);
+                                        remote_proxy_rx = Some(rx);
+                                        active_remote_name = Some(rname);
+                                        attached_session_id = None;
+                                    }
+                                    Err(e) => {
+                                        let _ = daemon_tx.send(DaemonMessage::Error {
+                                            thread_id: None,
+                                            text: format!("failed to connect to remote: {e}"),
+                                        });
+                                    }
+                                }
+                            } else {
+                                let _ = daemon_tx.send(DaemonMessage::Error {
+                                    thread_id: None,
+                                    text: "no remote daemons configured".into(),
+                                });
                             }
-                            Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error { thread_id: None, text: format!("failed to create session: {e}") }); }
+                        } else {
+                            let mut mgr = session_manager.lock().await;
+                            let mut emit = async |msg: DaemonMessage| {
+                                let _ = daemon_tx.send(msg);
+                            };
+                            match mgr.create_session(&cwd, &mut emit).await {
+                                Ok(sid) => {
+                                    mgr.attach_client(&sid, client_tx.clone(), false).await;
+                                    attached_session_id = Some(sid);
+                                }
+                                Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error { thread_id: None, text: format!("failed to create session: {e}") }); }
+                            }
                         }
                     }
                     ClientMessage::Connect { session_id, thread_id } => {
