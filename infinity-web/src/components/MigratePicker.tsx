@@ -4,8 +4,9 @@ import css from './MigratePicker.module.css';
 
 interface Props {
   remotes: RemoteInfo[];
-  currentHost: string;
-  onConfirm: (destination: string, cwd: string) => void;
+  currentHost?: string | null;
+  title?: string;
+  onConfirm: (destination: string | null, cwd: string) => void;
   onCancel: () => void;
 }
 
@@ -17,25 +18,26 @@ function statusKind(status: string): StatusKind {
   return 'disconnected';
 }
 
-export function MigratePicker({ remotes, currentHost, onConfirm, onCancel }: Props) {
-  const [selected, setSelected] = useState<string | null>(null);
+export function MigratePicker({ remotes, currentHost, title = 'Migrate session to', onConfirm, onCancel }: Props) {
+  const [selected, setSelected] = useState<string | null | undefined>(undefined);
   const [cwd, setCwd] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (selected) inputRef.current?.focus();
+    if (selected !== undefined) inputRef.current?.focus();
   }, [selected]);
 
-  const destinations: { name: string; status: StatusKind; isCurrent: boolean }[] = [
-    { name: 'local', status: 'connected', isCurrent: currentHost === 'local' },
+  const destinations: { name: string | null; displayName: string; status: StatusKind; isCurrent: boolean }[] = [
+    { name: null, displayName: 'local', status: 'connected', isCurrent: currentHost !== undefined && currentHost == null },
     ...remotes.map((r) => ({
       name: r.name,
+      displayName: r.name,
       status: statusKind(r.status),
-      isCurrent: r.name === currentHost,
+      isCurrent: currentHost !== undefined && r.name === currentHost,
     })),
   ];
 
-  const handleSelect = (dest: { name: string; status: StatusKind; isCurrent: boolean }) => {
+  const handleSelect = (dest: { name: string | null; status: StatusKind; isCurrent: boolean }) => {
     if (dest.isCurrent || dest.status !== 'connected') return;
     setSelected(dest.name);
     setCwd('');
@@ -44,12 +46,12 @@ export function MigratePicker({ remotes, currentHost, onConfirm, onCancel }: Pro
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Escape') {
       e.preventDefault();
-      if (selected) {
-        setSelected(null);
+      if (selected !== undefined) {
+        setSelected(undefined);
       } else {
         onCancel();
       }
-    } else if (e.key === 'Enter' && selected) {
+    } else if (e.key === 'Enter' && selected !== undefined) {
       e.preventDefault();
       onConfirm(selected, cwd.trim() || '/');
     }
@@ -65,30 +67,30 @@ export function MigratePicker({ remotes, currentHost, onConfirm, onCancel }: Pro
   return (
     <div className={css.overlay} onClick={onCancel} onKeyDown={handleOverlayKeyDown}>
       <div className={css.picker} onClick={(e) => e.stopPropagation()}>
-        <div className={css.title}>Migrate session to</div>
+        <div className={css.title}>{title}</div>
         <ul className={css.list}>
           {destinations.map((d) => (
             <li
-              key={d.name}
+              key={d.displayName}
               className={css.item}
               data-disabled={String(d.status !== 'connected' && !d.isCurrent)}
               data-current={String(d.isCurrent)}
               onClick={() => handleSelect(d)}
             >
               <span className={css.dot} data-status={d.status} />
-              <span className={css.label}>{d.name}</span>
+              <span className={css.label}>{d.displayName}</span>
               {d.isCurrent && <span className={css.current}>current</span>}
             </li>
           ))}
         </ul>
-        {selected && (
+        {selected !== undefined && (
           <input
             ref={inputRef}
             className={css.input}
             value={cwd}
             onChange={(e) => setCwd(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={`Working directory on ${selected} (empty for /)`}
+            placeholder={`Working directory on ${selected ?? 'local'} (empty for /)`}
             spellCheck={false}
           />
         )}

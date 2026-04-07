@@ -412,7 +412,7 @@ async fn run_client(
                     }
                 } else {
                     pending_input.push(text);
-                    let _ = to_daemon.send(ClientMessage::CreateSession { cwd: cwd.clone() });
+                    let _ = to_daemon.send(ClientMessage::CreateSession { cwd: cwd.clone(), location: None });
                 }
             }
         }

@@ -122,7 +122,7 @@ export type DaemonMessage =
 /* ── Client → Daemon messages ── */
 
 export type ClientMessage =
-  | { CreateSession: { cwd: string } }
+  | { CreateSession: { cwd: string; location: string | null } }
   | { Connect: { session_id: string; thread_id: string | null } }
   | { UserInput: { session_id: string; text: string } }
   | "Disconnect"
@@ -132,7 +132,7 @@ export type ClientMessage =
   | { SwitchModel: { session_id: string; model_id: string } }
   | { UserChoiceAnswered: { choice_id: string; selected: number } }
   | { TriggerCompaction: { session_id: string } }
-  | { RequestMigrate: { session_id: string; to: string; dest_cwd: string } }
+  | { RequestMigrate: { session_id: string; to: string | null; dest_cwd: string } }
   | { Emigrate: { session_id: string; dest_rap_urls: Record<string, string> } }
   | { EmigrateDone: { session_id: string } };
 
