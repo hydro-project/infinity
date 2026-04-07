@@ -242,7 +242,7 @@ The runtime will fetch the toolset definition from `https://tools.example.com/.w
 
 ## Local development
 
-You can develop and test RAP tools locally using the [Infinity Code CLI](/docs/infinity-code/quickstart) without deploying any infrastructure. Write your tool as a plain Node.js (or any language) HTTP server:
+You can develop and test RAP tools locally using the [Infinity Code CLI](/docs/infinity-code/overview) without deploying any infrastructure. Write your tool as a plain Node.js (or any language) HTTP server:
 
 ```javascript
 import { createServer } from 'node:http';

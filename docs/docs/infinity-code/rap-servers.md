@@ -11,7 +11,7 @@ Infinity Code uses [RAP (Reactive Agent Protocol)](/docs/what-is-rap) servers to
 
 The core sandbox server that powers all the coding tools: `clone_repo`, `execute_command`, `read_file`, `edit_file`, `create_file`, `grep`, `squash_sandbox`, and more. It handles Jujutsu workspaces, git worktrees — each agent thread gets its own sandboxed copy of the repo with restricted filesystem writes.
 
-This is installed during the [quickstart](/docs/infinity-code/quickstart) setup.
+This is installed during the [quickstart](/docs/infinity-code/overview#install) setup.
 
 ```bash
 infinity rap install --user --git https://github.com/hydro-project/infinity --crate sandbox-local
