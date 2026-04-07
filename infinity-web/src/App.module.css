@@ -92,8 +92,8 @@
 .root {
     position: relative;
     height: 100%;
-    margin-left: calc(var(--sidebar-offset, 0px) + 12px);
-    margin-right: 12px;
+    margin-left: var(--sidebar-offset, 0px);
+    margin-right: 0;
 }
 
 .menuBtn {
@@ -193,7 +193,7 @@
 .viewNav {
     display: flex;
     gap: 4px;
-    padding: 20px 16px 8px 0px;
+    padding: 20px 16px 8px 12px;
 }
 
 .viewTab {
