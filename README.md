@@ -12,6 +12,14 @@ A coding agent you run in your terminal. It spins up sandboxed workspaces, spawn
 
 ## Quick start
 
+First install the prerequisites:
+
+- [Rust](https://rustup.rs) (for building from source)
+- [Ripgrep](https://github.com/BurntSushi/ripgrep) — `brew install ripgrep`
+- [Jujutsu](https://docs.jj-vcs.dev/latest) (optional, recommended) — `brew install jj`
+
+Then install:
+
 ```bash
 # Install the CLI and the sandbox server
 cargo install infinity-agent-cli --git https://github.com/hydro-project/infinity
@@ -22,15 +30,25 @@ cd your-repo
 infinity
 ```
 
-Prerequisites: [Rust](https://rustup.rs), [Ripgrep](https://github.com/BurntSushi/ripgrep) (`brew install ripgrep`). [Jujutsu](https://docs.jj-vcs.dev/latest) recommended (`brew install jj`). [Ghostty](https://ghostty.org) recommended as your terminal.
-
 To update: `infinity update`
+
+### Desktop UI
+
+Infinity Code comes with an experimental desktop UI that provides a native interface for concurrent threads. To run the desktop interface:
+
+```bash
+cd infinity-web
+npm ci
+npm run dev
+```
+
+Then open the URL printed in your terminal (typically http://localhost:5173). The desktop UI connects to the same daemon as the CLI, so you can use both interchangeably.
 
 ## Documentation
 
-Full docs are in the [Infinity Code section](docs/docs/infinity-code/quickstart.md) of the RAP docs site:
+Full docs are in the [Infinity Code section](docs/docs/infinity-code/overview.md) of the docs site:
 
-- [Quickstart](docs/docs/infinity-code/quickstart.md) — Installation, first run, slash commands
+- [Overview](docs/docs/infinity-code/overview.md) — Installation, first run, slash commands
 - [Coding with Jujutsu](docs/docs/infinity-code/coding-with-jj.md) — Jujutsu workspace sandboxes
 - [Coding with Git](docs/docs/infinity-code/coding-with-git.md) — Git worktree sandboxes
 - [Background Agents](docs/docs/infinity-code/background-agents.md) — Multiple sessions, backgrounding, persistence
