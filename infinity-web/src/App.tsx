@@ -21,14 +21,15 @@ import css from "./App.module.css";
 
 const WS_URL = `ws://${window.location.hostname}:${import.meta.env.VITE_WS_PORT || "8080"}`;
 
-type Theme = "light" | "dark";
+type Theme = "light" | "dark" | "system";
 
 function getInitialTheme(): Theme {
-  const stored = localStorage.getItem("infinity-theme") as Theme | null;
-  if (stored) return stored;
-  return window.matchMedia("(prefers-color-scheme: light)").matches
-    ? "light"
-    : "dark";
+  return (localStorage.getItem("infinity-theme") as Theme) ?? "system";
+}
+
+function resolveTheme(t: Theme): "light" | "dark" {
+  if (t !== "system") return t;
+  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
 }
 
 export function App() {
@@ -41,6 +42,7 @@ export function App() {
   const [spinner, setSpinner] = useState<SpinnerState | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
+  const [resolved, setResolved] = useState<"light" | "dark">(() => resolveTheme(getInitialTheme()));
   const [cwdPickerOpen, setCwdPickerOpen] = useState(false);
   const [migratePickerOpen, setMigratePickerOpen] = useState(false);
   const [remotes, setRemotes] = useState<RemoteInfo[]>([]);
@@ -72,14 +74,25 @@ export function App() {
     [viewThreadId],
   );
 
-  // Apply theme to document
+  // Sync resolved theme from preference + system
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
+    setResolved(resolveTheme(theme));
     localStorage.setItem("infinity-theme", theme);
+    if (theme === "system") {
+      const mq = window.matchMedia("(prefers-color-scheme: light)");
+      const onChange = () => setResolved(resolveTheme("system"));
+      mq.addEventListener("change", onChange);
+      return () => mq.removeEventListener("change", onChange);
+    }
   }, [theme]);
 
+  // Apply resolved theme to document
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", resolved);
+  }, [resolved]);
+
   const toggleTheme = useCallback(() => {
-    setTheme((t) => (t === "dark" ? "light" : "dark"));
+    setTheme((t) => (t === "dark" ? "light" : t === "light" ? "system" : "dark"));
   }, []);
 
   const appendMessage = useCallback((item: MessageItem) => {
@@ -616,7 +629,7 @@ export function App() {
           onClick={toggleTheme}
           aria-label="Toggle theme"
         >
-          {theme === "dark" ? "\u2600" : "\u263E"}
+          {theme === "dark" ? "\u263E" : theme === "light" ? "\u2600" : "\uD83D\uDCBB"}
         </button>
       </div>
       <div className={css.mainContent}>
@@ -653,12 +666,12 @@ export function App() {
               inputDisabled={status !== "connected"}
               pendingChoice={pendingChoices[0] ?? null}
               onChoiceSelect={handleChoiceSelect}
-              theme={theme}
+              theme={resolved}
             />
-          </div>
+            </div>
           {views.diff && (
             <div style={{ display: activeTab === "diff" ? undefined : "none", height: "100%" }}>
-              <DiffView diff={views.diff.diff} theme={theme} />
+              <DiffView diff={views.diff.diff} theme={resolved} />
             </div>
           )}
           {activeTab !== "chat" && activeTab !== "diff" && hasViews && (
