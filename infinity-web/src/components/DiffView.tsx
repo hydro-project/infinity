@@ -75,6 +75,15 @@ export function DiffView({ diff, theme }: DiffViewProps) {
     [patches],
   );
 
+  const allDirs = useMemo(() => {
+    const dirs = new Set<string>();
+    for (const p of filePaths) {
+      const parts = p.split("/");
+      for (let i = 1; i < parts.length; i++)
+        dirs.add(parts.slice(0, i).join("/"));
+    }
+    return [...dirs];
+  }, [filePaths]);
   const [expandedItems, setExpandedItems] = useState<string[]>();
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
 
@@ -105,7 +114,7 @@ export function DiffView({ diff, theme }: DiffViewProps) {
           gitStatus={gitStatus}
           options={{ flattenEmptyDirectories: true }}
           selectedItems={selectedItems}
-          expandedItems={expandedItems}
+          expandedItems={expandedItems ?? allDirs}
           onExpandedItemsChange={setExpandedItems}
           onSelectedItemsChange={handleSelect}
         />
