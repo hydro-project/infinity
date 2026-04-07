@@ -20,7 +20,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// This is spawned as a task from the client handler.
 pub async fn orchestrate_migration(
     session_id: String,
-    to: String,
+    to: Option<String>,
     dest_cwd: PathBuf,
     session_manager: Arc<Mutex<SessionManager>>,
     daemon_tx: UnboundedSender<DaemonMessage>,
@@ -32,13 +32,12 @@ pub async fn orchestrate_migration(
     let real_session_id = session_id
         .split_once('/')
         .map_or(session_id.as_str(), |(_, s)| s);
-    let new_session_id = if to == "local" {
-        real_session_id.to_owned()
-    } else {
-        format!("{to}/{real_session_id}")
+    let new_session_id = match &to {
+        None => real_session_id.to_owned(),
+        Some(remote) => format!("{remote}/{real_session_id}"),
     };
 
-    match run_migration(&session_id, &to, &dest_cwd, &session_manager).await {
+    match run_migration(&session_id, to.as_deref(), &dest_cwd, &session_manager).await {
         Ok(()) => {
             let _ = daemon_tx.send(DaemonMessage::MigrateComplete {
                 session_id,
@@ -56,7 +55,7 @@ pub async fn orchestrate_migration(
 
 async fn run_migration(
     session_id: &str,
-    to: &str,
+    to: Option<&str>,
     dest_cwd: &Path,
     session_manager: &Arc<Mutex<SessionManager>>,
 ) -> Result<(), BoxError> {
@@ -69,7 +68,7 @@ async fn run_migration(
             .ok_or("invalid remote session id")?;
         (Some(r.to_owned()), s.to_owned())
     };
-    let dest_is_local = to == "local";
+    let dest_is_local = to.is_none();
 
     // Shut down the source session first (kills agent + original RAP servers)
     let source_cwd = if source_is_local {
@@ -154,7 +153,14 @@ async fn run_migration(
             mgr.remote_daemons.clone()
         };
         let rd = rd.ok_or("no remote daemons configured")?;
-        immigrate_to_remote(&rd, to, &real_session_id, dest_cwd, &session_data).await?;
+        immigrate_to_remote(
+            &rd,
+            to.expect("bug: dest is remote"),
+            &real_session_id,
+            dest_cwd,
+            &session_data,
+        )
+        .await?;
     }
 
     // Clean up source
@@ -284,7 +290,7 @@ pub enum LocalOrRemoteSpawned {
 /// Boot RAP servers on the destination and set up SSH tunnels so the source can reach them.
 /// Returns (config_id → reachable_url, tunnel guards, spawned dest servers).
 async fn boot_dest_and_tunnel(
-    to: &str,
+    to: Option<&str>,
     dest_cwd: &Path,
     source_remote: &Option<String>,
     session_manager: &Arc<Mutex<SessionManager>>,
@@ -296,7 +302,7 @@ async fn boot_dest_and_tunnel(
     ),
     BoxError,
 > {
-    let dest_is_local = to == "local";
+    let dest_is_local = to.is_none();
     // Boot RAP servers on destination — server_ports is config_id → port (migration-only)
     let (dest_server_ports, dest_spawned) = if dest_is_local {
         let booted = crate::session::boot_rap_servers(dest_cwd, &mut |_text| async {}).await?;
@@ -309,7 +315,9 @@ async fn boot_dest_and_tunnel(
             mgr.remote_daemons.clone()
         };
         let rd = rd.ok_or("no remote daemons configured")?;
-        let (tx, mut rx) = rd.open_raw_connection(to).await?;
+        let (tx, mut rx) = rd
+            .open_raw_connection(to.expect("bug: dest is remote"))
+            .await?;
         tx.send(ClientMessage::BootRapServers {
             cwd: dest_cwd.to_path_buf(),
         })?;
@@ -360,7 +368,9 @@ async fn boot_dest_and_tunnel(
             mgr.remote_daemons.clone()
         };
         let rd = rd.ok_or("no remote daemons configured")?;
-        let ssh_args = rd.get_ssh_args(to).ok_or("unknown remote")?;
+        let ssh_args = rd
+            .get_ssh_args(to.expect("bug: dest is remote"))
+            .ok_or("unknown remote")?;
         for (id, remote_port) in &dest_server_ports {
             let (local_port, guard) =
                 crate::remote::ssh_forward_port(&ssh_args, *remote_port).await?;
@@ -374,7 +384,9 @@ async fn boot_dest_and_tunnel(
             mgr.remote_daemons.clone()
         };
         let rd = rd.ok_or("no remote daemons configured")?;
-        let dest_ssh_args = rd.get_ssh_args(to).ok_or("unknown dest remote")?;
+        let dest_ssh_args = rd
+            .get_ssh_args(to.expect("bug: dest is remote"))
+            .ok_or("unknown dest remote")?;
         let source_remote_name = source_remote
             .as_deref()
             .expect("bug: source remote but no name");

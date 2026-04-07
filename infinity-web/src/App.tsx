@@ -3,7 +3,6 @@ import { useSocket } from "./useSocket";
 import { msgTag, msgPayload } from "./protocol";
 import { MessageList } from "./components/MessageList";
 import { SessionSidebar } from "./components/SessionSidebar";
-import { CwdPicker } from "./components/CwdPicker";
 import { MigratePicker } from "./components/MigratePicker";
 import { DiffView } from "./components/DiffView";
 import type {
@@ -43,7 +42,7 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const [resolved, setResolved] = useState<"light" | "dark">(() => resolveTheme(getInitialTheme()));
-  const [cwdPickerOpen, setCwdPickerOpen] = useState(false);
+  const [newSessionPickerOpen, setNewSessionPickerOpen] = useState(false);
   const [migratePickerOpen, setMigratePickerOpen] = useState(false);
   const [remotes, setRemotes] = useState<RemoteInfo[]>([]);
   const [pendingChoices, setPendingChoices] = useState<
@@ -477,7 +476,7 @@ export function App() {
         send({ UserInput: { session_id: threadRef.current, text } });
       } else {
         pendingInputRef.current.push(text);
-        setCwdPickerOpen(true);
+        setNewSessionPickerOpen(true);
       }
     },
     [send],
@@ -539,19 +538,19 @@ export function App() {
     setViews({});
     setActiveTab("chat");
     streamingRef.current = false;
-    setCwdPickerOpen(true);
+    setNewSessionPickerOpen(true);
   }, [send]);
 
-  const handleCwdConfirm = useCallback(
-    (cwd: string) => {
-      setCwdPickerOpen(false);
-      send({ CreateSession: { cwd } });
+  const handleNewSessionConfirm = useCallback(
+    (destination: string | null, cwd: string) => {
+      setNewSessionPickerOpen(false);
+      send({ CreateSession: { cwd, location: destination } });
     },
     [send],
   );
 
-  const handleCwdCancel = useCallback(() => {
-    setCwdPickerOpen(false);
+  const handleNewSessionCancel = useCallback(() => {
+    setNewSessionPickerOpen(false);
     pendingInputRef.current = [];
   }, []);
 
@@ -566,10 +565,10 @@ export function App() {
   }, []);
 
   const currentHost =
-    (sessionRef.current && sessions[sessionRef.current]?.remote) || "local";
+    (sessionRef.current && sessions[sessionRef.current]?.remote) ?? null;
 
   const handleMigrateConfirm = useCallback(
-    (destination: string, cwd: string) => {
+    (destination: string | null, cwd: string) => {
       setMigratePickerOpen(false);
       if (sessionRef.current) {
         send({
@@ -621,7 +620,7 @@ export function App() {
             onClick={() => setMigratePickerOpen(true)}
             aria-label="Migrate session"
           >
-            {currentHost}
+            {currentHost ?? 'local'}
           </button>
         )}
         <span className={css.infoPill}>
@@ -686,8 +685,13 @@ export function App() {
           )}
         </div>
       </div>
-      {cwdPickerOpen && (
-        <CwdPicker onConfirm={handleCwdConfirm} onCancel={handleCwdCancel} />
+      {newSessionPickerOpen && (
+        <MigratePicker
+          remotes={remotes}
+          title="New session on"
+          onConfirm={handleNewSessionConfirm}
+          onCancel={handleNewSessionCancel}
+        />
       )}
       {migratePickerOpen && (
         <MigratePicker
