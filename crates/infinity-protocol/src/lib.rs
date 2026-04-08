@@ -165,6 +165,9 @@ pub enum DaemonMessage {
         choices: Vec<String>,
         default: usize,
     },
+    UserChoiceComplete {
+        choice_id: String,
+    },
     ThinkingStart {
         thread_id: Option<String>,
     },

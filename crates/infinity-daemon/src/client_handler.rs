@@ -467,6 +467,7 @@ pub async fn handle_client_channels(
                                         .send()
                                         .await;
                                 }));
+                                mgr.broadcast(DaemonMessage::UserChoiceComplete { choice_id });
                             }
                         }
                     }
