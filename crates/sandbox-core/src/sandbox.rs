@@ -5,13 +5,6 @@ use async_trait::async_trait;
 use crate::error::SandboxError;
 use crate::types::RepoState;
 
-/// Result of executing a command in a sandbox.
-pub struct ExecResult {
-    pub stdout: String,
-    pub stderr: String,
-    pub exit_code: i32,
-}
-
 /// A spawned command with its child process handle and any resources
 /// that must stay alive until the process exits.
 pub struct SpawnedCommand {
@@ -32,18 +25,6 @@ pub trait SandboxBackend: Send + Sync {
     /// Spin up a sandbox temp dir with a jj clone pointing at the remote,
     /// checked out to the given working copy commit.
     async fn create_sandbox(&self, state: &RepoState) -> Result<PathBuf, SandboxError>;
-
-    /// Execute a command inside the sandbox directory.
-    ///
-    /// `argv` is the raw argument vector: `argv[0]` is the program name and
-    /// `argv[1..]` are its arguments.  No shell wrapping is performed — the
-    /// caller is responsible for wrapping in `["bash", "-c", cmd]` when a
-    /// shell is needed (e.g. the user-facing `execute_command` tool).
-    async fn execute_command(
-        &self,
-        sandbox_dir: &Path,
-        argv: &[&str],
-    ) -> Result<ExecResult, SandboxError>;
 
     /// Spawn a command inside the sandbox directory, returning the child process.
     /// stdout and stderr MUST be piped so the caller can stream output.
