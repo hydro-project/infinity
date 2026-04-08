@@ -95,6 +95,9 @@ fn daemon_msg_to_display(
                 response_url: String::new(),
             },
         ),
+        DaemonMessage::UserChoiceComplete { choice_id } => {
+            (None, DisplayEvent::UserChoiceComplete { choice_id })
+        }
         DaemonMessage::ThinkingStart { thread_id } => (thread_id, DisplayEvent::ThinkingStart),
         DaemonMessage::ThinkingEnd { thread_id } => (thread_id, DisplayEvent::ThinkingEnd),
         DaemonMessage::ThinkingChunk { thread_id, chunk } => {

@@ -412,6 +412,11 @@ export function App() {
             }
             break;
           }
+          case "UserChoiceComplete": {
+            const p = msgPayload<{ choice_id: string }>(m);
+            setPendingChoices((prev) => prev.filter((c) => c.id !== p.choice_id));
+            break;
+          }
           // Ignored for now
           case "OAuthRequired":
           case "DisconnectNotIdle":
