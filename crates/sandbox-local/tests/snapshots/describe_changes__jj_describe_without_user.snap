@@ -4,7 +4,7 @@ expression: describe_and_read_log(repo).await
 ---
 Commit ID: [COMMIT_ID]
 Change ID: [CHANGE_ID]
-Bookmarks: sandbox-test-thread
+Bookmarks: sandbox-test-thread sandbox-test-thread@git
 Author   : Infinity 🤖 <infinity@hydro.run> ([TIMESTAMP])
 Committer: Infinity 🤖 <infinity@hydro.run> ([TIMESTAMP])
 
