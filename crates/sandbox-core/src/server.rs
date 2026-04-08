@@ -1524,7 +1524,6 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
     let query_for_display = args.query.clone();
-    let backend = &state.backend;
 
     // Verify that ripgrep is installed before creating a sandbox.
     if which::which("rg").is_err() {
@@ -1573,17 +1572,26 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
             cmd_parts.push("--");
             cmd_parts.push(&args.query);
 
-            let exec_result = backend.execute_command(&sandbox_dir, &cmd_parts).await?;
+            let rg_output = tokio::process::Command::new(cmd_parts[0])
+                .args(&cmd_parts[1..])
+                .current_dir(&sandbox_dir)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output()
+                .await
+                .map_err(|e| SandboxError::CommandError(format!("failed to run rg: {e}")))?;
 
-            if exec_result.stdout.is_empty() && exec_result.exit_code == 1 {
+            let stdout = String::from_utf8_lossy(&rg_output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&rg_output.stderr).to_string();
+            let exit_code = rg_output.status.code().unwrap_or(-1);
+
+            if stdout.is_empty() && exit_code == 1 {
                 let display = vec![DisplaySegment::Text(format!(
                     "Searched for '{}' — no matches",
                     query_for_display
                 ))];
                 return Ok(("No matches found.".to_owned(), Some(display)));
             }
-
-            let stdout = &exec_result.stdout;
 
             // Build summary: count matching files and match lines
             let mut files = HashSet::new();
@@ -1609,10 +1617,10 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
                 files.len()
             ))];
 
-            let mut output = exec_result.stdout;
-            if !exec_result.stderr.is_empty() {
+            let mut output = stdout;
+            if !stderr.is_empty() {
                 output.push_str("\n[stderr]\n");
-                output.push_str(&exec_result.stderr);
+                output.push_str(&stderr);
             }
             Ok((output, Some(display)))
         },

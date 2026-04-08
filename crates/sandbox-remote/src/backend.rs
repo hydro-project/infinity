@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 use sandbox_core::error::SandboxError;
 use sandbox_core::jj::{self, run_jj};
-use sandbox_core::sandbox::{ExecResult, SandboxBackend, SpawnedCommand};
+use sandbox_core::sandbox::{SandboxBackend, SpawnedCommand};
 use sandbox_core::types::{RepoState, SandboxMode};
 
 /// EFS-backed sandbox backend for remote (Lambda) mode.
@@ -138,29 +138,6 @@ impl SandboxBackend for EfsBackend {
         .await?;
 
         Ok(sandbox_dir)
-    }
-
-    /// Execute a command in the sandbox. `argv[0]` is the program and
-    /// `argv[1..]` are its arguments — no shell wrapping is applied.
-    async fn execute_command(
-        &self,
-        sandbox_dir: &Path,
-        argv: &[&str],
-    ) -> Result<ExecResult, SandboxError> {
-        let output = tokio::process::Command::new(argv[0])
-            .args(&argv[1..])
-            .current_dir(sandbox_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .map_err(|e| SandboxError::CommandError(format!("failed to run command: {e}")))?;
-
-        Ok(ExecResult {
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-            exit_code: output.status.code().unwrap_or(-1),
-        })
     }
 
     /// Spawn a command in the sandbox, returning the child process handle.
