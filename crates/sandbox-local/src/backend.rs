@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use sandbox_core::error::SandboxError;
 use sandbox_core::git;
 use sandbox_core::jj::{self, run_jj};
-use sandbox_core::sandbox::{ExecResult, SandboxBackend, SpawnedCommand};
+use sandbox_core::sandbox::{SandboxBackend, SpawnedCommand};
 use sandbox_core::types::{RepoState, SandboxMode};
 
 /// Cached sandbox entry: sandbox directory + the repo state that created it.
@@ -250,122 +250,6 @@ impl SandboxBackend for LocalBackend {
         Ok(sandbox_dir)
     }
 
-    /// Execute a command in the sandbox.
-    ///
-    /// `argv` is the raw argument vector: `argv[0]` is the program name and
-    /// `argv[1..]` are its arguments.  The caller is responsible for any
-    /// shell wrapping (e.g. `&["bash", "-c", cmd]` for user shell commands).
-    ///
-    /// When sandboxing is enabled, uses `sandbox-exec` on macOS or `bwrap`
-    /// on Linux to restrict filesystem write access to only the sandbox
-    /// directory. On other platforms, runs the command directly.
-    async fn execute_command(
-        &self,
-        sandbox_dir: &Path,
-        argv: &[&str],
-    ) -> Result<ExecResult, SandboxError> {
-        let (program, args) = argv
-            .split_first()
-            .ok_or_else(|| SandboxError::Other("argv must not be empty".to_owned()))?;
-
-        let output = if cfg!(target_os = "macos") && self.sandbox_enabled {
-            let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
-            let sandbox_dir_str = abs_sandbox.to_string_lossy();
-
-            let tmp = tempfile::tempdir().map_err(SandboxError::Io)?;
-            let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
-
-            let writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
-            let subpath_rules: String = std::iter::once(sandbox_dir_str.to_string())
-                .chain(writable.iter().map(|p| p.to_string_lossy().to_string()))
-                .map(|p| format!("\n       (subpath \"{p}\")"))
-                .collect();
-            let profile = format!(
-                "(version 1)\n\
-                 (debug deny)\n\
-                 (allow default)\n\
-                 (deny file-write*)\n\
-                 (allow file-write*{subpath_rules})\n\
-                 (allow file-write-data\n\
-                     (require-all\n\
-                         (path \"/dev/null\")\n\
-                         (vnode-type CHARACTER-DEVICE)))"
-            );
-            tokio::process::Command::new("sandbox-exec")
-                .args(["-p", &profile])
-                .arg(program)
-                .args(args)
-                .env("TMPDIR", abs_tmp.as_os_str())
-                .current_dir(sandbox_dir)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-                .await
-                .map_err(|e| SandboxError::CommandError(format!("failed to run command: {e}")))?
-        } else if cfg!(target_os = "linux") && self.sandbox_enabled {
-            let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
-            let sandbox_dir_str = abs_sandbox.to_string_lossy();
-
-            let tmp = tempfile::tempdir().map_err(SandboxError::Io)?;
-            let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
-            let tmp_str = abs_tmp.to_string_lossy();
-
-            let writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
-            let mut bwrap_args = vec![
-                "--ro-bind",
-                "/",
-                "/",
-                "--bind",
-                &sandbox_dir_str,
-                &sandbox_dir_str,
-                "--bind",
-                &tmp_str,
-                &tmp_str,
-                "--dev",
-                "/dev",
-                "--proc",
-                "/proc",
-            ];
-            let writable_strs: Vec<String> = writable
-                .iter()
-                .map(|p| p.to_string_lossy().to_string())
-                .collect();
-            for p in &writable_strs {
-                bwrap_args.extend(["--bind", p.as_str(), p.as_str()]);
-            }
-            bwrap_args.push("--");
-
-            tokio::process::Command::new("bwrap")
-                .args(&bwrap_args)
-                .arg(program)
-                .args(args)
-                .env("TMPDIR", abs_tmp.as_os_str())
-                .current_dir(sandbox_dir)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-                .await
-                .map_err(|e| SandboxError::CommandError(format!("failed to run command: {e}")))?
-        } else {
-            tokio::process::Command::new(program)
-                .args(args)
-                .current_dir(sandbox_dir)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-                .await
-                .map_err(|e| SandboxError::CommandError(format!("failed to run command: {e}")))?
-        };
-
-        Ok(ExecResult {
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-            exit_code: output.status.code().unwrap_or(-1),
-        })
-    }
-
     /// Spawn a command in the sandbox, returning the child process handle.
     ///
     /// `argv` is the raw argument vector: `argv[0]` is the program name and
@@ -388,8 +272,16 @@ impl SandboxBackend for LocalBackend {
             .split_first()
             .ok_or_else(|| SandboxError::Other("argv must not be empty".to_owned()))?;
 
+        // Prevent git from discovering the outer repo when sandboxes live
+        // inside the repository (e.g. {repo}/.infinity/.sandboxes/).
+        let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
+        let git_ceiling = abs_sandbox
+            .parent()
+            .unwrap_or(&abs_sandbox)
+            .as_os_str()
+            .to_owned();
+
         if cfg!(target_os = "macos") && self.sandbox_enabled {
-            let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
             let tmp = tempfile::tempdir().map_err(SandboxError::Io)?;
@@ -442,6 +334,7 @@ impl SandboxBackend for LocalBackend {
                 .arg(program)
                 .args(args)
                 .env("TMPDIR", abs_tmp.as_os_str())
+                .env("GIT_CEILING_DIRECTORIES", &git_ceiling)
                 .current_dir(sandbox_dir)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
@@ -457,7 +350,6 @@ impl SandboxBackend for LocalBackend {
                 _keepalive: Some(Box::new(tmp)),
             })
         } else if cfg!(target_os = "linux") && self.sandbox_enabled {
-            let abs_sandbox = sandbox_dir.canonicalize().map_err(SandboxError::Io)?;
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
             let tmp = tempfile::tempdir().map_err(SandboxError::Io)?;
@@ -500,6 +392,7 @@ impl SandboxBackend for LocalBackend {
                 .arg(program)
                 .args(args)
                 .env("TMPDIR", abs_tmp.as_os_str())
+                .env("GIT_CEILING_DIRECTORIES", &git_ceiling)
                 .current_dir(sandbox_dir)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
@@ -517,6 +410,7 @@ impl SandboxBackend for LocalBackend {
         } else {
             let mut cmd = tokio::process::Command::new(program);
             cmd.args(args)
+                .env("GIT_CEILING_DIRECTORIES", &git_ceiling)
                 .current_dir(sandbox_dir)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
