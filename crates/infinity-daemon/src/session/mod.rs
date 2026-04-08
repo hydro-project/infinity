@@ -180,6 +180,14 @@ impl SessionManager {
         &self.conversation_store
     }
 
+    /// Broadcast a message to all connected clients.
+    pub fn broadcast(&self, msg: DaemonMessage) {
+        self.broadcast_clients
+            .lock()
+            .expect("bug: mutex poisoned")
+            .retain(|tx| tx.send(msg.clone()).is_ok());
+    }
+
     /// Handle a view_update RAP callback: persist the view and broadcast to subscribers.
     pub fn handle_view_update(&self, group_id: &str, view_type: &str, content: serde_json::Value) {
         self.conversation_store

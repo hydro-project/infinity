@@ -529,6 +529,18 @@ where
                                 ui_mode = UiMode::ChoicePicker;
                             }
                     }
+                    DisplayEvent::UserChoiceComplete { choice_id } => {
+                        let was_front = choice_queue.front().is_some_and(|c| c.id == choice_id);
+                        choice_queue.retain(|c| c.id != choice_id);
+                        if was_front && ui_mode == UiMode::ChoicePicker {
+                            if let Some(next) = choice_queue.front() {
+                                choice_picker = Some(ChoicePicker::new(next.prompt.clone(), next.choices.clone(), next.default));
+                            } else {
+                                choice_picker = None;
+                                ui_mode = UiMode::Normal;
+                            }
+                        }
+                    }
                 }
                 draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
             }
