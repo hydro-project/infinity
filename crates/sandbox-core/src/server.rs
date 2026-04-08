@@ -1397,21 +1397,59 @@ async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
 
             let matches: Vec<_> = content.match_indices(&args.old_str).collect();
 
-            if matches.is_empty() {
-                return Err(SandboxError::Other(format!(
-                    "old_str not found in {}",
-                    args.path
-                )));
-            }
-            if matches.len() > 1 {
+            let new_content = if matches.len() == 1 {
+                content.replacen(&args.old_str, &args.new_str, 1)
+            } else if matches.len() > 1 {
                 return Err(SandboxError::Other(format!(
                     "old_str matches {} locations in {} — must be unique",
                     matches.len(),
                     args.path
                 )));
-            }
-
-            let new_content = content.replacen(&args.old_str, &args.new_str, 1);
+            } else {
+                // Fallback: try whitespace-insensitive line matching
+                let content_lines: Vec<&str> = content.lines().collect();
+                let old_lines: Vec<&str> = args.old_str.lines().collect();
+                let old_trimmed: Vec<&str> = old_lines.iter().map(|l| l.trim()).collect();
+                let mut ws_match: Option<usize> = None;
+                let mut ambiguous = false;
+                if !old_lines.is_empty() && content_lines.len() >= old_lines.len() {
+                    for i in 0..=content_lines.len() - old_lines.len() {
+                        if content_lines[i..i + old_lines.len()]
+                            .iter()
+                            .zip(&old_trimmed)
+                            .all(|(a, b)| a.trim() == *b)
+                        {
+                            if ws_match.is_some() {
+                                ambiguous = true;
+                                break;
+                            }
+                            ws_match = Some(i);
+                        }
+                    }
+                }
+                if ambiguous {
+                    return Err(SandboxError::Other(format!(
+                        "old_str matches multiple locations in {} (by whitespace-insensitive match) — must be unique",
+                        args.path
+                    )));
+                }
+                if let Some(start) = ws_match {
+                    let mut result_lines: Vec<&str> = content_lines[..start].to_vec();
+                    let new_lines: Vec<&str> = args.new_str.lines().collect();
+                    result_lines.extend(&new_lines);
+                    result_lines.extend(&content_lines[start + old_lines.len()..]);
+                    let mut result = result_lines.join("\n");
+                    if content.ends_with('\n') {
+                        result.push('\n');
+                    }
+                    result
+                } else {
+                    return Err(SandboxError::Other(format!(
+                        "old_str not found in {}",
+                        args.path
+                    )));
+                }
+            };
             tokio::fs::write(&file_path, &new_content)
                 .await
                 .map_err(SandboxError::Io)?;
