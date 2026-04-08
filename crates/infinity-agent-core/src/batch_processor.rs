@@ -59,6 +59,9 @@ pub enum DisplayEvent<R> {
         default: usize,
         response_url: String,
     },
+    UserChoiceComplete {
+        choice_id: String,
+    },
     ThinkingStart,
     ThinkingEnd,
     ThinkingChunk {

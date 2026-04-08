@@ -77,6 +77,9 @@ pub(crate) fn display_event_to_daemon<R: GetTokenUsage>(
             chunk,
         },
         DisplayEvent::CompactionApplied => DaemonMessage::CompactionApplied { thread_id: tid },
+        DisplayEvent::UserChoiceComplete { choice_id } => {
+            DaemonMessage::UserChoiceComplete { choice_id }
+        }
     })
 }
 
