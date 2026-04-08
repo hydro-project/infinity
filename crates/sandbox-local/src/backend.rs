@@ -444,7 +444,21 @@ impl SandboxBackend for LocalBackend {
             Some(SandboxMode::Git { .. }) => git::git_amend_all(sandbox_dir, description).await,
             Some(SandboxMode::Jj { .. }) => {
                 let bookmark = format!("sandbox-{group_id}");
-                jj::jj_push_working_copy(sandbox_dir, &bookmark).await
+                jj::jj_push_working_copy(sandbox_dir, &bookmark).await?;
+                // Keep colocated git refs in sync so git commands via
+                // write-orig see the latest jj state.
+                let orig = PathBuf::from(
+                    &state
+                        .as_ref()
+                        .expect("bug: state should be Some")
+                        .remote_uri,
+                );
+                if orig.join(".git").exists()
+                    && let Err(e) = run_jj(&orig, &["git", "export"]).await
+                {
+                    tracing::warn!(error = %e, "jj git export failed");
+                }
+                Ok(())
             }
             None => Err(SandboxError::Other(format!(
                 "no cached sandbox state for group_id: {group_id}"
