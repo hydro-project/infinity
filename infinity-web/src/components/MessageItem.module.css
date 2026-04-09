@@ -4,7 +4,6 @@
     padding: 10px 0;
     margin-top: 16px;
     font-weight: 600;
-    white-space: pre-wrap;
     word-break: break-word;
     color: var(--text);
 }
@@ -19,27 +18,74 @@
     word-break: break-word;
 }
 
-.assistant :global(ul),
-.assistant :global(ol) {
-    list-style-position: inside;
+.markdown :global(ul),
+.markdown :global(ol) {
+    padding-left: 2em;
 }
 
-.assistant :global(p) {
+.markdown :global(.block) {
+    display: block;
+}
+
+.markdown :global(.text-muted-foreground) {
+    color: var(--text-muted);
+}
+
+.markdown :global(.italic) {
+    font-style: italic;
+}
+
+.markdown :global(hr) {
+    margin: 1.5em 0;
+}
+
+.markdown :global(.w-full) {
+    width: 100%;
+}
+
+.markdown :global(.divide-y) > * + * {
+    border-top: 1px solid;
+}
+
+.markdown :global(.divide-border) > * + * {
+    border-color: var(--border);
+}
+
+.markdown :global(table) {
+    border-collapse: collapse;
+}
+
+.markdown :global(img.hidden) {
+    display: none;
+}
+
+.markdown :global(.inline-block) {
+    display: inline-block;
+}
+
+.markdown :global([data-streamdown="table-wrapper"]) {
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    padding: 12px;
     margin-top: 0.6em;
 }
 
-.assistant :global(p:first-child) {
+.markdown :global(p) {
+    margin-top: 0.6em;
+}
+
+.markdown :global(p:first-child) {
     margin-top: 0;
 }
 
-.assistant div[data-streamdown="code-block"] {
+.markdown div[data-streamdown="code-block"] {
     margin-top: 10px;
     padding: 10px;
     border-radius: 5px;
     border: 1px solid var(--border);
 }
 
-.assistant div[data-streamdown="code-block-header"] {
+.markdown div[data-streamdown="code-block-header"] {
     display: none;
 }
 
