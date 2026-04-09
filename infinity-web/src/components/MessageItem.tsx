@@ -16,16 +16,26 @@ export function MessageItem({ item, isFirst, defaultCollapsed, theme }: Props) {
   switch (item.type) {
     case "user":
       return (
-        <div className={`${css.user} ${isFirst ? "" : css.userSep}`}>
-          {item.text}
+        <div
+          className={`${css.user} ${css.markdown} ${isFirst ? "" : css.userSep}`}
+        >
+          <Streamdown
+            controls={{ code: false, table: false }}
+            linkSafety={{ enabled: false }}
+            animated={false}
+            isAnimating={false}
+          >
+            {item.text}
+          </Streamdown>
         </div>
       );
 
     case "assistant":
       return (
-        <div className={css.assistant}>
+        <div className={`${css.assistant} ${css.markdown}`}>
           <Streamdown
-            controls={{ code: false }}
+            controls={{ code: false, table: false }}
+            linkSafety={{ enabled: false }}
             animated={{
               stagger: 0,
             }}
