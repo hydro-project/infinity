@@ -32,7 +32,11 @@ enum Commands {
         action: RapCommands,
     },
     /// Update the CLI itself
-    Update,
+    Update {
+        /// Comma-separated list of features to pass to cargo install (overrides auto-detected features)
+        #[arg(long)]
+        features: Option<String>,
+    },
     /// Daemon management
     Daemon {
         #[command(subcommand)]
@@ -117,7 +121,7 @@ async fn async_main() -> Result<(), BoxError> {
     // Handle subcommands
     if let Some(command) = cli.command {
         return match command {
-            Commands::Update => install::run_self_update().await,
+            Commands::Update { features } => install::run_self_update(features.as_deref()).await,
             Commands::Daemon { action } => match action {
                 Some(DaemonCommands::Stop) => {
                     let pid_path = infinity_protocol::pid_path();
