@@ -38,12 +38,29 @@ enum Commands {
         #[command(subcommand)]
         action: Option<DaemonCommands>,
     },
+    /// Remote daemon management
+    Remote {
+        #[command(subcommand)]
+        action: RemoteCommands,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
 enum DaemonCommands {
     /// Stop the running daemon
     Stop,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum RemoteCommands {
+    /// Add a new remote: infinity remote add <name> -- ssh <ssh_args...>
+    Add {
+        /// Name for this remote
+        name: String,
+        /// Transport and arguments (passed after --), e.g. "ssh my-host"
+        #[arg(last = true, required = true)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -139,6 +156,42 @@ async fn async_main() -> Result<(), BoxError> {
                         return Err("--user is currently required for rap update".into());
                     }
                     install::run_update().await
+                }
+              },
+            Commands::Remote { action } => match action {
+                RemoteCommands::Add { name, args } => {
+                    if args.first().map(|s| s.as_str()) != Some("ssh") {
+                        return Err("expected 'ssh' as first argument after --".into());
+                    }
+                    let ssh_args = &args[1..];
+                    if ssh_args.is_empty() {
+                        return Err("no ssh arguments provided after 'ssh'".into());
+                    }
+                    let path = infinity_protocol::remotes_config_path();
+                    let mut remotes: Vec<infinity_daemon::remote::RemoteConfig> =
+                        match std::fs::read_to_string(&path) {
+                            Ok(s) => serde_json::from_str(&s)
+                                .map_err(|e| format!("failed to parse {}: {e}", path.display()))?,
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                            Err(e) => {
+                                return Err(
+                                    format!("failed to read {}: {e}", path.display()).into()
+                                );
+                            }
+                        };
+                    if remotes.iter().any(|r| r.name == name) {
+                        return Err(format!("remote '{name}' already exists").into());
+                    }
+                    remotes.push(infinity_daemon::remote::RemoteConfig {
+                        name: name.clone(),
+                        ssh_args: ssh_args.to_vec(),
+                    });
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent).ok();
+                    }
+                    std::fs::write(&path, serde_json::to_string_pretty(&remotes)?)?;
+                    println!("added remote '{name}' (ssh {})", ssh_args.join(" "));
+                    Ok(())
                 }
             },
         };
