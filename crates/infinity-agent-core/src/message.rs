@@ -1,4 +1,5 @@
-use rig::message::UserContent;
+use rig::OneOrMany;
+use rig::message::{AssistantContent, Message, UserContent};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -143,4 +144,98 @@ pub struct InputMessage {
     /// the agent can later cancel it via `cancel_subscription`.
     #[serde(default)]
     pub subscription: bool,
+}
+
+/// Wraps rig message content with optional display metadata that survives
+/// serialization. On replay the display metadata is used directly instead of
+/// being reconstructed or stored as sidecar data.
+///
+/// Each variant stores the type-specific rig struct directly rather than a
+/// full `rig::message::Message`. Use [`into_message`](Self::into_message) to
+/// reconstruct the `Message` for LLM calls.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum InfinityMessage {
+    /// Plain user text message.
+    #[serde(rename = "user")]
+    User { content: UserContent },
+    /// Assistant text or reasoning message.
+    #[serde(rename = "assistant")]
+    Assistant { content: AssistantContent },
+    /// Assistant tool call with optional pretty-printed display string.
+    #[serde(rename = "tool_call")]
+    ToolCall {
+        call: rig::message::ToolCall,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_as: Option<String>,
+    },
+    /// User tool result with optional display segments for the UI.
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        result: rig::message::ToolResult,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_segments: Option<Vec<rap_protocol::DisplaySegment>>,
+    },
+    /// Synthetic subscription event injected into history. The display name is
+    /// recomputed on replay from the original tool call in history.
+    #[serde(rename = "subscription_event")]
+    SubscriptionEvent {
+        result: rig::message::ToolResult,
+        /// The tool_call_id of the original subscription tool call.
+        tool_call_id: String,
+        /// Set when this is a thread report (used to build the display name).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        child_thread_id: Option<String>,
+    },
+}
+
+impl InfinityMessage {
+    /// Reconstruct a `rig::message::Message` for LLM calls.
+    pub fn into_message(self) -> Message {
+        match self {
+            Self::User { content } => Message::User {
+                content: OneOrMany::one(content),
+            },
+            Self::Assistant { content } => Message::Assistant {
+                id: None,
+                content: OneOrMany::one(content),
+            },
+            Self::ToolCall { call, .. } => Message::Assistant {
+                id: None,
+                content: OneOrMany::one(AssistantContent::ToolCall(call)),
+            },
+            Self::ToolResult { result, .. } | Self::SubscriptionEvent { result, .. } => {
+                Message::User {
+                    content: OneOrMany::one(UserContent::ToolResult(result)),
+                }
+            }
+        }
+    }
+
+    /// Auto-classify a bare rig Message into the appropriate InfinityMessage variant.
+    /// Display metadata fields are set to `None`/defaults.
+    pub fn from_rig_message(msg: Message) -> Self {
+        match msg {
+            Message::User { content } => {
+                let first = content.into_iter().next().expect("bug: empty content");
+                match first {
+                    UserContent::ToolResult(result) => Self::ToolResult {
+                        result,
+                        display_segments: None,
+                    },
+                    other => Self::User { content: other },
+                }
+            }
+            Message::Assistant { content, .. } => {
+                let first = content.into_iter().next().expect("bug: empty content");
+                match first {
+                    AssistantContent::ToolCall(call) => Self::ToolCall {
+                        call,
+                        display_as: None,
+                    },
+                    other => Self::Assistant { content: other },
+                }
+            }
+        }
+    }
 }
