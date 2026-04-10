@@ -21,8 +21,8 @@ First install the prerequisites:
 Then install:
 
 ```bash
-# Install the CLI and the sandbox server
-cargo install infinity-agent-cli --git https://github.com/hydro-project/infinity
+# Install the CLI (includes the desktop web UI; remove --features bundled-web if you don't have npm)
+cargo install infinity-agent-cli --git https://github.com/hydro-project/infinity --features bundled-web
 infinity rap install --user --git https://github.com/hydro-project/infinity --crate sandbox-local
 
 # Run it
@@ -34,7 +34,17 @@ To update: `infinity update`
 
 ### Desktop UI
 
-Infinity Code comes with an experimental desktop UI that provides a native interface for concurrent threads. To run the desktop interface:
+Infinity Code comes with a desktop UI that provides a native interface for concurrent threads. There are two ways to run it:
+
+**Bundled (recommended if you have npm)** — install with the `bundled-web` feature and the daemon serves the UI automatically:
+
+```bash
+cargo install infinity-agent-cli --git https://github.com/hydro-project/infinity --features bundled-web
+```
+
+Then open `http://localhost:8080` in a browser. The `bundled-web` feature is preserved across `infinity update`.
+
+**Standalone** — run the Vite dev server separately (requires npm):
 
 ```bash
 cd infinity-web
@@ -42,7 +52,9 @@ npm ci
 npm run dev
 ```
 
-Then open the URL printed in your terminal (typically http://localhost:5173). The desktop UI connects to the same daemon as the CLI, so you can use both interchangeably.
+Then open the URL printed in your terminal (typically http://localhost:5173).
+
+Both modes connect to the same daemon as the CLI, so you can use all three interchangeably.
 
 ## Documentation
 

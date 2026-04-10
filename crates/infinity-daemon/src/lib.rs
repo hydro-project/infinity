@@ -11,6 +11,7 @@ pub mod session;
 pub mod session_store;
 pub mod set_title_tool;
 pub mod sleep_tools;
+pub mod web_assets;
 pub mod ws_handler;
 
 use infinity_protocol::socket_path;
@@ -67,8 +68,8 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>
                 Ok((stream, _)) => {
                     let mgr = ws_session_manager.clone();
                     tokio::task::spawn_local(rap_protocol::log_panic(
-                        "ws_client_handler",
-                        ws_handler::handle_ws_client(stream, mgr),
+                        "http_client_handler",
+                        ws_handler::handle_http_client(stream, mgr),
                     ));
                 }
                 Err(e) => {

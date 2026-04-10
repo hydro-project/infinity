@@ -36,8 +36,8 @@ Then install:
 
 ```bash
 
-# Install the CLI and the sandbox RAP server
-cargo install infinity-agent-cli --git https://github.com/hydro-project/infinity
+# Install the CLI (includes the desktop web UI; remove --features bundled-web if you don't have npm)
+cargo install infinity-agent-cli --git https://github.com/hydro-project/infinity --features bundled-web
 
 infinity rap install --user --git https://github.com/hydro-project/infinity --crate sandbox-local
 ```
@@ -67,7 +67,11 @@ Type a message and press Enter. The agent will read your code, make changes in a
 
 ### Desktop UI
 
-To run the desktop interface instead:
+There are two ways to run the desktop interface:
+
+**Bundled** — if you installed with `--features bundled-web`, the daemon already serves the UI. Open `http://localhost:8080` (or your `INFINITY_WS_PORT`) in a browser.
+
+**Standalone** — run the Vite dev server separately:
 
 ```bash
 cd infinity-web
@@ -75,7 +79,9 @@ npm ci
 npm run dev
 ```
 
-Then open the URL printed in your terminal (typically `http://localhost:5173`). The desktop UI connects to the same daemon as the CLI, so you can use both interchangeably.
+Then open the URL printed in your terminal (typically `http://localhost:5173`).
+
+Both modes connect to the same daemon as the CLI, so you can use all three interchangeably.
 
 ## Terminal UI
 
