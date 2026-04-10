@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use infinity_agent_core::message::InputMessage;
+use infinity_agent_core::message::{InfinityMessage, InputMessage};
 use infinity_agent_core::traits::{ConversationStore, InputSender, StateStore};
 use rig::message::Message;
 use serde::{Deserialize, Serialize};
@@ -26,13 +26,9 @@ impl std::error::Error for MemoryError {}
 pub struct InMemoryConversationStore {
     /// session_id -> ordered messages
     #[expect(clippy::type_complexity, reason = "shared state")]
-    messages: Arc<Mutex<HashMap<String, Vec<(Message, String)>>>>,
+    messages: Arc<Mutex<HashMap<String, Vec<(InfinityMessage, String)>>>>,
     /// thread_id -> ThreadInfo
     threads: Arc<Mutex<HashMap<String, ThreadInfo>>>,
-    /// thread_id -> tool_result_id -> display_as segments.
-    /// Persisted separately because rig's `Message` type does not carry display_as.
-    #[expect(clippy::type_complexity, reason = "shared state")]
-    display_as_map: Arc<Mutex<HashMap<String, HashMap<String, Vec<rap_protocol::DisplaySegment>>>>>,
     /// thread_id -> compaction summaries
     compaction_summaries: Arc<Mutex<HashMap<String, Vec<CompactionSummary>>>>,
     /// Directory where per-thread JSON files are stored. `None` disables persistence.
@@ -77,13 +73,96 @@ struct CompactionSummary {
 }
 
 /// Per-thread snapshot written to `{dir}/{thread_id}.json`.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 pub(crate) struct ThreadSnapshot {
+    messages: Vec<(InfinityMessage, String)>,
+    #[serde(default)]
+    compaction_summaries: Vec<CompactionSummary>,
+}
+
+/// Helper struct for deserializing the new format directly.
+#[derive(Deserialize)]
+struct NewThreadSnapshot {
+    messages: Vec<(InfinityMessage, String)>,
+    #[serde(default)]
+    compaction_summaries: Vec<CompactionSummary>,
+}
+
+/// Helper struct for deserializing the old format (bare rig Messages + display_as sidecar).
+#[derive(Deserialize)]
+struct OldThreadSnapshot {
+    #[serde(default)]
     messages: Vec<(Message, String)>,
-    #[serde(default, deserialize_with = "deserialize_display_as_map")]
+    #[serde(default, deserialize_with = "deserialize_legacy_display_as_map")]
     display_as: HashMap<String, Vec<rap_protocol::DisplaySegment>>,
     #[serde(default)]
     compaction_summaries: Vec<CompactionSummary>,
+}
+
+/// Custom deserializer for ThreadSnapshot that handles both old format
+/// (bare rig Messages + display_as map) and new format (InfinityMessage).
+impl<'de> Deserialize<'de> for ThreadSnapshot {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw: serde_json::Value = Deserialize::deserialize(deserializer)?;
+
+        // Try new format first, fall back to old format
+        if let Ok(new) = serde_json::from_value::<NewThreadSnapshot>(raw.clone()) {
+            return Ok(ThreadSnapshot {
+                messages: new.messages,
+                compaction_summaries: new.compaction_summaries,
+            });
+        }
+
+        let old: OldThreadSnapshot =
+            serde_json::from_value(raw).map_err(serde::de::Error::custom)?;
+
+        let messages = old
+            .messages
+            .into_iter()
+            .map(|(msg, id)| {
+                let mut inf = InfinityMessage::from_rig_message(msg);
+                if let InfinityMessage::ToolResult {
+                    ref result,
+                    ref mut display_segments,
+                } = inf
+                    && let Some(segs) = old.display_as.get(&result.id)
+                {
+                    *display_segments = Some(segs.clone());
+                }
+                (inf, id)
+            })
+            .collect();
+
+        Ok(ThreadSnapshot {
+            messages,
+            compaction_summaries: old.compaction_summaries,
+        })
+    }
+}
+
+/// Deserialize the legacy display_as map, handling both old String and new Vec<DisplaySegment> formats.
+fn deserialize_legacy_display_as_map<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<String, Vec<rap_protocol::DisplaySegment>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: HashMap<String, serde_json::Value> = HashMap::deserialize(deserializer)?;
+    let mut result = HashMap::new();
+    for (k, v) in raw {
+        let segments = match v {
+            serde_json::Value::String(s) => vec![rap_protocol::DisplaySegment::Text(s)],
+            serde_json::Value::Array(_) => {
+                serde_json::from_value(v).map_err(serde::de::Error::custom)?
+            }
+            _ => continue,
+        };
+        result.insert(k, segments);
+    }
+    Ok(result)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -94,31 +173,6 @@ pub(crate) struct SerializedThread {
     pub views: HashMap<String, serde_json::Value>,
 }
 
-/// Deserialize display_as map, handling both the old `String` format and the
-/// new `Vec<DisplaySegment>` format for backward compatibility.
-fn deserialize_display_as_map<'de, D>(
-    deserializer: D,
-) -> Result<HashMap<String, Vec<rap_protocol::DisplaySegment>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde_json::Value;
-
-    let raw: HashMap<String, Value> = HashMap::deserialize(deserializer)?;
-    let mut result = HashMap::new();
-    for (k, v) in raw {
-        let segments = match v {
-            // Old format: plain string → wrap in a single Text segment
-            Value::String(s) => vec![rap_protocol::DisplaySegment::Text(s)],
-            // New format: array of segments
-            Value::Array(_) => serde_json::from_value(v).unwrap_or_default(),
-            _ => Vec::new(),
-        };
-        result.insert(k, segments);
-    }
-    Ok(result)
-}
-
 impl InMemoryConversationStore {
     /// Create a store that persists each thread to its own JSON file under `dir`.
     pub fn new_with_dir(dir: impl AsRef<Path>) -> Self {
@@ -127,7 +181,6 @@ impl InMemoryConversationStore {
         Self {
             messages: Arc::new(Mutex::new(HashMap::new())),
             threads: Arc::new(Mutex::new(HashMap::new())),
-            display_as_map: Arc::new(Mutex::new(HashMap::new())),
             compaction_summaries: Arc::new(Mutex::new(HashMap::new())),
             dir: Some(dir),
             loaded: Arc::new(Mutex::new(HashSet::new())),
@@ -214,7 +267,6 @@ impl InMemoryConversationStore {
     fn save_thread(&self, thread_id: &str) {
         let Some(ref dir) = self.dir else { return };
         let messages = self.messages.lock().expect("bug: mutex poisoned");
-        let display_as_map = self.display_as_map.lock().expect("bug: mutex poisoned");
         let compaction_summaries = self
             .compaction_summaries
             .lock()
@@ -222,7 +274,6 @@ impl InMemoryConversationStore {
 
         let snapshot = ThreadSnapshot {
             messages: messages.get(thread_id).cloned().unwrap_or_default(),
-            display_as: display_as_map.get(thread_id).cloned().unwrap_or_default(),
             compaction_summaries: compaction_summaries
                 .get(thread_id)
                 .cloned()
@@ -281,7 +332,7 @@ impl InMemoryConversationStore {
         meta_loaded.insert(thread_id.to_owned());
     }
 
-    /// Ensure a thread's full data (messages, display_as, compaction summaries) is loaded.
+    /// Ensure a thread's full data (messages, compaction summaries) is loaded.
     /// Calls `ensure_thread_metadata_loaded` first.
     fn ensure_thread_loaded(&self, thread_id: &str) {
         self.ensure_thread_metadata_loaded(thread_id);
@@ -298,7 +349,6 @@ impl InMemoryConversationStore {
             && let Ok(snapshot) = serde_json::from_str::<ThreadSnapshot>(&json)
         {
             let mut messages = self.messages.lock().expect("bug: mutex poisoned");
-            let mut display_as_map = self.display_as_map.lock().expect("bug: mutex poisoned");
             let mut compaction_summaries = self
                 .compaction_summaries
                 .lock()
@@ -307,11 +357,6 @@ impl InMemoryConversationStore {
             assert!(
                 messages
                     .insert(thread_id.to_owned(), snapshot.messages)
-                    .is_none()
-            );
-            assert!(
-                display_as_map
-                    .insert(thread_id.to_owned(), snapshot.display_as)
                     .is_none()
             );
             assert!(
@@ -324,35 +369,6 @@ impl InMemoryConversationStore {
         loaded.insert(thread_id.to_owned());
 
         self.load_views(thread_id);
-    }
-
-    /// Record the display_as segments for a tool result so it survives persistence.
-    pub fn save_display_as(
-        &self,
-        thread_id: &str,
-        tool_result_id: &str,
-        display_as: &[rap_protocol::DisplaySegment],
-    ) {
-        self.ensure_thread_loaded(thread_id);
-        {
-            let mut map = self.display_as_map.lock().expect("bug: mutex poisoned");
-            map.entry(thread_id.to_owned())
-                .or_default()
-                .insert(tool_result_id.to_owned(), display_as.to_vec());
-        }
-        self.save_thread(thread_id);
-    }
-
-    /// Look up previously stored display_as segments for a tool result.
-    pub fn get_display_as(
-        &self,
-        thread_id: &str,
-        tool_result_id: &str,
-    ) -> Option<Vec<rap_protocol::DisplaySegment>> {
-        self.ensure_thread_loaded(thread_id);
-        let map = self.display_as_map.lock().expect("bug: mutex poisoned");
-        map.get(thread_id)
-            .and_then(|inner| inner.get(tool_result_id).cloned())
     }
 
     /// Resolve a thread ID to its root thread ID (i.e. the session ID).
@@ -598,14 +614,12 @@ impl InMemoryConversationStore {
             queue.extend(metadata.children.clone());
             let snapshot = {
                 let msgs = self.messages.lock().expect("bug: mutex poisoned");
-                let da = self.display_as_map.lock().expect("bug: mutex poisoned");
                 let cs = self
                     .compaction_summaries
                     .lock()
                     .expect("bug: mutex poisoned");
                 ThreadSnapshot {
                     messages: msgs.get(&tid).cloned().unwrap_or_default(),
-                    display_as: da.get(&tid).cloned().unwrap_or_default(),
                     compaction_summaries: cs.get(&tid).cloned().unwrap_or_default(),
                 }
             };
@@ -641,10 +655,6 @@ impl InMemoryConversationStore {
                 .lock()
                 .expect("bug: mutex poisoned")
                 .insert(tid.clone(), st.snapshot.messages);
-            self.display_as_map
-                .lock()
-                .expect("bug: mutex poisoned")
-                .insert(tid.clone(), st.snapshot.display_as);
             self.compaction_summaries
                 .lock()
                 .expect("bug: mutex poisoned")
@@ -711,7 +721,7 @@ impl ConversationStore for InMemoryConversationStore {
         session_id: &str,
         start_from: Option<i64>,
         up_to: Option<i64>,
-    ) -> Result<Vec<Message>, MemoryError> {
+    ) -> Result<Vec<InfinityMessage>, MemoryError> {
         self.ensure_thread_loaded(session_id);
         let msgs = self.messages.lock().expect("bug: mutex poisoned");
         Ok(msgs
@@ -727,10 +737,10 @@ impl ConversationStore for InMemoryConversationStore {
     async fn append_messages(
         &self,
         session_id: &str,
-        messages: Vec<(Message, String)>,
+        messages: Vec<(InfinityMessage, String)>,
     ) -> Result<(), MemoryError> {
         self.ensure_thread_loaded(session_id);
-        tracing::trace!("Appending messages {:?} to store", &messages);
+        tracing::trace!("Appending messages to store");
         {
             let mut store = self.messages.lock().expect("bug: mutex poisoned");
             let entry = store.entry(session_id.to_owned()).or_default();
@@ -793,11 +803,6 @@ impl ConversationStore for InMemoryConversationStore {
                 if let Some(parent) = threads.get_mut(parent_thread_id) {
                     parent.children.push(new_id.clone());
                 }
-            }
-
-            {
-                let mut display_as_map = self.display_as_map.lock().expect("bug: mutex poisoned");
-                display_as_map.insert(new_id.clone(), HashMap::new());
             }
 
             loaded.insert(new_id.clone());
@@ -1192,23 +1197,22 @@ impl InputSender for InMemoryMessageSender {
 }
 
 #[cfg(test)]
-#[expect(clippy::collapsible_if, reason = "readability")]
 mod tests {
     use super::*;
     use infinity_agent_core::traits::ConversationStore;
     use rig::OneOrMany;
     use rig::message::{AssistantContent, Message, UserContent};
 
-    fn user_msg(text: &str) -> Message {
-        Message::User {
+    fn user_msg(text: &str) -> InfinityMessage {
+        InfinityMessage::from_rig_message(Message::User {
             content: OneOrMany::one(UserContent::text(text)),
-        }
+        })
     }
-    fn asst_msg(text: &str) -> Message {
-        Message::Assistant {
+    fn asst_msg(text: &str) -> InfinityMessage {
+        InfinityMessage::from_rig_message(Message::Assistant {
             id: None,
             content: OneOrMany::one(AssistantContent::text(text)),
-        }
+        })
     }
 
     /// Parent has messages, child spawned at index 2. load_history_with_ancestors
@@ -1252,11 +1256,17 @@ mod tests {
             .await
             .expect("load history with ancestors");
         assert_eq!(history.len(), 3);
-        if let Message::User { content } = &history[0] {
-            assert!(matches!(content.first(), UserContent::Text(t) if t.text == "p1"));
+        if let InfinityMessage::User {
+            content: UserContent::Text(t),
+        } = &history[0]
+        {
+            assert_eq!(t.text, "p1");
         }
-        if let Message::User { content } = &history[2] {
-            assert!(matches!(content.first(), UserContent::Text(t) if t.text == "c1"));
+        if let InfinityMessage::User {
+            content: UserContent::Text(t),
+        } = &history[2]
+        {
+            assert_eq!(t.text, "c1");
         }
     }
 
@@ -1335,10 +1345,11 @@ mod tests {
             .expect("load history with ancestors");
         assert_eq!(history.len(), 3);
         assert_eq!(compacted_up_to, Some(2));
-        if let Message::Assistant { content, .. } = &history[0] {
-            if let AssistantContent::Text(t) = content.first() {
-                assert!(t.text.contains("summary of old stuff"));
-            }
+        if let InfinityMessage::Assistant {
+            content: AssistantContent::Text(t),
+        } = &history[0]
+        {
+            assert!(t.text.contains("summary of old stuff"));
         }
     }
 
@@ -1382,10 +1393,11 @@ mod tests {
             .await
             .expect("load history with ancestors");
         assert_eq!(history.len(), 3);
-        if let Message::Assistant { content, .. } = &history[0] {
-            if let AssistantContent::Text(t) = content.first() {
-                assert!(t.text.contains("compacted root"));
-            }
+        if let InfinityMessage::Assistant {
+            content: AssistantContent::Text(t),
+        } = &history[0]
+        {
+            assert!(t.text.contains("compacted root"));
         }
     }
 
@@ -1435,10 +1447,11 @@ mod tests {
             .await
             .expect("load history with ancestors");
         assert_eq!(history.len(), 3);
-        if let Message::Assistant { content, .. } = &history[0] {
-            if let AssistantContent::Text(t) = content.first() {
-                assert!(t.text.contains("later summary"));
-            }
+        if let InfinityMessage::Assistant {
+            content: AssistantContent::Text(t),
+        } = &history[0]
+        {
+            assert!(t.text.contains("later summary"));
         }
     }
 
@@ -1493,22 +1506,26 @@ mod tests {
         // No ancestor messages at all — leaf compaction short-circuits.
         assert_eq!(history.len(), 3);
         assert_eq!(compacted_up_to, Some(2));
-        if let Message::Assistant { content, .. } = &history[0] {
-            if let AssistantContent::Text(t) = content.first() {
-                assert!(
-                    t.text.contains("child compaction"),
-                    "should use child's compaction, got: {}",
-                    t.text
-                );
-                assert!(
-                    !t.text.contains("root compaction"),
-                    "should NOT contain root compaction"
-                );
-            }
+        if let InfinityMessage::Assistant {
+            content: AssistantContent::Text(t),
+        } = &history[0]
+        {
+            assert!(
+                t.text.contains("child compaction"),
+                "should use child's compaction, got: {}",
+                t.text
+            );
+            assert!(
+                !t.text.contains("root compaction"),
+                "should NOT contain root compaction"
+            );
         }
         // The remaining messages should be the child's post-compaction messages
-        if let Message::User { content } = &history[1] {
-            assert!(matches!(content.first(), UserContent::Text(t) if t.text == "c3"));
+        if let InfinityMessage::User {
+            content: UserContent::Text(t),
+        } = &history[1]
+        {
+            assert_eq!(t.text, "c3");
         }
     }
 }

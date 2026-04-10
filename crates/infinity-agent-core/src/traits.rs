@@ -1,8 +1,7 @@
 use async_trait::async_trait;
-use rig::OneOrMany;
-use rig::message::{AssistantContent, Message};
+use rig::message::AssistantContent;
 
-use crate::message::InputMessage;
+use crate::message::{InfinityMessage, InputMessage};
 
 /// Persistent conversation history storage (DSQL in Lambda, in-memory for CLI).
 #[async_trait]
@@ -18,7 +17,7 @@ pub trait ConversationStore: Send + Sync + Clone {
         session_id: &str,
         start_from: Option<i64>,
         up_to: Option<i64>,
-    ) -> Result<Vec<Message>, Self::Error>;
+    ) -> Result<Vec<InfinityMessage>, Self::Error>;
 
     /// Load full history for a thread including ancestor context and compaction.
     /// Walks backwards through ancestors to find the most recent compaction
@@ -28,18 +27,17 @@ pub trait ConversationStore: Send + Sync + Clone {
     async fn load_history_with_ancestors(
         &self,
         thread_id: &str,
-    ) -> Result<(Vec<Message>, Option<i64>), Self::Error> {
+    ) -> Result<(Vec<InfinityMessage>, Option<i64>), Self::Error> {
         // Check the thread itself first
         if let Ok(Some((summary, compacted_up_to))) = self
             .load_latest_compaction_summary_up_to(thread_id, None)
             .await
         {
-            let mut combined = vec![Message::Assistant {
-                id: None,
-                content: OneOrMany::one(AssistantContent::text(format!(
+            let mut combined = vec![InfinityMessage::Assistant {
+                content: AssistantContent::text(format!(
                     "[Compacted conversation summary]\n{}",
                     summary
-                ))),
+                )),
             }];
             combined.extend(
                 self.load_history_up_to(thread_id, Some(compacted_up_to), None)
@@ -70,12 +68,11 @@ pub trait ConversationStore: Send + Sync + Clone {
         if let (Some(idx), Some((summary, compacted_up_to))) = (compaction_idx, compaction_summary)
         {
             // Prepend the compaction summary (covers all ancestors before idx + ancestor idx's messages up to compacted_up_to)
-            combined.push(Message::Assistant {
-                id: None,
-                content: OneOrMany::one(AssistantContent::text(format!(
+            combined.push(InfinityMessage::Assistant {
+                content: AssistantContent::text(format!(
                     "[Compacted conversation summary]\n{}",
                     summary
-                ))),
+                )),
             });
             // Load remaining messages from the compacted ancestor (after summary, up to cutoff)
             let (_, cutoff) = &ancestors[idx];
@@ -101,7 +98,7 @@ pub trait ConversationStore: Send + Sync + Clone {
     async fn append_messages(
         &self,
         session_id: &str,
-        messages: Vec<(Message, String)>,
+        messages: Vec<(InfinityMessage, String)>,
     ) -> Result<(), Self::Error>;
 
     async fn spawn_thread(

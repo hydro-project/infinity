@@ -1,85 +1,73 @@
 ---
 source: crates/infinity-agent-core/src/event_processor.rs
-expression: hm.history
+expression: hm.history.into_inner()
 ---
 [
   {
-    "role": "user",
-    "content": [
-      {
-        "type": "text",
-        "text": "subscribe"
-      }
-    ]
+    "kind": "user",
+    "content": {
+      "type": "text",
+      "text": "subscribe"
+    }
   },
   {
-    "role": "assistant",
-    "id": null,
-    "content": [
-      {
-        "id": "tc-sub",
-        "call_id": null,
-        "function": {
-          "name": "subscribe_tool",
-          "arguments": {
+    "kind": "tool_call",
+    "call": {
+      "id": "tc-sub",
+      "call_id": null,
+      "function": {
+        "name": "subscribe_tool",
+        "arguments": {
+          "topic": "events"
+        }
+      },
+      "signature": null,
+      "additional_params": null
+    }
+  },
+  {
+    "kind": "tool_result",
+    "result": {
+      "id": "tc-sub",
+      "content": [
+        {
+          "type": "text",
+          "text": "Tool call interrupted by user"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "tool_call",
+    "call": {
+      "id": "[uuid]",
+      "call_id": null,
+      "function": {
+        "name": "receive_event__injected",
+        "arguments": {
+          "original_args": {
             "topic": "events"
-          }
-        },
-        "signature": null,
-        "additional_params": null
-      }
-    ]
+          },
+          "original_tool_call_id": "tc-sub",
+          "original_tool_name": "subscribe_tool"
+        }
+      },
+      "signature": null,
+      "additional_params": null
+    }
   },
   {
-    "role": "user",
-    "content": [
-      {
-        "type": "toolresult",
-        "id": "tc-sub",
-        "content": [
-          {
-            "type": "text",
-            "text": "Tool call interrupted by user"
-          }
-        ]
-      }
-    ]
-  },
-  {
-    "role": "assistant",
-    "id": null,
-    "content": [
-      {
-        "id": "[uuid]",
-        "call_id": null,
-        "function": {
-          "name": "receive_event__injected",
-          "arguments": {
-            "original_args": {
-              "topic": "events"
-            },
-            "original_tool_call_id": "tc-sub",
-            "original_tool_name": "subscribe_tool"
-          }
-        },
-        "signature": null,
-        "additional_params": null
-      }
-    ]
-  },
-  {
-    "role": "user",
-    "content": [
-      {
-        "type": "toolresult",
-        "id": "[uuid]",
-        "content": [
-          {
-            "type": "text",
-            "text": "thread report data"
-          }
-        ]
-      }
-    ]
+    "kind": "subscription_event",
+    "result": {
+      "id": "[uuid]",
+      "content": [
+        {
+          "type": "text",
+          "text": "thread report data"
+        }
+      ]
+    },
+    "tool_call_id": "tc-sub",
+    "child_thread_id": "thread-1"
   }
 ]

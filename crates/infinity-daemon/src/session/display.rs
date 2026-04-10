@@ -1,9 +1,8 @@
 use infinity_agent_core::batch_processor::DisplayEvent;
+use infinity_agent_core::message::InfinityMessage;
 use infinity_protocol::{DaemonMessage, TokenUsage};
 use rig::completion::GetTokenUsage;
-use rig::message::{ToolResultContent, UserContent};
-
-use crate::memory_store::InMemoryConversationStore;
+use rig::message::{AssistantContent, ToolResultContent, UserContent};
 
 pub(crate) fn display_event_to_daemon<R: GetTokenUsage>(
     thread_id: &str,
@@ -84,46 +83,92 @@ pub(crate) fn display_event_to_daemon<R: GetTokenUsage>(
 }
 
 pub(crate) fn history_message_to_daemon(
-    msg: &rig::message::Message,
+    msg: &InfinityMessage,
     tid: &str,
-    store: &InMemoryConversationStore,
+    history: &[InfinityMessage],
 ) -> Option<DaemonMessage> {
     let thread_id = Some(tid.to_owned());
-    use rig::message::{AssistantContent, Message};
     match msg {
-        Message::User { content } => match content.first() {
-            UserContent::Text(text) => Some(DaemonMessage::UserInputEcho {
-                thread_id,
-                text: text.text,
-            }),
-            UserContent::ToolResult(res) => {
-                if let ToolResultContent::Text(t) = res.content.first() {
-                    let display_as = store.get_display_as(tid, &res.id);
-                    Some(DaemonMessage::ToolResult {
-                        segments: rap_protocol::build_display_segments(
-                            display_as.as_deref(),
-                            &t.to_string(),
-                        ),
-                        thread_id,
+        InfinityMessage::SubscriptionEvent {
+            result,
+            tool_call_id,
+            child_thread_id,
+        } => {
+            let text = if let ToolResultContent::Text(t) = result.content.first() {
+                t.text
+            } else {
+                String::new()
+            };
+            let name = if let Some(child_id) = child_thread_id {
+                format!("Report from child thread {}", child_id)
+            } else {
+                history
+                    .iter()
+                    .find_map(|m| {
+                        if let InfinityMessage::ToolCall { call, .. } = m
+                            && call.id == *tool_call_id
+                        {
+                            Some(format!(
+                                "{}({})",
+                                call.function.name, call.function.arguments
+                            ))
+                        } else {
+                            None
+                        }
                     })
+                    .unwrap_or_else(|| tool_call_id.clone())
+            };
+            Some(DaemonMessage::SubscriptionEvent {
+                name,
+                text,
+                thread_id,
+            })
+        }
+        InfinityMessage::ToolCall { call, display_as } => Some(DaemonMessage::ToolCall {
+            name: call.function.name.clone(),
+            args: call.function.arguments.to_string(),
+            thread_id,
+            display_as: display_as.clone(),
+        }),
+        InfinityMessage::ToolResult {
+            result,
+            display_segments,
+        } => {
+            if let ToolResultContent::Text(t) = result.content.first() {
+                let segments = if let Some(segs) = display_segments {
+                    let mut s = segs.clone();
+                    s.push(rap_protocol::DisplaySegment::Text(t.text));
+                    s
                 } else {
-                    None
-                }
+                    vec![rap_protocol::DisplaySegment::Text(t.text)]
+                };
+                Some(DaemonMessage::ToolResult {
+                    segments,
+                    thread_id,
+                })
+            } else {
+                None
             }
-            _ => None,
-        },
-        Message::Assistant { content, .. } => match content.first() {
-            AssistantContent::Text(text) => Some(DaemonMessage::TextChunk {
-                thread_id,
-                chunk: text.text,
-            }),
-            AssistantContent::ToolCall(call) => Some(DaemonMessage::ToolCall {
-                name: call.function.name.clone(),
-                args: call.function.arguments.to_string(),
-                thread_id,
-                display_as: None,
-            }),
-            _ => None,
-        },
+        }
+        InfinityMessage::User { content } => {
+            if let UserContent::Text(text) = content {
+                Some(DaemonMessage::UserInputEcho {
+                    thread_id,
+                    text: text.text.clone(),
+                })
+            } else {
+                None
+            }
+        }
+        InfinityMessage::Assistant { content } => {
+            if let AssistantContent::Text(text) = content {
+                Some(DaemonMessage::TextChunk {
+                    thread_id,
+                    chunk: text.text.clone(),
+                })
+            } else {
+                None
+            }
+        }
     }
 }
