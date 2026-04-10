@@ -20,6 +20,11 @@ static CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Start the RAP server on an OS-assigned port, returning the base URL.
 /// `metadata_dir` is where per-group JSON state files are stored.
 pub async fn start_test_server(metadata_dir: &Path) -> String {
+    start_test_server_sandboxed(metadata_dir, false).await
+}
+
+/// Start the RAP server with platform sandboxing (bwrap/sandbox-exec) enabled.
+pub async fn start_test_server_sandboxed(metadata_dir: &Path, sandbox_enabled: bool) -> String {
     std::fs::create_dir_all(metadata_dir).expect("create metadata dir");
 
     unsafe {
@@ -29,7 +34,7 @@ pub async fn start_test_server(metadata_dir: &Path) -> String {
         );
     }
 
-    let backend = LocalBackend::new(false);
+    let backend = LocalBackend::new(sandbox_enabled);
     let metadata = FileMetadataStore::new(metadata_dir.to_path_buf());
     let (app, _tracker) = build_router(backend, metadata, PlainCallbackClient::new(), false, None);
 
