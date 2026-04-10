@@ -110,6 +110,11 @@
     white-space: nowrap;
 }
 
+.toolName:hover {
+    white-space: normal;
+    overflow-wrap: break-word;
+}
+
 .toolResult {
     padding: 8px 0 2px;
     color: var(--accent-green);
