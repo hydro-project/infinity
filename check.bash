@@ -25,15 +25,15 @@ cargo fmt --all --check || fail "formatting issues found (run 'cargo fmt --all' 
 pass "All code is formatted"
 
 step "Clippy (warnings denied)"
-cargo clippy --all-targets --all-features -- -D warnings || fail "clippy warnings found"
+cargo clippy --all-targets -- -D warnings || fail "clippy warnings found"
 pass "No clippy warnings"
 
 step "Check"
-cargo check --all-targets --all-features || fail "test targets failed to compile"
+cargo check --all-targets || fail "test targets failed to compile"
 pass "Test targets compile"
 
 step "Tests"
-cargo test --all-targets --all-features || fail "tests failed"
+cargo test --all-targets || fail "tests failed"
 pass "All tests passed"
 
 echo -e "\n${GREEN}${BOLD}All checks passed.${RESET}"

@@ -20,7 +20,9 @@ import type {
 } from "./types";
 import css from "./App.module.css";
 
-const WS_URL = `ws://${window.location.hostname}:${import.meta.env.VITE_WS_PORT || "8080"}`;
+const WS_URL = import.meta.env.VITE_WS_PORT
+  ? `ws://${window.location.hostname}:${import.meta.env.VITE_WS_PORT}`
+  : `ws://${window.location.host}`;
 
 type Theme = "light" | "dark" | "system";
 
@@ -805,7 +807,7 @@ export function App() {
             <span className={css.chatPanelTitle}>Chat</span>
             <button
               className={css.chatPanelClose}
-              onClick={() => { if (chatPinned) setChatHover(true); setChatPinned((p) => !p); }}}
+              onClick={() => { if (chatPinned) setChatHover(true); setChatPinned((p) => !p); }}
               aria-label={chatPinned ? "Unpin chat" : "Pin chat"}
               data-pinned={chatPinned}
             >

@@ -52,6 +52,7 @@ async fn run_cargo_install(
     crate_name: &str,
     git: Option<&str>,
     path: Option<&str>,
+    features: &[&str],
 ) -> Result<(), BoxError> {
     let mut cmd = Command::new("cargo");
     cmd.arg("install");
@@ -63,6 +64,9 @@ async fn run_cargo_install(
     }
     cmd.arg(crate_name);
     cmd.arg("--force");
+    if !features.is_empty() {
+        cmd.args(["--features", &features.join(",")]);
+    }
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.stdin(Stdio::null());
@@ -134,6 +138,7 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
         &args.crate_name,
         args.git.as_deref(),
         args.path.as_deref(),
+        &[],
     )
     .await
     {
@@ -236,7 +241,7 @@ async fn update_rap_tools(viewport: &mut InlineViewport) -> Result<Vec<String>, 
         )))?;
         viewport.draw(2, |_| {})?;
 
-        match run_cargo_install(viewport, crate_name, git.as_deref(), path.as_deref()).await {
+        match run_cargo_install(viewport, crate_name, git.as_deref(), path.as_deref(), &[]).await {
             Ok(()) => {
                 viewport.print_line_above(Line::from(Span::styled(
                     format!("  ✓ {crate_name}"),
@@ -256,8 +261,17 @@ async fn update_rap_tools(viewport: &mut InlineViewport) -> Result<Vec<String>, 
     Ok(failed)
 }
 
+/// Returns the list of cargo features this binary was compiled with.
+fn installed_features() -> Vec<&'static str> {
+    let mut features = Vec::new();
+    if cfg!(feature = "bundled-web") {
+        features.push("bundled-web");
+    }
+    features
+}
+
 /// Update the CLI binary itself, printing progress into an existing viewport.
-async fn update_cli(viewport: &mut InlineViewport) -> Result<(), BoxError> {
+async fn update_cli(viewport: &mut InlineViewport, features: &[&str]) -> Result<(), BoxError> {
     let (git, path) = detect_install_source()?;
 
     viewport.print_line_above(Line::from(Span::styled(
@@ -270,6 +284,7 @@ async fn update_cli(viewport: &mut InlineViewport) -> Result<(), BoxError> {
         "infinity-agent-cli",
         git.as_deref(),
         path.as_deref(),
+        features,
     )
     .await
     {
@@ -351,11 +366,21 @@ fn detect_install_source() -> Result<(Option<String>, Option<String>), BoxError>
     }
 }
 
-pub async fn run_self_update() -> Result<(), BoxError> {
+pub async fn run_self_update(features_override: Option<&str>) -> Result<(), BoxError> {
     cterm::enable_raw_mode()?;
     let mut viewport = InlineViewport::new(2)?;
 
-    if let Err(e) = update_cli(&mut viewport).await {
+    let features: Vec<&str> = match features_override {
+        Some("") => vec![],
+        Some(s) => s
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect(),
+        None => installed_features(),
+    };
+
+    if let Err(e) = update_cli(&mut viewport, &features).await {
         viewport.draw(2, |_| {})?;
         terminal::cleanup()?;
         return Err(e);

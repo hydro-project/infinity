@@ -31,12 +31,13 @@ reqwest = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
+hyper-util = { version = "0.1", features = ["tokio", "http1"] }
 http-body-util = "0.1"
 tokio-util = { version = "0.7", features = ["codec"] }
 bytes = "1"
 dirs = "6"
 tokio-tungstenite = "0.26"
+include_dir = { version = "0.7", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["signal"] }
@@ -45,6 +46,9 @@ nix = { version = "0.31", features = ["signal"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile = { workspace = true }
 rig-mock = { path = "../rig-mock" }
+
+[features]
+bundled-web = ["dep:include_dir"]
 
 [lints]
 workspace = true
