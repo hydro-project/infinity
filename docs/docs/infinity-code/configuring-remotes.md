@@ -7,9 +7,28 @@ title: Configuring Remotes
 
 Infinity Code can connect to Infinity daemons running on other machines over SSH. This lets you run agents on a powerful remote dev server while interacting with them from your laptop — remote sessions appear alongside local ones in the session picker.
 
-## Configuration
+## Adding Remotes via CLI
 
-Create `~/.infinity/remotes.json` with an array of remote entries:
+Use the `infinity remote add` command:
+
+```bash
+infinity remote add <name> -- ssh <ssh_args...>
+```
+
+Everything after `-- ssh` is captured as the SSH arguments. Examples:
+
+```bash
+infinity remote add devbox -- ssh my-devbox.example.com
+infinity remote add gpu-server -- ssh -J bastion.example.com gpu.internal
+```
+
+This appends a new entry to `~/.infinity/remotes.json`, creating the file if it doesn't exist. If a remote with the same name already exists, the command will error.
+
+Restart the daemon (`infinity daemon stop`, then start a new session) for it to pick up the new remote.
+
+## Configuration File
+
+You can also edit `~/.infinity/remotes.json` directly. It contains an array of remote entries:
 
 ```json
 [
