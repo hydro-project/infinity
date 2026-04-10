@@ -322,34 +322,26 @@ where
                     Ok(event_processor::CompletionEvent::SyncToolCall {
                         ref tool_name,
                         ref tool_args,
+                        ref display_as,
                     }) => {
-                        let ds = tool_registry
-                            .get(tool_name.as_str())
-                            .and_then(|t| t.display_script().map(String::from));
-                        let display_as =
-                            crate::tools::eval_display_script(ds.as_deref(), tool_args);
                         let _ = display_tx.send(DisplayEvent::ToolCall {
                             name: tool_name.clone(),
                             args: tool_args.clone(),
-                            display_as,
+                            display_as: display_as.clone(),
                         });
                     }
                     Ok(event_processor::CompletionEvent::Action(a)) => {
                         if let CompletionAction::ExecuteToolCall {
                             ref tool_name,
                             ref tool_args,
+                            ref display_as,
                             ..
                         } = a
                         {
-                            let ds = tool_registry
-                                .get(tool_name.as_str())
-                                .and_then(|t| t.display_script().map(String::from));
-                            let display_as =
-                                crate::tools::eval_display_script(ds.as_deref(), tool_args);
                             let _ = display_tx.send(DisplayEvent::ToolCall {
                                 name: tool_name.clone(),
                                 args: tool_args.clone(),
-                                display_as,
+                                display_as: display_as.clone(),
                             });
                         }
 
@@ -440,10 +432,14 @@ mod tests {
             _: &str,
             _: Option<i64>,
             _: Option<i64>,
-        ) -> Result<Vec<Message>, E> {
+        ) -> Result<Vec<crate::message::InfinityMessage>, E> {
             Ok(vec![])
         }
-        async fn append_messages(&self, _: &str, _: Vec<(Message, String)>) -> Result<(), E> {
+        async fn append_messages(
+            &self,
+            _: &str,
+            _: Vec<(crate::message::InfinityMessage, String)>,
+        ) -> Result<(), E> {
             Ok(())
         }
         async fn spawn_thread(&self, _: &str, _: &str, _: bool) -> Result<String, E> {
@@ -769,10 +765,10 @@ mod tests {
             .expect("create history manager");
 
         *hm.history.borrow_mut() = vec![
-            Message::User {
+            crate::message::InfinityMessage::from_rig_message(Message::User {
                 content: OneOrMany::one(UserContent::text("go")),
-            },
-            Message::Assistant {
+            }),
+            crate::message::InfinityMessage::from_rig_message(Message::Assistant {
                 id: None,
                 content: OneOrMany::one(rig::message::AssistantContent::ToolCall(
                     rig::message::ToolCall {
@@ -786,7 +782,7 @@ mod tests {
                         signature: None,
                     },
                 )),
-            },
+            }),
         ];
         let (m, _) = mock_model();
         let (dtx, mut drx) = mpsc::unbounded_channel();

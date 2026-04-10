@@ -171,13 +171,9 @@ pub async fn thread_worker<Mdl>(
     let handle_subscribe = async |tx: mpsc::UnboundedSender<DaemonMessage>, want_replay: bool| {
         if want_replay {
             let history: Vec<DaemonMessage> = {
-                current_history
-                    .history
-                    .borrow()
-                    .iter()
-                    .filter_map(|m| {
-                        history_message_to_daemon(m, &active_group_id, &conversation_store)
-                    })
+                let hist = current_history.history.borrow();
+                hist.iter()
+                    .filter_map(|m| history_message_to_daemon(m, &active_group_id, &hist))
                     .collect()
             };
             let choices = conversation_store.get_pending_choice_messages(&root_session_id);
@@ -271,11 +267,17 @@ pub async fn thread_worker<Mdl>(
                     Some(first_res)
                 } else {
                     let last_is_tool_call = {
-                        current_history.history.borrow().last().is_some_and(|msg| matches!(
-                            msg,
-                            rig::message::Message::Assistant { content, .. }
-                                if matches!(content.first(), rig::message::AssistantContent::ToolCall(c) if c.function.name != "close_thread")
-                        ))
+                        current_history.history.borrow().last().is_some_and(|msg| {
+                            if let infinity_agent_core::message::InfinityMessage::ToolCall {
+                                call,
+                                ..
+                            } = msg
+                            {
+                                call.function.name != "close_thread"
+                            } else {
+                                false
+                            }
+                        })
                     };
                     let has_subs = state_store
                         .get_active_subscriptions(&active_group_id)
@@ -330,11 +332,6 @@ pub async fn thread_worker<Mdl>(
             .collect();
 
         for (m, _) in &all_inputs {
-            if let (Some(da), InputMessageContent::User(UserContent::ToolResult(res))) =
-                (&m.display_as, &m.content)
-            {
-                conversation_store.save_display_as(&active_group_id, &res.id, da);
-            }
             if m.synthetic.as_ref().is_some_and(|s| {
                 matches!(
                     s,

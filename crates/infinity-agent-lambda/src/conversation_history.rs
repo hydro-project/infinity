@@ -5,6 +5,7 @@ use aws_sdk_dsql::{
     auth_token::{AuthTokenGenerator, Config},
 };
 use aws_types::region::Region;
+use infinity_agent_core::message::InfinityMessage;
 use infinity_agent_core::traits::ConversationStore;
 use lambda_runtime::Error;
 use rig::message::Message;
@@ -166,7 +167,7 @@ impl ConversationStore for DsqlConversationStore {
         session_id: &str,
         start_from: Option<i64>,
         up_to: Option<i64>,
-    ) -> Result<Vec<Message>, DsqlError> {
+    ) -> Result<Vec<InfinityMessage>, DsqlError> {
         let mut query =
             String::from("SELECT message_data FROM conversation_history WHERE session_id = $1");
         let mut bind_idx = 2;
@@ -196,8 +197,11 @@ impl ConversationStore for DsqlConversationStore {
         let mut messages = Vec::new();
         for row in rows {
             let json_str: String = row.get("message_data");
-            if let Ok(message) = serde_json::from_str::<Message>(&json_str) {
-                messages.push(message);
+            // Try new InfinityMessage format first, fall back to old rig Message
+            if let Ok(msg) = serde_json::from_str::<InfinityMessage>(&json_str) {
+                messages.push(msg);
+            } else if let Ok(msg) = serde_json::from_str::<Message>(&json_str) {
+                messages.push(InfinityMessage::from_rig_message(msg));
             }
         }
         Ok(messages)
@@ -206,7 +210,7 @@ impl ConversationStore for DsqlConversationStore {
     async fn append_messages(
         &self,
         session_id: &str,
-        messages: Vec<(Message, String)>,
+        messages: Vec<(InfinityMessage, String)>,
     ) -> Result<(), DsqlError> {
         if messages.is_empty() {
             return Ok(());

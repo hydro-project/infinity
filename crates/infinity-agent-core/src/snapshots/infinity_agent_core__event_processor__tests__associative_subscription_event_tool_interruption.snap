@@ -1,85 +1,72 @@
 ---
 source: crates/infinity-agent-core/src/event_processor.rs
-expression: hm.history
+expression: hm.history.into_inner()
 ---
 [
   {
-    "role": "user",
-    "content": [
-      {
-        "type": "text",
-        "text": "run command"
-      }
-    ]
+    "kind": "user",
+    "content": {
+      "type": "text",
+      "text": "run command"
+    }
   },
   {
-    "role": "assistant",
-    "id": null,
-    "content": [
-      {
-        "id": "tc-cmd",
-        "call_id": null,
-        "function": {
-          "name": "execute_command",
-          "arguments": {
+    "kind": "tool_call",
+    "call": {
+      "id": "tc-cmd",
+      "call_id": null,
+      "function": {
+        "name": "execute_command",
+        "arguments": {
+          "command": "make build"
+        }
+      },
+      "signature": null,
+      "additional_params": null
+    }
+  },
+  {
+    "kind": "tool_result",
+    "result": {
+      "id": "tc-cmd",
+      "content": [
+        {
+          "type": "text",
+          "text": "Tool call interrupted by user"
+        }
+      ]
+    }
+  },
+  {
+    "kind": "tool_call",
+    "call": {
+      "id": "[uuid]",
+      "call_id": null,
+      "function": {
+        "name": "receive_event__injected",
+        "arguments": {
+          "original_args": {
             "command": "make build"
-          }
-        },
-        "signature": null,
-        "additional_params": null
-      }
-    ]
+          },
+          "original_tool_call_id": "tc-cmd",
+          "original_tool_name": "execute_command"
+        }
+      },
+      "signature": null,
+      "additional_params": null
+    }
   },
   {
-    "role": "user",
-    "content": [
-      {
-        "type": "toolresult",
-        "id": "tc-cmd",
-        "content": [
-          {
-            "type": "text",
-            "text": "Tool call interrupted by user"
-          }
-        ]
-      }
-    ]
-  },
-  {
-    "role": "assistant",
-    "id": null,
-    "content": [
-      {
-        "id": "[uuid]",
-        "call_id": null,
-        "function": {
-          "name": "receive_event__injected",
-          "arguments": {
-            "original_args": {
-              "command": "make build"
-            },
-            "original_tool_call_id": "tc-cmd",
-            "original_tool_name": "execute_command"
-          }
-        },
-        "signature": null,
-        "additional_params": null
-      }
-    ]
-  },
-  {
-    "role": "user",
-    "content": [
-      {
-        "type": "toolresult",
-        "id": "[uuid]",
-        "content": [
-          {
-            "type": "text",
-            "text": "build output chunk\n[exit code: 0]"
-          }
-        ]
-      }
-    ]
+    "kind": "subscription_event",
+    "result": {
+      "id": "[uuid]",
+      "content": [
+        {
+          "type": "text",
+          "text": "build output chunk\n[exit code: 0]"
+        }
+      ]
+    },
+    "tool_call_id": "tc-cmd"
   }
 ]
