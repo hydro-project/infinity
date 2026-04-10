@@ -40,6 +40,9 @@ dirs = "6"
 tokio-util = { version = "0.7", features = ["codec"] }
 bytes = "1"
 
+[features]
+bundled-web = ["infinity-daemon/bundled-web"]
+
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["signal"] }
 
