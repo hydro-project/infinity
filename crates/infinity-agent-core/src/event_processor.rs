@@ -14,7 +14,9 @@ use rig::{
 use serde::Serialize;
 use tracing;
 
-use crate::message::{InputMessage, InputMessageContent};
+use crate::message::{
+    InfinityMessage, InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind,
+};
 use crate::tools::{Tool, ToolContext};
 use crate::traits::{ConversationStore, InputSender, StateStore};
 
@@ -69,6 +71,7 @@ pub enum CompletionAction<R> {
         tool_args: serde_json::Value,
         tool_call_id: String,
         call_id: Option<String>,
+        display_as: Option<String>,
     },
 }
 
@@ -82,6 +85,7 @@ pub enum CompletionEvent<R> {
     SyncToolCall {
         tool_name: String,
         tool_args: serde_json::Value,
+        display_as: Option<String>,
     },
     /// The model has started thinking (reasoning).
     ThinkingStart,
@@ -98,7 +102,7 @@ pub enum CompletionEvent<R> {
 // ── HistoryManager (unchanged from before) ──
 
 pub struct PendingItem {
-    message: Message,
+    message: InfinityMessage,
     message_id: String,
 }
 
@@ -108,7 +112,7 @@ pub struct HistoryManager<C: ConversationStore, S: StateStore> {
     pub thread_id: String,
     pub root_thread_id: String,
     ancestor_chain: Vec<String>,
-    pub history: RefCell<Vec<Message>>,
+    pub history: RefCell<Vec<InfinityMessage>>,
     processed_message_ids: RefCell<HashSet<String>>,
     processed_tool_calls: RefCell<HashSet<String>>,
     metadata: RefCell<Option<serde_json::Value>>,
@@ -176,7 +180,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
 
     pub async fn handle_content(
         &self,
-        message: Message,
+        message: InfinityMessage,
         message_id: String,
     ) -> Result<bool, BoxError> {
         if self.processed_message_ids.borrow().contains(&message_id) {
@@ -184,9 +188,10 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             return Ok(false);
         }
 
-        if let Message::User { content } = &message
-            && let UserContent::ToolResult(ref tool_result) = content.first()
+        if let InfinityMessage::ToolResult { ref result, .. }
+        | InfinityMessage::SubscriptionEvent { ref result, .. } = message
         {
+            let tool_result = result;
             if self
                 .processed_tool_calls
                 .borrow()
@@ -205,10 +210,8 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                     .await;
                 return Ok(false);
             } else if !self.history.borrow().last().is_some_and(|l| {
-                if let Message::Assistant { content, .. } = l
-                    && let AssistantContent::ToolCall(c) = content.first()
-                {
-                    c.id == tool_result.id
+                if let InfinityMessage::ToolCall { call, .. } = l {
+                    call.id == tool_result.id
                 } else {
                     false
                 }
@@ -220,9 +223,14 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 return Ok(false);
             }
         } else {
-            let last_msg = self.history.borrow().last().cloned();
-            if let Some(Message::Assistant { content, .. }) = last_msg
-                && let AssistantContent::ToolCall(tool_call) = content.first()
+            let last_call = self.history.borrow().last().and_then(|m| {
+                if let InfinityMessage::ToolCall { call, .. } = m {
+                    Some(call.clone())
+                } else {
+                    None
+                }
+            });
+            if let Some(tool_call) = last_call
                 && !self
                     .processed_tool_calls
                     .borrow()
@@ -232,14 +240,15 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 self.interrupted_tool_calls
                     .borrow_mut()
                     .push(tool_call.id.clone());
-                let synthetic_result = Message::User {
-                    content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+                let synthetic_result = InfinityMessage::ToolResult {
+                    result: ToolResult {
                         id: tool_call.id.clone(),
                         call_id: tool_call.call_id.clone(),
                         content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
                             text: "Tool call interrupted by user".to_owned(),
                         })),
-                    })),
+                    },
+                    display_segments: None,
                 };
                 self.append_pending(synthetic_result, format!("{}-interrupted", tool_call.id));
                 self.mark_tool_call_complete(tool_call.id);
@@ -255,24 +264,23 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         &self,
         completion: &StreamedAssistantContent<R>,
         completion_id: String,
+        display_as: Option<String>,
     ) {
         if self.processed_message_ids.borrow().contains(&completion_id) {
             return;
         }
-        let message = match completion {
-            StreamedAssistantContent::Text(text) => Message::Assistant {
-                id: None,
-                content: OneOrMany::one(AssistantContent::Text(text.clone())),
+        let infinity_message = match completion {
+            StreamedAssistantContent::Text(text) => InfinityMessage::Assistant {
+                content: AssistantContent::Text(text.clone()),
             },
-            StreamedAssistantContent::Reasoning(r) => Message::Assistant {
-                id: None,
-                content: OneOrMany::one(AssistantContent::Reasoning(r.clone())),
+            StreamedAssistantContent::Reasoning(r) => InfinityMessage::Assistant {
+                content: AssistantContent::Reasoning(r.clone()),
             },
             StreamedAssistantContent::ToolCall {
                 tool_call: call, ..
-            } => Message::Assistant {
-                id: None,
-                content: OneOrMany::one(AssistantContent::ToolCall(call.clone())),
+            } => InfinityMessage::ToolCall {
+                call: call.clone(),
+                display_as,
             },
             StreamedAssistantContent::ToolCallDelta { .. }
             | StreamedAssistantContent::ReasoningDelta { .. }
@@ -280,15 +288,15 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 return;
             }
         };
-        self.append_pending(message, completion_id);
+        self.append_pending(infinity_message, completion_id);
     }
 
-    fn append_pending(&self, message: Message, message_id: String) {
+    fn append_pending(&self, message: InfinityMessage, message_id: String) {
         self.history.borrow_mut().push(message.clone());
-        if let Message::User { content } = &message
-            && let UserContent::ToolResult(result) = content.first()
+        if let InfinityMessage::ToolResult { ref result, .. }
+        | InfinityMessage::SubscriptionEvent { ref result, .. } = message
         {
-            self.mark_tool_call_complete(result.id);
+            self.mark_tool_call_complete(result.id.clone());
         }
         self.pending_items.borrow_mut().push(PendingItem {
             message,
@@ -313,7 +321,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             return Ok(());
         }
         if !pending_items.is_empty() {
-            let msgs: Vec<(Message, String)> = pending_items
+            let msgs: Vec<(InfinityMessage, String)> = pending_items
                 .iter()
                 .map(|item| (item.message.clone(), item.message_id.clone()))
                 .collect();
@@ -351,19 +359,30 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         self.metadata.borrow().clone()
     }
     pub fn get_history(&self) -> OneOrMany<Message> {
-        OneOrMany::many(self.history.borrow().clone()).expect("bug: history should never be empty")
+        OneOrMany::many(
+            self.history
+                .borrow()
+                .iter()
+                .map(|m| m.clone().into_message())
+                .collect::<Vec<_>>(),
+        )
+        .expect("bug: history should never be empty")
     }
 
     pub fn remove_trailing_reasoning(&self) {
         let mut history = self.history.borrow_mut();
         let mut pending_items = self.pending_items.borrow_mut();
-        while let Some(Message::Assistant { content, .. }) = history.last() {
-            match content.first() {
-                AssistantContent::Reasoning(_) => {
+        while let Some(msg) = history.last() {
+            match msg {
+                InfinityMessage::Assistant {
+                    content: AssistantContent::Reasoning(_),
+                } => {
                     history.pop();
                     pending_items.pop();
                 }
-                AssistantContent::Text(text) if text.text.trim().is_empty() => {
+                InfinityMessage::Assistant {
+                    content: AssistantContent::Text(text),
+                } if text.text.trim().is_empty() => {
                     history.pop();
                     pending_items.pop();
                 }
@@ -408,12 +427,11 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             let mut history = self.history.borrow_mut();
             if up_to <= history.len() {
                 let remaining = history.split_off(up_to);
-                *history = vec![Message::Assistant {
-                    id: None,
-                    content: OneOrMany::one(AssistantContent::text(format!(
+                *history = vec![InfinityMessage::Assistant {
+                    content: AssistantContent::text(format!(
                         "[Compacted conversation summary]\n{}",
                         summary
-                    ))),
+                    )),
                 }];
                 history.extend(remaining);
                 *self.compacted_up_to.borrow_mut() = Some(up_to_order);
@@ -493,9 +511,7 @@ where
     if input_msg.synthetic.as_ref().is_some_and(|s| {
         matches!(
             s,
-            crate::message::SyntheticKind::Tagged(
-                crate::message::TaggedSyntheticKind::CompactionComplete
-            )
+            SyntheticKind::Tagged(TaggedSyntheticKind::CompactionComplete)
         )
     }) {
         tracing::info!("Applying compaction to thread {}", input_msg.group_id);
@@ -504,12 +520,11 @@ where
     }
 
     // Handle compaction trigger: spawn a compaction child thread
-    if input_msg.synthetic.as_ref().is_some_and(|s| {
-        matches!(
-            s,
-            crate::message::SyntheticKind::Tagged(crate::message::TaggedSyntheticKind::Compaction)
-        )
-    }) {
+    if input_msg
+        .synthetic
+        .as_ref()
+        .is_some_and(|s| matches!(s, SyntheticKind::Tagged(TaggedSyntheticKind::Compaction)))
+    {
         let spawn_call_id = uuid::Uuid::new_v4().to_string();
         let sub_thread_id = conversation_store
             .spawn_thread(&input_msg.group_id, &spawn_call_id, false)
@@ -530,23 +545,24 @@ where
         // If the parent's history ends with an unanswered tool call, prepend
         // a synthetic "interrupted" result so the child doesn't have two
         // consecutive assistant tool calls without a tool_result in between.
-        let mut child_messages: Vec<(Message, String)> = Vec::new();
-        if let Some(Message::Assistant { content, .. }) =
-            current_history.history.borrow().last().cloned()
-            && let AssistantContent::ToolCall(pending_call) = content.first()
+        let mut child_messages: Vec<(InfinityMessage, String)> = Vec::new();
+        if let Some(InfinityMessage::ToolCall {
+            call: pending_call, ..
+        }) = current_history.history.borrow().last()
             && !current_history
                 .processed_tool_calls
                 .borrow()
                 .contains(pending_call.id.as_str())
         {
-            let interrupted_result = Message::User {
-                content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+            let interrupted_result = InfinityMessage::ToolResult {
+                result: ToolResult {
                     id: pending_call.id.clone(),
                     call_id: pending_call.call_id.clone(),
                     content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
                         text: "Tool call interrupted by compaction".to_owned(),
                     })),
-                })),
+                },
+                display_segments: None,
             };
             child_messages.push((
                 interrupted_result,
@@ -554,9 +570,8 @@ where
             ));
         }
 
-        let spawn_tool_call = Message::Assistant {
-            id: None,
-            content: OneOrMany::one(AssistantContent::ToolCall(rig::message::ToolCall {
+        let spawn_tool_call = InfinityMessage::ToolCall {
+            call: rig::message::ToolCall {
                 id: spawn_call_id.clone(),
                 call_id: None,
                 function: rig::message::ToolFunction {
@@ -565,7 +580,8 @@ where
                 },
                 additional_params: None,
                 signature: None,
-            })),
+            },
+            display_as: None,
         };
         child_messages.push((
             spawn_tool_call,
@@ -642,6 +658,25 @@ where
     };
 
     // Handle synthetic tool results (subscription events / thread reports)
+    // Capture metadata for SubscriptionEvent variant before synthetic_kind is consumed.
+    let subscription_event_meta: Option<(String, Option<String>)> =
+        input_msg.synthetic.as_ref().and_then(|s| {
+            if s.is_thread_report() || s.is_associative() || s.is_parent_message() {
+                let child_id = if let SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
+                    child_thread_id,
+                    ..
+                }) = s
+                {
+                    Some(child_thread_id.clone())
+                } else {
+                    None
+                };
+                Some((s.tool_call_id().to_owned(), child_id))
+            } else {
+                None
+            }
+        });
+
     let content = if let Some(synthetic_kind) = input_msg.synthetic {
         let original_tool_call_id = synthetic_kind.tool_call_id().to_owned();
         let is_final_subscription = synthetic_kind.is_final();
@@ -651,18 +686,10 @@ where
         );
 
         let original_call = current_history.history.borrow().iter().find_map(|msg| {
-            if let Message::Assistant { content, .. } = msg {
-                content.iter().find_map(|c| {
-                    if let AssistantContent::ToolCall(call) = c {
-                        if call.id == original_tool_call_id {
-                            Some(call.clone())
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                })
+            if let InfinityMessage::ToolCall { call, .. } = msg
+                && call.id == original_tool_call_id
+            {
+                Some(call.clone())
             } else {
                 None
             }
@@ -682,9 +709,8 @@ where
         {
             let new_tool_call_id = uuid::Uuid::new_v4().to_string();
             if let UserContent::ToolResult(mut tool_result) = user_content {
-                let synthetic_tool_call = Message::Assistant {
-                    id: None,
-                    content: OneOrMany::one(AssistantContent::ToolCall(rig::message::ToolCall {
+                let synthetic_tool_call = InfinityMessage::ToolCall {
+                    call: rig::message::ToolCall {
                         id: new_tool_call_id.clone(),
                         call_id: None,
                         function: rig::message::ToolFunction {
@@ -697,7 +723,8 @@ where
                         },
                         additional_params: None,
                         signature: None,
-                    })),
+                    },
+                    display_as: None,
                 };
                 current_history
                     .handle_content(
@@ -752,23 +779,24 @@ where
             // "interrupted" result so the child's conversation doesn't have
             // two consecutive assistant tool calls without a tool_result in
             // between, which would cause a 400 Bad Request from the API.
-            let mut child_messages: Vec<(Message, String)> = Vec::new();
-            if let Some(Message::Assistant { content, .. }) =
-                current_history.history.borrow().last().cloned()
-                && let AssistantContent::ToolCall(pending_call) = content.first()
+            let mut child_messages: Vec<(InfinityMessage, String)> = Vec::new();
+            if let Some(InfinityMessage::ToolCall {
+                call: pending_call, ..
+            }) = current_history.history.borrow().last()
                 && !current_history
                     .processed_tool_calls
                     .borrow()
                     .contains(pending_call.id.as_str())
             {
-                let interrupted_result = Message::User {
-                    content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+                let interrupted_result = InfinityMessage::ToolResult {
+                    result: ToolResult {
                         id: pending_call.id.clone(),
                         call_id: pending_call.call_id.clone(),
                         content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
                             text: "Tool call interrupted by subscription event".to_owned(),
                         })),
-                    })),
+                    },
+                    display_segments: None,
                 };
                 child_messages.push((
                     interrupted_result,
@@ -777,9 +805,8 @@ where
             }
 
             // Write event + spawn tool calls directly to child's store
-            let event_tool_call = Message::Assistant {
-                id: None,
-                content: OneOrMany::one(AssistantContent::ToolCall(rig::message::ToolCall {
+            let event_tool_call = InfinityMessage::ToolCall {
+                call: rig::message::ToolCall {
                     id: event_call_id.clone(),
                     call_id: None,
                     function: rig::message::ToolFunction {
@@ -792,11 +819,11 @@ where
                     },
                     additional_params: None,
                     signature: None,
-                })),
+                },
+                display_as: None,
             };
-            let spawn_tool_call = Message::Assistant {
-                id: None,
-                content: OneOrMany::one(AssistantContent::ToolCall(rig::message::ToolCall {
+            let spawn_tool_call = InfinityMessage::ToolCall {
+                call: rig::message::ToolCall {
                     id: spawn_call_id.clone(),
                     call_id: None,
                     function: rig::message::ToolFunction {
@@ -807,10 +834,11 @@ where
                     },
                     additional_params: None,
                     signature: None,
-                })),
+                },
+                display_as: None,
             };
-            let spawn_tool_result = Message::User {
-                content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+            let spawn_tool_result = InfinityMessage::ToolResult {
+                result: ToolResult {
                     id: spawn_call_id.clone(),
                     call_id: None,
                     content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
@@ -819,7 +847,8 @@ where
                             sub_thread_id, input_msg.group_id
                         ),
                     })),
-                })),
+                },
+                display_segments: None,
             };
             child_messages.extend(vec![
                 (spawn_tool_call, format!("{}-spawn-call", spawn_call_id)),
@@ -870,13 +899,28 @@ where
         None
     };
 
-    let is_new = current_history
-        .handle_content(
-            Message::User {
-                content: OneOrMany::one(content),
+    let infinity_msg = if let Some((tool_call_id, child_thread_id)) = subscription_event_meta {
+        if let UserContent::ToolResult(result) = content {
+            InfinityMessage::SubscriptionEvent {
+                result,
+                tool_call_id,
+                child_thread_id,
+            }
+        } else {
+            InfinityMessage::User { content }
+        }
+    } else {
+        match content {
+            UserContent::ToolResult(result) => InfinityMessage::ToolResult {
+                result,
+                display_segments: input_msg.display_as.clone(),
             },
-            message_id.clone(),
-        )
+            other => InfinityMessage::User { content: other },
+        }
+    };
+
+    let is_new = current_history
+        .handle_content(infinity_msg, message_id.clone())
         .await?;
 
     if !is_new {
@@ -1117,99 +1161,115 @@ where
                 let completion_id = format!("{}-{}-completion-{}", group_id, message_id, completion_counter);
                 completion_counter += 1;
 
-                if let StreamedAssistantContent::ToolCall { .. } = chunk && has_emitted_tool_call {
+                  if let StreamedAssistantContent::ToolCall { .. } = chunk && has_emitted_tool_call {
 
-                } else {
-                    history.handle_completion(&chunk, completion_id);
-                    match chunk {
-                        StreamedAssistantContent::Text(text) => {
-                            if is_thinking {
-                                is_thinking = false;
-                                yield CompletionEvent::ThinkingEnd;
-                            }
-                            tracing::info!("[Text] {}", &text.text);
-                            yield CompletionEvent::TextChunk(text.text);
-                        }
-                        StreamedAssistantContent::ToolCall { tool_call: call, .. } => {
-                            if is_thinking {
-                                is_thinking = false;
-                                yield CompletionEvent::ThinkingEnd;
-                            }
-                            tracing::info!("[Tool Call: {} with arguments {}]", &call.function.name, &call.function.arguments);
+                  } else {
+                      // Compute display_as for tool calls before inserting into history.
+                      let tool_display_as = if let StreamedAssistantContent::ToolCall { tool_call: ref call, .. } = chunk {
+                          let ds = tool_registry
+                              .get(call.function.name.as_str())
+                              .and_then(|t| t.display_script().map(String::from));
+                          crate::tools::eval_display_script(ds.as_deref(), &call.function.arguments)
+                      } else {
+                          None
+                      };
+                      history.handle_completion(&chunk, completion_id, tool_display_as.clone());
+                      match chunk {
+                          StreamedAssistantContent::Text(text) => {
+                              if is_thinking {
+                                  is_thinking = false;
+                                  yield CompletionEvent::ThinkingEnd;
+                              }
+                              tracing::info!("[Text] {}", &text.text);
+                              yield CompletionEvent::TextChunk(text.text);
+                          }
+                          StreamedAssistantContent::ToolCall { tool_call: call, .. } => {
+                              if is_thinking {
+                                  is_thinking = false;
+                                  yield CompletionEvent::ThinkingEnd;
+                              }
+                              tracing::info!("[Tool Call: {} with arguments {}]", &call.function.name, &call.function.arguments);
 
-                            if has_emitted_tool_call {
-                                tracing::info!("Ignoring batched tool call");
-                            } else {
-                                has_emitted_tool_call = true;
-                                if call.function.name == "receive_event__injected" {
-                                    let tool_result = Message::User {
-                                        content: OneOrMany::one(UserContent::ToolResult(ToolResult {
-                                            id: call.id.clone(),
-                                            call_id: call.call_id.clone(),
-                                            content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                                                text: format!("Error: you cannot directly invoke {}, invocations will automatically be injected when events arrive.", call.function.name),
-                                            })),
-                                        })),
-                                    };
-                                    history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
-                                    should_loop_back = true;
-                                    continue;
-                                } else if !tool_names.contains(call.function.name.as_str()) {
-                                    // Unknown tool — inject error and retry the whole completion
-                                    tracing::warn!("Unknown tool '{}' called, injecting error and retrying", call.function.name);
-                                    let tool_result = Message::User {
-                                        content: OneOrMany::one(UserContent::ToolResult(ToolResult {
-                                            id: call.id.clone(),
-                                            call_id: call.call_id.clone(),
-                                            content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                                                text: format!("Error: tool '{}' does not exist", call.function.name),
-                                            })),
-                                        })),
-                                    };
-                                    history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
-                                    should_loop_back = true;
-                                    continue;
-                                }
+                              if has_emitted_tool_call {
+                                  tracing::info!("Ignoring batched tool call");
+                              } else {
+                                  has_emitted_tool_call = true;
+                                  if call.function.name == "receive_event__injected" {
+                                      let tool_result = InfinityMessage::ToolResult {
+                                          result: ToolResult {
+                                              id: call.id.clone(),
+                                              call_id: call.call_id.clone(),
+                                              content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                                                  text: format!("Error: you cannot directly invoke {}, invocations will automatically be injected when events arrive.", call.function.name),
+                                              })),
+                                          },
+                                          display_segments: None,
+                                      };
+                                      history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
+                                      should_loop_back = true;
+                                      continue;
+                                  } else if !tool_names.contains(call.function.name.as_str()) {
+                                      // Unknown tool — inject error and retry the whole completion
+                                      tracing::warn!("Unknown tool '{}' called, injecting error and retrying", call.function.name);
+                                      let tool_result = InfinityMessage::ToolResult {
+                                          result: ToolResult {
+                                              id: call.id.clone(),
+                                              call_id: call.call_id.clone(),
+                                              content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                                                  text: format!("Error: tool '{}' does not exist", call.function.name),
+                                              })),
+                                          },
+                                          display_segments: None,
+                                      };
+                                      history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
+                                      should_loop_back = true;
+                                      continue;
+                                  }
 
-                                // Check for synchronous execution — if the tool provides
-                                // synchronous results, inject into history immediately and
-                                // continue the completion loop instead of returning. This
-                                // prevents race conditions where a concurrent event makes
-                                // the tool call appear cancelled.
-                                let tool = tool_registry.get(call.function.name.as_str()).expect("bug: tool not found in registry after call");
-                                if tool.supports_sync() {
-                                    history.sync().await?; // we must sync the history so that thread spawning uses the correct state
+                                  // Check for synchronous execution — if the tool provides
+                                  // synchronous results, inject into history immediately and
+                                  // continue the completion loop instead of returning. This
+                                  // prevents race conditions where a concurrent event makes
+                                  // the tool call appear cancelled.
+                                  let tool = tool_registry.get(call.function.name.as_str()).expect("bug: tool not found in registry after call");
+                                  if tool.supports_sync() {
+                                      history.sync().await?; // we must sync the history so that thread spawning uses the correct state
 
-                                    let res = tool.execute_synchronous(
-                                        &call.function.arguments,
-                                        &call.id,
-                                        call.call_id.as_deref(),
-                                        tool_context,
-                                    ).await.expect("bug: synchronous tool execution failed");
+                                      let res = tool.execute_synchronous(
+                                          &call.function.arguments,
+                                          &call.id,
+                                          call.call_id.as_deref(),
+                                          tool_context,
+                                      ).await.expect("bug: synchronous tool execution failed");
 
-                                    yield CompletionEvent::SyncToolCall {
-                                        tool_name: call.function.name.clone(),
-                                        tool_args: call.function.arguments.clone()
-                                    };
-                                    yield CompletionEvent::SyncToolResult(res.clone());
+                                      yield CompletionEvent::SyncToolCall {
+                                          tool_name: call.function.name.clone(),
+                                          tool_args: call.function.arguments.clone(),
+                                          display_as: tool_display_as,
+                                      };
+                                      yield CompletionEvent::SyncToolResult(res.clone());
 
-                                    let sync_id = format!("{}-sync-result-{}", call.id, completion_counter);
-                                    completion_counter += 1;
-                                    history.handle_content(
-                                        Message::User { content: OneOrMany::one(UserContent::ToolResult(res)) },
-                                        sync_id,
-                                    ).await?;
-                                    should_loop_back = true;
-                                } else {
-                                    yield CompletionEvent::Action(CompletionAction::ExecuteToolCall {
-                                        tool_name: call.function.name.clone(),
-                                        tool_args: call.function.arguments.clone(),
-                                        tool_call_id: call.id.clone(),
-                                        call_id: call.call_id.clone(),
-                                    });
-                                }
-                            }
-                        }
+                                      let sync_id = format!("{}-sync-result-{}", call.id, completion_counter);
+                                      completion_counter += 1;
+                                      history.handle_content(
+                                          InfinityMessage::ToolResult {
+                                              result: res,
+                                              display_segments: None,
+                                          },
+                                          sync_id,
+                                      ).await?;
+                                      should_loop_back = true;
+                                  } else {
+                                      yield CompletionEvent::Action(CompletionAction::ExecuteToolCall {
+                                          tool_name: call.function.name.clone(),
+                                          tool_args: call.function.arguments.clone(),
+                                          tool_call_id: call.id.clone(),
+                                          call_id: call.call_id.clone(),
+                                          display_as: tool_display_as,
+                                      });
+                                  }
+                              }
+                          }
                         StreamedAssistantContent::ToolCallDelta { content, .. } => {
                             match content {
                                 ToolCallDeltaContent::Name(n) => {
@@ -1274,6 +1334,7 @@ where
             tool_args,
             tool_call_id,
             call_id,
+            display_as: _,
         } => {
             let tool = tool_registry
                 .get(&tool_name)
@@ -1361,13 +1422,13 @@ mod tests {
             _session_id: &str,
             _start_from: Option<i64>,
             _up_to: Option<i64>,
-        ) -> Result<Vec<Message>, TestError> {
+        ) -> Result<Vec<InfinityMessage>, TestError> {
             Ok(vec![])
         }
         async fn append_messages(
             &self,
             _session_id: &str,
-            _messages: Vec<(Message, String)>,
+            _messages: Vec<(InfinityMessage, String)>,
         ) -> Result<(), TestError> {
             Ok(())
         }
@@ -1500,7 +1561,10 @@ mod tests {
             HistoryManager::new_with_history(store.clone(), StubStateStore, "thread-1".to_owned())
                 .await
                 .expect("create history manager");
-        *hm.history.borrow_mut() = initial_history;
+        *hm.history.borrow_mut() = initial_history
+            .into_iter()
+            .map(InfinityMessage::from_rig_message)
+            .collect();
         hm
     }
 
@@ -1749,7 +1813,7 @@ mod tests {
         // Should have: original user, original tool call, original result, synthetic tool call, synthetic result
         insta::assert_json_snapshot!(
             hm.history.into_inner(),
-            { "[3].content[0].id" => "[uuid]", "[4].content[0].id" => "[uuid]" }
+            { "[3].call.id" => "[uuid]", "[4].result.id" => "[uuid]" }
         );
     }
 
@@ -1786,7 +1850,7 @@ mod tests {
         assert_eq!(result, PrepareResult::Ready);
         insta::assert_json_snapshot!(
             hm.history.into_inner(),
-            { "[3].content[0].id" => "[uuid]", "[4].content[0].id" => "[uuid]" }
+            { "[3].call.id" => "[uuid]", "[4].result.id" => "[uuid]" }
         );
     }
 
@@ -1973,7 +2037,7 @@ mod tests {
         // Should have: original user, tool call, original result, synthetic tool call, event result
         insta::assert_json_snapshot!(
             hm.history.into_inner(),
-            { "[3].content[0].id" => "[uuid]", "[4].content[0].id" => "[uuid]" }
+            { "[3].call.id" => "[uuid]", "[4].result.id" => "[uuid]" }
         );
     }
 
@@ -2015,7 +2079,7 @@ mod tests {
         assert_eq!(hm.thread_id, "thread-1");
         insta::assert_json_snapshot!(
             hm.history.into_inner(),
-            { "[3].content[0].id" => "[uuid]", "[4].content[0].id" => "[uuid]" }
+            { "[3].call.id" => "[uuid]", "[4].result.id" => "[uuid]" }
         );
     }
 

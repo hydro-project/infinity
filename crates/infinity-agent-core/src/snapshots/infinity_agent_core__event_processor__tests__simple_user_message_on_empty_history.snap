@@ -1,15 +1,13 @@
 ---
 source: crates/infinity-agent-core/src/event_processor.rs
-expression: hm.history
+expression: hm.history.into_inner()
 ---
 [
   {
-    "role": "user",
-    "content": [
-      {
-        "type": "text",
-        "text": "hello"
-      }
-    ]
+    "kind": "user",
+    "content": {
+      "type": "text",
+      "text": "hello"
+    }
   }
 ]

@@ -1,57 +1,47 @@
 ---
 source: crates/infinity-agent-core/src/event_processor.rs
-expression: hm.history
+expression: hm.history.into_inner()
 ---
 [
   {
-    "role": "user",
-    "content": [
-      {
-        "type": "text",
-        "text": "do something"
-      }
-    ]
+    "kind": "user",
+    "content": {
+      "type": "text",
+      "text": "do something"
+    }
   },
   {
-    "role": "assistant",
-    "id": null,
-    "content": [
-      {
-        "id": "tc-1",
-        "call_id": null,
-        "function": {
-          "name": "some_tool",
-          "arguments": {
-            "x": 1
-          }
-        },
-        "signature": null,
-        "additional_params": null
-      }
-    ]
+    "kind": "tool_call",
+    "call": {
+      "id": "tc-1",
+      "call_id": null,
+      "function": {
+        "name": "some_tool",
+        "arguments": {
+          "x": 1
+        }
+      },
+      "signature": null,
+      "additional_params": null
+    }
   },
   {
-    "role": "user",
-    "content": [
-      {
-        "type": "toolresult",
-        "id": "tc-1",
-        "content": [
-          {
-            "type": "text",
-            "text": "Tool call interrupted by user"
-          }
-        ]
-      }
-    ]
+    "kind": "tool_result",
+    "result": {
+      "id": "tc-1",
+      "content": [
+        {
+          "type": "text",
+          "text": "Tool call interrupted by user"
+        }
+      ]
+    }
   },
   {
-    "role": "user",
-    "content": [
-      {
-        "type": "text",
-        "text": "actually, never mind"
-      }
-    ]
+    "kind": "user",
+    "content": {
+      "type": "text",
+      "text": "actually, never mind"
+    }
   }
 ]

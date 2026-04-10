@@ -417,15 +417,14 @@ impl SessionManager {
             });
         } else if wants_replay {
             // Session not alive — load history from the conversation store directly.
-            let history: Vec<DaemonMessage> = self
+            let history = self
                 .conversation_store
                 .load_history_up_to(thread_id, None, None)
                 .await
-                .unwrap_or_default()
+                .unwrap_or_default();
+            let history: Vec<DaemonMessage> = history
                 .iter()
-                .filter_map(|m| {
-                    display::history_message_to_daemon(m, thread_id, &self.conversation_store)
-                })
+                .filter_map(|m| display::history_message_to_daemon(m, thread_id, &history))
                 .collect();
             let choices = self
                 .conversation_store
