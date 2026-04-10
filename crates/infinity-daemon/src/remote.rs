@@ -13,7 +13,7 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub type BroadcastClients = Arc<std::sync::Mutex<Vec<mpsc::UnboundedSender<DaemonMessage>>>>;
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(serde::Serialize, Deserialize, Clone, Debug)]
 pub struct RemoteConfig {
     pub name: String,
     pub ssh_args: Vec<String>,
