@@ -35,13 +35,58 @@ pub struct LocalBackend {
 }
 
 /// Returns the list of additional writable paths for a sandbox.
-/// Includes the temp dir.
+/// Includes the temp dir and the sccache cache directory.
 fn extra_writable_paths(_sandbox_dir: &Path, tmp_dir: Option<&Path>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(t) = tmp_dir {
         paths.push(t.to_path_buf());
     }
+
+    // Allow sccache to write to its cache directory so that sandboxed
+    // `cargo build` invocations (which use sccache as RUSTC_WRAPPER) can
+    // store and retrieve cached artifacts.
+    if let Some(dir) = sccache_cache_dir()
+        && let Ok(resolved) = dir.canonicalize()
+    {
+        paths.push(resolved);
+    }
+
     paths
+}
+
+/// Returns the sccache local cache directory, respecting `SCCACHE_DIR` and
+/// platform-specific defaults.
+fn sccache_cache_dir() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("SCCACHE_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    let home = std::env::var("HOME").ok()?;
+    if cfg!(target_os = "macos") {
+        Some(PathBuf::from(format!(
+            "{home}/Library/Caches/Mozilla.sccache"
+        )))
+    } else {
+        Some(PathBuf::from(format!("{home}/.cache/sccache")))
+    }
+}
+
+/// Ensure the sccache server is running. Called before each sandboxed
+/// command so that a crashed server is restarted outside the sandbox
+/// (where it has full write access).
+fn ensure_sccache_server() {
+    match Command::new("sccache")
+        .arg("--start-server")
+        .stderr(Stdio::piped())
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            tracing::info!("started sccache server");
+        }
+        Ok(_) => {
+            tracing::trace!("sccache server already running");
+        }
+        Err(_) => {} // sccache not available
+    }
 }
 
 /// Returns `true` when the current platform supports sandboxed execution.
@@ -55,22 +100,6 @@ impl LocalBackend {
             tracing::warn!(
                 "sandbox enabled but not supported on this platform; commands will run unsandboxed"
             );
-        }
-
-        // Pre-start sccache server if available to avoid startup issues
-        // when sccache is first invoked from within a sandboxed command.
-        match Command::new("sccache")
-            .arg("--start-server")
-            .stderr(Stdio::piped())
-            .output()
-        {
-            Ok(output) if output.status.success() => {
-                tracing::info!("pre-started sccache server");
-            }
-            Ok(_) => {
-                tracing::debug!("sccache server already running");
-            }
-            Err(_) => {} // sccache not available
         }
 
         Self {
@@ -271,6 +300,13 @@ impl SandboxBackend for LocalBackend {
         let (program, args) = argv
             .split_first()
             .ok_or_else(|| SandboxError::Other("argv must not be empty".to_owned()))?;
+
+        // Re-check that the sccache server is alive before each command so
+        // that a crashed server is restarted outside the sandbox (where it
+        // has full filesystem access).
+        if self.sandbox_enabled {
+            ensure_sccache_server();
+        }
 
         // Prevent git from discovering the outer repo when sandboxes live
         // inside the repository (e.g. {repo}/.infinity/.sandboxes/).
