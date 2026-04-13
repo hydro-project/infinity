@@ -117,7 +117,8 @@ export type DaemonMessage =
   | { EmigrateResult: { session_id: string; session_data: string } }
   | { MigrateStarted: { session_id: string } }
   | { MigrateComplete: { session_id: string; new_session_id: string } }
-  | { MigrateError: { session_id: string; error: string } };
+  | { MigrateError: { session_id: string; error: string } }
+  | { DirectoryListing: { request_path: string; entries: string[]; on: string | null } };
 
 /* ── Client → Daemon messages ── */
 
@@ -134,7 +135,8 @@ export type ClientMessage =
   | { TriggerCompaction: { session_id: string } }
   | { RequestMigrate: { session_id: string; to: string | null; dest_cwd: string } }
   | { Emigrate: { session_id: string; dest_rap_urls: Record<string, string> } }
-  | { EmigrateDone: { session_id: string } };
+  | { EmigrateDone: { session_id: string } }
+  | { ListDirectory: { path: string; on: string | null } };
 
 /* ── Spinner states (matching terminal) ── */
 
