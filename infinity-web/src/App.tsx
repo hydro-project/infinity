@@ -50,6 +50,7 @@ export function App() {
   >([]);
   const [views, setViews] = useState<Record<string, any>>({});
   const [activeTab, setActiveTab] = useState<string>("chat");
+  const [dirEntries, setDirEntries] = useState<string[]>([]);
   // Thread navigation: viewThreadId is the currently viewed thread (null = root).
   // threadStack tracks the path from root so we can pop back when threads close.
   // e.g. [childA, grandchildB] means we navigated root → childA → grandchildB.
@@ -416,6 +417,11 @@ export function App() {
             setPendingChoices((prev) => prev.filter((c) => c.id !== p.choice_id));
             break;
           }
+          case "DirectoryListing": {
+            const p = msgPayload<{ request_path: string; entries: string[] }>(m);
+            setDirEntries(p.entries);
+            break;
+          }
           // Ignored for now
           case "OAuthRequired":
           case "DisconnectNotIdle":
@@ -691,6 +697,9 @@ export function App() {
           title="New session on"
           onConfirm={handleNewSessionConfirm}
           onCancel={handleNewSessionCancel}
+          send={send}
+          directoryEntries={dirEntries}
+          onClearEntries={() => { setDirEntries([]); }}
         />
       )}
       {migratePickerOpen && (
@@ -699,6 +708,9 @@ export function App() {
           currentHost={currentHost}
           onConfirm={handleMigrateConfirm}
           onCancel={handleMigrateCancel}
+          send={send}
+          directoryEntries={dirEntries}
+          onClearEntries={() => { setDirEntries([]); }}
         />
       )}
     </div>
