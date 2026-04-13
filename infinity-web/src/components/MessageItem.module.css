@@ -89,6 +89,10 @@
     display: none;
 }
 
+.markdown div[data-streamdown="code-block-body"] {
+    overflow-x: auto;
+}
+
 .toolCall {
     padding: 6px 0;
     color: #6ea8fe;
