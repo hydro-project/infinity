@@ -13,6 +13,48 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use crate::session::SessionManager;
 
+/// List directory entries matching a partial path for tab-completion.
+/// Given "/home/user/fo", lists entries in "/home/user/" that start with "fo".
+/// Given "/home/user/", lists all entries in "/home/user/".
+/// Directories get a trailing `/` in the result.
+async fn list_directory_completions(input: &str) -> Vec<String> {
+    use std::path::Path;
+
+    let path = Path::new(input);
+    let (dir, prefix) = if input.ends_with('/') {
+        (path.to_owned(), "".to_owned())
+    } else {
+        (
+            path.parent().unwrap_or(Path::new("/")).to_owned(),
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_owned(),
+        )
+    };
+
+    let Ok(mut read_dir) = tokio::fs::read_dir(&dir).await else {
+        return Vec::new();
+    };
+
+    let mut entries: Vec<String> = Vec::new();
+    while let Ok(Some(e)) = read_dir.next_entry().await {
+        let Some(name) = e.file_name().to_str().map(|s| s.to_owned()) else {
+            continue;
+        };
+        if !name.starts_with(&*prefix) {
+            continue;
+        }
+        let full = dir.join(&name);
+        match tokio::fs::metadata(&full).await {
+            Ok(m) if m.is_dir() => entries.push(format!("{}/", full.display())),
+            _ => {} // only complete directories
+        }
+    }
+    entries.sort();
+    entries
+}
+
 /// Split "remote_name/real_id" into (remote_name, real_id).
 fn is_remote_session(session_id: &str) -> Option<(&str, &str)> {
     session_id.split_once('/')
@@ -317,7 +359,7 @@ pub async fn handle_client_channels(
                             remote_proxy_rx = None;
                             active_remote_name = None;
                         }
-                        ClientMessage::RequestMigrate { .. } => {
+                        ClientMessage::RequestMigrate { .. } | ClientMessage::ListDirectory { .. } => {
                             // Always handled locally; fall through without tearing down proxy
                         }
                         _ => {
@@ -572,6 +614,61 @@ pub async fn handle_client_channels(
                                     text: format!("failed to boot RAP servers: {e}"),
                                 });
                             }
+                        }
+                    }
+                    ClientMessage::ListDirectory { path, on } => {
+                        if let Some(ref remote_name) = on {
+                            // Forward to the remote daemon
+                            let rd = {
+                                let mgr = session_manager.lock().await;
+                                mgr.remote_daemons.clone()
+                            };
+                            if let Some(rd) = rd {
+                                let remote_name = remote_name.clone();
+                                let tx = daemon_tx.clone();
+                                tokio::task::spawn_local(async move {
+                                    match rd.open_raw_connection(&remote_name).await {
+                                        Ok((remote_tx, mut remote_rx)) => {
+                                            let _ = remote_tx.send(ClientMessage::ListDirectory {
+                                                path: path.clone(),
+                                                on: None,
+                                            });
+                                            // Wait for the DirectoryListing response
+                                            while let Some(msg) = remote_rx.recv().await {
+                                                if let DaemonMessage::DirectoryListing { request_path, entries, .. } = msg {
+                                                    let _ = tx.send(DaemonMessage::DirectoryListing {
+                                                        request_path,
+                                                        entries,
+                                                        on: Some(remote_name),
+                                                    });
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("ListDirectory remote error: {e}");
+                                            let _ = tx.send(DaemonMessage::DirectoryListing {
+                                                request_path: path,
+                                                entries: Vec::new(),
+                                                on: Some(remote_name),
+                                            });
+                                        }
+                                    }
+                                });
+                            } else {
+                                let _ = daemon_tx.send(DaemonMessage::DirectoryListing {
+                                    request_path: path,
+                                    entries: Vec::new(),
+                                    on,
+                                });
+                            }
+                        } else {
+                            let entries = list_directory_completions(&path).await;
+                            let _ = daemon_tx.send(DaemonMessage::DirectoryListing {
+                                request_path: path,
+                                entries,
+                                on: None,
+                            });
                         }
                     }
                 }

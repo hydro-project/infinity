@@ -122,7 +122,8 @@ fn daemon_msg_to_display(
         | DaemonMessage::ImportComplete { .. }
         | DaemonMessage::RapServersBooted { .. }
         | DaemonMessage::RemotesUpdated { .. }
-        | DaemonMessage::ViewUpdate { .. } => return None,
+        | DaemonMessage::ViewUpdate { .. }
+        | DaemonMessage::DirectoryListing { .. } => return None,
     })
 }
 
