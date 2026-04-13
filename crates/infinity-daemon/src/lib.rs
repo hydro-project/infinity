@@ -56,8 +56,7 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(8080);
-    let ws_bind_addr = std::env::var("INFINITY_WS_BIND")
-        .unwrap_or_else(|_| "127.0.0.1".to_string());
+    let ws_bind_addr = std::env::var("INFINITY_WS_BIND").unwrap_or_else(|_| "127.0.0.1".to_owned());
     let ws_listener = TcpListener::bind((&*ws_bind_addr, ws_port)).await?;
     tracing::info!("websocket server listening on {ws_bind_addr}:{ws_port}");
 

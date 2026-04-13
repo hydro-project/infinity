@@ -51,7 +51,7 @@ async fn list_directory_completions(input: &str) -> Vec<String> {
             _ => {} // only complete directories
         }
     }
-    entries.sort();
+    entries.sort_by(|a, b| a.trim_end_matches('/').cmp(b.trim_end_matches('/')));
     entries
 }
 
