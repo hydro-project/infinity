@@ -98,7 +98,19 @@
   color: var(--text-muted);
 }
 
+.inputWrapper {
+  position: relative;
+  border-top: 1px solid var(--glass-border);
+}
+
+.inputRow {
+  position: relative;
+  overflow: hidden;
+}
+
 .input {
+  position: relative;
+  z-index: 1;
   width: 100%;
   background: none;
   border: none;
@@ -107,11 +119,59 @@
   font-family: var(--font-mono);
   font-size: 14px;
   padding: 14px 16px;
-  border-top: 1px solid var(--glass-border);
 }
 
 .input::placeholder {
   color: var(--text-muted);
+}
+
+/* Ghost text overlay — positioned to align exactly with the input text */
+.ghost {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  padding: 14px 16px;
+  white-space: pre;
+  overflow: hidden;
+}
+
+/* Invisible span that takes up the same width as the typed text */
+.ghostHidden {
+  visibility: hidden;
+}
+
+/* The gray completion hint */
+.ghostText {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.completions {
+  list-style: none;
+  max-height: 200px;
+  overflow-y: auto;
+  border-top: 1px solid var(--glass-border);
+}
+
+.completionItem {
+  padding: 6px 16px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.completionItem:hover {
+  background: var(--bg-hover);
+}
+
+.completionItem[data-selected='true'] {
+  background: var(--bg-hover);
 }
 
 @keyframes pulse {

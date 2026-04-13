@@ -110,6 +110,13 @@ pub enum ClientMessage {
     BootRapServers {
         cwd: PathBuf,
     },
+    /// Request directory listing for path completion.
+    ListDirectory {
+        path: String,
+        /// Target remote name. `None` means list on the local filesystem.
+        #[serde(default)]
+        on: Option<String>,
+    },
 }
 
 // ── Daemon → Client ─────────────────────────────────────────────────────────
@@ -250,6 +257,16 @@ pub enum DaemonMessage {
     RapServersBooted {
         /// config_id → port on the remote host (only servers with needsMigration)
         server_ports: HashMap<String, u16>,
+    },
+    /// Response to ListDirectory: directory entries for path completion.
+    DirectoryListing {
+        /// The path that was requested (for matching responses to requests).
+        request_path: String,
+        /// Directory entries (names only, directories have trailing `/`).
+        entries: Vec<String>,
+        /// The remote that was queried, if any.
+        #[serde(default)]
+        on: Option<String>,
     },
 }
 
