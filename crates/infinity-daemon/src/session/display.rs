@@ -93,6 +93,7 @@ pub(crate) fn history_message_to_daemon(
             result,
             tool_call_id,
             child_thread_id,
+            ..
         } => {
             let text = if let ToolResultContent::Text(t) = result.content.first() {
                 t.text
