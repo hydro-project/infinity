@@ -38,8 +38,19 @@ expression: hm.history.into_inner()
     }
   },
   {
-    "kind": "tool_call",
-    "call": {
+    "kind": "subscription_event",
+    "result": {
+      "id": "[uuid]",
+      "content": [
+        {
+          "type": "text",
+          "text": "thread report data"
+        }
+      ]
+    },
+    "tool_call_id": "tc-sub",
+    "child_thread_id": "thread-1",
+    "invocation": {
       "id": "[uuid]",
       "call_id": null,
       "function": {
@@ -55,19 +66,5 @@ expression: hm.history.into_inner()
       "signature": null,
       "additional_params": null
     }
-  },
-  {
-    "kind": "subscription_event",
-    "result": {
-      "id": "[uuid]",
-      "content": [
-        {
-          "type": "text",
-          "text": "thread report data"
-        }
-      ]
-    },
-    "tool_call_id": "tc-sub",
-    "child_thread_id": "thread-1"
   }
 ]
