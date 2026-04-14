@@ -38,8 +38,18 @@ expression: hm.history.into_inner()
     }
   },
   {
-    "kind": "tool_call",
-    "call": {
+    "kind": "subscription_event",
+    "result": {
+      "id": "[uuid]",
+      "content": [
+        {
+          "type": "text",
+          "text": "build output chunk\n[exit code: 0]"
+        }
+      ]
+    },
+    "tool_call_id": "tc-cmd",
+    "invocation": {
       "id": "[uuid]",
       "call_id": null,
       "function": {
@@ -55,18 +65,5 @@ expression: hm.history.into_inner()
       "signature": null,
       "additional_params": null
     }
-  },
-  {
-    "kind": "subscription_event",
-    "result": {
-      "id": "[uuid]",
-      "content": [
-        {
-          "type": "text",
-          "text": "build output chunk\n[exit code: 0]"
-        }
-      ]
-    },
-    "tool_call_id": "tc-cmd"
   }
 ]

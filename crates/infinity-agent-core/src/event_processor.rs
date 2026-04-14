@@ -188,76 +188,99 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             return Ok(false);
         }
 
-        if let InfinityMessage::ToolResult { ref result, .. }
-        | InfinityMessage::SubscriptionEvent { ref result, .. } = message
-        {
-            let tool_result = result;
-            if self
-                .processed_tool_calls
-                .borrow()
-                .contains(tool_result.id.as_str())
-            {
-                tracing::info!(
-                    "Tool call {} already processed, ignoring duplicate",
-                    tool_result.id
-                );
-                self.processed_message_ids
-                    .borrow_mut()
-                    .insert(message_id.clone());
-                let _ = self
-                    .state_store
-                    .add_processed_message_ids(&self.thread_id, vec![message_id])
-                    .await;
-                return Ok(false);
-            } else if !self.history.borrow().last().is_some_and(|l| {
-                if let InfinityMessage::ToolCall { call, .. } = l {
-                    call.id == tool_result.id
-                } else {
-                    false
-                }
-            }) {
-                tracing::info!(
-                    "Got tool call result for wrong call, ignoring {:?}",
-                    tool_result
-                );
-                return Ok(false);
+        // SubscriptionEvent with an embedded invocation is self-contained —
+        // treat it like a non-tool-result (may interrupt a pending call).
+        let is_self_contained_subscription = matches!(
+            message,
+            InfinityMessage::SubscriptionEvent {
+                invocation: Some(_),
+                ..
             }
-        } else {
-            let last_call = self.history.borrow().last().and_then(|m| {
-                if let InfinityMessage::ToolCall { call, .. } = m {
-                    Some(call.clone())
-                } else {
-                    None
-                }
-            });
-            if let Some(tool_call) = last_call
-                && !self
+        );
+
+        if !is_self_contained_subscription {
+            if let InfinityMessage::ToolResult { ref result, .. }
+            | InfinityMessage::SubscriptionEvent { ref result, .. } = message
+            {
+                let tool_result = result;
+                if self
                     .processed_tool_calls
                     .borrow()
-                    .contains(tool_call.id.as_str())
-            {
-                tracing::info!("Tool call {} interrupted by new user message", tool_call.id);
-                self.interrupted_tool_calls
-                    .borrow_mut()
-                    .push(tool_call.id.clone());
-                let synthetic_result = InfinityMessage::ToolResult {
-                    result: ToolResult {
-                        id: tool_call.id.clone(),
-                        call_id: tool_call.call_id.clone(),
-                        content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                            text: "Tool call interrupted by user".to_owned(),
-                        })),
-                    },
-                    display_segments: None,
-                };
-                self.append_pending(synthetic_result, format!("{}-interrupted", tool_call.id));
-                self.mark_tool_call_complete(tool_call.id);
+                    .contains(tool_result.id.as_str())
+                {
+                    tracing::info!(
+                        "Tool call {} already processed, ignoring duplicate",
+                        tool_result.id
+                    );
+                    self.processed_message_ids
+                        .borrow_mut()
+                        .insert(message_id.clone());
+                    if let Err(e) = self
+                        .state_store
+                        .add_processed_message_ids(&self.thread_id, vec![message_id])
+                        .await
+                    {
+                        tracing::warn!(error = %e, "failed to persist processed message id");
+                    }
+                    return Ok(false);
+                } else if !self.history.borrow().last().is_some_and(|l| {
+                    if let InfinityMessage::ToolCall { call, .. } = l {
+                        call.id == tool_result.id
+                    } else {
+                        false
+                    }
+                }) {
+                    tracing::info!(
+                        "Got tool call result for wrong call, ignoring {:?}",
+                        tool_result
+                    );
+                    return Ok(false);
+                }
+            } else {
+                self.interrupt_pending_tool_call();
             }
+        } else {
+            self.interrupt_pending_tool_call();
         }
 
         self.append_pending(message, message_id.clone());
         self.processed_message_ids.borrow_mut().insert(message_id);
         Ok(true)
+    }
+
+    /// If the last history entry is an unanswered tool call, inject a
+    /// synthetic "interrupted" result and mark it complete.
+    fn interrupt_pending_tool_call(&self) {
+        let last_call = self.history.borrow().last().and_then(|m| {
+            if let InfinityMessage::ToolCall { call, .. } = m {
+                Some(call.clone())
+            } else {
+                None
+            }
+        });
+        if let Some(tool_call) = last_call
+            && !self
+                .processed_tool_calls
+                .borrow()
+                .contains(tool_call.id.as_str())
+        {
+            tracing::info!("Tool call {} interrupted by incoming message", tool_call.id);
+            self.interrupted_tool_calls
+                .borrow_mut()
+                .push(tool_call.id.clone());
+            let synthetic_result = InfinityMessage::ToolResult {
+                result: ToolResult {
+                    id: tool_call.id.clone(),
+                    call_id: tool_call.call_id.clone(),
+                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                        text: "Tool call interrupted by user".to_owned(),
+                    })),
+                },
+                display_segments: None,
+            };
+            self.append_pending(synthetic_result, format!("{}-interrupted", tool_call.id));
+            self.mark_tool_call_complete(tool_call.id);
+        }
     }
 
     pub fn handle_completion<R>(
@@ -363,7 +386,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             self.history
                 .borrow()
                 .iter()
-                .map(|m| m.clone().into_message())
+                .flat_map(|m| m.clone().into_messages())
                 .collect::<Vec<_>>(),
         )
         .expect("bug: history should never be empty")
@@ -677,6 +700,9 @@ where
             }
         });
 
+    // Will be set to the synthetic invocation ToolCall for inlined subscription events.
+    let mut subscription_invocation: Option<rig::message::ToolCall> = None;
+
     let content = if let Some(synthetic_kind) = input_msg.synthetic {
         let original_tool_call_id = synthetic_kind.tool_call_id().to_owned();
         let is_final_subscription = synthetic_kind.is_final();
@@ -709,29 +735,20 @@ where
         {
             let new_tool_call_id = uuid::Uuid::new_v4().to_string();
             if let UserContent::ToolResult(mut tool_result) = user_content {
-                let synthetic_tool_call = InfinityMessage::ToolCall {
-                    call: rig::message::ToolCall {
-                        id: new_tool_call_id.clone(),
-                        call_id: None,
-                        function: rig::message::ToolFunction {
-                            name: "receive_event__injected".to_owned(),
-                            arguments: serde_json::json!({
-                                "original_tool_name": original_call.function.name,
-                                "original_tool_call_id": original_tool_call_id,
-                                "original_args": original_call.function.arguments,
-                            }),
-                        },
-                        additional_params: None,
-                        signature: None,
+                subscription_invocation = Some(rig::message::ToolCall {
+                    id: new_tool_call_id.clone(),
+                    call_id: None,
+                    function: rig::message::ToolFunction {
+                        name: "receive_event__injected".to_owned(),
+                        arguments: serde_json::json!({
+                            "original_tool_name": original_call.function.name,
+                            "original_tool_call_id": original_tool_call_id,
+                            "original_args": original_call.function.arguments,
+                        }),
                     },
-                    display_as: None,
-                };
-                current_history
-                    .handle_content(
-                        synthetic_tool_call,
-                        format!("{}-synthetic-call", new_tool_call_id),
-                    )
-                    .await?;
+                    additional_params: None,
+                    signature: None,
+                });
                 tool_result.id = new_tool_call_id;
                 // Remove subscription if this is the final event
                 if is_final_subscription {
@@ -905,6 +922,7 @@ where
                 result,
                 tool_call_id,
                 child_thread_id,
+                invocation: subscription_invocation,
             }
         } else {
             InfinityMessage::User { content }
@@ -1810,10 +1828,10 @@ mod tests {
             .expect("prepare input");
 
         assert_eq!(result, PrepareResult::Ready);
-        // Should have: original user, original tool call, original result, synthetic tool call, synthetic result
+        // Should have: original user, original tool call, original result, subscription event (with embedded invocation)
         insta::assert_json_snapshot!(
             hm.history.into_inner(),
-            { "[3].call.id" => "[uuid]", "[4].result.id" => "[uuid]" }
+            { "[3].result.id" => "[uuid]", "[3].invocation.id" => "[uuid]" }
         );
     }
 
@@ -1850,7 +1868,7 @@ mod tests {
         assert_eq!(result, PrepareResult::Ready);
         insta::assert_json_snapshot!(
             hm.history.into_inner(),
-            { "[3].call.id" => "[uuid]", "[4].result.id" => "[uuid]" }
+            { "[3].result.id" => "[uuid]", "[3].invocation.id" => "[uuid]" }
         );
     }
 
@@ -2034,10 +2052,10 @@ mod tests {
         assert_eq!(result, PrepareResult::Ready);
         // Should NOT spawn a subthread — stays in the same thread
         assert_eq!(hm.thread_id, "thread-1");
-        // Should have: original user, tool call, original result, synthetic tool call, event result
+        // Should have: original user, tool call, original result, subscription event (with embedded invocation)
         insta::assert_json_snapshot!(
             hm.history.into_inner(),
-            { "[3].call.id" => "[uuid]", "[4].result.id" => "[uuid]" }
+            { "[3].result.id" => "[uuid]", "[3].invocation.id" => "[uuid]" }
         );
     }
 
@@ -2079,7 +2097,7 @@ mod tests {
         assert_eq!(hm.thread_id, "thread-1");
         insta::assert_json_snapshot!(
             hm.history.into_inner(),
-            { "[3].call.id" => "[uuid]", "[4].result.id" => "[uuid]" }
+            { "[3].result.id" => "[uuid]", "[3].invocation.id" => "[uuid]" }
         );
     }
 

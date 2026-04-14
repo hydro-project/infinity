@@ -186,28 +186,49 @@ pub enum InfinityMessage {
         /// Set when this is a thread report (used to build the display name).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         child_thread_id: Option<String>,
+        /// The synthetic `receive_event__injected` tool call. When present,
+        /// `into_messages` emits both the tool call and the tool result for
+        /// the LLM, but replay only emits the subscription display event.
+        /// `None` for backward-compat with old serialized histories.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invocation: Option<rig::message::ToolCall>,
     },
 }
 
 impl InfinityMessage {
-    /// Reconstruct a `rig::message::Message` for LLM calls.
-    pub fn into_message(self) -> Message {
+    /// Reconstruct `rig::message::Message`(s) for LLM calls.
+    /// Most variants produce one message; `SubscriptionEvent` with an
+    /// `invocation` produces two (tool call + tool result).
+    pub fn into_messages(self) -> Vec<Message> {
         match self {
-            Self::User { content } => Message::User {
+            Self::User { content } => vec![Message::User {
                 content: OneOrMany::one(content),
-            },
-            Self::Assistant { content } => Message::Assistant {
+            }],
+            Self::Assistant { content } => vec![Message::Assistant {
                 id: None,
                 content: OneOrMany::one(content),
-            },
-            Self::ToolCall { call, .. } => Message::Assistant {
+            }],
+            Self::ToolCall { call, .. } => vec![Message::Assistant {
                 id: None,
                 content: OneOrMany::one(AssistantContent::ToolCall(call)),
-            },
-            Self::ToolResult { result, .. } | Self::SubscriptionEvent { result, .. } => {
-                Message::User {
-                    content: OneOrMany::one(UserContent::ToolResult(result)),
+            }],
+            Self::ToolResult { result, .. } => vec![Message::User {
+                content: OneOrMany::one(UserContent::ToolResult(result)),
+            }],
+            Self::SubscriptionEvent {
+                result, invocation, ..
+            } => {
+                let mut msgs = Vec::new();
+                if let Some(call) = invocation {
+                    msgs.push(Message::Assistant {
+                        id: None,
+                        content: OneOrMany::one(AssistantContent::ToolCall(call)),
+                    });
                 }
+                msgs.push(Message::User {
+                    content: OneOrMany::one(UserContent::ToolResult(result)),
+                });
+                msgs
             }
         }
     }
