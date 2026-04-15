@@ -1725,23 +1725,30 @@ async fn push_diff_view<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     };
     let repo_path = PathBuf::from(&repo_state.remote_uri);
     let diff = match &repo_state.mode {
-        SandboxMode::Jj { base_revision } => run_jj(
-            sandbox_dir,
-            &[
-                "diff",
-                "--from",
-                base_revision,
-                "--to",
-                &repo_state.bookmark,
-                "--git",
-            ],
-        )
-        .await
-        .ok(),
-        SandboxMode::Git { base_revision } => {
-            git::run_git(&repo_path, &["diff", base_revision, &repo_state.bookmark])
-                .await
-                .ok()
+        SandboxMode::Jj { .. } => {
+            let bookmark_parent = format!("{}-", repo_state.bookmark);
+            run_jj(
+                sandbox_dir,
+                &[
+                    "diff",
+                    "--from",
+                    &bookmark_parent,
+                    "--to",
+                    &repo_state.bookmark,
+                    "--git",
+                ],
+            )
+            .await
+            .ok()
+        }
+        SandboxMode::Git { .. } => {
+            let bookmark_parent = format!("{}~1", repo_state.bookmark);
+            git::run_git(
+                &repo_path,
+                &["diff", &bookmark_parent, &repo_state.bookmark],
+            )
+            .await
+            .ok()
         }
         _ => None,
     };
