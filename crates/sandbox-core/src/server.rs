@@ -1454,8 +1454,8 @@ async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
                 .await
                 .map_err(SandboxError::Io)?;
 
-            // Build a unified diff for display
-            let display = build_edit_diff(&args.path, &args.old_str, &args.new_str);
+            // Build a unified diff for display (use full file contents so line numbers are correct)
+            let display = build_edit_diff(&args.path, &content, &new_content);
 
             Ok((format!("Replaced text in {}", args.path), Some(display)))
         },
