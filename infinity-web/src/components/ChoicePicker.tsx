@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
 import css from './ChoicePicker.module.css';
 
 interface Props {
@@ -6,11 +6,18 @@ interface Props {
   choices: string[];
   defaultIndex: number;
   onSelect: (index: number) => void;
+  onFocusInput?: () => void;
 }
 
-export function ChoicePicker({ prompt, choices, defaultIndex, onSelect }: Props) {
+export interface ChoicePickerHandle {
+  focus: () => void;
+}
+
+export const ChoicePicker = forwardRef<ChoicePickerHandle, Props>(function ChoicePicker({ prompt, choices, defaultIndex, onSelect, onFocusInput }, fwdRef) {
   const [selected, setSelected] = useState(defaultIndex);
   const ref = useRef<HTMLDivElement>(null);
+
+  useImperativeHandle(fwdRef, () => ({ focus: () => ref.current?.focus() }), []);
 
   useEffect(() => { ref.current?.focus(); }, []);
 
@@ -22,7 +29,14 @@ export function ChoicePicker({ prompt, choices, defaultIndex, onSelect }: Props)
         break;
       case 'ArrowDown':
         e.preventDefault();
-        setSelected(i => Math.min(choices.length - 1, i + 1));
+        setSelected(i => {
+          const next = i + 1;
+          if (next > choices.length - 1) {
+            onFocusInput?.();
+            return i;
+          }
+          return next;
+        });
         break;
       case 'Enter':
         e.preventDefault();
@@ -33,7 +47,7 @@ export function ChoicePicker({ prompt, choices, defaultIndex, onSelect }: Props)
         onSelect(defaultIndex);
         break;
     }
-  }, [choices.length, defaultIndex, onSelect, selected]);
+  }, [choices.length, defaultIndex, onSelect, selected, onFocusInput]);
 
   return (
     <div className={css.picker} ref={ref} tabIndex={-1} onKeyDown={handleKeyDown}>
@@ -54,4 +68,4 @@ export function ChoicePicker({ prompt, choices, defaultIndex, onSelect }: Props)
       </div>
     </div>
   );
-}
+});

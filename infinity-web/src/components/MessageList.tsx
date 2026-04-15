@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useCallback } from 'react';
 import type { MessageItem as MsgItem, SpinnerState } from '../types';
 import { MessageItem } from './MessageItem';
-import { InputBar } from './InputBar';
+import { InputBar, type InputBarHandle } from './InputBar';
 import { ChoicePicker } from './ChoicePicker';
 import css from './MessageList.module.css';
 
@@ -28,6 +28,7 @@ function isAtBottom(el: HTMLElement) {
 export function MessageList({ messages, spinner, onSend, inputDisabled, pendingChoice, onChoiceSelect, theme }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldStickRef = useRef(true);
+  const inputBarRef = useRef<InputBarHandle>(null);
 
   // Before React commits DOM changes, snapshot whether we're at bottom
   const wasAtBottomRef = useRef(true);
@@ -102,17 +103,17 @@ export function MessageList({ messages, spinner, onSend, inputDisabled, pendingC
         })}
       </div>
       <div className={css.inputArea}>
-        {pendingChoice ? (
-          <ChoicePicker
-            prompt={pendingChoice.prompt}
-            choices={pendingChoice.choices}
-            defaultIndex={pendingChoice.default}
-            onSelect={onChoiceSelect}
-          />
-        ) : (
-          <InputBar onSend={handleSend} disabled={inputDisabled} spinner={spinner} />
-        )}
-      </div>
+          {pendingChoice && (
+            <ChoicePicker
+              prompt={pendingChoice.prompt}
+              choices={pendingChoice.choices}
+              defaultIndex={pendingChoice.default}
+              onSelect={onChoiceSelect}
+              onFocusInput={() => inputBarRef.current?.focus()}
+            />
+          )}
+          <InputBar ref={inputBarRef} onSend={handleSend} disabled={inputDisabled} spinner={spinner} />
+        </div>
     </div>
   );
 }

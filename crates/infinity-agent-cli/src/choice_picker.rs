@@ -100,8 +100,12 @@ impl Component for ChoicePicker {
             KeyCode::Up if self.selected > 0 => {
                 self.selected -= 1;
             }
-            KeyCode::Down if self.selected < self.choices.len().saturating_sub(1) => {
-                self.selected += 1;
+            KeyCode::Down => {
+                if self.selected < self.choices.len().saturating_sub(1) {
+                    self.selected += 1;
+                } else {
+                    return KeyResult::NotCaptured;
+                }
             }
             KeyCode::Enter => {
                 self.result = Some(ChoicePickerResult::Selected(self.selected));
