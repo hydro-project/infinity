@@ -27,12 +27,14 @@ interface Props {
   sessions: Record<string, SessionInfo>;
   activeSessionId: string | null;
   activeThreadId: string | null;
-  open: boolean;
+  pinned: boolean;
+  visible: boolean;
   remotes: RemoteInfo[];
   localStatus: ConnectionStatus;
   onSelect: (sessionId: string, threadId: string | null) => void;
   onNew: () => void;
-  onClose: () => void;
+  onTogglePin: () => void;
+  onWidthChange: (width: number) => void;
 }
 
 function ThreadTree({
@@ -93,24 +95,27 @@ export function SessionSidebar({
   sessions,
   activeSessionId,
   activeThreadId,
-  open,
+  pinned,
+  visible,
   remotes,
   localStatus,
   onSelect,
   onNew,
-  onClose,
+  onTogglePin,
+  onWidthChange,
 }: Props) {
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   const dragging = useRef(false);
 
   // Publish sidebar offset as CSS variable on :root
   useEffect(() => {
-    const offset = open ? width + 12 : 0; // 12px left
+    const offset = pinned ? width + 12 : 0;
     document.documentElement.style.setProperty(
       "--sidebar-offset",
       `${offset}px`,
     );
-  }, [open, width]);
+    onWidthChange(width);
+  }, [pinned, width, onWidthChange]);
 
   const onDragStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -138,26 +143,27 @@ export function SessionSidebar({
     .filter(([, info]) => info.status !== "Archived")
     .sort(([, a], [, b]) => b.last_updated.localeCompare(a.last_updated));
 
-  return (
-    <aside
-      className={`${css.sidebar} ${!open ? css.hidden : ""}`}
-      style={{ width }}
-    >
-      <div className={css.header}>
-        <span className={css.title}>Sessions</span>
-        <div className={css.headerActions}>
-          <button className={css.newBtn} onClick={onNew}>
-            + New
-          </button>
-          <button
-            className={css.collapseBtn}
-            onClick={onClose}
-            aria-label="Hide sidebar"
-          >
-            {"\u2715"}
-          </button>
+      return (
+        <aside
+          className={`${css.sidebar} ${!visible && !pinned ? css.hidden : ""}`}
+          style={{ width }}
+      >
+        <div className={css.header}>
+          <span className={css.title}>Sessions</span>
+          <div className={css.headerActions}>
+            <button className={css.newBtn} onClick={onNew}>
+              + New
+            </button>
+            <button
+              className={css.collapseBtn}
+              onClick={onTogglePin}
+              aria-label={pinned ? "Unpin sidebar" : "Pin sidebar"}
+              data-pinned={pinned}
+            >
+                {"\u{1F4CC}"}
+            </button>
+          </div>
         </div>
-      </div>
       {localStatus !== "connected" && (
         <div className={css.remoteBanner}>
           <div

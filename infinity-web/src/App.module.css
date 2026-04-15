@@ -92,39 +92,16 @@
 .root {
     position: relative;
     height: 100%;
-    margin-left: var(--sidebar-offset, 0px);
-    margin-right: 0;
+    margin-left: max(24px, var(--sidebar-offset, 24px));
+    margin-right: var(--chat-panel-offset, 24px);
 }
 
-.menuBtn {
-    position: fixed;
-    top: 16px;
-    left: 16px;
-    z-index: 5;
-    background: var(--glass-bg);
-    backdrop-filter: blur(24px) saturate(1.4);
-    -webkit-backdrop-filter: blur(24px) saturate(1.4);
-    border: 1px solid var(--glass-border);
-    box-shadow: 0 4px 16px var(--glass-shadow);
-    color: var(--text-dim);
-    font-size: 16px;
-    width: 36px;
-    height: 36px;
-    border-radius: 12px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background 0.15s;
-}
-.menuBtn:hover {
-    background: var(--bg-hover);
-}
+/* ── View tab navbar ── */
 
 .topRight {
     position: fixed;
     top: 16px;
-    right: 16px;
+    right: var(--chat-panel-offset, 24px);
     z-index: 5;
     display: flex;
     gap: 8px;
@@ -236,3 +213,105 @@
     flex: 1;
     overflow: hidden;
 }
+
+/* ── Chat right panel (when views are present) ── */
+
+.chatPanel {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    bottom: 12px;
+    width: var(--chat-panel-width, 420px);
+    z-index: 200;
+    display: flex;
+    flex-direction: column;
+    border-radius: 16px;
+    overflow: hidden;
+    transition:
+        transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+        opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+
+    background: var(--glass-bg);
+    backdrop-filter: blur(24px) saturate(1.4);
+    -webkit-backdrop-filter: blur(24px) saturate(1.4);
+    border: 1px solid var(--glass-border);
+    box-shadow:
+        0 8px 32px var(--glass-shadow),
+        inset 0 0.5px 0 rgba(255, 255, 255, 0.06);
+}
+
+.chatPanel.chatPanelHidden {
+    transform: translateX(110%);
+    opacity: 0;
+    pointer-events: none;
+}
+
+.chatPanelHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--glass-border);
+}
+
+.chatPanelTitle {
+    font-weight: 600;
+    font-size: 14px;
+}
+
+.chatPanelClose {
+    background: none;
+    border: 1px solid var(--glass-border);
+    color: var(--text-dim);
+    font-size: 14px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s, opacity 0.15s;
+}
+.chatPanelClose:hover {
+    background: var(--bg-hover);
+}
+.chatPanelClose[data-pinned="true"] {
+    opacity: 1;
+}
+.chatPanelClose[data-pinned="false"] {
+    opacity: 0.4;
+}
+
+.chatPanelBody {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+}
+
+.chatPanelResize {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 8px;
+    cursor: col-resize;
+}
+.chatPanelResize:hover {
+    background: var(--accent);
+    opacity: 0.2;
+    border-radius: 4px;
+}
+
+.chatIdleDot {
+    width: 100px;
+    height: 20px;
+    border-radius: 4px;
+    background: var(--text-muted);
+    opacity: 0.3;
+}
+
+.chatSpinnerPortal {
+    display: flex;
+    align-items: center;
+}
+.chatSpinnerPortal span {
+    display: none;
+}
+
