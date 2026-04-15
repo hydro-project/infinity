@@ -121,6 +121,77 @@ async fn jj_execute_command_preserves_description() {
     );
 }
 
+/// Verify that TMPDIR inside a sandboxed command does not point inside the
+/// sandbox repo directory (or vice versa). If TMPDIR were inside the repo,
+/// temp files would be committed by jj snapshots and pollute the working copy.
+///
+/// Only tests the platform-sandboxed path (bwrap/sandbox-exec) since the
+/// unsandboxed path inherits the parent's TMPDIR without managing it.
+#[tokio::test]
+async fn sandboxed_tmpdir_is_not_inside_sandbox_repo() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let tmp = jj_init_with_file("README.md", "hello\n");
+    let repo = tmp.path();
+
+    let server_url = common::start_test_server_sandboxed(&repo.join(".test-metadata"), true).await;
+    let (callback_url, mut rx) = start_callback_channel()
+        .await
+        .expect("start callback channel");
+
+    let group_id = "tmpdir-test";
+    let repo_str = repo.to_str().expect("repo path to str");
+
+    let text = invoke(
+        &server_url,
+        &callback_url,
+        group_id,
+        "clone_repo",
+        serde_json::json!({ "repo": repo_str }),
+        &mut rx,
+        None,
+    )
+    .await;
+    assert!(text.contains("Repository initialized"), "got: {text}");
+
+    // Print TMPDIR and PWD from inside the sandbox.
+    let text = invoke(
+        &server_url,
+        &callback_url,
+        group_id,
+        "execute_command",
+        serde_json::json!({ "command": "echo TMPDIR=$TMPDIR; echo PWD=$PWD" }),
+        &mut rx,
+        None,
+    )
+    .await;
+
+    // Parse the TMPDIR and PWD values from the output.
+    let tmpdir_val = text
+        .lines()
+        .find_map(|l| l.strip_prefix("TMPDIR="))
+        .expect("TMPDIR line not found in output");
+    let pwd_val = text
+        .lines()
+        .find_map(|l| l.strip_prefix("PWD="))
+        .expect("PWD line not found in output");
+
+    let tmpdir = Path::new(tmpdir_val);
+    let pwd = Path::new(pwd_val);
+    let repo_canon = repo.canonicalize().expect("canonicalize repo");
+
+    // TMPDIR must not be inside the repo (or the sandbox working dir).
+    assert!(
+        !tmpdir.starts_with(&repo_canon) && !tmpdir.starts_with(pwd),
+        "TMPDIR ({tmpdir_val}) must not be inside the repo ({repo_canon:?}) or sandbox ({pwd_val})"
+    );
+    // The sandbox working dir must not be inside TMPDIR either.
+    assert!(
+        !pwd.starts_with(tmpdir),
+        "Sandbox dir ({pwd_val}) must not be inside TMPDIR ({tmpdir_val})"
+    );
+}
+
 /// Verify that the sccache cache directory is writable from inside a
 /// bwrap sandbox. This exercises the `extra_writable_paths` fix that
 /// adds the sccache cache dir to the sandbox's writable mounts.
