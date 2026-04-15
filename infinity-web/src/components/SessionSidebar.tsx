@@ -35,6 +35,7 @@ interface Props {
   onNew: () => void;
   onTogglePin: () => void;
   onWidthChange: (width: number) => void;
+  onDragStateChange: (dragging: boolean) => void;
 }
 
 function ThreadTree({
@@ -103,6 +104,7 @@ export function SessionSidebar({
   onNew,
   onTogglePin,
   onWidthChange,
+  onDragStateChange,
 }: Props) {
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   const dragging = useRef(false);
@@ -120,6 +122,7 @@ export function SessionSidebar({
   const onDragStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     dragging.current = true;
+    onDragStateChange(true);
     const onMove = (ev: MouseEvent) => {
       if (!dragging.current) return;
       // 12px left margin, so sidebar left edge is at 12
@@ -128,12 +131,13 @@ export function SessionSidebar({
     };
     const onUp = () => {
       dragging.current = false;
+      onDragStateChange(false);
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
-  }, []);
+  }, [onDragStateChange]);
 
   const onDragDoubleClick = useCallback(() => {
     setWidth(DEFAULT_WIDTH);
