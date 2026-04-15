@@ -57,7 +57,7 @@ export function App() {
     { id: string; prompt: string; choices: string[]; default: number }[]
   >([]);
   const [views, setViews] = useState<Record<string, any>>({});
-  const [activeTab, setActiveTab] = useState<string>("chat");
+  const [activeTab, setActiveTab] = useState<string | null>(null);
   const [chatPinned, setChatPinned] = useState(false);
   const [chatHover, setChatHover] = useState(false);
   const [chatPanelWidth, setChatPanelWidth] = useState(420);
@@ -75,6 +75,7 @@ export function App() {
   // Track whether we're currently accumulating assistant text
   const streamingRef = useRef(false);
   const chatSpinnerPortalRef = useRef<HTMLDivElement>(null);
+  const sidebarDragging = useRef(false);
 
   /** Check if a message's thread_id matches the thread we're currently viewing. */
   const isForCurrentView = useCallback(
@@ -375,10 +376,10 @@ export function App() {
                   setSpinner(null);
                   setPendingChoices([]);
                   setViews({});
-                  setActiveTab("chat");
-                  streamingRef.current = false;
-                  sendRef.current({
-                    Connect: { session_id: sid, thread_id: newView },
+                    setActiveTab(null);
+                    streamingRef.current = false;
+                    sendRef.current({
+                      Connect: { session_id: sid, thread_id: newView },
                   });
                 }
               }
@@ -399,7 +400,6 @@ export function App() {
             for (const c of p.pending_choices) processOne(c);
             if (p.views && Object.keys(p.views).length > 0) {
               setViews(p.views);
-              setActiveTab(Object.keys(p.views)[0]);
             }
             break;
           }
@@ -409,16 +409,9 @@ export function App() {
               view_type: string;
               content: any;
             }>(m);
-            if (isForCurrentView(p.thread_id)) {
-              setViews((prev) => {
-                const next = { ...prev, [p.view_type]: p.content };
-                // Auto-select first view tab when views first appear
-                if (Object.keys(prev).length === 0) {
-                  setActiveTab(p.view_type);
-                }
-                return next;
-              });
-            }
+              if (isForCurrentView(p.thread_id)) {
+                setViews((prev) => ({ ...prev, [p.view_type]: p.content }));
+              }
             break;
           }
           case "UserChoiceRequired": {
@@ -477,10 +470,10 @@ export function App() {
               setSpinner(null);
               setPendingChoices([]);
               setViews({});
-              setActiveTab("chat");
-              streamingRef.current = false;
-              sendRef.current({
-                Connect: { session_id: p.new_session_id, thread_id: null },
+                setActiveTab(null);
+                streamingRef.current = false;
+                sendRef.current({
+                  Connect: { session_id: p.new_session_id, thread_id: null },
               });
             }
             appendMessage({ type: "info", text: "Migration complete" });
@@ -549,7 +542,7 @@ export function App() {
       setSpinner(null);
       setPendingChoices([]);
       setViews({});
-      setActiveTab("chat");
+      setActiveTab(null);
       streamingRef.current = false;
 
       if (switchingSession) {
@@ -573,10 +566,10 @@ export function App() {
     setSpinner(null);
     setPendingChoices([]);
     setViews({});
-    setActiveTab("chat");
-    streamingRef.current = false;
-    setNewSessionPickerOpen(true);
-  }, [send]);
+      setActiveTab(null);
+      streamingRef.current = false;
+      setNewSessionPickerOpen(true);
+    }, [send]);
 
   const handleNewSessionConfirm = useCallback(
     (destination: string | null, cwd: string) => {
@@ -653,6 +646,13 @@ export function App() {
   const chatVisible = chatPinned || chatHover;
   const chatPanelOffset = hasViews && chatPinned ? chatPanelWidth + 16 : 24;
 
+  // Auto-select first view tab when views first appear
+  useEffect(() => {
+    if (hasViews && activeTab === null) {
+      setActiveTab(viewKeys[0]);
+    }
+  }, [hasViews]);
+
   // Edge hover zones for unpinned panels, with velocity-based flick detection
   const EDGE_SIZE = 32;
   const DEHOVER_BUFFER = 40;
@@ -677,7 +677,7 @@ export function App() {
           (vx < -VELOCITY_THRESHOLD && e.clientX <= sidebarWidth + 12)
         ) {
           setSidebarHover(true);
-        } else if (e.clientX > sidebarWidth + 12 + DEHOVER_BUFFER) {
+        } else if (!sidebarDragging.current && e.clientX > sidebarWidth + 12 + DEHOVER_BUFFER) {
           setSidebarHover(false);
         }
       }
@@ -720,8 +720,9 @@ export function App() {
         localStatus={status}
         onSelect={navigateTo}
         onNew={handleNewSession}
-        onTogglePin={() => setSidebarPinned((p) => !p)}
+        onTogglePin={() => { if (sidebarPinned) setSidebarHover(true); setSidebarPinned((p) => !p); }}
         onWidthChange={setSidebarWidth}
+        onDragStateChange={(d: boolean) => { sidebarDragging.current = d; }}
       />
       <div className={css.topRight}>
         {sessionRef.current && (
@@ -804,7 +805,7 @@ export function App() {
             <span className={css.chatPanelTitle}>Chat</span>
             <button
               className={css.chatPanelClose}
-              onClick={() => setChatPinned((p) => !p)}
+              onClick={() => { if (chatPinned) setChatHover(true); setChatPinned((p) => !p); }}}
               aria-label={chatPinned ? "Unpin chat" : "Pin chat"}
               data-pinned={chatPinned}
             >
