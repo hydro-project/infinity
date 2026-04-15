@@ -17,6 +17,7 @@
 .inputArea {
     position: sticky;
     bottom: 0;
+    z-index: 100;
     max-width: var(--max-width);
     margin: 0 auto;
     padding: 8px 12px 16px;

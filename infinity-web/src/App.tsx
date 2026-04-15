@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useSocket } from "./useSocket";
 import { msgTag, msgPayload } from "./protocol";
 import { MessageList } from "./components/MessageList";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { MigratePicker } from "./components/MigratePicker";
 import { DiffView } from "./components/DiffView";
+import { Spinner } from "./components/Spinner";
 import type {
   ClientMessage,
   DaemonMessage,
@@ -28,7 +30,9 @@ function getInitialTheme(): Theme {
 
 function resolveTheme(t: Theme): "light" | "dark" {
   if (t !== "system") return t;
-  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  return window.matchMedia("(prefers-color-scheme: light)").matches
+    ? "light"
+    : "dark";
 }
 
 export function App() {
@@ -39,9 +43,13 @@ export function App() {
   const [contextWindow, setContextWindow] = useState(0);
   const [totalTokens, setTotalTokens] = useState(0);
   const [spinner, setSpinner] = useState<SpinnerState | null>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarPinned, setSidebarPinned] = useState(true);
+  const [sidebarHover, setSidebarHover] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(272);
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
-  const [resolved, setResolved] = useState<"light" | "dark">(() => resolveTheme(getInitialTheme()));
+  const [resolved, setResolved] = useState<"light" | "dark">(() =>
+    resolveTheme(getInitialTheme()),
+  );
   const [newSessionPickerOpen, setNewSessionPickerOpen] = useState(false);
   const [migratePickerOpen, setMigratePickerOpen] = useState(false);
   const [remotes, setRemotes] = useState<RemoteInfo[]>([]);
@@ -50,6 +58,9 @@ export function App() {
   >([]);
   const [views, setViews] = useState<Record<string, any>>({});
   const [activeTab, setActiveTab] = useState<string>("chat");
+  const [chatPinned, setChatPinned] = useState(false);
+  const [chatHover, setChatHover] = useState(false);
+  const [chatPanelWidth, setChatPanelWidth] = useState(420);
   const [dirEntries, setDirEntries] = useState<string[]>([]);
   // Thread navigation: viewThreadId is the currently viewed thread (null = root).
   // threadStack tracks the path from root so we can pop back when threads close.
@@ -63,6 +74,7 @@ export function App() {
   const sendRef = useRef<(msg: ClientMessage) => void>(() => {});
   // Track whether we're currently accumulating assistant text
   const streamingRef = useRef(false);
+  const chatSpinnerPortalRef = useRef<HTMLDivElement>(null);
 
   /** Check if a message's thread_id matches the thread we're currently viewing. */
   const isForCurrentView = useCallback(
@@ -92,7 +104,9 @@ export function App() {
   }, [resolved]);
 
   const toggleTheme = useCallback(() => {
-    setTheme((t) => (t === "dark" ? "light" : t === "light" ? "system" : "dark"));
+    setTheme((t) =>
+      t === "dark" ? "light" : t === "light" ? "system" : "dark",
+    );
   }, []);
 
   const appendMessage = useCallback((item: MessageItem) => {
@@ -385,6 +399,7 @@ export function App() {
             for (const c of p.pending_choices) processOne(c);
             if (p.views && Object.keys(p.views).length > 0) {
               setViews(p.views);
+              setActiveTab(Object.keys(p.views)[0]);
             }
             break;
           }
@@ -395,7 +410,14 @@ export function App() {
               content: any;
             }>(m);
             if (isForCurrentView(p.thread_id)) {
-              setViews((prev) => ({ ...prev, [p.view_type]: p.content }));
+              setViews((prev) => {
+                const next = { ...prev, [p.view_type]: p.content };
+                // Auto-select first view tab when views first appear
+                if (Object.keys(prev).length === 0) {
+                  setActiveTab(p.view_type);
+                }
+                return next;
+              });
             }
             break;
           }
@@ -414,11 +436,15 @@ export function App() {
           }
           case "UserChoiceComplete": {
             const p = msgPayload<{ choice_id: string }>(m);
-            setPendingChoices((prev) => prev.filter((c) => c.id !== p.choice_id));
+            setPendingChoices((prev) =>
+              prev.filter((c) => c.id !== p.choice_id),
+            );
             break;
           }
           case "DirectoryListing": {
-            const p = msgPayload<{ request_path: string; entries: string[] }>(m);
+            const p = msgPayload<{ request_path: string; entries: string[] }>(
+              m,
+            );
             setDirEntries(p.entries);
             break;
           }
@@ -437,7 +463,10 @@ export function App() {
             break;
           }
           case "MigrateComplete": {
-            const p = msgPayload<{ session_id: string; new_session_id: string }>(m);
+            const p = msgPayload<{
+              session_id: string;
+              new_session_id: string;
+            }>(m);
             if (sessionRef.current === p.session_id) {
               sendRef.current("Disconnect");
               sessionRef.current = null;
@@ -450,7 +479,9 @@ export function App() {
               setViews({});
               setActiveTab("chat");
               streamingRef.current = false;
-              sendRef.current({ Connect: { session_id: p.new_session_id, thread_id: null } });
+              sendRef.current({
+                Connect: { session_id: p.new_session_id, thread_id: null },
+              });
             }
             appendMessage({ type: "info", text: "Migration complete" });
             break;
@@ -593,32 +624,105 @@ export function App() {
     setMigratePickerOpen(false);
   }, []);
 
+  const chatDragging = useRef(false);
+  const onChatDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    chatDragging.current = true;
+    const onMove = (ev: MouseEvent) => {
+      if (!chatDragging.current) return;
+      const newW = Math.min(
+        700,
+        Math.max(300, window.innerWidth - ev.clientX - 12),
+      );
+      setChatPanelWidth(newW);
+    };
+    const onUp = () => {
+      chatDragging.current = false;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, []);
+
   const contextPct =
     contextWindow > 0 ? Math.min(100, (totalTokens / contextWindow) * 100) : 0;
 
   const viewKeys = Object.keys(views);
   const hasViews = viewKeys.length > 0;
+  const chatVisible = chatPinned || chatHover;
+  const chatPanelOffset = hasViews && chatPinned ? chatPanelWidth + 16 : 24;
+
+  // Edge hover zones for unpinned panels, with velocity-based flick detection
+  const EDGE_SIZE = 32;
+  const DEHOVER_BUFFER = 40;
+  const VELOCITY_THRESHOLD = 6400; // px/s
+  const SMOOTHING = 0.3; // exponential moving average factor
+  const lastMouseRef = useRef({ x: 0, t: 0, vx: 0 });
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const now = performance.now();
+      const dt = (now - lastMouseRef.current.t) / 1000;
+      const dx = e.clientX - lastMouseRef.current.x;
+      const instantVx = dt > 0 ? dx / dt : 0;
+      const vx =
+        lastMouseRef.current.t === 0
+          ? instantVx
+          : SMOOTHING * instantVx + (1 - SMOOTHING) * lastMouseRef.current.vx;
+      lastMouseRef.current = { x: e.clientX, t: now, vx };
+
+      if (!sidebarPinned) {
+        if (
+          e.clientX <= EDGE_SIZE ||
+          (vx < -VELOCITY_THRESHOLD && e.clientX <= sidebarWidth + 12)
+        ) {
+          setSidebarHover(true);
+        } else if (e.clientX > sidebarWidth + 12 + DEHOVER_BUFFER) {
+          setSidebarHover(false);
+        }
+      }
+      if (hasViews && !chatPinned) {
+        const fromRight = window.innerWidth - e.clientX;
+        if (
+          fromRight <= EDGE_SIZE ||
+          (vx > VELOCITY_THRESHOLD && fromRight <= chatPanelWidth + 12)
+        ) {
+          setChatHover(true);
+        } else if (
+          !chatDragging.current &&
+          fromRight > chatPanelWidth + 12 + DEHOVER_BUFFER
+        ) {
+          setChatHover(false);
+        }
+      }
+    };
+    window.addEventListener("mousemove", onMove);
+    return () => window.removeEventListener("mousemove", onMove);
+  }, [sidebarPinned, chatPinned, hasViews, sidebarWidth, chatPanelWidth]);
 
   return (
-    <div className={css.root}>
+    <div
+      className={css.root}
+      style={
+        {
+          "--chat-panel-offset": `${chatPanelOffset}px`,
+          "--chat-panel-width": `${chatPanelWidth}px`,
+        } as React.CSSProperties
+      }
+    >
       <SessionSidebar
         sessions={sessions}
         activeSessionId={sessionRef.current}
         activeThreadId={viewThreadId}
-        open={sidebarOpen}
+        pinned={sidebarPinned}
+        visible={sidebarHover}
         remotes={remotes}
         localStatus={status}
         onSelect={navigateTo}
         onNew={handleNewSession}
-        onClose={() => setSidebarOpen(false)}
+        onTogglePin={() => setSidebarPinned((p) => !p)}
+        onWidthChange={setSidebarWidth}
       />
-      <button
-        className={css.menuBtn}
-        onClick={() => setSidebarOpen((o) => !o)}
-        aria-label="Toggle sessions"
-      >
-        {"\u2630"}
-      </button>
       <div className={css.topRight}>
         {sessionRef.current && (
           <button
@@ -626,7 +730,7 @@ export function App() {
             onClick={() => setMigratePickerOpen(true)}
             aria-label="Migrate session"
           >
-            {currentHost ?? 'local'}
+            {currentHost ?? "local"}
           </button>
         )}
         <span className={css.infoPill}>
@@ -639,23 +743,17 @@ export function App() {
           onClick={toggleTheme}
           aria-label="Toggle theme"
         >
-          {theme === "dark" ? "\u263E" : theme === "light" ? "\u2600" : "\uD83D\uDCBB"}
+          {theme === "dark"
+            ? "\u263E"
+            : theme === "light"
+              ? "\u2600"
+              : "\uD83D\uDCBB"}
         </button>
+        <div ref={chatSpinnerPortalRef} className={css.chatSpinnerPortal} />
       </div>
       <div className={css.mainContent}>
         {hasViews && (
-          <nav
-            className={css.viewNav}
-            style={{
-              paddingLeft: sidebarOpen ? undefined : "60px",
-            }}
-          >
-            <button
-              className={activeTab === "chat" ? css.viewTabActive : css.viewTab}
-              onClick={() => setActiveTab("chat")}
-            >
-              Chat
-            </button>
+          <nav className={css.viewNav}>
             {viewKeys.map((key) => (
               <button
                 key={key}
@@ -668,7 +766,52 @@ export function App() {
           </nav>
         )}
         <div className={css.mainBody}>
-          <div style={{ display: activeTab === "chat" || !hasViews ? undefined : "none", height: "100%" }}>
+          {!hasViews && (
+            <div style={{ height: "100%" }}>
+              <MessageList
+                messages={messages}
+                spinner={spinner}
+                onSend={handleSend}
+                inputDisabled={status !== "connected"}
+                pendingChoice={pendingChoices[0] ?? null}
+                onChoiceSelect={handleChoiceSelect}
+                theme={resolved}
+              />
+            </div>
+          )}
+          {views.diff && (
+            <div
+              style={{
+                display: activeTab === "diff" ? undefined : "none",
+                height: "100%",
+              }}
+            >
+              <DiffView diff={views.diff.diff} theme={resolved} />
+            </div>
+          )}
+          {hasViews && activeTab !== "diff" && (
+            <div style={{ padding: 24, color: "var(--text-muted)" }}>
+              Unsupported view: {activeTab}
+            </div>
+          )}
+        </div>
+      </div>
+      {hasViews && (
+        <div
+          className={`${css.chatPanel} ${!chatVisible ? css.chatPanelHidden : ""}`}
+        >
+          <div className={css.chatPanelHeader}>
+            <span className={css.chatPanelTitle}>Chat</span>
+            <button
+              className={css.chatPanelClose}
+              onClick={() => setChatPinned((p) => !p)}
+              aria-label={chatPinned ? "Unpin chat" : "Pin chat"}
+              data-pinned={chatPinned}
+            >
+              {"\uD83D\uDCCC"}
+            </button>
+          </div>
+          <div className={css.chatPanelBody}>
             <MessageList
               messages={messages}
               spinner={spinner}
@@ -678,19 +821,30 @@ export function App() {
               onChoiceSelect={handleChoiceSelect}
               theme={resolved}
             />
-            </div>
-          {views.diff && (
-            <div style={{ display: activeTab === "diff" ? undefined : "none", height: "100%" }}>
-              <DiffView diff={views.diff.diff} theme={resolved} />
-            </div>
-          )}
-          {activeTab !== "chat" && activeTab !== "diff" && hasViews && (
-            <div style={{ padding: 24, color: "var(--text-muted)" }}>
-              Unsupported view: {activeTab}
-            </div>
-          )}
+          </div>
+          <div
+            className={css.chatPanelResize}
+            onMouseDown={onChatDragStart}
+            onDoubleClick={() => setChatPanelWidth(420)}
+          />
         </div>
-      </div>
+      )}
+      {hasViews &&
+        !chatPinned &&
+        chatSpinnerPortalRef.current &&
+        createPortal(
+          <div
+            onClick={() => setChatPinned(true)}
+            style={{ cursor: "pointer" }}
+          >
+            {spinner ? (
+              <Spinner state={spinner} />
+            ) : (
+              <div className={css.chatIdleDot} />
+            )}
+          </div>,
+          chatSpinnerPortalRef.current,
+        )}
       {newSessionPickerOpen && (
         <MigratePicker
           remotes={remotes}
@@ -699,7 +853,9 @@ export function App() {
           onCancel={handleNewSessionCancel}
           send={send}
           directoryEntries={dirEntries}
-          onClearEntries={() => { setDirEntries([]); }}
+          onClearEntries={() => {
+            setDirEntries([]);
+          }}
         />
       )}
       {migratePickerOpen && (
@@ -710,7 +866,9 @@ export function App() {
           onCancel={handleMigrateCancel}
           send={send}
           directoryEntries={dirEntries}
-          onClearEntries={() => { setDirEntries([]); }}
+          onClearEntries={() => {
+            setDirEntries([]);
+          }}
         />
       )}
     </div>
