@@ -50,8 +50,24 @@ async fn collect_files_recursive(root: &Path, dir: &Path) -> Vec<PathBuf> {
     result
 }
 
-/// Discover all steering files under `root`, canonicalize to dedup symlinks,
-/// and return sorted relative paths.
+/// Collect steering candidates from a base directory, returning paths relative to that base.
+async fn collect_candidates(base: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for f in SINGLE_FILES {
+        candidates.push(PathBuf::from(f));
+    }
+    for dir in DIRECTORIES {
+        let dir_path = base.join(dir);
+        if dir_path.is_dir() {
+            candidates.extend(collect_files_recursive(base, &dir_path).await);
+        }
+    }
+    candidates
+}
+
+/// Discover all steering files under `root` and the user's home directory,
+/// canonicalize to dedup symlinks, and return sorted relative paths.
+/// Home directory files are prefixed with `~/`.
 pub async fn list_steering_files(root: &Path) -> Result<Vec<String>, String> {
     let canon_root = fs::canonicalize(root)
         .await
@@ -60,21 +76,8 @@ pub async fn list_steering_files(root: &Path) -> Result<Vec<String>, String> {
     let mut seen_canonical = HashSet::new();
     let mut results = Vec::new();
 
-    // Collect candidate relative paths
-    let mut candidates: Vec<PathBuf> = Vec::new();
-
-    for f in SINGLE_FILES {
-        candidates.push(PathBuf::from(f));
-    }
-
-    for dir in DIRECTORIES {
-        let dir_path = root.join(dir);
-        if dir_path.is_dir() {
-            candidates.extend(collect_files_recursive(root, &dir_path).await);
-        }
-    }
-
-    for rel in candidates {
+    // Scan project root
+    for rel in collect_candidates(root).await {
         let abs = root.join(&rel);
         if !abs.exists() {
             continue;
@@ -91,22 +94,66 @@ pub async fn list_steering_files(root: &Path) -> Result<Vec<String>, String> {
         }
     }
 
+    // Scan home directory
+    if let Some(home) = home_dir()
+        && let Ok(canon_home) = fs::canonicalize(&home).await
+        && canon_home != canon_root
+    {
+        for rel in collect_candidates(&home).await {
+            let abs = home.join(&rel);
+            if !abs.exists() {
+                continue;
+            }
+            let Ok(canonical) = fs::canonicalize(&abs).await else {
+                continue;
+            };
+            if !canonical.starts_with(&canon_home) {
+                continue;
+            }
+            if seen_canonical.insert(canonical) {
+                results.push(format!("~/{}", rel.to_string_lossy()));
+            }
+        }
+    }
+
     results.sort();
     Ok(results)
 }
 
-/// Load a steering file, with path traversal prevention.
-pub async fn load_steering_file(root: &Path, rel_path: &str) -> Result<String, String> {
-    let canon_root = fs::canonicalize(root)
-        .await
-        .map_err(|e| format!("cannot canonicalize root: {e}"))?;
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
 
-    let abs = root.join(rel_path);
+/// Check that `rel` is under a known steering location.
+fn is_known_steering_location(rel: &str) -> bool {
+    let rel_path = Path::new(rel);
+    SINGLE_FILES.contains(&rel) || DIRECTORIES.iter().any(|d| rel_path.starts_with(d))
+}
+
+/// Load a steering file, with path traversal prevention.
+/// Paths prefixed with `~/` are resolved relative to the home directory.
+pub async fn load_steering_file(root: &Path, rel_path: &str) -> Result<String, String> {
+    let (base, rel) = if let Some(stripped) = rel_path.strip_prefix("~/") {
+        let home = home_dir().ok_or_else(|| "HOME not set".to_owned())?;
+        (home, stripped)
+    } else {
+        (root.to_path_buf(), rel_path)
+    };
+
+    if !is_known_steering_location(rel) {
+        return Err("not a steering file location".to_owned());
+    }
+
+    let canon_base = fs::canonicalize(&base)
+        .await
+        .map_err(|e| format!("cannot canonicalize base: {e}"))?;
+
+    let abs = base.join(rel);
     let canonical = fs::canonicalize(&abs)
         .await
         .map_err(|e| format!("file not found: {e}"))?;
 
-    if !canonical.starts_with(&canon_root) {
+    if !canonical.starts_with(&canon_base) {
         return Err("path traversal denied".to_owned());
     }
 
