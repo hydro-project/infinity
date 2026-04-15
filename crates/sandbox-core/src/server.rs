@@ -649,12 +649,12 @@ where
             .await?;
     }
 
-    if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
-        tracing::warn!("failed to cleanup sandbox: {e}");
+    if modifies {
+        push_diff_view(state, invocation, &sandbox_dir).await;
     }
 
-    if modifies {
-        push_diff_view(state, invocation).await;
+    if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
+        tracing::warn!("failed to cleanup sandbox: {e}");
     }
 
     tracing::info!(group_id = %group_id, "sandbox operation complete");
@@ -1093,7 +1093,7 @@ async fn handle_execute_command_streaming_inner<
             .push_sandbox(&sandbox_dir, &invocation.group_id, None)
             .await;
         send_tool_result(&state.callback_client, invocation, &text, None, false).await;
-        push_diff_view(state, invocation).await;
+        push_diff_view(state, invocation, &sandbox_dir).await;
         if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
             tracing::warn!("failed to cleanup sandbox: {e}");
         }
@@ -1153,7 +1153,7 @@ async fn handle_execute_command_streaming_inner<
                     None,
                 )
                 .await;
-                push_diff_view(state, invocation).await;
+                push_diff_view(state, invocation, &sandbox_dir).await;
                 send_subscription_event(
                     &state.callback_client,
                     &invocation.callback_url,
@@ -1207,12 +1207,12 @@ async fn handle_execute_command_streaming_inner<
                             None,
                         )
                         .await;
-                        push_diff_view(state, invocation).await;
+                        push_diff_view(state, invocation, &sandbox_dir).await;
                         send_subscription_event(
                             &state.callback_client,
                             &invocation.callback_url,
-                    invocation.group_id.clone(),
-                    invocation.id.clone(),
+                            invocation.group_id.clone(),
+                            invocation.id.clone(),
                             &accumulated,
                             true,
                             true,
@@ -1235,7 +1235,7 @@ async fn handle_execute_command_streaming_inner<
                             None,
                         )
                         .await;
-                        push_diff_view(state, invocation).await;
+                        push_diff_view(state, invocation, &sandbox_dir).await;
                         if !accumulated.is_empty() {
                             send_subscription_event(
                                 &state.callback_client,
@@ -1718,6 +1718,7 @@ async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackC
 async fn push_diff_view<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
+    sandbox_dir: &Path,
 ) {
     let Ok(Some(repo_state)) = state.metadata.get(&invocation.group_id).await else {
         return;
@@ -1725,7 +1726,7 @@ async fn push_diff_view<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     let repo_path = PathBuf::from(&repo_state.remote_uri);
     let diff = match &repo_state.mode {
         SandboxMode::Jj { base_revision } => run_jj(
-            &repo_path,
+            sandbox_dir,
             &[
                 "diff",
                 "--from",
