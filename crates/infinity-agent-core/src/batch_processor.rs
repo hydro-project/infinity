@@ -240,15 +240,21 @@ where
     }
 
     // Best-effort: notify RAP tool servers about interrupted tool calls
+    // and dismiss any associated pending user choices.
     {
         let interrupted = current_history.take_interrupted_tool_calls();
-        if !interrupted.is_empty()
-            && let Some(notifier) = rap_notifier
-        {
+        if !interrupted.is_empty() {
+            if let Some(notifier) = rap_notifier {
+                for call_id in &interrupted {
+                    notifier
+                        .notify_tool_cancelled(active_group_id, call_id)
+                        .await;
+                }
+            }
             for call_id in &interrupted {
-                notifier
-                    .notify_tool_cancelled(active_group_id, call_id)
-                    .await;
+                let _ = display_tx.send(DisplayEvent::UserChoiceComplete {
+                    choice_id: call_id.clone(),
+                });
             }
         }
     }

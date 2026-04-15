@@ -372,8 +372,12 @@ impl TextInput {
                 KeyResult::Captured
             }
             KeyCode::Up => {
-                self.move_up();
-                KeyResult::Captured
+                if self.cursor == 0 {
+                    KeyResult::NotCaptured
+                } else {
+                    self.move_up();
+                    KeyResult::Captured
+                }
             }
             KeyCode::Down => {
                 self.move_down();
