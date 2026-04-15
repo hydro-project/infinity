@@ -643,7 +643,7 @@ export function App() {
 
   const viewKeys = Object.keys(views);
   const hasViews = viewKeys.length > 0;
-  const chatVisible = chatPinned || chatHover;
+  const chatVisible = chatPinned || chatHover || pendingChoices.length > 0;
   const chatPanelOffset = hasViews && chatPinned ? chatPanelWidth + 16 : 24;
 
   // Auto-select first view tab when views first appear
