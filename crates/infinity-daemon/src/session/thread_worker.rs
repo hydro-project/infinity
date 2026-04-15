@@ -115,6 +115,11 @@ pub async fn thread_worker<Mdl>(
                     );
                 }
 
+                // Remove pending choices when completed/cancelled.
+                if let DisplayEvent::UserChoiceComplete { ref choice_id } = evt {
+                    fwd_conversation_store.remove_pending_choice(&fwd_root_session_id, choice_id);
+                }
+
                 if let Some(dm) = display_event_to_daemon(&fwd_group_id, evt) {
                     let mut subs = fwd_subscribers.lock().expect("bug: mutex poisoned");
                     subs.retain(|tx| tx.send(dm.clone()).is_ok());

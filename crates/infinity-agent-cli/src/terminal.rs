@@ -29,16 +29,15 @@ use tokio::sync::mpsc;
 /// The current UI mode determines which component is active.
 #[derive(PartialEq, Eq)]
 enum UiMode {
-    /// Normal input mode.
-    Normal,
+    /// Normal input mode. When `choice_focused` is true, keystrokes go to the
+    /// choice picker instead of the text input.
+    Normal { choice_focused: bool },
     /// Session picker overlay is visible.
     SessionPicker,
     /// Model picker overlay is visible.
     ModelPicker,
     /// Quit/switch picker overlay is visible.
     QuitPicker,
-    /// User choice picker overlay is visible.
-    ChoicePicker,
 }
 
 /// Spinner animation state — only affected by root-thread events.
@@ -147,7 +146,9 @@ where
     }
 
     let mut input = TextInput::new();
-    let mut ui_mode = UiMode::Normal;
+    let mut ui_mode = UiMode::Normal {
+        choice_focused: false,
+    };
     let mut session_picker: Option<SessionPicker> = None;
     let mut model_picker: Option<ModelPicker> = None;
     let mut quit_picker: Option<QuitPicker> = None;
@@ -279,7 +280,7 @@ where
                             thread_buffers.clear();
                             thread_id = None;
                             spinner_state = None;
-                            ui_mode = UiMode::Normal;
+                            ui_mode = UiMode::Normal { choice_focused: false };
                         }
                         _ => {}
                     }
@@ -523,21 +524,22 @@ where
                     DisplayEvent::UserChoiceRequired { id, prompt, choices, default, .. } => {
                         choice_queue.push_back(PendingChoice { id, prompt, choices, default });
                         // Show the first queued choice if no picker is active
-                        if choice_picker.is_none() && ui_mode != UiMode::ChoicePicker
+                        if choice_picker.is_none()
                             && let Some(pending) = choice_queue.front() {
                                 choice_picker = Some(ChoicePicker::new(pending.prompt.clone(), pending.choices.clone(), pending.default));
-                                ui_mode = UiMode::ChoicePicker;
+                                ui_mode = UiMode::Normal { choice_focused: true };
                             }
                     }
                     DisplayEvent::UserChoiceComplete { choice_id } => {
                         let was_front = choice_queue.front().is_some_and(|c| c.id == choice_id);
                         choice_queue.retain(|c| c.id != choice_id);
-                        if was_front && ui_mode == UiMode::ChoicePicker {
+                        if was_front && choice_picker.is_some() {
                             if let Some(next) = choice_queue.front() {
                                 choice_picker = Some(ChoicePicker::new(next.prompt.clone(), next.choices.clone(), next.default));
+                                ui_mode = UiMode::Normal { choice_focused: true };
                             } else {
                                 choice_picker = None;
-                                ui_mode = UiMode::Normal;
+                                ui_mode = UiMode::Normal { choice_focused: false };
                             }
                         }
                     }
@@ -565,7 +567,7 @@ where
                             got_resize = true;
                         }
                         Event::Paste(text) => {
-                            if matches!(ui_mode, UiMode::Normal) {
+                            if matches!(ui_mode, UiMode::Normal { .. }) {
                                 input.insert_str(&text);
                             }
                         }
@@ -587,12 +589,12 @@ where
                                                     }
                                                 }
                                                 SessionPickerResult::Cancelled => {
-                                                    ui_mode = UiMode::Normal;
+                                                    ui_mode = UiMode::Normal { choice_focused: false };
                                                 }
                                             }
                                             session_picker = None;
                                             if ui_mode == UiMode::SessionPicker {
-                                                ui_mode = UiMode::Normal;
+                                                ui_mode = UiMode::Normal { choice_focused: false };
                                             }
                                         }
                                     }
@@ -618,7 +620,7 @@ where
                                                 ModelPickerResult::Cancelled => {}
                                             }
                                             model_picker = None;
-                                            ui_mode = UiMode::Normal;
+                                            ui_mode = UiMode::Normal { choice_focused: false };
                                         }
                                     }
                                 }
@@ -637,31 +639,35 @@ where
                                                     return Ok(true);
                                                 }
                                                 QuitPickerResult::Cancelled => {
-                                                    ui_mode = UiMode::Normal;
+                                                    ui_mode = UiMode::Normal { choice_focused: false };
                                                 }
                                             }
                                         }
                                     }
                                 }
-                                UiMode::ChoicePicker => {
-                                    if let Some(ref mut picker) = choice_picker {
-                                        picker.handle_keystroke(key);
+                                UiMode::Normal { choice_focused: cf } => {
+                                    // Route to choice picker when it has focus.
+                                    if cf && choice_picker.is_some() {
+                                        let picker = choice_picker.as_mut().expect("bug: choice_focused but no picker");
+                                        let kr = picker.handle_keystroke(key);
+                                        if matches!(kr, KeyResult::NotCaptured) {
+                                            // Down past last choice → move focus to input
+                                            ui_mode = UiMode::Normal { choice_focused: false };
+                                        }
                                         if let Some(result) = picker.take_result() {
                                             let ChoicePickerResult::Selected(idx) = result;
                                             if let Some(pending) = choice_queue.pop_front() {
                                                 let _ = choice_answered_tx.send((pending.id, idx));
                                             }
                                             choice_picker = None;
-                                            // Show next queued choice, or return to normal
                                             if let Some(next) = choice_queue.front() {
                                                 choice_picker = Some(ChoicePicker::new(next.prompt.clone(), next.choices.clone(), next.default));
+                                                ui_mode = UiMode::Normal { choice_focused: true };
                                             } else {
-                                                ui_mode = UiMode::Normal;
+                                                ui_mode = UiMode::Normal { choice_focused: false };
                                             }
                                         }
-                                    }
-                                }
-                                UiMode::Normal => {
+                                    } else {
                                     // Handle Tab for autocomplete cycling.
                                     if key.code == KeyCode::Tab {
                                         let prefix = tab_complete.as_ref().map(|(p, _)| p.clone())
@@ -685,6 +691,10 @@ where
                                         tab_complete = None;
                                     }
                                     if matches!(captured, KeyResult::NotCaptured) {
+                                        // Up at top of input → shift focus to choice picker
+                                        if key.code == KeyCode::Up && choice_picker.is_some() {
+                                            ui_mode = UiMode::Normal { choice_focused: true };
+                                        } else {
                                         // Map both Ctrl shortcuts and slash commands to a
                                         // canonical command, then handle in one place.
                                         let (command, user_text): (Option<&str>, Option<String>) = match (key.code, key.modifiers) {
@@ -784,8 +794,10 @@ where
                                                 }
                                             }
                                         }
+                                        } // else (not Up→choice)
                                     }
                                     }
+                                    } // else (input focused)
                                 }
                             }
                         }
@@ -913,6 +925,12 @@ fn draw_viewport(
     let max_context = context_window;
     let current_width = viewport.area().width;
     let thread_rows = thread_buffers.len() as u16;
+    let choice_focused = matches!(
+        ui_mode,
+        UiMode::Normal {
+            choice_focused: true
+        }
+    );
 
     // Determine status bar text based on mode.
     let pct = if max_context > 0 {
@@ -931,10 +949,13 @@ fn draw_viewport(
         format!("{:.0}% context used", pct)
     };
     let status_left = match ui_mode {
-        UiMode::SessionPicker | UiMode::ModelPicker | UiMode::QuitPicker | UiMode::ChoicePicker => {
+        UiMode::SessionPicker | UiMode::ModelPicker | UiMode::QuitPicker => {
             "↑↓ navigate  enter select  esc cancel".to_owned()
         }
-        UiMode::Normal => format!("{} (/help for commands)", model_name),
+        UiMode::Normal { .. } if choice_picker.is_some() => {
+            "↑↓ navigate  enter select  esc default".to_owned()
+        }
+        UiMode::Normal { .. } => format!("{} (/help for commands)", model_name),
     };
 
     // Snapshot thread lines for the closure.
@@ -955,6 +976,10 @@ fn draw_viewport(
         .collect();
 
     // Compute desired height based on mode.
+    let choice_height = choice_picker
+        .as_ref()
+        .map(|p| p.preferred_height())
+        .unwrap_or(0);
     let (content_height, is_picker) = match ui_mode {
         UiMode::SessionPicker => {
             let picker_height = session_picker
@@ -977,19 +1002,12 @@ fn draw_viewport(
                 .unwrap_or(1);
             (picker_height, true)
         }
-        UiMode::ChoicePicker => {
-            let picker_height = choice_picker
-                .as_ref()
-                .map(|p| p.preferred_height())
-                .unwrap_or(1);
-            (picker_height, true)
-        }
-        UiMode::Normal => (input.preferred_height(current_width), false),
+        UiMode::Normal { .. } => (choice_height + input.preferred_height(current_width), false),
     };
 
     // Compute autocomplete hints for slash commands.
     let (autocomplete, ac_selected): (Vec<(&str, &str)>, Option<usize>) =
-        if matches!(ui_mode, UiMode::Normal) {
+        if matches!(ui_mode, UiMode::Normal { .. }) {
             let prefix = tab_complete
                 .as_ref()
                 .map(|(p, _)| p.as_str())
@@ -1117,7 +1135,7 @@ fn draw_viewport(
             // blank line is the last row of ac_area, left empty
         }
 
-        // Content area — either session picker, model picker, quit picker, choice picker, or input
+        // Content area — either session picker, model picker, quit picker, or choice+input
         if is_picker {
             if let Some(picker) = session_picker {
                 frame.render_widget(SessionPickerWidget::new(picker), areas[idx]);
@@ -1125,10 +1143,21 @@ fn draw_viewport(
                 frame.render_widget(ModelPickerWidget::new(picker), areas[idx]);
             } else if let Some(picker) = quit_picker {
                 frame.render_widget(QuitPickerWidget::new(picker), areas[idx]);
-            } else if let Some(picker) = choice_picker {
-                frame.render_widget(ChoicePickerWidget::new(picker), areas[idx]);
             }
             // No cursor in picker mode
+        } else if choice_height > 0 {
+            // Split content area: choice picker on top, input below
+            let content_area = areas[idx];
+            let splits = Layout::vertical([Constraint::Length(choice_height), Constraint::Min(1)])
+                .split(content_area);
+            if let Some(picker) = choice_picker {
+                frame.render_widget(ChoicePickerWidget::new(picker), splits[0]);
+            }
+            let mut cursor_pos = None;
+            frame.render_widget(TextInputWidget::new(input, &mut cursor_pos), splits[1]);
+            if !choice_focused && let Some(pos) = cursor_pos {
+                frame.set_cursor_position(pos);
+            }
         } else {
             let mut cursor_pos = None;
             frame.render_widget(TextInputWidget::new(input, &mut cursor_pos), areas[idx]);

@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, type KeyboardEvent } from 'react';
+import { useState, useRef, useCallback, forwardRef, useImperativeHandle, type KeyboardEvent } from 'react';
 import type { SpinnerState } from '../types';
 import { Spinner } from './Spinner';
 import css from './InputBar.module.css';
@@ -9,9 +9,15 @@ interface Props {
   spinner: SpinnerState | null;
 }
 
-export function InputBar({ onSend, disabled, spinner }: Props) {
+export interface InputBarHandle {
+  focus: () => void;
+}
+
+export const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ onSend, disabled, spinner }, fwdRef) {
   const [value, setValue] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useImperativeHandle(fwdRef, () => ({ focus: () => textareaRef.current?.focus() }), []);
 
   const submit = useCallback(() => {
     const trimmed = value.trim();
@@ -65,5 +71,5 @@ export function InputBar({ onSend, disabled, spinner }: Props) {
         </button>
       </div>
     </div>
-  );
-}
+    );
+});
