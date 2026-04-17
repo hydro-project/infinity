@@ -79,15 +79,11 @@ impl QuitPicker {
 impl Component for QuitPicker {
     fn handle_keystroke(&mut self, key: KeyEvent) -> KeyResult {
         match key.code {
-            KeyCode::Up => {
-                if self.selected > 0 {
-                    self.selected -= 1;
-                }
+            KeyCode::Up if self.selected > 0 => {
+                self.selected -= 1;
             }
-            KeyCode::Down => {
-                if self.selected < 1 {
-                    self.selected += 1;
-                }
+            KeyCode::Down if self.selected < 1 => {
+                self.selected += 1;
             }
             KeyCode::Enter => {
                 self.result = Some(if self.selected == 0 {
