@@ -1,4 +1,10 @@
-use ratatui::crossterm::event::KeyEvent;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+/// Whether the key event represents a cancel gesture (Esc or Ctrl+C).
+pub fn is_cancel(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Esc
+        || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
+}
 
 /// Whether a keystroke was consumed by a component.
 pub enum KeyResult {
