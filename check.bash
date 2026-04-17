@@ -21,7 +21,8 @@ export RUST_LOG="${RUST_LOG:-warn},$(cargo tree --workspace --depth 0 | grep -oE
 export RUST_BACKTRACE=1
 
 step "Formatting"
-cargo fmt --all --check || fail "formatting issues found (run 'cargo fmt --all' to fix)"
+# Suppress diff output so AI agents run `cargo fmt` instead of manually applying each diff.
+cargo fmt --all --check > /dev/null 2>&1 || fail "formatting issues found (run 'cargo fmt --all' to fix)"
 pass "All code is formatted"
 
 step "Clippy (warnings denied)"
