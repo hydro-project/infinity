@@ -17,8 +17,12 @@ struct Cli {
     command: Option<Commands>,
 
     /// Send an initial message to the agent on startup.
-    #[arg(short, long)]
-    message: Option<String>,
+    #[arg(short = 'i', long = "initial-message")]
+    initial_message: Option<String>,
+
+    /// Send the task to the daemon and exit without opening the TUI.
+    #[arg(short = 'H', long)]
+    headless: Option<String>,
 
     #[arg(short, long)]
     local: bool,
@@ -201,11 +205,16 @@ async fn async_main() -> Result<(), BoxError> {
         };
     }
 
+    // Headless mode: send task to daemon and exit without TUI.
+    if let Some(message) = cli.headless {
+        return daemon_client::run_headless(message).await;
+    }
+
     // Try daemon mode first — auto-launches daemon if not running.
     let daemon_err = if cli.local {
         None
     } else {
-        match daemon_client::run_with_daemon(cli.message.clone()).await {
+        match daemon_client::run_with_daemon(cli.initial_message.clone()).await {
             Ok(()) => return Ok(()),
             Err(e) => {
                 tracing::debug!("daemon mode failed, falling back to direct mode: {e}");
@@ -215,7 +224,7 @@ async fn async_main() -> Result<(), BoxError> {
     };
 
     // Direct mode: run daemon session manager in-process
-    run_direct(cli.message, daemon_err).await
+    run_direct(cli.initial_message, daemon_err).await
 }
 
 #[tracing::instrument]
