@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::{invoke, start_test_server};
+use common::{invoke, invoke_raw, start_test_server};
 use rap_client::callback_server::start_callback_channel;
 
 use std::path::Path;
@@ -256,4 +256,52 @@ async fn git_describe_without_user() {
     let repo = tmp.path();
 
     insta::assert_snapshot!(git_describe_and_read_log(repo).await);
+}
+
+#[tokio::test]
+async fn describe_returns_display_segments() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let tmp = common::jj_init_with_file("README.md", "hello\n");
+    let repo = tmp.path();
+
+    let server_url = start_test_server(&repo.join(".test-metadata")).await;
+    let (callback_url, mut rx) = start_callback_channel()
+        .await
+        .expect("start callback channel");
+
+    let group_id = "test-display";
+    let repo_str = repo.to_str().expect("repo path to str");
+
+    let text = invoke(
+        &server_url,
+        &callback_url,
+        group_id,
+        "clone_repo",
+        serde_json::json!({ "repo": repo_str }),
+        &mut rx,
+        None,
+    )
+    .await;
+    assert!(text.contains("Repository initialized"), "got: {text}");
+
+    let message = "feat: add widget support\n\nAdded the new widget module.";
+    let result = invoke_raw(
+        &server_url,
+        &callback_url,
+        group_id,
+        "describe_overall_changes",
+        serde_json::json!({ "message": message }),
+        &mut rx,
+        None,
+    )
+    .await;
+
+    assert_eq!(result.text, "Edits described.");
+    let segments = result.display_as.expect("display_as should be Some");
+    assert_eq!(segments.len(), 1);
+    match &segments[0] {
+        rap_protocol::DisplaySegment::Text(t) => assert_eq!(t, message),
+        other => panic!("expected Text segment, got: {other:?}"),
+    }
 }

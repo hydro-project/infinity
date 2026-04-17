@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rap_protocol::{RapCallback, RapInvocation, RapViewUpdate};
+use rap_protocol::{RapCallback, RapInvocation, RapToolResult, RapViewUpdate};
 use sandbox_core::callback::PlainCallbackClient;
 use sandbox_core::server::build_router;
 use sandbox_local::backend::LocalBackend;
@@ -57,6 +57,29 @@ pub async fn invoke(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<RapCallback>,
     thread_ancestors: Option<Vec<String>>,
 ) -> String {
+    invoke_raw(
+        server_url,
+        callback_url,
+        group_id,
+        operation,
+        arguments,
+        rx,
+        thread_ancestors,
+    )
+    .await
+    .text
+}
+
+/// Like [`invoke`] but returns the full [`RapToolResult`] including `display_as`.
+pub async fn invoke_raw(
+    server_url: &str,
+    callback_url: &str,
+    group_id: &str,
+    operation: &str,
+    arguments: serde_json::Value,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<RapCallback>,
+    thread_ancestors: Option<Vec<String>>,
+) -> RapToolResult {
     let invocation = RapInvocation {
         operation: operation.to_owned(),
         arguments,
@@ -78,7 +101,6 @@ pub async fn invoke(
         .await
         .expect("send invoke request");
 
-    // Loop to skip ViewUpdate callbacks and find the ToolResult.
     loop {
         let cb = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
             .await
@@ -86,7 +108,7 @@ pub async fn invoke(
             .expect("channel closed");
 
         match cb {
-            RapCallback::ToolResult(r) => return r.text,
+            RapCallback::ToolResult(r) => return r,
             RapCallback::ViewUpdate(_) => continue,
             other => panic!("expected ToolResult, got: {other:?}"),
         }
