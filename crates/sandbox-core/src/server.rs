@@ -1636,11 +1636,12 @@ async fn handle_describe_overall_changes<B: SandboxBackend, M: MetadataStore, C:
     let args: DescribeOverallChangesArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
+    let display = Some(vec![DisplaySegment::Text(args.message.clone())]);
     with_sandbox(
         state,
         invocation,
         Some(&args.message),
-        |_sandbox_dir| async move { Ok(("Edits described.".to_owned(), None)) },
+        |_sandbox_dir| async move { Ok(("Edits described.".to_owned(), display)) },
         true,
     )
     .await
@@ -2245,7 +2246,7 @@ fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
             },
             ToolDef {
                 name: "describe_overall_changes".to_owned(),
-                description: "Call this after finishing a coding task or subtask to describe the overall changes. Use a git-style commit message: a short one-line summary, followed by a blank line, then detailed explanations of what was changed and why.".to_owned(),
+                description: "Call this after finishing a coding task or subtask to describe the overall changes. Use a git-style commit message: a short one-line summary, followed by a blank line, then detailed explanations of what was changed and why. The message will be displayed to the user automatically; do not repeat it in your response.".to_owned(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -2257,7 +2258,7 @@ fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
                     "required": ["message"]
                 }),
                 annotations: None,
-                display_script: None,
+                display_script: Some(r#"let lines = args.message.split("\n"); "Describe changes: " + lines[0]"#.to_owned()),
             },
             ToolDef {
                 name: "squash_sandbox".to_owned(),
