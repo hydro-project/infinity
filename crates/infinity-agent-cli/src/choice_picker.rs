@@ -97,15 +97,11 @@ impl ChoicePicker {
 impl Component for ChoicePicker {
     fn handle_keystroke(&mut self, key: KeyEvent) -> KeyResult {
         match key.code {
-            KeyCode::Up => {
-                if self.selected > 0 {
-                    self.selected -= 1;
-                }
+            KeyCode::Up if self.selected > 0 => {
+                self.selected -= 1;
             }
-            KeyCode::Down => {
-                if self.selected < self.choices.len().saturating_sub(1) {
-                    self.selected += 1;
-                }
+            KeyCode::Down if self.selected < self.choices.len().saturating_sub(1) => {
+                self.selected += 1;
             }
             KeyCode::Enter => {
                 self.result = Some(ChoicePickerResult::Selected(self.selected));
