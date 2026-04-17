@@ -1,4 +1,4 @@
-use crate::component::{Component, KeyResult};
+use crate::component::{Component, KeyResult, is_cancel};
 use infinity_protocol::{SessionInfo, SessionStatus};
 use ratatui::{
     buffer::Buffer,
@@ -220,7 +220,7 @@ impl Component for SessionPicker {
                 self.confirm();
                 KeyResult::Captured
             }
-            KeyCode::Esc => {
+            _ if is_cancel(&key) => {
                 self.cancel();
                 KeyResult::Captured
             }
