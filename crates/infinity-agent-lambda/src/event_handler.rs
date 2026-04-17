@@ -271,13 +271,11 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             DisplayEvent::TextChunk { chunk, .. } => {
                 accumulated_text.push_str(&chunk);
             }
-            DisplayEvent::ToolCall { name, args, .. } => {
-                if name != "sleep_until_event_or_input" {
-                    accumulated_text.push_str(&format!(
-                        "\n[Tool Call: {} with arguments {}]\n",
-                        name, args
-                    ));
-                }
+            DisplayEvent::ToolCall { name, args, .. } if name != "sleep_until_event_or_input" => {
+                accumulated_text.push_str(&format!(
+                    "\n[Tool Call: {} with arguments {}]\n",
+                    name, args
+                ));
             }
             DisplayEvent::OAuthRequired { auth_url } => {
                 oauth_auth_url = Some(auth_url);
