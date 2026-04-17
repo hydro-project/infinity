@@ -22,13 +22,14 @@ Write the description in **Markdown**. Use bullet lists, code spans, and heading
 ```
 feat(infinity-daemon): add session persistence via `sessions.json`
 
-- Store sessions to `~/.infinity/sessions.json` on shutdown
-- Restore on startup via `SessionStore::load()`
-- Skip sessions older than 7 days
+* Store sessions to `~/.infinity/sessions.json` on shutdown
+* Restore on startup via `SessionStore::load()`
+* Skip sessions older than 7 days
 ```
 
 ## Development
 
-- Run `./check.bash` to test your changes before finalizing.
-- Use `.expect("...")` with a descriptive message instead of `.unwrap()`. Prefix the message with "bug:" if a panic
+* Run `./check.bash` to test your changes before finalizing.
+* Never ignore errors (`Result::Err`), make sure they are passed along or at least logged.
+* Use `.expect("...")` with a descriptive message instead of `.unwrap()`. Prefix the message with "bug:" if a panic
   would represent a logical bug in our code (rather than a runtime error out of our control).
