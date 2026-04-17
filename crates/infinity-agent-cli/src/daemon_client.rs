@@ -220,12 +220,16 @@ pub async fn run_headless(message: String) -> Result<(), BoxError> {
     framed.send(Bytes::from(serde_json::to_vec(&msg)?)).await?;
 
     println!("Session {session_id} created — agent is running in the background.");
+    println!("To connect: infinity --session '{session_id}'");
 
     Ok(())
 }
 
 /// Connect to the daemon over a unix socket (serialized framing).
-pub async fn run_with_daemon(initial_message: Option<String>) -> Result<(), BoxError> {
+pub async fn run_with_daemon(
+    initial_message: Option<String>,
+    session: Option<String>,
+) -> Result<(), BoxError> {
     let stream = ensure_daemon_running().await?;
     let mut framed = Framed::new(stream, LengthDelimitedCodec::new());
 
@@ -233,7 +237,7 @@ pub async fn run_with_daemon(initial_message: Option<String>) -> Result<(), BoxE
     let (from_daemon_tx, from_daemon_rx) = mpsc::unbounded_channel::<DaemonMessage>();
 
     tokio::pin! {
-        let client_fut = run_client(from_daemon_rx, to_daemon_tx, initial_message, None);
+        let client_fut = run_client(from_daemon_rx, to_daemon_tx, initial_message, session, None);
     }
 
     loop {
@@ -283,9 +287,17 @@ pub async fn run_in_memory(
     from_daemon_rx: mpsc::UnboundedReceiver<DaemonMessage>,
     to_daemon_tx: mpsc::UnboundedSender<ClientMessage>,
     initial_message: Option<String>,
+    session: Option<String>,
     startup_info: Option<String>,
 ) -> Result<(), BoxError> {
-    run_client(from_daemon_rx, to_daemon_tx, initial_message, startup_info).await
+    run_client(
+        from_daemon_rx,
+        to_daemon_tx,
+        initial_message,
+        session,
+        startup_info,
+    )
+    .await
 }
 
 /// Core client logic — works with channels regardless of transport.
@@ -293,6 +305,7 @@ async fn run_client(
     mut from_daemon: mpsc::UnboundedReceiver<DaemonMessage>,
     to_daemon: mpsc::UnboundedSender<ClientMessage>,
     initial_message: Option<String>,
+    session: Option<String>,
     startup_info: Option<String>,
 ) -> Result<(), BoxError> {
     // Read Welcome
@@ -348,6 +361,17 @@ async fn run_client(
         None,
         DisplayEvent::Info(format!("Using provider {} ({})", provider_name, model_name)),
     ));
+
+    // If --session was provided, connect to it immediately.
+    if let Some(ref session_id) = session {
+        if !sessions.contains_key(session_id) {
+            return Err(format!("no session found with ID '{session_id}'").into());
+        }
+        to_daemon.send(ClientMessage::Connect {
+            session_id: session_id.clone(),
+            thread_id: None,
+        })?;
+    }
 
     let models_for_switch = model_entries.clone();
 
