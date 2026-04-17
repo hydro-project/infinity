@@ -156,6 +156,74 @@ fn launch_daemon() -> Result<(), BoxError> {
     Ok(())
 }
 
+/// Send a task to the daemon and exit without opening the TUI.
+pub async fn run_headless(message: String) -> Result<(), BoxError> {
+    let stream = ensure_daemon_running().await?;
+    let mut framed = Framed::new(stream, LengthDelimitedCodec::new());
+
+    /// Receive the next DaemonMessage from the framed socket.
+    async fn recv(
+        framed: &mut Framed<UnixStream, LengthDelimitedCodec>,
+    ) -> Result<DaemonMessage, BoxError> {
+        match framed.next().await {
+            Some(Ok(bytes)) => Ok(serde_json::from_slice::<DaemonMessage>(&bytes)
+                .expect("bug: failed to deserialize daemon message")),
+            _ => Err("daemon disconnected".into()),
+        }
+    }
+
+    // Read Welcome (must be first message).
+    match recv(&mut framed).await? {
+        DaemonMessage::Welcome { .. } => {}
+        DaemonMessage::Error { text, .. } => return Err(text.into()),
+        _ => return Err("expected Welcome from daemon".into()),
+    }
+
+    let cwd = std::env::current_dir()?;
+
+    // Create a new session.
+    let msg = ClientMessage::CreateSession {
+        cwd,
+        location: None,
+    };
+    framed.send(Bytes::from(serde_json::to_vec(&msg)?)).await?;
+
+    // Wait for Connected to get the session ID.
+    let session_id = loop {
+        match recv(&mut framed).await? {
+            DaemonMessage::Connected { session_id, .. } => break session_id,
+            DaemonMessage::Error { text, .. } => return Err(text.into()),
+            _ => continue, // skip SessionsUpdated, etc.
+        }
+    };
+
+    // Send the user's message.
+    let msg = ClientMessage::UserInput {
+        session_id: session_id.clone(),
+        text: message,
+    };
+    framed.send(Bytes::from(serde_json::to_vec(&msg)?)).await?;
+
+    // Wait for the agent to start processing before disconnecting,
+    // so the session isn't killed by the idle check. Also surface any
+    // initialization errors.
+    loop {
+        match recv(&mut framed).await? {
+            DaemonMessage::StartOutput { .. } => break,
+            DaemonMessage::Error { text, .. } => return Err(text.into()),
+            _ => continue,
+        }
+    }
+
+    // Disconnect (agent keeps running in the background).
+    let msg = ClientMessage::Disconnect;
+    framed.send(Bytes::from(serde_json::to_vec(&msg)?)).await?;
+
+    println!("Session {session_id} created — agent is running in the background.");
+
+    Ok(())
+}
+
 /// Connect to the daemon over a unix socket (serialized framing).
 pub async fn run_with_daemon(initial_message: Option<String>) -> Result<(), BoxError> {
     let stream = ensure_daemon_running().await?;
