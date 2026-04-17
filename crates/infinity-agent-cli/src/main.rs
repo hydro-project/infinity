@@ -24,6 +24,10 @@ struct Cli {
     #[arg(short = 'H', long, conflicts_with = "local")]
     headless: Option<String>,
 
+    /// Connect directly to an existing session by ID.
+    #[arg(short = 's', long)]
+    session: Option<String>,
+
     #[arg(short, long)]
     local: bool,
 }
@@ -214,7 +218,8 @@ async fn async_main() -> Result<(), BoxError> {
     let daemon_err = if cli.local {
         None
     } else {
-        match daemon_client::run_with_daemon(cli.initial_message.clone()).await {
+        match daemon_client::run_with_daemon(cli.initial_message.clone(), cli.session.clone()).await
+        {
             Ok(()) => return Ok(()),
             Err(e) => {
                 tracing::debug!("daemon mode failed, falling back to direct mode: {e}");
@@ -224,12 +229,13 @@ async fn async_main() -> Result<(), BoxError> {
     };
 
     // Direct mode: run daemon session manager in-process
-    run_direct(cli.initial_message, daemon_err).await
+    run_direct(cli.initial_message, cli.session, daemon_err).await
 }
 
 #[tracing::instrument]
 async fn run_direct(
     initial_message: Option<String>,
+    session: Option<String>,
     daemon_err: Option<String>,
 ) -> Result<(), BoxError> {
     let state_dir = std::env::current_dir()?.join(".infinity");
@@ -250,7 +256,13 @@ async fn run_direct(
             from_daemon_tx,
             mgr.clone(),
         ),
-        daemon_client::run_in_memory(from_daemon_rx, to_daemon_tx, initial_message, daemon_err)
+        daemon_client::run_in_memory(
+            from_daemon_rx,
+            to_daemon_tx,
+            initial_message,
+            session,
+            daemon_err
+        )
     );
 
     let mut mgr = mgr.lock().await;
