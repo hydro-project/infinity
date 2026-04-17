@@ -1,13 +1,13 @@
 use crate::component::{Component, KeyResult};
 use ratatui::{
     buffer::Buffer,
-    crossterm::event::{KeyCode, KeyEvent},
+    crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
     layout::Rect,
     style::{Color, Modifier, Style},
     widgets::Widget,
 };
 
-const OPTIONS: [&str; 2] = ["Shut down agent", "Continue running agent in background"];
+const OPTIONS: [&str; 2] = ["Continue running agent in background", "Shut down agent"];
 
 pub enum QuitPickerResult {
     ShutDown,
@@ -87,13 +87,16 @@ impl Component for QuitPicker {
             }
             KeyCode::Enter => {
                 self.result = Some(if self.selected == 0 {
-                    QuitPickerResult::ShutDown
-                } else {
                     QuitPickerResult::KeepRunning
+                } else {
+                    QuitPickerResult::ShutDown
                 });
             }
             KeyCode::Esc => {
                 self.result = Some(QuitPickerResult::Cancelled);
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.result = Some(QuitPickerResult::KeepRunning);
             }
             _ => {}
         }

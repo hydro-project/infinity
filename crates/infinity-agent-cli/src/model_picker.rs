@@ -1,4 +1,4 @@
-use crate::component::{Component, KeyResult};
+use crate::component::{Component, KeyResult, is_cancel};
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{KeyCode, KeyEvent},
@@ -154,7 +154,7 @@ impl Component for ModelPicker {
                 self.confirm();
                 KeyResult::Captured
             }
-            KeyCode::Esc => {
+            _ if is_cancel(&key) => {
                 self.cancel();
                 KeyResult::Captured
             }
