@@ -1,4 +1,4 @@
-use crate::component::{Component, KeyResult};
+use crate::component::{Component, KeyResult, is_cancel};
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{KeyCode, KeyEvent},
@@ -106,7 +106,7 @@ impl Component for ChoicePicker {
             KeyCode::Enter => {
                 self.result = Some(ChoicePickerResult::Selected(self.selected));
             }
-            KeyCode::Esc => {
+            _ if is_cancel(&key) => {
                 self.result = Some(ChoicePickerResult::Selected(self.default));
             }
             _ => {}
