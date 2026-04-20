@@ -249,9 +249,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-bedrockruntime"
-version = "1.129.0"
+version = "1.130.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c710f0b7dbd906047724ec892afc0de0b92c7484ba25f499a91563e0417a96d6"
+checksum = "3e2f7bca252e3c5c8f0ed12c5501bf8b0fbadb937cd9fdd71a0ebd9d7526540f"
 dependencies = [
  "aws-credential-types",
  "aws-runtime",
@@ -276,9 +276,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-dsql"
-version = "1.54.0"
+version = "1.55.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40c5d3eaf1e6be811d2567a0d972ba977019f5f4b5f88698ae9eb52357c97f80"
+checksum = "f914acf80007b4d0fc1e68d7f8045b39d58367bc3aaa8270c44368e8b8dd3ee1"
 dependencies = [
  "aws-credential-types",
  "aws-runtime",
@@ -302,9 +302,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-dynamodb"
-version = "1.110.0"
+version = "1.111.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c597424385739456cd04535982831c15bd58f97ca28c5bcb232c0d730d5cb39"
+checksum = "fc418346e3cb248c7d59e642acbcb06488b7c7cd2ba6ebc79e8003f618c60099"
 dependencies = [
  "aws-credential-types",
  "aws-runtime",
@@ -326,9 +326,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-scheduler"
-version = "1.97.0"
+version = "1.98.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2520efef3114265e4753230775f6b6759df03fb900bc1278d884e530c726c8d"
+checksum = "ccfe5f789a61ea1f11e7627af0b1050ee863d8f3e2ac1b73a692c944233b070c"
 dependencies = [
  "aws-credential-types",
  "aws-runtime",
@@ -350,9 +350,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-sqs"
-version = "1.97.0"
+version = "1.98.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d497fb382b906b04167e62848ad00e56c5ad523791a461d5a5611c186531d81"
+checksum = "5d5ee88532abaf0f125d460659cb80fe1506322f69131ed789c32c8d84c520ab"
 dependencies = [
  "aws-credential-types",
  "aws-runtime",
@@ -3523,9 +3523,9 @@ checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.12"
+version = "0.103.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8279bb85272c9f10811ae6a6c547ff594d6a7f3c6c6b02ee9726d1d0dcfcdd06"
+checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
 dependencies = [
  "aws-lc-rs",
  "ring",
