@@ -137,6 +137,37 @@ pub async fn jj_push_working_copy(dir: &Path, bookmark_name: &str) -> Result<(),
     Ok(())
 }
 
+/// Check if a bookmark has been moved externally (i.e. no longer points to `@`).
+pub async fn jj_detect_external_bookmark_move(dir: &Path, bookmark_name: &str) -> bool {
+    let Some(bookmark_commit) = run_jj(
+        dir,
+        &["log", "--no-graph", "-r", bookmark_name, "-T", "commit_id"],
+    )
+    .await
+    .ok() else {
+        return false;
+    };
+    let Some(working_copy_commit) =
+        run_jj(dir, &["log", "--no-graph", "-r", "@", "-T", "commit_id"])
+            .await
+            .ok()
+    else {
+        return false;
+    };
+
+    if bookmark_commit != working_copy_commit {
+        tracing::warn!(
+            bookmark = %bookmark_name,
+            bookmark_target = %bookmark_commit,
+            working_copy = %working_copy_commit,
+            "bookmark was moved externally; overwriting with sandbox working copy"
+        );
+        true
+    } else {
+        false
+    }
+}
+
 /// Check if a bookmark's commit is empty (no file changes).
 pub async fn jj_bookmark_is_empty(dir: &Path, bookmark: &str) -> bool {
     run_jj(dir, &["log", "--no-graph", "-r", bookmark, "-T", "empty"])
