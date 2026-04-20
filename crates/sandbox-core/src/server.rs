@@ -642,6 +642,20 @@ where
 
     let result = action(sandbox_dir.clone()).await;
 
+    // Detect external bookmark moves before push overwrites them.
+    let push_warning = if modifies
+        && result.is_ok()
+        && matches!(repo_state.mode, SandboxMode::Jj { .. })
+        && jj::jj_detect_external_bookmark_move(&sandbox_dir, &repo_state.bookmark).await
+    {
+        Some(format!(
+            "Warning: bookmark '{}' was moved externally; overwriting with sandbox working copy.",
+            repo_state.bookmark
+        ))
+    } else {
+        None
+    };
+
     if modifies {
         state
             .backend
@@ -659,7 +673,11 @@ where
 
     tracing::info!(group_id = %group_id, "sandbox operation complete");
 
-    result
+    // Prepend push warning to the result text if present.
+    match (push_warning, result) {
+        (Some(warning), Ok((text, display))) => Ok((format!("{warning}\n{text}"), display)),
+        (_, result) => result,
+    }
 }
 
 // ── Streaming execute_command handler ──
