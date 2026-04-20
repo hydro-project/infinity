@@ -21,7 +21,7 @@ struct Cli {
     initial_message: Option<String>,
 
     /// Send the task to the daemon and exit without opening the TUI.
-    #[arg(short = 'H', long)]
+    #[arg(short = 'H', long, conflicts_with = "local")]
     headless: Option<String>,
 
     #[arg(short, long)]
