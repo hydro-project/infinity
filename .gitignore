@@ -13,4 +13,4 @@ jj-layer/
 
 /rust-toolchain.toml
 
-infinity-web/tsconfig.tsbuildinfo
+/infinity-web/tsconfig.tsbuildinfo
