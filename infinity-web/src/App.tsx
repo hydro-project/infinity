@@ -556,6 +556,21 @@ export function App() {
     [send, sessions],
   );
 
+  const handleArchiveSession = useCallback(() => {
+    if (!sessionRef.current) return;
+    send({ ArchiveSession: { session_id: sessionRef.current } });
+    sessionRef.current = null;
+    threadRef.current = null;
+    setViewThreadId(null);
+    threadStackRef.current = [];
+    setMessages([]);
+    setSpinner(null);
+    setPendingChoices([]);
+    setViews({});
+    setActiveTab(null);
+    streamingRef.current = false;
+  }, [send]);
+
   const handleNewSession = useCallback(() => {
     if (sessionRef.current) {
       send("Disconnect");
@@ -741,11 +756,24 @@ export function App() {
           {modelName && " \u00b7 "}
           {Math.round(contextPct)}% context
         </span>
-        <button
-          className={css.themePill}
-          onClick={toggleTheme}
-          aria-label="Toggle theme"
-        >
+          {sessionRef.current && (
+            <button
+              className={css.archivePill}
+              onClick={handleArchiveSession}
+              aria-label="Archive session"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="3" width="20" height="5" rx="1" />
+                <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+                <path d="M10 12h4" />
+              </svg>
+            </button>
+          )}
+          <button
+            className={css.themePill}
+            onClick={toggleTheme}
+            aria-label="Toggle theme"
+          >
           {theme === "dark"
             ? "\u263E"
             : theme === "light"

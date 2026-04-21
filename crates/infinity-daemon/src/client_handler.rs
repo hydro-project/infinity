@@ -213,6 +213,9 @@ fn strip_client_message(msg: ClientMessage, remote_name: &str) -> ClientMessage 
         ClientMessage::ShutdownSession { session_id } => ClientMessage::ShutdownSession {
             session_id: strip_id(&session_id, remote_name),
         },
+        ClientMessage::ArchiveSession { session_id } => ClientMessage::ArchiveSession {
+            session_id: strip_id(&session_id, remote_name),
+        },
         ClientMessage::SwitchModel {
             session_id,
             model_id,
@@ -501,6 +504,16 @@ pub async fn handle_client_channels(
                     ClientMessage::ShutdownSession { session_id } => {
                         let mut mgr = session_manager.lock().await;
                         mgr.cleanup_session(&session_id).await;
+                        attached_session_id = None;
+                    }
+                    ClientMessage::ArchiveSession { session_id } => {
+                        let mut mgr = session_manager.lock().await;
+                        mgr.cleanup_session(&session_id).await;
+                        let mut store = mgr.session_store.lock().await;
+                        store.mark_archived(&session_id);
+                        if let Err(e) = store.save() {
+                            tracing::error!("Failed to save session store after archiving {session_id}: {e}");
+                        }
                         attached_session_id = None;
                     }
                     ClientMessage::TriggerCompaction { session_id } => {
