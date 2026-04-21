@@ -26,6 +26,10 @@ impl<M: InputSender + 'static> Tool<M> for SleepUntilEventOrInputTool {
         })
     }
 
+    fn display_script(&self) -> Option<&str> {
+        Some(r#""Sleeping until event or input""#)
+    }
+
     async fn execute(
         &self,
         _args: serde_json::Value,
