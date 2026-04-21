@@ -34,6 +34,12 @@ impl<M: InputSender + 'static> Tool<M> for SleepTool {
         })
     }
 
+    fn display_script(&self) -> Option<&str> {
+        Some(
+            r#"let s = "Sleeping " + args.seconds + "s"; if args.reason != () { s += ": " + args.reason; } s"#,
+        )
+    }
+
     async fn execute(
         &self,
         args: serde_json::Value,
@@ -95,6 +101,12 @@ impl<M: InputSender + 'static> Tool<M> for SleepUntilTool {
             },
             "required": ["date", "time"]
         })
+    }
+
+    fn display_script(&self) -> Option<&str> {
+        Some(
+            r#"let s = "Sleeping until " + args.date + " " + args.time; if args.timezone != () { s += " (" + args.timezone + ")"; } s"#,
+        )
     }
 
     async fn execute(
