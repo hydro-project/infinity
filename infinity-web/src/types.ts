@@ -136,6 +136,7 @@ export type ClientMessage =
   | { RequestMigrate: { session_id: string; to: string | null; dest_cwd: string } }
   | { Emigrate: { session_id: string; dest_rap_urls: Record<string, string> } }
   | { EmigrateDone: { session_id: string } }
+  | { ArchiveSession: { session_id: string } }
   | { ListDirectory: { path: string; on: string | null } };
 
 /* ── Spinner states (matching terminal) ── */

@@ -88,6 +88,58 @@ function ThreadTree({
   );
 }
 
+function SessionItem({
+  id,
+  info,
+  activeSessionId,
+  activeThreadId,
+  onSelect,
+  style,
+}: {
+  id: string;
+  info: SessionInfo;
+  activeSessionId: string | null;
+  activeThreadId: string | null;
+  onSelect: (sessionId: string, threadId: string | null) => void;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <div style={style}>
+      <button
+        className={`${css.item} ${id === activeSessionId && !activeThreadId ? css.active : ""}`}
+        onClick={() => onSelect(id, null)}
+      >
+        <span className={css.itemTitle}>
+          <span className={css.itemTitleText}>
+            {info.title ||
+              (id.includes("/")
+                ? id.split("/").pop()!.slice(0, 8)
+                : id.slice(0, 8))}
+          </span>
+          {info.remote && (
+            <span className={css.remotePill}>{info.remote}</span>
+          )}
+        </span>
+        <span className={css.itemMeta}>
+          <span className={css.statusDot} data-status={info.status} />
+          {info.total_tokens_used.toLocaleString()} tokens
+          <CopyThreadId id={id} />
+        </span>
+      </button>
+      {info.threads && info.threads.length > 0 && (
+        <ThreadTree
+          threads={info.threads}
+          parentId={id}
+          sessionId={id}
+          activeThreadId={activeThreadId}
+          onSelect={onSelect}
+          depth={0}
+        />
+      )}
+    </div>
+  );
+}
+
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 480;
 const DEFAULT_WIDTH = 272;
@@ -143,9 +195,15 @@ export function SessionSidebar({
     setWidth(DEFAULT_WIDTH);
   }, []);
 
-  const sorted = Object.entries(sessions)
-    .filter(([, info]) => info.status !== "Archived")
-    .sort(([, a], [, b]) => b.last_updated.localeCompare(a.last_updated));
+    const sorted = Object.entries(sessions)
+      .filter(([, info]) => info.status !== "Archived")
+      .sort(([, a], [, b]) => b.last_updated.localeCompare(a.last_updated));
+
+    const archived = Object.entries(sessions)
+      .filter(([, info]) => info.status === "Archived")
+      .sort(([, a], [, b]) => b.last_updated.localeCompare(a.last_updated));
+
+    const [showArchived, setShowArchived] = useState(false);
 
       return (
         <aside
@@ -201,46 +259,28 @@ export function SessionSidebar({
             ))}
         </div>
       )}
-      <div className={css.list}>
-        {sorted.map(([id, info]) => (
-          <div key={id}>
-            <button
-              className={`${css.item} ${id === activeSessionId && !activeThreadId ? css.active : ""}`}
-              onClick={() => onSelect(id, null)}
-            >
-              <span className={css.itemTitle}>
-                <span className={css.itemTitleText}>
-                  {info.title ||
-                    (id.includes("/")
-                      ? id.split("/").pop()!.slice(0, 8)
-                      : id.slice(0, 8))}
-                </span>
-                {info.remote && (
-                  <span className={css.remotePill}>{info.remote}</span>
-                )}
-              </span>
-              <span className={css.itemMeta}>
-                <span className={css.statusDot} data-status={info.status} />
-                {info.total_tokens_used.toLocaleString()} tokens
-                <CopyThreadId id={id} />
-              </span>
-            </button>
-            {info.threads && info.threads.length > 0 && (
-              <ThreadTree
-                threads={info.threads}
-                parentId={id}
-                sessionId={id}
-                activeThreadId={activeThreadId}
-                onSelect={onSelect}
-                depth={0}
-              />
-            )}
-          </div>
-        ))}
-        {sorted.length === 0 && (
-          <div className={css.empty}>No sessions yet</div>
-        )}
-      </div>
+        <div className={css.list}>
+          {sorted.map(([id, info]) => (
+            <SessionItem key={id} id={id} info={info} activeSessionId={activeSessionId} activeThreadId={activeThreadId} onSelect={onSelect} />
+          ))}
+          {sorted.length === 0 && archived.length === 0 && (
+            <div className={css.empty}>No sessions yet</div>
+          )}
+          {archived.length > 0 && (
+            <>
+              <button
+                className={css.archivedToggle}
+                onClick={() => setShowArchived((p) => !p)}
+              >
+                {showArchived ? "▾" : "▸"} Archived ({archived.length})
+              </button>
+              {showArchived &&
+                archived.map(([id, info]) => (
+                  <SessionItem key={id} id={id} info={info} activeSessionId={activeSessionId} activeThreadId={activeThreadId} onSelect={onSelect} style={{ opacity: 0.6 }} />
+                ))}
+            </>
+          )}
+        </div>
       <div
         className={css.resizeHandle}
         onMouseDown={onDragStart}

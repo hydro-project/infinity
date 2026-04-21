@@ -300,6 +300,10 @@
     border-radius: 4px;
 }
 
+.archivePill {
+    composes: themePill;
+}
+
 .chatIdleDot {
     width: 100px;
     height: 20px;
