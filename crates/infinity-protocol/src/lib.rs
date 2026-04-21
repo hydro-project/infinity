@@ -67,6 +67,10 @@ pub enum ClientMessage {
     ShutdownSession {
         session_id: String,
     },
+    /// Archive a session (shut it down and hide from the main list).
+    ArchiveSession {
+        session_id: String,
+    },
     SwitchModel {
         session_id: String,
         model_id: String,
