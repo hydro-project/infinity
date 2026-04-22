@@ -102,6 +102,18 @@ impl MockModelController {
         round.request
     }
 
+    /// Non-blocking attempt to get the next request. Returns `None` if no
+    /// request is pending.
+    pub fn try_next_request(&mut self) -> Option<CompletionRequest> {
+        match self.round_rx.try_recv() {
+            Ok(round) => {
+                self.current_tx = Some(round.chunk_tx);
+                Some(round.request)
+            }
+            Err(_) => None,
+        }
+    }
+
     /// Send a raw streaming chunk.
     pub fn send_chunk(&self, chunk: RawStreamingChoice<MockStreamingResponse>) {
         self.tx().send(Ok(chunk)).ok();
