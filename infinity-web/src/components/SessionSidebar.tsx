@@ -203,7 +203,11 @@ export function SessionSidebar({
       .filter(([, info]) => info.status === "Archived")
       .sort(([, a], [, b]) => b.last_updated.localeCompare(a.last_updated));
 
-    const [showArchived, setShowArchived] = useState(false);
+      const [showArchived, setShowArchived] = useState(false);
+
+      const disconnectedRemotes = new Set(
+        remotes.filter((r) => r.status !== "connected").map((r) => r.name),
+      );
 
       return (
         <aside
@@ -259,10 +263,10 @@ export function SessionSidebar({
             ))}
         </div>
       )}
-        <div className={css.list}>
-          {sorted.map(([id, info]) => (
-            <SessionItem key={id} id={id} info={info} activeSessionId={activeSessionId} activeThreadId={activeThreadId} onSelect={onSelect} />
-          ))}
+          <div className={css.list}>
+            {sorted.map(([id, info]) => (
+              <SessionItem key={id} id={id} info={info} activeSessionId={activeSessionId} activeThreadId={activeThreadId} onSelect={onSelect} style={info.remote && disconnectedRemotes.has(info.remote) ? { opacity: 0.5 } : undefined} />
+            ))}
           {sorted.length === 0 && archived.length === 0 && (
             <div className={css.empty}>No sessions yet</div>
           )}
