@@ -321,11 +321,9 @@ pub async fn handle_client_channels(
                 }
             } => {
                 let Some(msg) = msg else {
-                    remote_proxy_tx = None;
-                    remote_proxy_rx = None;
-                    let rn = active_remote_name.take().unwrap_or_default();
+                    let rn = active_remote_name.as_deref().unwrap_or("unknown");
                     let _ = daemon_tx.send(DaemonMessage::Error { thread_id: None, text: format!("Remote '{rn}' connection closed") });
-                    continue;
+                    break;
                 };
                 let rn = active_remote_name.as_deref().unwrap_or("");
                 if daemon_tx.send(prefix_daemon_message(msg, rn)).is_err() { break; }
@@ -461,6 +459,10 @@ pub async fn handle_client_channels(
                         }
                     }
                     ClientMessage::UserInput { session_id: thread_id, text } => {
+                        if is_remote_session(&thread_id).is_some() {
+                            let _ = daemon_tx.send(DaemonMessage::Error { thread_id: Some(thread_id), text: "remote is not connected".into() });
+                            continue;
+                        }
                         let mut mgr = session_manager.lock().await;
                         let mut emit = async |msg: DaemonMessage| {
                             let _ = daemon_tx.send(msg);
