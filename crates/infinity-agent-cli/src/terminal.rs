@@ -703,7 +703,6 @@ where
                                             (KeyCode::Char('l'), m) if m.contains(KeyModifiers::CONTROL) => (Some("/load"), None),
                                             (KeyCode::Char('m'), m) if m.contains(KeyModifiers::CONTROL) => (Some("/model"), None),
                                             (KeyCode::Char('n'), m) if m.contains(KeyModifiers::CONTROL) => (Some("/new"), None),
-                                            (KeyCode::Char('k'), m) if m.contains(KeyModifiers::CONTROL) => (Some("/compact"), None),
                                             (KeyCode::Char('s'), m) if m.contains(KeyModifiers::CONTROL) => (Some("/stop"), None),
                                             (KeyCode::Enter, _) if !input.is_empty() => {
                                                 tab_complete = None;
@@ -714,7 +713,7 @@ where
                                                     "/new" | "/n" => (Some("/new"), None),
                                                     "/load" | "/l" => (Some("/load"), None),
                                                     "/model" | "/m" => (Some("/model"), None),
-                                                    "/compact" | "/k" => (Some("/compact"), None),
+                                                    "/compact" => (Some("/compact"), None),
                                                     "/stop" | "/s" => (Some("/stop"), None),
                                                     _ => (None, Some(trimmed)),
                                                 }
@@ -863,7 +862,7 @@ fn show_help(viewport: &mut InlineViewport) -> Result<(), BoxError> {
         "    /new, /n           New session",
         "    /load, /l          Load session",
         "    /model, /m         Switch model",
-        "    /compact, /k       Trigger compaction",
+        "    /compact           Trigger compaction",
         "    /stop, /s          Stop agent",
         "",
         "  Keyboard Shortcuts",
@@ -871,7 +870,6 @@ fn show_help(viewport: &mut InlineViewport) -> Result<(), BoxError> {
         "    Ctrl+N             New session",
         "    Ctrl+L             Load session",
         "    Ctrl+M             Switch model",
-        "    Ctrl+K             Trigger compaction",
         "    Ctrl+S             Stop agent",
         "    Ctrl+H             Show this help",
         "    Enter              Send message",
