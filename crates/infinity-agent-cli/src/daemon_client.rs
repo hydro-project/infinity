@@ -500,6 +500,9 @@ async fn run_client(
                 if let Some(ref sid) = active_session {
                     if text == "__compact__" {
                         let _ = to_daemon.send(ClientMessage::TriggerCompaction { session_id: sid.clone() });
+                    } else if text == "__archive__" {
+                        let _ = to_daemon.send(ClientMessage::ArchiveSession { session_id: sid.clone() });
+                        active_session = None;
                     } else {
                         let _ = to_daemon.send(ClientMessage::UserInput { session_id: sid.clone(), text });
                     }

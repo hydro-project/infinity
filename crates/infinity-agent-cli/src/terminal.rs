@@ -64,6 +64,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/model", "Switch model"),
     ("/compact", "Trigger compaction"),
     ("/stop", "Stop agent"),
+    ("/archive", "Archive session"),
 ];
 
 pub struct SessionChanged {
@@ -715,6 +716,7 @@ where
                                                     "/model" | "/m" => (Some("/model"), None),
                                                     "/compact" => (Some("/compact"), None),
                                                     "/stop" | "/s" => (Some("/stop"), None),
+                                                    "/archive" | "/a" => (Some("/archive"), None),
                                                     _ => (None, Some(trimmed)),
                                                 }
                                             }
@@ -784,6 +786,22 @@ where
                                                 } else {
                                                     viewport.print_line_above(Line::from(vec![
                                                         Span::styled("No active session to stop", Style::default().fg(Color::DarkGray)),
+                                                    ]))?;
+                                                }
+                                            }
+                                            Some("/archive") => {
+                                                if thread_id.is_some() {
+                                                    let _ = input_tx.send("__archive__".to_owned());
+                                                    viewport.print_line_above(Line::from(vec![
+                                                        Span::styled("✦ Session archived", Style::default().fg(Color::Yellow)),
+                                                    ]))?;
+                                                    total_tokens_used = 0;
+                                                    thread_buffers.clear();
+                                                    thread_id = None;
+                                                    spinner_state = None;
+                                                } else {
+                                                    viewport.print_line_above(Line::from(vec![
+                                                        Span::styled("No active session to archive", Style::default().fg(Color::DarkGray)),
                                                     ]))?;
                                                 }
                                             }
@@ -864,6 +882,7 @@ fn show_help(viewport: &mut InlineViewport) -> Result<(), BoxError> {
         "    /model, /m         Switch model",
         "    /compact           Trigger compaction",
         "    /stop, /s          Stop agent",
+        "    /archive, /a       Archive session",
         "",
         "  Keyboard Shortcuts",
         "    Ctrl+C / Ctrl+D    Exit",
