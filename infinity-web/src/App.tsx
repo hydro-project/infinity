@@ -78,6 +78,28 @@ export function App() {
   const streamingRef = useRef(false);
   const chatSpinnerPortalRef = useRef<HTMLDivElement>(null);
   const sidebarDragging = useRef(false);
+  // Track whether we've received Connected for the current session
+  const [sessionConnected, setSessionConnected] = useState(false);
+  const connectRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearConnectRetry = useCallback(() => {
+    if (connectRetryRef.current) {
+      clearInterval(connectRetryRef.current);
+      connectRetryRef.current = null;
+    }
+  }, []);
+
+  /** Send a Connect message and start a retry timer. */
+  const sendConnect = useCallback((sessionId: string, threadId: string | null) => {
+    clearConnectRetry();
+    setSessionConnected(false);
+    sendRef.current({ Connect: { session_id: sessionId, thread_id: threadId } });
+    connectRetryRef.current = setInterval(() => {
+      sendRef.current({ Connect: { session_id: sessionId, thread_id: threadId } });
+    }, 5000);
+    }, [clearConnectRetry]);
+
+  useEffect(() => clearConnectRetry, [clearConnectRetry]);
 
   /** Check if a message's thread_id matches the thread we're currently viewing. */
   const isForCurrentView = useCallback(
@@ -159,28 +181,34 @@ export function App() {
             setModels(p.available_models);
             setModelName(p.default_model_name);
             setContextWindow(p.default_context_window);
-            setRemotes(p.remotes ?? []);
-            appendMessage({
-              type: "info",
-              text: `Using provider ${p.provider_name} (${p.default_model_name})`,
-            });
-            break;
+              setRemotes(p.remotes ?? []);
+              appendMessage({
+                type: "info",
+                text: `Using provider ${p.provider_name} (${p.default_model_name})`,
+              });
+              // Re-connect to the session we were viewing before the WS dropped
+              if (sessionRef.current) {
+                sendConnect(sessionRef.current, viewThreadId);
+              }
+              break;
           }
-          case "Connected": {
-            const p = msgPayload<{
-              session_id: string;
-              thread_id: string;
-              model_name: string;
-              context_window: number;
-              title: string | null;
-              total_tokens_used: number;
-            }>(m);
-            sessionRef.current = p.session_id;
-            threadRef.current = p.thread_id;
-            setModelName(p.model_name);
-            setContextWindow(p.context_window);
-            setTotalTokens(p.total_tokens_used);
-            // Flush pending inputs
+            case "Connected": {
+              const p = msgPayload<{
+                session_id: string;
+                thread_id: string;
+                model_name: string;
+                context_window: number;
+                title: string | null;
+                total_tokens_used: number;
+              }>(m);
+              sessionRef.current = p.session_id;
+              threadRef.current = p.thread_id;
+              setModelName(p.model_name);
+              setContextWindow(p.context_window);
+              setTotalTokens(p.total_tokens_used);
+              clearConnectRetry();
+              setSessionConnected(true);
+              // Flush pending inputs
             for (const text of pendingInputRef.current) {
               sendRef.current({
                 UserInput: { session_id: p.thread_id, text },
@@ -379,10 +407,8 @@ export function App() {
                   setPendingChoices([]);
                   setViews({});
                     setActiveTab(null);
-                    streamingRef.current = false;
-                    sendRef.current({
-                      Connect: { session_id: sid, thread_id: newView },
-                  });
+                      streamingRef.current = false;
+                      sendConnect(sid, newView);
                 }
               }
               return next;
@@ -473,10 +499,8 @@ export function App() {
               setPendingChoices([]);
               setViews({});
                 setActiveTab(null);
-                streamingRef.current = false;
-                sendRef.current({
-                  Connect: { session_id: p.new_session_id, thread_id: null },
-              });
+                  streamingRef.current = false;
+                  sendConnect(p.new_session_id, null);
             }
             appendMessage({ type: "info", text: "Migration complete" });
             break;
@@ -493,7 +517,7 @@ export function App() {
       };
       processOne(msg);
     },
-    [appendMessage, updateLastAssistant, finishAssistant, isForCurrentView],
+    [appendMessage, updateLastAssistant, finishAssistant, isForCurrentView, sendConnect, clearConnectRetry],
   );
 
   const { send, status } = useSocket({
@@ -551,9 +575,9 @@ export function App() {
         sessionRef.current = null;
         threadRef.current = null;
       }
-      send({ Connect: { session_id: sessionId, thread_id: threadId } });
+      sendConnect(sessionId, threadId);
     },
-    [send, sessions],
+    [send, sessions, sendConnect],
   );
 
   const handleArchiveSession = useCallback(() => {
@@ -569,7 +593,9 @@ export function App() {
     setViews({});
     setActiveTab(null);
     streamingRef.current = false;
-  }, [send]);
+    clearConnectRetry();
+    setSessionConnected(false);
+  }, [send, clearConnectRetry]);
 
   const handleNewSession = useCallback(() => {
     if (sessionRef.current) {
@@ -585,8 +611,10 @@ export function App() {
     setViews({});
       setActiveTab(null);
       streamingRef.current = false;
+      clearConnectRetry();
+      setSessionConnected(false);
       setNewSessionPickerOpen(true);
-    }, [send]);
+    }, [send, clearConnectRetry]);
 
   const handleNewSessionConfirm = useCallback(
     (destination: string | null, cwd: string) => {
@@ -796,20 +824,20 @@ export function App() {
             ))}
           </nav>
         )}
-        <div className={css.mainBody}>
-          {!hasViews && (
-            <div style={{ height: "100%" }}>
-              <MessageList
-                messages={messages}
-                spinner={spinner}
-                onSend={handleSend}
-                inputDisabled={status !== "connected"}
-                pendingChoice={pendingChoices[0] ?? null}
-                onChoiceSelect={handleChoiceSelect}
-                theme={resolved}
-              />
-            </div>
-          )}
+          <div className={css.mainBody}>
+            {!hasViews && (
+              <div style={{ height: "100%" }}>
+                <MessageList
+                  messages={messages}
+                  spinner={spinner}
+                  onSend={handleSend}
+                  inputDisabled={status !== "connected" || !sessionConnected}
+                  pendingChoice={pendingChoices[0] ?? null}
+                  onChoiceSelect={handleChoiceSelect}
+                  theme={resolved}
+                />
+              </div>
+            )}
           {views.diff && (
             <div
               style={{
@@ -841,18 +869,18 @@ export function App() {
             >
               {"\uD83D\uDCCC"}
             </button>
-          </div>
-          <div className={css.chatPanelBody}>
-            <MessageList
-              messages={messages}
-              spinner={spinner}
-              onSend={handleSend}
-              inputDisabled={status !== "connected"}
-              pendingChoice={pendingChoices[0] ?? null}
-              onChoiceSelect={handleChoiceSelect}
-              theme={resolved}
-            />
-          </div>
+            </div>
+            <div className={css.chatPanelBody}>
+              <MessageList
+                messages={messages}
+                spinner={spinner}
+                onSend={handleSend}
+                inputDisabled={status !== "connected" || !sessionConnected}
+                pendingChoice={pendingChoices[0] ?? null}
+                onChoiceSelect={handleChoiceSelect}
+                theme={resolved}
+              />
+            </div>
           <div
             className={css.chatPanelResize}
             onMouseDown={onChatDragStart}
