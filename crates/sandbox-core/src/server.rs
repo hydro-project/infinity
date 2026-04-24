@@ -1733,7 +1733,40 @@ async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackC
     result
 }
 
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+enum FileChangeStatus {
+    Added,
+    Deleted,
+    Modified,
+}
+
+/// Parse `git diff --name-status` or `jj diff --summary` output into (status, path) pairs.
+fn parse_changed_files(output: &str) -> Vec<(FileChangeStatus, &str)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            // jj format: "M path" or "A path" or "D path"
+            // git format: "M\tpath" or "A\tpath" or "D\tpath"
+            let (status, path) =
+                if let Some(rest) = line.strip_prefix("M\t").or(line.strip_prefix("M ")) {
+                    (FileChangeStatus::Modified, rest)
+                } else if let Some(rest) = line.strip_prefix("A\t").or(line.strip_prefix("A ")) {
+                    (FileChangeStatus::Added, rest)
+                } else if let Some(rest) = line.strip_prefix("D\t").or(line.strip_prefix("D ")) {
+                    (FileChangeStatus::Deleted, rest)
+                } else {
+                    return None;
+                };
+            Some((status, path.trim()))
+        })
+        .collect()
+}
+
 /// Compute the overall diff for a sandbox and send a `view_update` callback.
+/// Sends old/new file contents for each changed file so the frontend can render
+/// expandable diffs.
 async fn push_diff_view<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
@@ -1743,10 +1776,11 @@ async fn push_diff_view<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
         return;
     };
     let repo_path = PathBuf::from(&repo_state.remote_uri);
-    let diff = match &repo_state.mode {
+
+    let files: Vec<serde_json::Value> = match &repo_state.mode {
         SandboxMode::Jj { .. } => {
             let bookmark_parent = format!("{}-", repo_state.bookmark);
-            run_jj(
+            let Ok(summary) = run_jj(
                 sandbox_dir,
                 &[
                     "diff",
@@ -1754,32 +1788,96 @@ async fn push_diff_view<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
                     &bookmark_parent,
                     "--to",
                     &repo_state.bookmark,
-                    "--git",
+                    "--summary",
                 ],
             )
             .await
-            .ok()
+            else {
+                return;
+            };
+            let mut files = Vec::new();
+            for (status, path) in parse_changed_files(&summary) {
+                let old_contents = if matches!(status, FileChangeStatus::Added) {
+                    String::new()
+                } else {
+                    run_jj(
+                        sandbox_dir,
+                        &["file", "show", "--revision", &bookmark_parent, path],
+                    )
+                    .await
+                    .unwrap_or_default()
+                };
+                let new_contents = if matches!(status, FileChangeStatus::Deleted) {
+                    String::new()
+                } else {
+                    run_jj(
+                        sandbox_dir,
+                        &["file", "show", "--revision", &repo_state.bookmark, path],
+                    )
+                    .await
+                    .unwrap_or_default()
+                };
+                files.push(serde_json::json!({
+                    "path": path,
+                    "status": status,
+                    "oldContents": old_contents,
+                    "newContents": new_contents,
+                }));
+            }
+            files
         }
         SandboxMode::Git { .. } => {
             let bookmark_parent = format!("{}~1", repo_state.bookmark);
-            git::run_git(
+            let Ok(summary) = git::run_git(
                 &repo_path,
-                &["diff", &bookmark_parent, &repo_state.bookmark],
+                &[
+                    "diff",
+                    "--name-status",
+                    &bookmark_parent,
+                    &repo_state.bookmark,
+                ],
             )
             .await
-            .ok()
+            else {
+                return;
+            };
+            let mut files = Vec::new();
+            for (status, path) in parse_changed_files(&summary) {
+                let old_contents = if matches!(status, FileChangeStatus::Added) {
+                    String::new()
+                } else {
+                    let ref_path = format!("{bookmark_parent}:{path}");
+                    git::run_git(&repo_path, &["show", &ref_path])
+                        .await
+                        .unwrap_or_default()
+                };
+                let new_contents = if matches!(status, FileChangeStatus::Deleted) {
+                    String::new()
+                } else {
+                    let ref_path = format!("{}:{path}", repo_state.bookmark);
+                    git::run_git(&repo_path, &["show", &ref_path])
+                        .await
+                        .unwrap_or_default()
+                };
+                files.push(serde_json::json!({
+                    "path": path,
+                    "status": status,
+                    "oldContents": old_contents,
+                    "newContents": new_contents,
+                }));
+            }
+            files
         }
-        _ => None,
+        _ => Vec::new(),
     };
-    if let Some(diff) = diff
-        && !diff.trim().is_empty()
-    {
+
+    if !files.is_empty() {
         rap_protocol::send_view_update(
             &state.callback_client,
             &invocation.callback_url,
             invocation.group_id.clone(),
             "diff",
-            serde_json::json!({ "diff": diff }),
+            serde_json::json!({ "files": files }),
         )
         .await;
     }

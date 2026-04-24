@@ -383,5 +383,9 @@ async fn external_bookmark_move_affects_diff_view_temporarily() {
     Replaced text in README.md
     "#);
     // The diff view should contain our changes (push_sandbox runs before push_diff_view)
-    assert!(!views.is_empty(), "should still get diff views");
+    assert_eq!(views.len(), 1, "should get exactly one diff view");
+    let files = views[0].content["files"]
+        .as_array()
+        .expect("files should be an array");
+    insta::assert_json_snapshot!(files);
 }

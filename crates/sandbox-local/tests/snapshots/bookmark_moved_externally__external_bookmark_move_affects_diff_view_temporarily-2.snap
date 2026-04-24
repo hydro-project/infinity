@@ -1,0 +1,12 @@
+---
+source: crates/sandbox-local/tests/bookmark_moved_externally.rs
+expression: files
+---
+[
+  {
+    "newContents": "hello world v2",
+    "oldContents": "hello",
+    "path": "README.md",
+    "status": "modified"
+  }
+]

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, useEffect } from "react";
+import { useCallback, useRef, useState, useEffect, memo, useMemo } from "react";
 import type { SessionInfo, SubthreadInfo, RemoteInfo } from "../types";
 import type { ConnectionStatus } from "../useSocket";
 import css from "./SessionSidebar.module.css";
@@ -16,7 +16,11 @@ function CopyThreadId({ id }: { id: string }) {
   return (
     <span className={css.threadId}>
       <code className={css.threadIdText}>{short}</code>
-      <button className={css.threadIdCopy} onClick={copy} aria-label="Copy thread ID">
+      <button
+        className={css.threadIdCopy}
+        onClick={copy}
+        aria-label="Copy thread ID"
+      >
         {copied ? "✓" : "⧉"}
       </button>
     </span>
@@ -88,26 +92,34 @@ function ThreadTree({
   );
 }
 
-function SessionItem({
+const SessionItem = memo(function SessionItem({
   id,
   info,
   activeSessionId,
   activeThreadId,
   onSelect,
-  style,
+  dimmed,
 }: {
   id: string;
   info: SessionInfo;
   activeSessionId: string | null;
   activeThreadId: string | null;
   onSelect: (sessionId: string, threadId: string | null) => void;
-  style?: React.CSSProperties;
+  dimmed?: boolean;
 }) {
   return (
-    <div style={style}>
-      <button
+    <div style={dimmed ? DIMMED_STYLE : undefined}>
+      <div
+        role="button"
+        tabIndex={0}
         className={`${css.item} ${id === activeSessionId && !activeThreadId ? css.active : ""}`}
         onClick={() => onSelect(id, null)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onSelect(id, null);
+          }
+        }}
       >
         <span className={css.itemTitle}>
           <span className={css.itemTitleText}>
@@ -116,16 +128,14 @@ function SessionItem({
                 ? id.split("/").pop()!.slice(0, 8)
                 : id.slice(0, 8))}
           </span>
-          {info.remote && (
-            <span className={css.remotePill}>{info.remote}</span>
-          )}
+          {info.remote && <span className={css.remotePill}>{info.remote}</span>}
         </span>
         <span className={css.itemMeta}>
           <span className={css.statusDot} data-status={info.status} />
           {info.total_tokens_used.toLocaleString()} tokens
           <CopyThreadId id={id} />
         </span>
-      </button>
+      </div>
       {info.threads && info.threads.length > 0 && (
         <ThreadTree
           threads={info.threads}
@@ -138,13 +148,14 @@ function SessionItem({
       )}
     </div>
   );
-}
+});
 
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 480;
 const DEFAULT_WIDTH = 272;
+const DIMMED_STYLE: React.CSSProperties = { opacity: 0.5 };
 
-export function SessionSidebar({
+export const SessionSidebar = memo(function SessionSidebar({
   sessions,
   activeSessionId,
   activeThreadId,
@@ -171,74 +182,145 @@ export function SessionSidebar({
     onWidthChange(width);
   }, [pinned, width, onWidthChange]);
 
-  const onDragStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    dragging.current = true;
-    onDragStateChange(true);
-    const onMove = (ev: MouseEvent) => {
-      if (!dragging.current) return;
-      // 12px left margin, so sidebar left edge is at 12
-      const newW = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, ev.clientX - 12));
-      setWidth(newW);
-    };
-    const onUp = () => {
-      dragging.current = false;
-      onDragStateChange(false);
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, [onDragStateChange]);
+  const onDragStart = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      dragging.current = true;
+      onDragStateChange(true);
+      const onMove = (ev: MouseEvent) => {
+        if (!dragging.current) return;
+        // 12px left margin, so sidebar left edge is at 12
+        const newW = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, ev.clientX - 12));
+        setWidth(newW);
+      };
+      const onUp = () => {
+        dragging.current = false;
+        onDragStateChange(false);
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [onDragStateChange],
+  );
 
   const onDragDoubleClick = useCallback(() => {
     setWidth(DEFAULT_WIDTH);
   }, []);
 
-    const sorted = Object.entries(sessions)
-      .filter(([, info]) => info.status !== "Archived")
-      .sort(([, a], [, b]) => b.last_updated.localeCompare(a.last_updated));
+  const sorted = useMemo(
+    () =>
+      Object.entries(sessions)
+        .filter(([, info]) => info.status !== "Archived")
+        .sort(([, a], [, b]) => b.last_updated.localeCompare(a.last_updated)),
+    [sessions],
+  );
 
-    const archived = Object.entries(sessions)
-      .filter(([, info]) => info.status === "Archived")
-      .sort(([, a], [, b]) => b.last_updated.localeCompare(a.last_updated));
+  const archived = useMemo(
+    () =>
+      Object.entries(sessions)
+        .filter(([, info]) => info.status === "Archived")
+        .sort(([, a], [, b]) => b.last_updated.localeCompare(a.last_updated)),
+    [sessions],
+  );
 
-      const [showArchived, setShowArchived] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
 
-      const disconnectedRemotes = new Set(
+  const disconnectedRemotes = useMemo(
+    () =>
+      new Set(
         remotes.filter((r) => r.status !== "connected").map((r) => r.name),
-      );
+      ),
+    [remotes],
+  );
 
-      return (
-        <aside
-          className={`${css.sidebar} ${!visible && !pinned ? css.hidden : ""}`}
-          style={{ width }}
-      >
-        <div className={css.header}>
-          <span className={css.title}>Sessions</span>
-          <div className={css.headerActions}>
-            <button className={css.newBtn} onClick={onNew}>
-              + New
-            </button>
+  const sessionList = useMemo(
+    () => (
+      <div className={css.list}>
+        {sorted.map(([id, info]) => (
+          <SessionItem
+            key={id}
+            id={id}
+            info={info}
+            activeSessionId={activeSessionId}
+            activeThreadId={activeThreadId}
+            onSelect={onSelect}
+            dimmed={!!(info.remote && disconnectedRemotes.has(info.remote))}
+          />
+        ))}
+        {sorted.length === 0 && archived.length === 0 && (
+          <div className={css.empty}>No sessions yet</div>
+        )}
+        {archived.length > 0 && (
+          <>
             <button
-              className={css.collapseBtn}
-              onClick={onTogglePin}
-              aria-label={pinned ? "Unpin sidebar" : "Pin sidebar"}
-              data-pinned={pinned}
+              className={css.archivedToggle}
+              onClick={() => setShowArchived((p) => !p)}
             >
-                {"\u{1F4CC}"}
+              {showArchived ? "▾" : "▸"} Archived ({archived.length})
             </button>
-          </div>
+            {showArchived &&
+              archived.map(([id, info]) => (
+                <SessionItem
+                  key={id}
+                  id={id}
+                  info={info}
+                  activeSessionId={activeSessionId}
+                  activeThreadId={activeThreadId}
+                  onSelect={onSelect}
+                  dimmed
+                />
+              ))}
+          </>
+        )}
+      </div>
+    ),
+    [
+      sorted,
+      archived,
+      showArchived,
+      activeSessionId,
+      activeThreadId,
+      disconnectedRemotes,
+      onSelect,
+    ],
+  );
+
+  return (
+    <aside
+      className={`${css.sidebar} ${!visible && !pinned ? css.hidden : ""}`}
+      style={{ width }}
+    >
+      <div className={css.header}>
+        <span className={css.title}>Sessions</span>
+        <div className={css.headerActions}>
+          <button className={css.newBtn} onClick={onNew}>
+            + New
+          </button>
+          <button
+            className={css.collapseBtn}
+            onClick={onTogglePin}
+            aria-label={pinned ? "Unpin sidebar" : "Pin sidebar"}
+            data-pinned={pinned}
+          >
+            {"\u{1F4CC}"}
+          </button>
         </div>
+      </div>
       {localStatus !== "connected" && (
         <div className={css.remoteBanner}>
           <div
             className={css.remoteBannerItem}
-            data-status={localStatus === "connecting" ? "connecting" : "disconnected"}
+            data-status={
+              localStatus === "connecting" ? "connecting" : "disconnected"
+            }
           >
             <span
               className={css.remoteBannerDot}
-              data-status={localStatus === "connecting" ? "connecting" : "disconnected"}
+              data-status={
+                localStatus === "connecting" ? "connecting" : "disconnected"
+              }
             />
             local: {localStatus}
           </div>
@@ -252,39 +334,22 @@ export function SessionSidebar({
               <div
                 key={r.name}
                 className={css.remoteBannerItem}
-                data-status={r.status === "connecting" ? "connecting" : "disconnected"}
+                data-status={
+                  r.status === "connecting" ? "connecting" : "disconnected"
+                }
               >
                 <span
                   className={css.remoteBannerDot}
-                  data-status={r.status === "connecting" ? "connecting" : "disconnected"}
+                  data-status={
+                    r.status === "connecting" ? "connecting" : "disconnected"
+                  }
                 />
                 {r.name}: {r.status}
               </div>
             ))}
         </div>
       )}
-          <div className={css.list}>
-            {sorted.map(([id, info]) => (
-              <SessionItem key={id} id={id} info={info} activeSessionId={activeSessionId} activeThreadId={activeThreadId} onSelect={onSelect} style={info.remote && disconnectedRemotes.has(info.remote) ? { opacity: 0.5 } : undefined} />
-            ))}
-          {sorted.length === 0 && archived.length === 0 && (
-            <div className={css.empty}>No sessions yet</div>
-          )}
-          {archived.length > 0 && (
-            <>
-              <button
-                className={css.archivedToggle}
-                onClick={() => setShowArchived((p) => !p)}
-              >
-                {showArchived ? "▾" : "▸"} Archived ({archived.length})
-              </button>
-              {showArchived &&
-                archived.map(([id, info]) => (
-                  <SessionItem key={id} id={id} info={info} activeSessionId={activeSessionId} activeThreadId={activeThreadId} onSelect={onSelect} style={{ opacity: 0.6 }} />
-                ))}
-            </>
-          )}
-        </div>
+      {sessionList}
       <div
         className={css.resizeHandle}
         onMouseDown={onDragStart}
@@ -292,4 +357,4 @@ export function SessionSidebar({
       />
     </aside>
   );
-}
+});

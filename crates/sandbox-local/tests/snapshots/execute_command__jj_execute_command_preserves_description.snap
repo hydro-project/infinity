@@ -1,11 +1,12 @@
 ---
 source: crates/sandbox-local/tests/execute_command.rs
-expression: diff
+expression: files
 ---
-diff --git a/new_file.txt b/new_file.txt
-new file mode 100644
-index 0000000000..77f863d7ef
---- /dev/null
-+++ b/new_file.txt
-@@ -0,0 +1,1 @@
-+new-content
+[
+  {
+    "newContents": "new-content",
+    "oldContents": "",
+    "path": "new_file.txt",
+    "status": "added"
+  }
+]
