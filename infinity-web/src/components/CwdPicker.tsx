@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, type KeyboardEvent } from 'react';
-import css from './CwdPicker.module.css';
+import { useState, useRef, useEffect, type KeyboardEvent } from "react";
+import css from "./CwdPicker.module.css";
 
 interface Props {
   onConfirm: (cwd: string) => void;
@@ -7,7 +7,7 @@ interface Props {
 }
 
 export function CwdPicker({ onConfirm, onCancel }: Props) {
-  const [value, setValue] = useState('');
+  const [value, setValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Future: directory listing state will go here
@@ -19,12 +19,12 @@ export function CwdPicker({ onConfirm, onCancel }: Props) {
   }, []);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Escape') {
+    if (e.key === "Escape") {
       e.preventDefault();
       onCancel();
-    } else if (e.key === 'Enter') {
+    } else if (e.key === "Enter") {
       e.preventDefault();
-      onConfirm(value.trim() || '/');
+      onConfirm(value.trim() || "/");
     }
     // Future: ArrowUp/ArrowDown/Tab for directory navigation
   };

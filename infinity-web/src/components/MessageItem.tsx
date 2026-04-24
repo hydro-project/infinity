@@ -1,7 +1,7 @@
 import { Streamdown } from "streamdown";
 import "streamdown/styles.css";
 import { PatchDiff } from "@pierre/diffs/react";
-import { useState } from "react";
+import { useState, memo } from "react";
 import type { MessageItem as MsgItem, DisplaySegment } from "../types";
 import css from "./MessageItem.module.css";
 
@@ -12,7 +12,12 @@ interface Props {
   theme?: "light" | "dark";
 }
 
-export function MessageItem({ item, isFirst, defaultCollapsed, theme }: Props) {
+export const MessageItem = memo(function MessageItem({
+  item,
+  isFirst,
+  defaultCollapsed,
+  theme,
+}: Props) {
   switch (item.type) {
     case "user":
       return (
@@ -146,7 +151,7 @@ export function MessageItem({ item, isFirst, defaultCollapsed, theme }: Props) {
         <div className={css.compaction}>{"\u2726"} Compaction applied</div>
       );
   }
-}
+});
 
 function ThinkingBlock({
   text,
