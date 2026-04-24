@@ -1,7 +1,14 @@
-import { useState, useRef, useCallback, forwardRef, useImperativeHandle, type KeyboardEvent } from 'react';
-import type { SpinnerState } from '../types';
-import { Spinner } from './Spinner';
-import css from './InputBar.module.css';
+import {
+  useState,
+  useRef,
+  useCallback,
+  forwardRef,
+  useImperativeHandle,
+  type KeyboardEvent,
+} from "react";
+import type { SpinnerState } from "../types";
+import { Spinner } from "./Spinner";
+import css from "./InputBar.module.css";
 
 interface Props {
   onSend: (text: string) => void;
@@ -13,24 +20,31 @@ export interface InputBarHandle {
   focus: () => void;
 }
 
-export const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ onSend, disabled, spinner }, fwdRef) {
-  const [value, setValue] = useState('');
+export const InputBar = forwardRef<InputBarHandle, Props>(function InputBar(
+  { onSend, disabled, spinner },
+  fwdRef,
+) {
+  const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  useImperativeHandle(fwdRef, () => ({ focus: () => textareaRef.current?.focus() }), []);
+  useImperativeHandle(
+    fwdRef,
+    () => ({ focus: () => textareaRef.current?.focus() }),
+    [],
+  );
 
   const submit = useCallback(() => {
     const trimmed = value.trim();
     if (!trimmed) return;
     onSend(trimmed);
-    setValue('');
+    setValue("");
     // Reset height
-    if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
   }, [value, onSend]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         submit();
       }
@@ -41,8 +55,8 @@ export const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ on
   const handleInput = useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 200) + 'px';
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 200) + "px";
   }, []);
 
   return (
@@ -53,9 +67,12 @@ export const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ on
           ref={textareaRef}
           className={css.textarea}
           value={value}
-          onChange={(e) => { setValue(e.target.value); handleInput(); }}
+          onChange={(e) => {
+            setValue(e.target.value);
+            handleInput();
+          }}
           onKeyDown={handleKeyDown}
-          placeholder={disabled ? 'Connecting…' : 'Send a message…'}
+          placeholder={disabled ? "Connecting…" : "Send a message…"}
           disabled={disabled}
           rows={1}
         />
@@ -71,5 +88,5 @@ export const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ on
         </button>
       </div>
     </div>
-    );
+  );
 });
