@@ -1,6 +1,12 @@
 /* ── Protocol types matching crates/infinity-protocol/src/lib.rs ── */
 
-export type SessionStatus = "Running" | "Idle" | "Stopped" | "WaitingForChoice" | "Migrating" | "Archived";
+export type SessionStatus =
+  | "Running"
+  | "Idle"
+  | "Stopped"
+  | "WaitingForChoice"
+  | "Migrating"
+  | "Archived";
 
 export interface SubthreadInfo {
   thread_id: string;
@@ -108,8 +114,16 @@ export type DaemonMessage =
   | { CompactionApplied: { thread_id: string | null } }
   | { Error: { thread_id: string | null; text: string } }
   | { UserChoiceComplete: { choice_id: string } }
-  | { Replay: { history: DaemonMessage[]; pending_choices: DaemonMessage[]; views: Record<string, any> } }
-  | { ViewUpdate: { thread_id: string | null; view_type: string; content: any } }
+  | {
+      Replay: {
+        history: DaemonMessage[];
+        pending_choices: DaemonMessage[];
+        views: Record<string, any>;
+      };
+    }
+  | {
+      ViewUpdate: { thread_id: string | null; view_type: string; content: any };
+    }
   | { SessionsUpdated: { sessions: Record<string, SessionInfo> } }
   | { RemotesUpdated: { remotes: RemoteInfo[] } }
   | "DisconnectNotIdle"
@@ -118,7 +132,13 @@ export type DaemonMessage =
   | { MigrateStarted: { session_id: string } }
   | { MigrateComplete: { session_id: string; new_session_id: string } }
   | { MigrateError: { session_id: string; error: string } }
-  | { DirectoryListing: { request_path: string; entries: string[]; on: string | null } };
+  | {
+      DirectoryListing: {
+        request_path: string;
+        entries: string[];
+        on: string | null;
+      };
+    };
 
 /* ── Client → Daemon messages ── */
 
@@ -133,7 +153,13 @@ export type ClientMessage =
   | { SwitchModel: { session_id: string; model_id: string } }
   | { UserChoiceAnswered: { choice_id: string; selected: number } }
   | { TriggerCompaction: { session_id: string } }
-  | { RequestMigrate: { session_id: string; to: string | null; dest_cwd: string } }
+  | {
+      RequestMigrate: {
+        session_id: string;
+        to: string | null;
+        dest_cwd: string;
+      };
+    }
   | { Emigrate: { session_id: string; dest_rap_urls: Record<string, string> } }
   | { EmigrateDone: { session_id: string } }
   | { ArchiveSession: { session_id: string } }

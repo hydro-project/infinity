@@ -1,25 +1,24 @@
-import { useMemo, useCallback, useRef, useState } from "react";
-import { PatchDiff } from "@pierre/diffs/react";
+import { useMemo, useCallback, useRef, useState, memo } from "react";
+import { MultiFileDiff } from "@pierre/diffs/react";
 import { FileTree } from "@pierre/trees/react";
 import type { GitStatusEntry } from "@pierre/trees";
 import css from "./DiffView.module.css";
 
+interface FileEntry {
+  path: string;
+  status: "added" | "deleted" | "modified";
+  oldContents: string;
+  newContents: string;
+}
+
 interface DiffViewProps {
-  diff: string;
+  files: FileEntry[];
   theme: "light" | "dark";
 }
 
-interface FilePatch {
-  path: string;
-  status: "added" | "deleted" | "modified";
-  patch: string;
-}
-
-/** Sort file patches to match @pierre/trees default order:
- *  folders before files, dot-prefixed before others, case-insensitive alpha. */
-function sortPatches(patches: FilePatch[]): FilePatch[] {
-  const allPaths = new Set(patches.map((p) => p.path));
-  // Collect all directory prefixes
+/** Sort file entries: folders before files, dot-prefixed before others, case-insensitive alpha. */
+function sortFiles(files: FileEntry[]): FileEntry[] {
+  const allPaths = new Set(files.map((f) => f.path));
   const dirs = new Set<string>();
   for (const p of allPaths) {
     const parts = p.split("/");
@@ -27,7 +26,7 @@ function sortPatches(patches: FilePatch[]): FilePatch[] {
       dirs.add(parts.slice(0, i).join("/"));
   }
 
-  return [...patches].sort((a, b) => {
+  return [...files].sort((a, b) => {
     const aParts = a.path.split("/");
     const bParts = b.path.split("/");
     const len = Math.min(aParts.length, bParts.length);
@@ -47,32 +46,42 @@ function sortPatches(patches: FilePatch[]): FilePatch[] {
   });
 }
 
-function splitDiff(diff: string): FilePatch[] {
-  const results: FilePatch[] = [];
-  const parts = diff.split(/^(?=diff --git )/m);
-  for (const part of parts) {
-    const match = part.match(/^diff --git a\/(.*) b\/(.*)$/m);
-    if (!match) continue;
-    const oldPath = match[1];
-    const path = match[2];
-    let status: FilePatch["status"] = "modified";
-    if (part.includes("--- /dev/null")) status = "added";
-    else if (part.includes("+++ /dev/null") || oldPath !== path)
-      status = "deleted";
-    results.push({ path, status, patch: part.trimEnd() });
-  }
-  return results;
-}
+const FileDiffEntry = memo(function FileDiffEntry({
+  path,
+  oldContents,
+  newContents,
+  options,
+}: {
+  path: string;
+  oldContents: string;
+  newContents: string;
+  options: Parameters<typeof MultiFileDiff>[0]["options"];
+}) {
+  const oldFile = useMemo(
+    () => ({ name: path, contents: oldContents }),
+    [path, oldContents],
+  );
+  const newFile = useMemo(
+    () => ({ name: path, contents: newContents }),
+    [path, newContents],
+  );
+  return (
+    <MultiFileDiff oldFile={oldFile} newFile={newFile} options={options} />
+  );
+});
 
-export function DiffView({ diff, theme }: DiffViewProps) {
+export const DiffView = memo(function DiffView({
+  files,
+  theme,
+}: DiffViewProps) {
   const paneRef = useRef<HTMLDivElement>(null);
   const fileRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
-  const patches = useMemo(() => sortPatches(splitDiff(diff)), [diff]);
-  const filePaths = useMemo(() => patches.map((f) => f.path), [patches]);
+  const sorted = useMemo(() => sortFiles(files), [files]);
+  const filePaths = useMemo(() => sorted.map((f) => f.path), [sorted]);
   const gitStatus: GitStatusEntry[] = useMemo(
-    () => patches.map((f) => ({ path: f.path, status: f.status })),
-    [patches],
+    () => sorted.map((f) => ({ path: f.path, status: f.status })),
+    [sorted],
   );
 
   const allDirs = useMemo(() => {
@@ -101,7 +110,15 @@ export function DiffView({ diff, theme }: DiffViewProps) {
     [],
   );
 
-  if (!diff) {
+  const options = useMemo(
+    () => ({
+      diffStyle: "unified" as const,
+      themeType: theme,
+    }),
+    [theme],
+  );
+
+  if (!files || files.length === 0) {
     return <div className={css.empty}>No changes yet</div>;
   }
 
@@ -120,15 +137,17 @@ export function DiffView({ diff, theme }: DiffViewProps) {
         />
       </div>
       <div className={css.diffPane} ref={paneRef}>
-        {patches.map((f) => (
+        {sorted.map((f) => (
           <div className={css.diffPatch} key={f.path} ref={setFileRef(f.path)}>
-            <PatchDiff
-              patch={f.patch}
-              options={{ diffStyle: "unified", themeType: theme ?? "system" }}
+            <FileDiffEntry
+              path={f.path}
+              oldContents={f.oldContents}
+              newContents={f.newContents}
+              options={options}
             />
           </div>
         ))}
       </div>
     </div>
   );
-}
+});

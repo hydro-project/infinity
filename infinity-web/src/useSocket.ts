@@ -1,8 +1,8 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
-import type { ClientMessage, DaemonMessage } from './types';
-import { parseDaemonMessage, serializeClientMessage } from './protocol';
+import { useEffect, useRef, useCallback, useState } from "react";
+import type { ClientMessage, DaemonMessage } from "./types";
+import { parseDaemonMessage, serializeClientMessage } from "./protocol";
 
-export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
+export type ConnectionStatus = "connecting" | "connected" | "disconnected";
 
 interface UseSocketOptions {
   url: string;
@@ -13,7 +13,7 @@ export function useSocket({ url, onMessage }: UseSocketOptions) {
   const wsRef = useRef<WebSocket | null>(null);
   const onMessageRef = useRef(onMessage);
   onMessageRef.current = onMessage;
-  const [status, setStatus] = useState<ConnectionStatus>('connecting');
+  const [status, setStatus] = useState<ConnectionStatus>("connecting");
 
   useEffect(() => {
     let cancelled = false;
@@ -21,13 +21,16 @@ export function useSocket({ url, onMessage }: UseSocketOptions) {
 
     function connect() {
       if (cancelled) return;
-      setStatus('connecting');
+      setStatus("connecting");
       const ws = new WebSocket(url);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        if (cancelled) { ws.close(); return; }
-        setStatus('connected');
+        if (cancelled) {
+          ws.close();
+          return;
+        }
+        setStatus("connected");
       };
 
       ws.onmessage = (ev) => {
@@ -41,7 +44,7 @@ export function useSocket({ url, onMessage }: UseSocketOptions) {
 
       ws.onclose = () => {
         if (cancelled) return;
-        setStatus('disconnected');
+        setStatus("disconnected");
         reconnectTimer = setTimeout(connect, 2000);
       };
 

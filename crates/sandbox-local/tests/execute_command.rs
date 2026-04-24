@@ -76,10 +76,10 @@ async fn jj_execute_command_preserves_description() {
 
     // Snapshot the ViewUpdate diff.
     assert_eq!(views.len(), 1, "expected exactly one ViewUpdate");
-    let diff = views[0].content["diff"]
-        .as_str()
-        .expect("diff should be a string");
-    insta::assert_snapshot!(diff);
+    let files = views[0].content["files"]
+        .as_array()
+        .expect("files should be an array");
+    insta::assert_json_snapshot!(files);
 
     // The commit description should still be the one we set, not the command.
     let desc = String::from_utf8_lossy(
