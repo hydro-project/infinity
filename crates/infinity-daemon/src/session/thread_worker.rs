@@ -32,12 +32,14 @@ pub fn is_user_text_input(msg: &InputMessage) -> bool {
 
 const SLEEP_TOOL_NAMES: &[&str] = &["sleep", "sleep_until", "sleep_until_event_or_input"];
 
-fn is_subscription_event(msg: &InputMessage) -> bool {
+fn is_deferrable_synthetic_event(msg: &InputMessage) -> bool {
     msg.synthetic.as_ref().is_some_and(|s| {
         matches!(
             s,
             infinity_agent_core::message::SyntheticKind::Tagged(
                 infinity_agent_core::message::TaggedSyntheticKind::SubscriptionEvent { .. }
+                    | infinity_agent_core::message::TaggedSyntheticKind::ThreadReport { .. }
+                    | infinity_agent_core::message::TaggedSyntheticKind::ParentMessage { .. }
             ) | infinity_agent_core::message::SyntheticKind::SubscriptionEvent(_)
         )
     })
@@ -293,12 +295,12 @@ pub async fn thread_worker<Mdl>(
                 })
             };
 
-            // Treat pending items as empty if they're all deferred subscription events.
+            // Treat pending items as empty if they're all deferred synthetic events.
             let has_actionable_pending = !pending_non_interrupt_items.is_empty()
                 && (!waiting_for_non_sleep_tool
                     || pending_non_interrupt_items
                         .iter()
-                        .any(|(msg, _)| !is_subscription_event(msg)));
+                        .any(|(msg, _)| !is_deferrable_synthetic_event(msg)));
 
             if !has_actionable_pending {
                 let first_res = rx.try_recv();
@@ -362,12 +364,12 @@ pub async fn thread_worker<Mdl>(
                 batch.push(item);
             }
 
-            // Defer subscription events arriving from rx when waiting for a
+            // Defer synthetic events arriving from rx when waiting for a
             // non-sleep async tool result.
             if waiting_for_non_sleep_tool && !batch.is_empty() {
                 let (sub_events, rest): (Vec<_>, Vec<_>) = batch
                     .into_iter()
-                    .partition(|(msg, _)| is_subscription_event(msg));
+                    .partition(|(msg, _)| is_deferrable_synthetic_event(msg));
                 if !sub_events.is_empty() {
                     pending_non_interrupt_items.extend(sub_events);
                 }
@@ -1112,6 +1114,136 @@ mod tests {
                 assert!(
                     has_injected_event,
                     "deferred subscription event should be in completion"
+                );
+            })
+            .await;
+    }
+
+    /// Thread reports arriving while waiting for a non-sleep async tool
+    /// result are deferred until the tool result is processed.
+    #[tokio::test(flavor = "current_thread")]
+    async fn thread_report_deferred_during_async_tool_wait() {
+        use infinity_agent_core::message::{SyntheticKind, TaggedSyntheticKind};
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (conv, state, _dir) = tmp_stores();
+                let (model, mut ctrl) = mock_model();
+                use async_trait::async_trait;
+                struct AsyncTool;
+                #[async_trait]
+                impl Tool<InMemoryMessageSender> for AsyncTool {
+                    fn name(&self) -> &str {
+                        "async_tool"
+                    }
+                    fn description(&self) -> &str {
+                        "a"
+                    }
+                    fn parameters(&self) -> serde_json::Value {
+                        serde_json::json!({"type":"object","properties":{}})
+                    }
+                    async fn execute(
+                        &self,
+                        _: serde_json::Value,
+                        _: String,
+                        _: Option<String>,
+                        _: &ToolContext<InMemoryMessageSender>,
+                    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                        Ok(())
+                    }
+                }
+                let (tx, mut display_rx, _, _) =
+                    spawn_worker("t1", conv, state, model, vec![Box::new(AsyncTool)]);
+
+                // 1. User sends input, model calls async_tool.
+                tx.send(user_text_input("t1", "do async"))
+                    .expect("send user input");
+                let _req = ctrl.next_request().await;
+                ctrl.send_tool_call("tc-async", "async_tool", serde_json::json!({}));
+                ctrl.finish();
+                loop {
+                    match tokio::time::timeout(std::time::Duration::from_secs(2), display_rx.recv())
+                        .await
+                    {
+                        Ok(Some(DaemonMessage::ResponseDone { .. })) => break,
+                        Ok(Some(_)) => {}
+                        _ => panic!("timed out waiting for first ResponseDone"),
+                    }
+                }
+
+                // 2. While waiting for tool result, a thread report arrives.
+                tx.send((
+                    InputMessage {
+                        content: InputMessageContent::User(UserContent::ToolResult(
+                            rig::message::ToolResult {
+                                id: String::new(),
+                                call_id: None,
+                                content: rig::OneOrMany::one(
+                                    rig::message::ToolResultContent::Text(rig::agent::Text {
+                                        text: "Report from child thread: progress update".into(),
+                                    }),
+                                ),
+                            },
+                        )),
+                        group_id: "t1".into(),
+                        metadata: None,
+                        synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
+                            tool_call_id: "tc-async".into(),
+                            child_thread_id: "child-1".into(),
+                        })),
+                        display_as: None,
+                        subscription: false,
+                    },
+                    uuid::Uuid::new_v4().to_string(),
+                ))
+                .expect("send thread report");
+
+                // Yield so the worker can process the thread report.
+                tokio::task::yield_now().await;
+                tokio::task::yield_now().await;
+
+                // 3. The thread report should NOT have triggered a
+                //    completion request yet (it should be deferred).
+                assert!(
+                    ctrl.try_next_request().is_none(),
+                    "thread report should not trigger completion while waiting for async tool"
+                );
+
+                // 4. Now deliver the actual tool result.
+                tx.send(tool_result_input("t1", "tc-async", "tool done"))
+                    .expect("send tool result");
+
+                // 5. The tool result triggers a completion. The deferred
+                //    thread report should be included in this batch.
+                let req2 = ctrl.next_request().await;
+                ctrl.send_text("all processed");
+                ctrl.finish();
+                collect_until_done(&mut display_rx).await;
+
+                let has_tool_result = req2.chat_history.iter().any(|m| {
+                    if let rig::message::Message::User { content } = m {
+                        if let UserContent::ToolResult(r) = content.first() {
+                            if let rig::message::ToolResultContent::Text(t) = r.content.first() {
+                                return t.text.contains("tool done");
+                            }
+                        }
+                    }
+                    false
+                });
+                let has_thread_report = req2.chat_history.iter().any(|m| {
+                    if let rig::message::Message::User { content } = m {
+                        if let UserContent::ToolResult(r) = content.first() {
+                            if let rig::message::ToolResultContent::Text(t) = r.content.first() {
+                                return t.text.contains("progress update");
+                            }
+                        }
+                    }
+                    false
+                });
+                assert!(has_tool_result, "tool result should be in completion");
+                assert!(
+                    has_thread_report,
+                    "deferred thread report should be in completion"
                 );
             })
             .await;
