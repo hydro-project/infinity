@@ -114,6 +114,7 @@ export const DiffView = memo(function DiffView({
     () => ({
       diffStyle: "unified" as const,
       themeType: theme,
+      overflow: "wrap" as const,
     }),
     [theme],
   );
