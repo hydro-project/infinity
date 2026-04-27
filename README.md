@@ -49,8 +49,10 @@ Then open `http://localhost:8080` in a browser. The `bundled-web` feature is pre
 ```bash
 cd infinity-web
 npm ci
-npm run dev
+VITE_WS_PORT=8080 npm run dev
 ```
+
+The `VITE_WS_PORT` variable tells the frontend to connect its WebSocket to the daemon on port 8080. Without it, the app tries to connect to the Vite dev server itself and the WebSocket connection will fail.
 
 Then open the URL printed in your terminal (typically http://localhost:5173).
 
