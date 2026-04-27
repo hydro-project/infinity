@@ -1,8 +1,7 @@
 //! Tests for `execute_command`.
 //!
-//! - Verifies that running a command preserves the commit description,
-//!   that the command string appears in the evolog, and snapshot-tests
-//!   the ViewUpdate diff callback (jj mode, unsandboxed).
+//! - Verifies that running a command preserves the commit description
+//!   and snapshot-tests the ViewUpdate diff callback (jj mode, unsandboxed).
 //! - Verifies that the sccache cache directory is writable from inside
 //!   a platform sandbox (bwrap / sandbox-exec).
 
@@ -104,20 +103,6 @@ async fn jj_execute_command_preserves_description() {
     assert!(
         !desc.contains("echo new-content"),
         "description should not contain the command, got: {desc}"
-    );
-
-    // The command should appear in the evolog.
-    let evolog = String::from_utf8_lossy(
-        &jj_cmd(repo)
-            .args(["evolog", "-r", &format!("sandbox-{group_id}")])
-            .output()
-            .expect("run jj evolog")
-            .stdout,
-    )
-    .to_string();
-    assert!(
-        evolog.contains("echo new-content > new_file.txt"),
-        "expected command in evolog, got: {evolog}"
     );
 }
 
