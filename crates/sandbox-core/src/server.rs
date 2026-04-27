@@ -929,17 +929,9 @@ async fn handle_execute_command_streaming_inner<
     }
 
     let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;
-    let is_jj = matches!(repo_state.mode, SandboxMode::Jj { .. });
-    if is_jj {
-        run_jj(&sandbox_dir, &["new"]).await?;
-        run_jj(&sandbox_dir, &["describe", "-m", &args.command]).await?;
-    }
 
     // Check for early cancellation before spawning the process.
     if cancel_rx.try_recv().is_ok() {
-        if is_jj {
-            let _ = jj::jj_squash_stacked(&sandbox_dir).await;
-        }
         let _ = state
             .backend
             .push_sandbox(&sandbox_dir, &invocation.group_id, None)
@@ -983,9 +975,6 @@ async fn handle_execute_command_streaming_inner<
         Ok(s) => s,
         Err(e) => {
             state.in_flight.lock().await.remove(&invocation.id);
-            if is_jj {
-                let _ = jj::jj_squash_stacked(&sandbox_dir).await;
-            }
             let _ = state
                 .backend
                 .push_sandbox(&sandbox_dir, &invocation.group_id, None)
@@ -1070,11 +1059,8 @@ async fn handle_execute_command_streaming_inner<
                 tracing::info!(tool_call_id = %invocation.id, "command cancelled during phase 1");
                 #[cfg(unix)]
                 kill_process(child_pid);
-                // let text = format_cancel_output(&stdout_buf, &stderr_buf);
-                if is_jj {
-                    let _ = jj::jj_squash_stacked(&sandbox_dir).await;
-                }
-                let _ = state.backend.push_sandbox(&sandbox_dir, &invocation.group_id, None).await;
+                  // let text = format_cancel_output(&stdout_buf, &stderr_buf);
+                  let _ = state.backend.push_sandbox(&sandbox_dir, &invocation.group_id, None).await;
                 // TODO: determine if sending this would be in-spec
                 // send_subscription_event(&state.callback_client, invocation, &text, true).await;
                 if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
@@ -1103,9 +1089,6 @@ async fn handle_execute_command_streaming_inner<
         // Process finished within 5 seconds — return a normal tool_result.
         state.in_flight.lock().await.remove(&invocation.id);
         let text = format_exec_output(&stdout_buf, &stderr_buf, code);
-        if is_jj {
-            let _ = jj::jj_squash_stacked(&sandbox_dir).await;
-        }
         let _ = state
             .backend
             .push_sandbox(&sandbox_dir, &invocation.group_id, None)
@@ -1159,13 +1142,10 @@ async fn handle_execute_command_streaming_inner<
                 if !accumulated.is_empty() {
                     accumulated.push_str("\n[cancelled]");
                 } else {
-                    accumulated.push_str("[cancelled]");
-                }
+                  accumulated.push_str("[cancelled]");
+                  }
 
-                if is_jj {
-                    let _ = jj::jj_squash_stacked(&sandbox_dir).await;
-                }
-                let _ = state.backend.push_sandbox(
+                  let _ = state.backend.push_sandbox(
                     &sandbox_dir,
                     &invocation.group_id,
                     None,
@@ -1213,13 +1193,10 @@ async fn handle_execute_command_streaming_inner<
                         if accumulated.is_empty() {
                             accumulated.push_str(&format!("[exit code: {code}]"));
                         } else {
-                            accumulated.push_str(&format!("\n[exit code: {code}]"));
-                        }
+                          accumulated.push_str(&format!("\n[exit code: {code}]"));
+                          }
 
-                        if is_jj {
-                            let _ = jj::jj_squash_stacked(&sandbox_dir).await;
-                        }
-                        let _ = state.backend.push_sandbox(
+                          let _ = state.backend.push_sandbox(
                             &sandbox_dir,
                             &invocation.group_id,
                             None,
@@ -1244,9 +1221,6 @@ async fn handle_execute_command_streaming_inner<
                     None => {
                         state.in_flight.lock().await.remove(&invocation.id);
 
-                        if is_jj {
-                            let _ = jj::jj_squash_stacked(&sandbox_dir).await;
-                        }
                         let _ = state.backend.push_sandbox(
                             &sandbox_dir,
                             &invocation.group_id,
