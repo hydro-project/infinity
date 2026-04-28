@@ -200,102 +200,130 @@ where
             biased;
 
             change = session_rx.recv() => {
-                if let Some(change) = change {
-                    thread_id = Some(change.session_id.clone());
-                    total_tokens_used = change.total_tokens_used;
-                    thread_buffers.clear(); // for now, we can't properly restore themn
-                    set_terminal_title(change.title.as_deref().unwrap_or(""));
-                    viewport.print_line_above(Line::from(""))?;
-                    viewport.print_line_above(Line::from(Span::styled(
-                        format!("✦ Loading session — thread {}", change.session_id),
-                        Style::default().fg(Color::Cyan),
-                    )))?;
-                }
+                let Some(change) = change else {
+                    viewport.print_line_above(Line::from(vec![
+                        Span::styled("Connection to daemon dropped unexpectedly, exiting", Style::default().fg(Color::Red)),
+                    ]))?;
+
+                    tracing::error!("Session channel closed, exiting");
+                    cleanup()?;
+                    return Ok(true);
+                };
+
+                thread_id = Some(change.session_id.clone());
+                total_tokens_used = change.total_tokens_used;
+                thread_buffers.clear(); // for now, we can't properly restore themn
+                set_terminal_title(change.title.as_deref().unwrap_or(""));
+                viewport.print_line_above(Line::from(""))?;
+                viewport.print_line_above(Line::from(Span::styled(
+                    format!("✦ Loading session — thread {}", change.session_id),
+                    Style::default().fg(Color::Cyan),
+                )))?;
             }
 
             updates = sessions_updated_rx.recv() => {
-                if let Some(updates) = updates {
-                    // Update terminal title if the current session's title changed
-                    if let Some(ref tid) = thread_id
-                        && let Some(info) = updates.get(tid)
-                            && let Some(ref title) = info.title {
-                                set_terminal_title(title);
-                            }
+                let Some(updates) = updates else {
+                    viewport.print_line_above(Line::from(vec![
+                        Span::styled("Connection to daemon dropped unexpectedly, exiting", Style::default().fg(Color::Red)),
+                    ]))?;
 
-                    sessions.extend(updates);
+                    tracing::error!("Sessions-updated channel closed, exiting");
+                    cleanup()?;
+                    return Ok(true);
+                };
 
-                    if let Some(session_picker) = session_picker.as_mut() {
-                        let last_picked_id = session_picker.sessions[session_picker.selected].0.clone();
-
-                        let mut all_sessions: Vec<(String, infinity_protocol::SessionInfo)> = sessions.iter()
-                            .map(|(id, info)| (id.clone(), info.clone()))
-                            .collect();
-                        all_sessions.sort_by(|a, b| b.1.last_updated.cmp(&a.1.last_updated));
-
-                        session_picker.sessions = all_sessions;
-                        if let Some(found) = session_picker.sessions.iter().position(|s| s.0 == last_picked_id) {
-                            session_picker.selected = found;
+                // Update terminal title if the current session's title changed
+                if let Some(ref tid) = thread_id
+                    && let Some(info) = updates.get(tid)
+                        && let Some(ref title) = info.title {
+                            set_terminal_title(title);
                         }
+
+                sessions.extend(updates);
+
+                if let Some(session_picker) = session_picker.as_mut() {
+                    let last_picked_id = session_picker.sessions[session_picker.selected].0.clone();
+
+                    let mut all_sessions: Vec<(String, infinity_protocol::SessionInfo)> = sessions.iter()
+                        .map(|(id, info)| (id.clone(), info.clone()))
+                        .collect();
+                    all_sessions.sort_by(|a, b| b.1.last_updated.cmp(&a.1.last_updated));
+
+                    session_picker.sessions = all_sessions;
+                    if let Some(found) = session_picker.sessions.iter().position(|s| s.0 == last_picked_id) {
+                        session_picker.selected = found;
                     }
                 }
             }
 
             result = detach_result_rx.recv() => {
-                if let Some(result) = result {
-                    let action = pending_soft_detach.take();
-                    match (result, action) {
-                        (DetachResult::Idle, Some(SoftDetachAction::Quit)) => {
-                            cleanup()?;
-                            return Ok(true);
-                        }
-                        (DetachResult::Idle, Some(SoftDetachAction::SwitchSession(target))) => {
-                            let _ = load_session_tx.send((target.clone(), false));
-                            if target.is_none() {
-                                viewport.print_line_above(Line::from(vec![
-                                    Span::styled(
-                                        "✦ Lazily creating a new session",
-                                        Style::default().fg(Color::Yellow),
-                                    ),
-                                ]))?;
-                            }
-                            total_tokens_used = 0;
-                            thread_buffers.clear();
-                            thread_id = None;
-                            spinner_state = None;
-                        }
-                        (DetachResult::NotIdle, Some(SoftDetachAction::Quit)) => {
-                            quit_picker = Some(QuitPicker::new());
-                            ui_mode = UiMode::QuitPicker;
-                        }
-                        (DetachResult::NotIdle, Some(SoftDetachAction::SwitchSession(target))) => {
-                            let _ = load_session_tx.send((target.clone(), false));
-                            if target.is_none() {
-                                viewport.print_line_above(Line::from(vec![
-                                    Span::styled(
-                                        "✦ Lazily creating a new session",
-                                        Style::default().fg(Color::Yellow),
-                                    ),
-                                ]))?;
-                            }
-                            total_tokens_used = 0;
-                            thread_buffers.clear();
-                            thread_id = None;
-                            spinner_state = None;
-                            ui_mode = UiMode::Normal { choice_focused: false };
-                        }
-                        _ => {}
+                let Some(result) = result else {
+                    viewport.print_line_above(Line::from(vec![
+                        Span::styled("Connection to daemon dropped unexpectedly, exiting", Style::default().fg(Color::Red)),
+                    ]))?;
+
+                    tracing::error!("Detach-result channel closed, exiting");
+                    cleanup()?;
+                    return Ok(true);
+                };
+
+                let action = pending_soft_detach.take();
+                match (result, action) {
+                    (DetachResult::Idle, Some(SoftDetachAction::Quit)) => {
+                        cleanup()?;
+                        return Ok(true);
                     }
-                    draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
+                    (DetachResult::Idle, Some(SoftDetachAction::SwitchSession(target))) => {
+                        let _ = load_session_tx.send((target.clone(), false));
+                        if target.is_none() {
+                            viewport.print_line_above(Line::from(vec![
+                                Span::styled(
+                                    "✦ Lazily creating a new session",
+                                    Style::default().fg(Color::Yellow),
+                                ),
+                            ]))?;
+                        }
+                        total_tokens_used = 0;
+                        thread_buffers.clear();
+                        thread_id = None;
+                        spinner_state = None;
+                    }
+                    (DetachResult::NotIdle, Some(SoftDetachAction::Quit)) => {
+                        quit_picker = Some(QuitPicker::new());
+                        ui_mode = UiMode::QuitPicker;
+                    }
+                    (DetachResult::NotIdle, Some(SoftDetachAction::SwitchSession(target))) => {
+                        let _ = load_session_tx.send((target.clone(), false));
+                        if target.is_none() {
+                            viewport.print_line_above(Line::from(vec![
+                                Span::styled(
+                                    "✦ Lazily creating a new session",
+                                    Style::default().fg(Color::Yellow),
+                                ),
+                            ]))?;
+                        }
+                        total_tokens_used = 0;
+                        thread_buffers.clear();
+                        thread_id = None;
+                        spinner_state = None;
+                        ui_mode = UiMode::Normal { choice_focused: false };
+                    }
+                    _ => {}
                 }
+                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
             }
 
             evt = display_rx.recv() => {
                 let Some((evt_thread_id, evt)) = evt else {
-                    if pending_soft_detach.is_some() {
-                        cleanup()?;
-                        return Ok(true);
+                    if pending_soft_detach.is_none() {
+                        viewport.print_line_above(Line::from(vec![
+                            Span::styled("Connection to daemon dropped unexpectedly, exiting", Style::default().fg(Color::Red)),
+                        ]))?;
+
+                        tracing::error!("Display channel closed, exiting");
                     }
-                    panic!("agent loop terminated unexpectedly");
+                    cleanup()?;
+                    return Ok(true);
                 };
                 let is_root = evt_thread_id.is_none() || evt_thread_id.as_ref() == thread_id.as_ref();
                 // For non-root events, the thread_id is always Some.
