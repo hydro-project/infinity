@@ -243,12 +243,13 @@ pub async fn run_with_daemon(
     loop {
         tokio::select! {
             msg = to_daemon_rx.recv() => {
-                let Some(msg) = msg else {
+                let Some(msg) = msg else { // intentional shut down, terminal disconnecting from daemon
                     drop(from_daemon_tx);
                     return client_fut.await;
                 };
                 let bytes = Bytes::from(serde_json::to_vec(&msg).expect("bug: failed to serialize daemon message"));
                 if framed.send(bytes).await.is_err() {
+                    tracing::error!("failed to send message to daemon, it may have disconnected");
                     drop(from_daemon_tx);
                     return client_fut.await;
                 }
@@ -270,9 +271,15 @@ pub async fn run_with_daemon(
                         let msg = serde_json::from_slice::<DaemonMessage>(&bytes).expect("bug: failed to deserialize daemon message");
                         let _ = from_daemon_tx.send(msg);
                     }
-                    _ => {
+                    Some(Err(e)) => {
+                        tracing::error!("error reading from daemon socket: {e}");
+                        drop(from_daemon_tx);
+                        return client_fut.await;
+                    }
+                    None => {
                         // Daemon closed the socket — drop from_daemon_tx so
                         // run_client sees the channel close.
+                        tracing::error!("Daemon closed the connection unexpectedly");
                         drop(from_daemon_tx);
                         return client_fut.await;
                     }
@@ -343,16 +350,15 @@ async fn run_client(
 
     let (display_tx, display_rx) =
         mpsc::unbounded_channel::<(Option<String>, DisplayEvent<DaemonTokenUsage>)>();
-    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<String>();
-    let (load_session_tx, mut load_session_rx) =
-        mpsc::unbounded_channel::<(Option<String>, bool)>();
-    let (model_switch_tx, mut model_switch_rx) = mpsc::unbounded_channel::<usize>();
+    let (input_tx, input_rx) = mpsc::unbounded_channel::<String>();
+    let (load_session_tx, load_session_rx) = mpsc::unbounded_channel::<(Option<String>, bool)>();
+    let (model_switch_tx, model_switch_rx) = mpsc::unbounded_channel::<usize>();
     let (session_tx, session_rx) = mpsc::unbounded_channel::<SessionChanged>();
     let (sessions_updated_tx, sessions_updated_rx) =
         mpsc::unbounded_channel::<HashMap<String, SessionInfo>>();
-    let (soft_detach_tx, mut soft_detach_rx) = mpsc::unbounded_channel::<()>();
+    let (soft_detach_tx, soft_detach_rx) = mpsc::unbounded_channel::<()>();
     let (detach_result_tx, detach_result_rx) = mpsc::unbounded_channel::<DetachResult>();
-    let (choice_answered_tx, mut choice_answered_rx) = mpsc::unbounded_channel::<(String, usize)>();
+    let (choice_answered_tx, choice_answered_rx) = mpsc::unbounded_channel::<(String, usize)>();
 
     if let Some(info) = startup_info {
         let _ = display_tx.send((None, DisplayEvent::Info(info)));
@@ -397,118 +403,130 @@ async fn run_client(
     let mut terminal_result: Option<Result<Result<bool, BoxError>, tokio::task::JoinError>> = None;
     let mut pending_soft_detach = false;
 
-    loop {
-        tokio::select! {
-            biased;
+    {
+        // move into a local scope so they drop when the loop exits
+        let mut input_rx = input_rx;
+        let display_tx = display_tx;
+        let mut load_session_rx = load_session_rx;
+        let mut model_switch_rx = model_switch_rx;
+        let session_tx = session_tx;
+        let sessions_updated_tx = sessions_updated_tx;
+        let mut soft_detach_rx = soft_detach_rx;
+        let detach_result_tx = detach_result_tx;
+        let mut choice_answered_rx = choice_answered_rx;
 
-            msg = from_daemon.recv() => {
-                let Some(msg) = msg else {
-                    break;
-                };
-                match msg {
-                    DaemonMessage::Connected { session_id, title, total_tokens_used, .. } => {
-                        active_session = Some(session_id.clone());
-                        let _ = session_tx.send(SessionChanged { session_id, title, total_tokens_used });
-                        for text in pending_input.drain(..) {
-                            let sid = active_session.as_ref().expect("bug: active_session should be set after Connected").clone();
-                            let _ = to_daemon.send(ClientMessage::UserInput { session_id: sid, text });
+        loop {
+            tokio::select! {
+                biased;
+
+                msg = from_daemon.recv() => {
+                    let Some(msg) = msg else {
+                        break;
+                    };
+                    match msg {
+                        DaemonMessage::Connected { session_id, title, total_tokens_used, .. } => {
+                            active_session = Some(session_id.clone());
+                            let _ = session_tx.send(SessionChanged { session_id, title, total_tokens_used });
+                            for text in pending_input.drain(..) {
+                                let sid = active_session.as_ref().expect("bug: active_session should be set after Connected").clone();
+                                let _ = to_daemon.send(ClientMessage::UserInput { session_id: sid, text });
+                            }
                         }
-                    }
-                    DaemonMessage::Replay { history, pending_choices, .. } => {
-                        for m in history {
-                            if let Some(evt) = daemon_msg_to_display(m) {
+                        DaemonMessage::Replay { history, pending_choices, .. } => {
+                            for m in history {
+                                if let Some(evt) = daemon_msg_to_display(m) {
+                                    let _ = display_tx.send(evt);
+                                }
+                            }
+                            let _ = display_tx.send((None, DisplayEvent::ResponseDone(Some(DaemonTokenUsage(None)))));
+                            for m in pending_choices {
+                                if let Some(evt) = daemon_msg_to_display(m) {
+                                    let _ = display_tx.send(evt);
+                                }
+                            }
+                        }
+                        DaemonMessage::SessionsUpdated { sessions } => {
+                            let _ = sessions_updated_tx.send(sessions);
+                        }
+                        DaemonMessage::DisconnectNotIdle => {
+                            if pending_soft_detach {
+                                pending_soft_detach = false;
+                                let _ = detach_result_tx.send(DetachResult::NotIdle);
+                            }
+                        }
+                        DaemonMessage::DetachedIdle => {
+                            if pending_soft_detach {
+                                pending_soft_detach = false;
+                                active_session = None;
+                                let _ = detach_result_tx.send(DetachResult::Idle);
+                            }
+                        }
+                        msg => {
+                            if let Some(evt) = daemon_msg_to_display(msg) {
                                 let _ = display_tx.send(evt);
                             }
                         }
-                        let _ = display_tx.send((None, DisplayEvent::ResponseDone(Some(DaemonTokenUsage(None)))));
-                        for m in pending_choices {
-                            if let Some(evt) = daemon_msg_to_display(m) {
-                                let _ = display_tx.send(evt);
-                            }
-                        }
-                    }
-                    DaemonMessage::SessionsUpdated { sessions } => {
-                        let _ = sessions_updated_tx.send(sessions);
-                    }
-                    DaemonMessage::DisconnectNotIdle => {
-                        if pending_soft_detach {
-                            pending_soft_detach = false;
-                            let _ = detach_result_tx.send(DetachResult::NotIdle);
-                        }
-                    }
-                    DaemonMessage::DetachedIdle => {
-                        if pending_soft_detach {
-                            pending_soft_detach = false;
-                            active_session = None;
-                            let _ = detach_result_tx.send(DetachResult::Idle);
-                        }
-                    }
-                    msg => {
-                        if let Some(evt) = daemon_msg_to_display(msg) {
-                            let _ = display_tx.send(evt);
-                        }
                     }
                 }
-            }
 
-            msg = soft_detach_rx.recv() => {
-                let Some(()) = msg else { break };
-                if let Some(ref sid) = active_session {
-                    pending_soft_detach = true;
-                    let _ = to_daemon.send(ClientMessage::SoftDetach { session_id: sid.clone() });
-                }
-            }
-
-            maybe_target = load_session_rx.recv() => {
-                let Some((maybe_target, shut_down_old)) = maybe_target else { break };
-                if let Some(ref sid) = active_session {
-                    if shut_down_old {
-                        let _ = to_daemon.send(ClientMessage::ShutdownSession { session_id: sid.clone() });
-                    } else {
-                        let _ = to_daemon.send(ClientMessage::Disconnect);
+                msg = soft_detach_rx.recv() => {
+                    let Some(()) = msg else { break };
+                    if let Some(ref sid) = active_session {
+                        pending_soft_detach = true;
+                        let _ = to_daemon.send(ClientMessage::SoftDetach { session_id: sid.clone() });
                     }
                 }
-                active_session = None;
 
-                if let Some(target) = maybe_target {
-                    let _ = to_daemon.send(ClientMessage::Connect { session_id: target, thread_id: None });
-                } // if none, will be created on next user input
-            }
+                maybe_target = load_session_rx.recv() => {
+                    let Some((maybe_target, shut_down_old)) = maybe_target else { break };
+                    if let Some(ref sid) = active_session {
+                        if shut_down_old {
+                            let _ = to_daemon.send(ClientMessage::ShutdownSession { session_id: sid.clone() });
+                        } else {
+                            let _ = to_daemon.send(ClientMessage::Disconnect);
+                        }
+                    }
+                    active_session = None;
 
-            idx = model_switch_rx.recv() => {
-                let Some(idx) = idx else { break };
-                if let (Some(sid), Some(entry)) = (&active_session, models_for_switch.get(idx)) {
-                    let _ = to_daemon.send(ClientMessage::SwitchModel {
-                        session_id: sid.clone(), model_id: entry.model_id.clone(),
-                    });
+                    if let Some(target) = maybe_target {
+                        let _ = to_daemon.send(ClientMessage::Connect { session_id: target, thread_id: None });
+                    } // if none, will be created on next user input
                 }
-            }
 
-            answered = choice_answered_rx.recv() => {
-                if let Some((choice_id, selected)) = answered {
+                idx = model_switch_rx.recv() => {
+                    let Some(idx) = idx else { break };
+                    if let (Some(sid), Some(entry)) = (&active_session, models_for_switch.get(idx)) {
+                        let _ = to_daemon.send(ClientMessage::SwitchModel {
+                            session_id: sid.clone(), model_id: entry.model_id.clone(),
+                        });
+                    }
+                }
+
+                answered = choice_answered_rx.recv() => {
+                    let Some((choice_id, selected)) = answered else { break; };
                     let _ = to_daemon.send(ClientMessage::UserChoiceAnswered { choice_id, selected });
                 }
-            }
 
-            res = &mut terminal_handle => {
-                terminal_result = Some(res);
-                break;
-            }
+                res = &mut terminal_handle => {
+                    terminal_result = Some(res);
+                    break;
+                }
 
-            text = input_rx.recv() => {
-                let Some(text) = text else { break };
-                if let Some(ref sid) = active_session {
-                    if text == "__compact__" {
-                        let _ = to_daemon.send(ClientMessage::TriggerCompaction { session_id: sid.clone() });
-                    } else if text == "__archive__" {
-                        let _ = to_daemon.send(ClientMessage::ArchiveSession { session_id: sid.clone() });
-                        active_session = None;
+                text = input_rx.recv() => {
+                    let Some(text) = text else { break };
+                    if let Some(ref sid) = active_session {
+                        if text == "__compact__" {
+                            let _ = to_daemon.send(ClientMessage::TriggerCompaction { session_id: sid.clone() });
+                        } else if text == "__archive__" {
+                            let _ = to_daemon.send(ClientMessage::ArchiveSession { session_id: sid.clone() });
+                            active_session = None;
+                        } else {
+                            let _ = to_daemon.send(ClientMessage::UserInput { session_id: sid.clone(), text });
+                        }
                     } else {
-                        let _ = to_daemon.send(ClientMessage::UserInput { session_id: sid.clone(), text });
+                        pending_input.push(text);
+                        let _ = to_daemon.send(ClientMessage::CreateSession { cwd: cwd.clone(), location: None });
                     }
-                } else {
-                    pending_input.push(text);
-                    let _ = to_daemon.send(ClientMessage::CreateSession { cwd: cwd.clone(), location: None });
                 }
             }
         }
