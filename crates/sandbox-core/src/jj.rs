@@ -119,7 +119,7 @@ pub async fn jj_git_clone(
 }
 /// Push the current working copy to the remote.
 pub async fn jj_push_working_copy(dir: &Path, bookmark_name: &str) -> Result<(), SandboxError> {
-    run_jj(dir, &["bookmark", "set", bookmark_name]).await?;
+    run_jj(dir, &["bookmark", "set", bookmark_name, "-B"]).await?;
     Ok(())
 }
 
