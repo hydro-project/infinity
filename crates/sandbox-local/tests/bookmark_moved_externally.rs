@@ -306,6 +306,146 @@ async fn external_bookmark_delete_is_recovered() {
     assert!(text.contains("hello world recovered"), "got: {text}");
 }
 
+/// Moving a bookmark FORWARD externally (to a descendant of the sandbox's
+/// working copy) causes `jj bookmark set` to fail without `--allow-backwards`,
+/// because moving the bookmark back to `@` is a backwards move.
+/// This test reproduces that bug.
+#[tokio::test]
+async fn external_bookmark_move_forward_is_overwritten_by_next_edit() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let tmp = jj_init_with_file("README.md", "hello\n");
+    let repo = tmp.path();
+
+    let server_url = start_test_server(&repo.join(".test-metadata")).await;
+    let (callback_url, mut rx) = start_callback_channel()
+        .await
+        .expect("start callback channel");
+
+    let group = "bm-forward-test";
+    let repo_str = repo.to_str().expect("repo path to str");
+    let bookmark = format!("sandbox-{group}");
+
+    // 1. Clone repo and make an initial edit so the bookmark has content
+    invoke(
+        &server_url,
+        &callback_url,
+        group,
+        "clone_repo",
+        serde_json::json!({ "repo": repo_str }),
+        &mut rx,
+        None,
+    )
+    .await;
+
+    invoke(
+        &server_url,
+        &callback_url,
+        group,
+        "edit_file",
+        serde_json::json!({
+            "path": "README.md",
+            "old_str": "hello\n",
+            "new_str": "hello world\n"
+        }),
+        &mut rx,
+        None,
+    )
+    .await;
+
+    // Record the bookmark's commit after the edit
+    let commit_after_edit = bookmark_commit(repo, &bookmark);
+    assert!(!commit_after_edit.is_empty());
+
+    // 2. Externally move the bookmark FORWARD: create a new commit on top of
+    //    the bookmark and move the bookmark to it. This simulates what happens
+    //    when a child sandbox's squash moves the bookmark ahead.
+    let output = jj_cmd(repo)
+        .args(["new", &bookmark, "--no-edit"])
+        .output()
+        .expect("create new commit on top of bookmark");
+    assert!(
+        output.status.success(),
+        "jj new failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Find the new descendant commit and move the bookmark to it
+    let new_change = {
+        let out = jj_cmd(repo)
+            .args([
+                "log",
+                "--no-graph",
+                "-r",
+                &format!("children({bookmark})"),
+                "-T",
+                "change_id",
+            ])
+            .output()
+            .expect("find child commit");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+
+    let output = jj_cmd(repo)
+        .args(["bookmark", "set", &bookmark, "-r", &new_change, "-B"])
+        .output()
+        .expect("move bookmark forward");
+    assert!(
+        output.status.success(),
+        "external bookmark forward move failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let commit_after_forward_move = bookmark_commit(repo, &bookmark);
+    assert_ne!(
+        commit_after_edit, commit_after_forward_move,
+        "bookmark should have moved to a different (descendant) commit"
+    );
+
+    // 3. Make another edit through the sandbox — this requires moving the
+    //    bookmark BACKWARDS to the sandbox's working copy, which fails without
+    //    --allow-backwards.
+    let text = invoke(
+        &server_url,
+        &callback_url,
+        group,
+        "edit_file",
+        serde_json::json!({
+            "path": "README.md",
+            "old_str": "hello world\n",
+            "new_str": "hello world updated\n"
+        }),
+        &mut rx,
+        None,
+    )
+    .await;
+    // Should succeed (not error) and contain the external move warning
+    assert!(
+        !text.starts_with("Error:"),
+        "edit should succeed even when bookmark was moved forward, got: {text}"
+    );
+    assert!(
+        text.contains("Warning:") && text.contains("moved externally"),
+        "should warn about external bookmark move, got: {text}"
+    );
+
+    // 4. Verify the sandbox still has the correct content
+    let text = invoke(
+        &server_url,
+        &callback_url,
+        group,
+        "read_file",
+        serde_json::json!({ "path": "README.md" }),
+        &mut rx,
+        None,
+    )
+    .await;
+    assert!(
+        text.contains("hello world updated"),
+        "sandbox should still have the latest edit, got: {text}"
+    );
+}
+
 /// Moving a bookmark externally does not affect the diff view in practice,
 /// since push_sandbox always restores the bookmark before push_diff_view runs.
 /// This test verifies that the diff view still works correctly after an
