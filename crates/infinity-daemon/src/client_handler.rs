@@ -246,17 +246,34 @@ pub async fn handle_client(stream: UnixStream, session_manager: Arc<Mutex<Sessio
     loop {
         tokio::select! {
             msg = daemon_msg_rx.recv() => {
-                let Some(msg) = msg else { break };
+                let Some(msg) = msg else { // handle_client_channels has dropped the senders, so we disconnect
+                    break
+                };
                 let bytes = Bytes::from(serde_json::to_vec(&msg).expect("bug: failed to serialize DaemonMessage"));
-                if framed.send(bytes).await.is_err() { break; }
+
+                if let Err(e) = framed.send(bytes).await {
+                    tracing::error!("Failed to send daemon message to client: {e}");
+                    break;
+                }
             }
             _ = &mut handler => {
                 return;
             }
             frame = framed.next() => {
-                let Some(Ok(bytes)) = frame else { break };
-                let Ok(msg) = serde_json::from_slice::<ClientMessage>(&bytes) else { continue };
-                client_msg_tx.send(msg).expect("bug: client message receiver dropped");
+                match frame {
+                    Some(Ok(bytes)) => {
+                        let Ok(msg) = serde_json::from_slice::<ClientMessage>(&bytes) else { continue };
+                        client_msg_tx.send(msg).expect("bug: client message receiver dropped");
+                    }
+                    Some(Err(e)) => {
+                        tracing::error!("Error reading from client socket: {e}");
+                        break;
+                    }
+                    None => {
+                        tracing::info!("Client closed the connection");
+                        break;
+                    }
+                }
             }
         }
     }
@@ -310,8 +327,14 @@ pub async fn handle_client_channels(
         tokio::select! {
             // Forward session display events to client
             msg = client_tx_rx.recv() => {
-                let Some(msg) = msg else { break };
-                if daemon_tx.send(msg).is_err() { break; }
+                let Some(msg) = msg else {
+                    tracing::error!("Session display events dropped");
+                    break
+                };
+                if daemon_tx.send(msg).is_err() {
+                    tracing::error!("Failed to send display event to client");
+                    break;
+                }
             }
             // Forward remote proxy messages to client (prefixed)
             msg = async {
@@ -330,7 +353,10 @@ pub async fn handle_client_channels(
             }
             // Handle client messages
             msg = client_rx.recv() => {
-                let Some(msg) = msg else { break };
+                let Some(msg) = msg else {
+                    tracing::info!("Client stream ended");
+                    break
+                };
                 tracing::info!(?msg, "Received client message");
 
                 // If connected to a remote session, forward most messages there
@@ -702,5 +728,4 @@ pub async fn handle_client_channels(
         let mgr = session_manager.lock().await;
         mgr.send_idle_ping(sid);
     }
-    tracing::trace!("Client stream ended");
 }

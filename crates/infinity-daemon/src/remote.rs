@@ -165,17 +165,39 @@ impl RemoteDaemons {
             loop {
                 tokio::select! {
                     msg = stream.next() => {
-                        let Some(Ok(bytes)) = msg else { break };
-                        let Ok(dm) = serde_json::from_slice::<DaemonMessage>(&bytes) else { continue };
+                        let bytes = match msg {
+                            Some(Ok(bytes)) => bytes,
+                            Some(Err(e)) => {
+                                tracing::error!("Error reading from remote connection: {e}");
+                                break;
+                            }
+                            None => {
+                                tracing::error!("Remote connection closed unexpectedly");
+                                break;
+                            }
+                        };
+                        let Ok(dm) = serde_json::from_slice::<DaemonMessage>(&bytes) else {
+                            tracing::error!("Failed to parse DaemonMessage from remote: {}", String::from_utf8_lossy(&bytes));
+                            break;
+                        };
                         if matches!(dm, DaemonMessage::Welcome { .. } | DaemonMessage::SessionsUpdated { .. } | DaemonMessage::RemotesUpdated { .. }) {
                             continue;
                         }
-                        if daemon_tx.send(dm).is_err() { break; }
+                        if daemon_tx.send(dm).is_err() {
+                            tracing::info!("Remote receiver disconnected, so closing connection");
+                            break;
+                        }
                     }
                     msg = client_rx.recv() => {
-                        let Some(msg) = msg else { break };
+                        let Some(msg) = msg else {
+                            tracing::info!("Client sender disconnected, so closing connection");
+                            break
+                        };
                         let bytes = Bytes::from(serde_json::to_vec(&msg).expect("bug: serialization failed"));
-                        if sink.send(bytes).await.is_err() { break; }
+                        if sink.send(bytes).await.is_err() {
+                            tracing::error!("Error sending to remote connection");
+                            break;
+                        }
                     }
                 }
             }

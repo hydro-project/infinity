@@ -105,16 +105,10 @@ enum RapCommands {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), BoxError> {
-    let local = tokio::task::LocalSet::new();
-    local.run_until(async_main()).await
-}
-
-async fn async_main() -> Result<(), BoxError> {
-    std::fs::create_dir_all(".infinity").ok();
-
     // Parse CLI arguments via clap.
     let cli = Cli::parse();
 
+    std::fs::create_dir_all(".infinity").ok();
     if !matches!(cli.command, Some(Commands::Daemon { .. })) {
         let log_file = std::fs::File::create(".infinity/cli.log").ok();
         if let Some(file) = log_file {
@@ -126,6 +120,11 @@ async fn async_main() -> Result<(), BoxError> {
         }
     }
 
+    let local = tokio::task::LocalSet::new();
+    local.run_until(async_main(cli)).await
+}
+
+async fn async_main(cli: Cli) -> Result<(), BoxError> {
     // Handle subcommands
     if let Some(command) = cli.command {
         return match command {
