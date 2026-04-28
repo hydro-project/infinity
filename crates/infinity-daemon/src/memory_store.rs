@@ -495,22 +495,32 @@ impl InMemoryConversationStore {
                 }
             }
             _ => {
-                std::fs::remove_file(path).ok();
+                let _ = std::fs::remove_file(path); // file might already not exist
             }
         }
     }
 
     /// Load views from `{dir}/{thread_id}.views.json`.
     fn load_views(&self, thread_id: &str) {
+        tracing::info!("Loading views for thread {thread_id}");
         let Some(ref dir) = self.dir else { return };
         let path = dir.join(format!("{}.views.json", thread_id));
-        if let Ok(json) = std::fs::read_to_string(&path)
-            && let Ok(v) = serde_json::from_str::<HashMap<String, serde_json::Value>>(&json)
-        {
-            self.views
-                .lock()
-                .expect("bug: mutex poisoned")
-                .insert(thread_id.to_owned(), v);
+        match std::fs::read_to_string(&path) {
+            Ok(json) => match serde_json::from_str::<HashMap<String, serde_json::Value>>(&json) {
+                Ok(v) => {
+                    self.views
+                        .lock()
+                        .expect("bug: mutex poisoned")
+                        .insert(thread_id.to_owned(), v);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to deserialize views: {e}");
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // file does not exist, okay
+            Err(e) => {
+                tracing::error!("Failed to load views file: {e}");
+            }
         }
     }
 
