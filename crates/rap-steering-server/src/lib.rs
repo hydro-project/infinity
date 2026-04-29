@@ -17,7 +17,12 @@ const SINGLE_FILES: &[&str] = &[
 ];
 
 /// Directory steering locations — all files recursively.
-const DIRECTORIES: &[&str] = &[".kiro/steering", ".cursor/rules", ".ai/rules"];
+const DIRECTORIES: &[&str] = &[
+    ".kiro/steering",
+    ".cursor/rules",
+    ".ai/rules",
+    ".claude/skills",
+];
 
 #[derive(Debug, Deserialize)]
 pub struct ListSteeringArgs {
