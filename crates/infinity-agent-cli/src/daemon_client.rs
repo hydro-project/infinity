@@ -502,7 +502,13 @@ async fn run_client(
                             let _ = to_daemon.send(ClientMessage::Disconnect);
                         }
                     }
-                    active_session = None;
+
+                    if shut_down_old && maybe_target.is_none() {
+                        // When stopping (shut_down_old=true) with no target, keep active_session
+                        // so the next user input resumes the same session.
+                    } else {
+                        active_session = None;
+                    }
 
                     if let Some(target) = maybe_target {
                         let _ = to_daemon.send(ClientMessage::Connect { session_id: target, thread_id: None });
