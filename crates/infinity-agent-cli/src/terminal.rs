@@ -805,11 +805,9 @@ where
                                                 if thread_id.is_some() {
                                                     let _ = load_session_tx.send((None, true));
                                                     viewport.print_line_above(Line::from(vec![
-                                                        Span::styled("✦ Agent stopped", Style::default().fg(Color::Yellow)),
+                                                        Span::styled("✦ Agent stopped — send a message to resume", Style::default().fg(Color::Yellow)),
                                                     ]))?;
-                                                    total_tokens_used = 0;
                                                     thread_buffers.clear();
-                                                    thread_id = None;
                                                     spinner_state = None;
                                                 } else {
                                                     viewport.print_line_above(Line::from(vec![
