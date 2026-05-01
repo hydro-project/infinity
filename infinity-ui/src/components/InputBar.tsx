@@ -14,6 +14,8 @@ interface Props {
   onSend: (text: string) => void;
   disabled: boolean;
   spinner: SpinnerState | null;
+  /** When set, overrides the textarea value (for demo/embedded use). */
+  embeddedInput?: string;
 }
 
 export interface InputBarHandle {
@@ -21,11 +23,13 @@ export interface InputBarHandle {
 }
 
 export const InputBar = forwardRef<InputBarHandle, Props>(function InputBar(
-  { onSend, disabled, spinner },
+  { onSend, disabled, spinner, embeddedInput },
   fwdRef,
 ) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const displayValue = embeddedInput ?? value;
 
   useImperativeHandle(
     fwdRef,
@@ -66,20 +70,22 @@ export const InputBar = forwardRef<InputBarHandle, Props>(function InputBar(
         <textarea
           ref={textareaRef}
           className={css.textarea}
-          value={value}
+          value={displayValue}
           onChange={(e) => {
-            setValue(e.target.value);
-            handleInput();
+            if (embeddedInput === undefined) {
+              setValue(e.target.value);
+              handleInput();
+            }
           }}
           onKeyDown={handleKeyDown}
           placeholder={disabled ? "Connecting…" : "Send a message…"}
-          disabled={disabled}
+          disabled={disabled || embeddedInput !== undefined}
           rows={1}
         />
         <button
           className={css.sendBtn}
           onClick={submit}
-          disabled={disabled || !value.trim()}
+          disabled={disabled || !displayValue.trim()}
           aria-label="Send"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
