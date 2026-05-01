@@ -1,8 +1,10 @@
 import { useEffect, useRef, useCallback, useState } from "react";
-import type { ClientMessage, DaemonMessage } from "./types";
-import { parseDaemonMessage, serializeClientMessage } from "./protocol";
-
-export type ConnectionStatus = "connecting" | "connected" | "disconnected";
+import type {
+  ClientMessage,
+  DaemonMessage,
+  ConnectionStatus,
+} from "infinity-ui";
+import { parseDaemonMessage, serializeClientMessage } from "infinity-ui";
 
 interface UseSocketOptions {
   url: string;

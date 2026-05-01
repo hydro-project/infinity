@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSocket } from "./useSocket";
-import { msgTag, msgPayload } from "./protocol";
-import { MessageList } from "./components/MessageList";
-import { SessionSidebar } from "./components/SessionSidebar";
-import { MigratePicker } from "./components/MigratePicker";
-import { DiffView } from "./components/DiffView";
-import { Spinner } from "./components/Spinner";
+import {
+  msgTag,
+  msgPayload,
+  MessageList,
+  SessionSidebar,
+  MigratePicker,
+  DiffView,
+  Spinner,
+} from "infinity-ui";
 import type {
   ClientMessage,
   DaemonMessage,
@@ -15,10 +18,11 @@ import type {
   ModelInfo,
   RemoteInfo,
   SpinnerState,
-  MessageItem,
+  MessageItemType as MessageItem,
   TokenUsage,
-} from "./types";
+} from "infinity-ui";
 import css from "./App.module.css";
+import chatCss from "infinity-ui/src/components/ChatPanel.module.css";
 
 const WS_URL = import.meta.env.VITE_WS_PORT
   ? `ws://${window.location.hostname}:${import.meta.env.VITE_WS_PORT}`
@@ -919,12 +923,12 @@ export function App() {
       </div>
       {hasViews && (
         <div
-          className={`${css.chatPanel} ${!chatVisible ? css.chatPanelHidden : ""}`}
+          className={`${chatCss.chatPanel} ${!chatVisible ? chatCss.chatPanelHidden : ""}`}
         >
-          <div className={css.chatPanelHeader}>
-            <span className={css.chatPanelTitle}>Chat</span>
+          <div className={chatCss.chatPanelHeader}>
+            <span className={chatCss.chatPanelTitle}>Chat</span>
             <button
-              className={css.chatPanelClose}
+              className={chatCss.chatPanelClose}
               onClick={handleToggleChatPin}
               aria-label={chatPinned ? "Unpin chat" : "Pin chat"}
               data-pinned={chatPinned}
@@ -932,7 +936,7 @@ export function App() {
               {"\uD83D\uDCCC"}
             </button>
           </div>
-          <div className={css.chatPanelBody}>
+          <div className={chatCss.chatPanelBody}>
             <MessageList
               messages={messages}
               generation={msgState.gen}
@@ -945,7 +949,7 @@ export function App() {
             />
           </div>
           <div
-            className={css.chatPanelResize}
+            className={chatCss.chatPanelResize}
             onMouseDown={onChatDragStart}
             onDoubleClick={() => setChatPanelWidth(420)}
           />
