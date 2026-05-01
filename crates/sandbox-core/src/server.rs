@@ -1542,6 +1542,10 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
             cmd_parts.push("--max-count");
             cmd_parts.push("50");
 
+            // Limit line length to avoid destroying context with minified files
+            cmd_parts.push("--max-columns");
+            cmd_parts.push("1000");
+
             if args.case_sensitive != Some(true) {
                 cmd_parts.push("--ignore-case");
             }
