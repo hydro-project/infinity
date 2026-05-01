@@ -20,6 +20,7 @@ interface Props {
   pendingChoice: PendingChoice | null;
   onChoiceSelect: (index: number) => void;
   theme?: "light" | "dark";
+  embeddedInput?: string;
 }
 
 function isAtBottom(el: HTMLElement) {
@@ -35,6 +36,7 @@ export const MessageList = memo(function MessageList({
   pendingChoice,
   onChoiceSelect,
   theme,
+  embeddedInput,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldStickRef = useRef(true);
@@ -174,6 +176,7 @@ export const MessageList = memo(function MessageList({
           onSend={handleSend}
           disabled={inputDisabled}
           spinner={spinner}
+          embeddedInput={embeddedInput}
         />
       </div>
     </div>

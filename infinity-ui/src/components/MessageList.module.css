@@ -1,4 +1,6 @@
 .container {
+    display: flex;
+    flex-direction: column;
     position: absolute;
     inset: 0;
     overflow-y: auto;
@@ -6,9 +8,11 @@
 }
 
 .inner {
+    flex: 1;
     max-width: var(--max-width);
+    width: 100%;
     margin: 0 auto;
-    padding: 64px 12px 16px;
+    padding: 0px 12px 16px;
     display: flex;
     flex-direction: column;
     gap: 2px;
@@ -19,6 +23,7 @@
     bottom: 0;
     z-index: 100;
     max-width: var(--max-width);
+    width: 100%;
     margin: 0 auto;
     padding: 8px 12px 16px;
 }
