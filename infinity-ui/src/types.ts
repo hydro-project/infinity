@@ -165,6 +165,10 @@ export type ClientMessage =
   | { ArchiveSession: { session_id: string } }
   | { ListDirectory: { path: string; on: string | null } };
 
+/* ── Connection status ── */
+
+export type ConnectionStatus = "connecting" | "connected" | "disconnected";
+
 /* ── Spinner states (matching terminal) ── */
 
 export type SpinnerState = "loading" | "thinking" | "tool";

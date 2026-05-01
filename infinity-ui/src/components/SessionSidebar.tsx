@@ -1,6 +1,10 @@
 import { useCallback, useRef, useState, useEffect, memo, useMemo } from "react";
-import type { SessionInfo, SubthreadInfo, RemoteInfo } from "../types";
-import type { ConnectionStatus } from "../useSocket";
+import type {
+  SessionInfo,
+  SubthreadInfo,
+  RemoteInfo,
+  ConnectionStatus,
+} from "../types";
 import css from "./SessionSidebar.module.css";
 
 function CopyThreadId({ id }: { id: string }) {
@@ -40,6 +44,8 @@ interface Props {
   onTogglePin: () => void;
   onWidthChange: (width: number) => void;
   onDragStateChange: (dragging: boolean) => void;
+  /** When true, uses relative positioning and skips document-level side effects. */
+  embedded?: boolean;
 }
 
 function ThreadTree({
@@ -168,19 +174,21 @@ export const SessionSidebar = memo(function SessionSidebar({
   onTogglePin,
   onWidthChange,
   onDragStateChange,
+  embedded,
 }: Props) {
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   const dragging = useRef(false);
 
   // Publish sidebar offset as CSS variable on :root
   useEffect(() => {
+    if (embedded) return;
     const offset = pinned ? width + 12 : 0;
     document.documentElement.style.setProperty(
       "--sidebar-offset",
       `${offset}px`,
     );
     onWidthChange(width);
-  }, [pinned, width, onWidthChange]);
+  }, [pinned, width, onWidthChange, embedded]);
 
   const onDragStart = useCallback(
     (e: React.MouseEvent) => {
@@ -350,11 +358,13 @@ export const SessionSidebar = memo(function SessionSidebar({
         </div>
       )}
       {sessionList}
-      <div
-        className={css.resizeHandle}
-        onMouseDown={onDragStart}
-        onDoubleClick={onDragDoubleClick}
-      />
+      {!embedded && (
+        <div
+          className={css.resizeHandle}
+          onMouseDown={onDragStart}
+          onDoubleClick={onDragDoubleClick}
+        />
+      )}
     </aside>
   );
 });

@@ -3,8 +3,8 @@ import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
-  title: 'Reactive Agent Protocol',
-  tagline: 'The protocol for agents that never stop',
+  title: 'Infinity',
+  tagline: 'The open-source ecosystem for agents with principled concurrency',
   favicon: 'img/favicon.ico',
 
   future: {
@@ -55,6 +55,7 @@ const config: Config = {
         sidebarCollapsed: false,
       },
     ],
+    './plugins/transpile-infinity-ui',
   ],
 
   themeConfig: {
@@ -63,7 +64,7 @@ const config: Config = {
       respectPrefersColorScheme: true,
     },
     navbar: {
-      title: 'Reactive Agent Protocol',
+      title: 'Infinity',
       items: [
         {
           type: 'docSidebar',
