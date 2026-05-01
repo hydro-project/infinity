@@ -10,11 +10,9 @@
     "format": "prettier --write 'src/**/*.{ts,tsx}'"
   },
   "dependencies": {
-    "@pierre/diffs": "^1.1.10",
-    "@pierre/trees": "^0.0.1-beta.4",
+    "infinity-ui": "file:../infinity-ui",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "streamdown": "^2.5.0"
+    "react-dom": "^19.1.0"
   },
   "devDependencies": {
     "@types/react": "^19.1.0",
