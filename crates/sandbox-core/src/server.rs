@@ -1533,18 +1533,12 @@ async fn handle_grep<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
         |sandbox_dir| async move {
             let exclude_glob: Option<String>;
             let mut cmd_parts = vec!["rg", "--line-number"];
-
             // Context lines
-            cmd_parts.push("-C");
-            cmd_parts.push("2");
-
+            cmd_parts.extend(["-C", "2"]);
             // Max count to avoid huge output
-            cmd_parts.push("--max-count");
-            cmd_parts.push("50");
-
+            cmd_parts.extend(["--max-count", "50"]);
             // Limit line length to avoid destroying context with minified files
-            cmd_parts.push("--max-columns");
-            cmd_parts.push("1000");
+            cmd_parts.extend(["--max-columns", "200", "--max-columns-preview"]);
 
             if args.case_sensitive != Some(true) {
                 cmd_parts.push("--ignore-case");
