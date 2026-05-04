@@ -5,7 +5,7 @@
   "type": "module",
   "main": "src/index.ts",
   "dependencies": {
-    "@pierre/diffs": "^1.1.10",
+    "@pierre/diffs": "^1.2.1",
     "@pierre/trees": "^0.0.1-beta.4",
     "streamdown": "^2.5.0"
   },

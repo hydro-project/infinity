@@ -6,6 +6,7 @@
 
 .sidebar {
     margin-top: 16px;
+    margin-right: 16px;
     width: 240px;
     min-width: 200px;
     overflow-y: auto;
@@ -22,20 +23,23 @@
     color: var(--text-dim);
 }
 
-.diffPane {
+.diffPaneWrapper {
     flex: 1;
-    overflow-y: auto;
-    padding: 0px 16px;
-    margin-top: 16px;
-}
-
-.diffPatch {
-    padding-bottom: 16px;
-}
-
-.diffPatch diffs-container {
-    border-radius: 16px;
+    min-height: 0;
+    display: grid;
+    border-radius: 16px 16px 0 0;
     overflow: hidden;
+}
+
+.diffPane {
+    overflow-y: auto;
+    overflow-x: clip;
+}
+
+.diffPane diffs-container {
+    contain: layout paint style;
+    overflow: clip;
+    border-radius: 16px;
 }
 
 .sidebar file-tree-container {
