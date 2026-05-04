@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSocket } from "./useSocket";
+import { workerFactory } from "./workerFactory";
 import {
   msgTag,
   msgPayload,
@@ -911,7 +912,7 @@ export function App() {
                 height: "100%",
               }}
             >
-              <DiffView files={views.diff.files ?? []} theme={resolved} />
+              <DiffView files={views.diff.files ?? []} theme={resolved} workerFactory={workerFactory} />
             </div>
           )}
           {hasViews && activeTab !== "diff" && (

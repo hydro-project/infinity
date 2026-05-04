@@ -1,5 +1,10 @@
 import { useMemo, useCallback, useRef, useState, memo } from "react";
-import { MultiFileDiff } from "@pierre/diffs/react";
+import {
+  CodeView,
+  type CodeViewHandle,
+  WorkerPoolContextProvider,
+} from "@pierre/diffs/react";
+import { parseDiffFromFile, type CodeViewItem } from "@pierre/diffs";
 import { FileTree } from "@pierre/trees/react";
 import type { GitStatusEntry } from "@pierre/trees";
 import css from "./DiffView.module.css";
@@ -14,6 +19,7 @@ interface FileEntry {
 interface DiffViewProps {
   files: FileEntry[];
   theme: "light" | "dark";
+  workerFactory?: () => Worker;
 }
 
 /** Sort file entries: folders before files, dot-prefixed before others, case-insensitive alpha. */
@@ -46,36 +52,12 @@ function sortFiles(files: FileEntry[]): FileEntry[] {
   });
 }
 
-const FileDiffEntry = memo(function FileDiffEntry({
-  path,
-  oldContents,
-  newContents,
-  options,
-}: {
-  path: string;
-  oldContents: string;
-  newContents: string;
-  options: Parameters<typeof MultiFileDiff>[0]["options"];
-}) {
-  const oldFile = useMemo(
-    () => ({ name: path, contents: oldContents }),
-    [path, oldContents],
-  );
-  const newFile = useMemo(
-    () => ({ name: path, contents: newContents }),
-    [path, newContents],
-  );
-  return (
-    <MultiFileDiff oldFile={oldFile} newFile={newFile} options={options} />
-  );
-});
-
 export const DiffView = memo(function DiffView({
   files,
   theme,
+  workerFactory,
 }: DiffViewProps) {
-  const paneRef = useRef<HTMLDivElement>(null);
-  const fileRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const viewerRef = useRef<CodeViewHandle<undefined>>(null);
 
   const sorted = useMemo(() => sortFiles(files), [files]);
   const filePaths = useMemo(() => sorted.map((f) => f.path), [sorted]);
@@ -96,25 +78,45 @@ export const DiffView = memo(function DiffView({
   const [expandedItems, setExpandedItems] = useState<string[]>();
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
 
+  const diffCacheRef = useRef<Map<string, { old: string; new: string; fileDiff: ReturnType<typeof parseDiffFromFile>; version: number }>>(new Map());
+
+  const items: CodeViewItem[] = useMemo(() => {
+    const cache = diffCacheRef.current;
+    return sorted.map((f) => {
+      const cached = cache.get(f.path);
+      if (cached && cached.old === f.oldContents && cached.new === f.newContents) {
+        return { type: "diff" as const, id: `diff:${f.path}`, fileDiff: cached.fileDiff };
+      }
+      const version = cached ? cached.version + 1 : 0;
+      const fileDiff = parseDiffFromFile(
+        { name: f.path, contents: f.oldContents, cacheKey: `${f.path}:old:${version}` },
+        { name: f.path, contents: f.newContents, cacheKey: `${f.path}:new:${version}` },
+      );
+      cache.set(f.path, { old: f.oldContents, new: f.newContents, fileDiff, version });
+      return { type: "diff" as const, id: `diff:${f.path}`, fileDiff };
+    });
+  }, [sorted]);
+
   const handleSelect = useCallback((paths: string[]) => {
     setSelectedItems(paths);
-    const el = paths[0] && fileRefs.current.get(paths[0]);
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (paths[0]) {
+      viewerRef.current?.scrollTo({
+        type: "item",
+        id: `diff:${paths[0]}`,
+        align: "start",
+        behavior: "smooth-auto",
+      });
+    }
   }, []);
-
-  const setFileRef = useCallback(
-    (path: string) => (el: HTMLDivElement | null) => {
-      if (el) fileRefs.current.set(path, el);
-      else fileRefs.current.delete(path);
-    },
-    [],
-  );
 
   const options = useMemo(
     () => ({
-      diffStyle: "unified" as const,
+      theme: { dark: "pierre-dark", light: "pierre-light" } as const,
       themeType: theme,
+      diffStyle: "unified" as const,
       overflow: "wrap" as const,
+      stickyHeaders: true,
+      layout: { paddingTop: 16, paddingBottom: 16, gap: 16 },
     }),
     [theme],
   );
@@ -123,7 +125,7 @@ export const DiffView = memo(function DiffView({
     return <div className={css.empty}>No changes yet</div>;
   }
 
-  return (
+  const diffContent = (
     <div className={css.root}>
       <div className={css.sidebar}>
         <div className={css.sidebarHeader}>Files</div>
@@ -137,18 +139,30 @@ export const DiffView = memo(function DiffView({
           onSelectedItemsChange={handleSelect}
         />
       </div>
-      <div className={css.diffPane} ref={paneRef}>
-        {sorted.map((f) => (
-          <div className={css.diffPatch} key={f.path} ref={setFileRef(f.path)}>
-            <FileDiffEntry
-              path={f.path}
-              oldContents={f.oldContents}
-              newContents={f.newContents}
-              options={options}
-            />
-          </div>
-        ))}
+      <div className={css.diffPaneWrapper}>
+        <CodeView
+          ref={viewerRef}
+          items={items}
+          className={css.diffPane}
+          options={options}
+        />
       </div>
     </div>
   );
+
+  if (workerFactory) {
+    return (
+      <WorkerPoolContextProvider
+        poolOptions={{ workerFactory }}
+        highlighterOptions={{
+          theme: { dark: "pierre-dark", light: "pierre-light" },
+          langs: ["typescript", "javascript", "css", "html", "json", "rust"],
+        }}
+      >
+        {diffContent}
+      </WorkerPoolContextProvider>
+    );
+  }
+
+  return diffContent;
 });
