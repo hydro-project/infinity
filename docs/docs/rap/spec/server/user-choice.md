@@ -84,11 +84,11 @@ sequenceDiagram
     Note over R: Runtime wakes, continues with result
 ```
 
-The flow begins when the runtime dispatches a normal [tool invocation](/spec/basic/tool-invocation). The tool acknowledges immediately, then determines that user confirmation is required before proceeding. The tool sends a `user_choice` message containing the prompt, available choices, a default selection, and a response URL.
+The flow begins when the runtime dispatches a normal [tool invocation](/docs/rap/spec/basic/tool-invocation). The tool acknowledges immediately, then determines that user confirmation is required before proceeding. The tool sends a `user_choice` message containing the prompt, available choices, a default selection, and a response URL.
 
 The runtime surfaces the choices to the user through whatever interface it provides — a picker in a CLI, a dropdown in a web UI, a button group in Slack. The user selects an option or dismisses the prompt (in which case the default is used). The runtime POSTs the selection to the response URL.
 
-The tool receives the selection, acts accordingly, and delivers a normal [tool result](/spec/basic/tool-result) to the callback URL. From the runtime's perspective, the tool call simply took longer than usual — the user choice detour is transparent to the LLM.
+The tool receives the selection, acts accordingly, and delivers a normal [tool result](/docs/rap/spec/basic/tool-result) to the callback URL. From the runtime's perspective, the tool call simply took longer than usual — the user choice detour is transparent to the LLM.
 
 ## Runtime Behavior
 

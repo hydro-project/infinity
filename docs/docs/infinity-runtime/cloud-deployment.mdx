@@ -122,7 +122,7 @@ The first deploy takes a few minutes. CDK will show you the resources being crea
 There are three ways to add tools to your agent:
 
 - `RapToolSet` — a native RAP tool server (Lambda or remote URL). Serves `/.well-known/rap-toolset` for discovery. The runtime fetches tool definitions at startup.
-- `LambdaMCPToolSet` / `HTTPMCPToolSet` — wraps an MCP server in a proxy Lambda. See [MCP Compatibility](/docs/about/mcp-compatibility) for details on how the proxy translates between protocols.
+- `LambdaMCPToolSet` / `HTTPMCPToolSet` — wraps an MCP server in a proxy Lambda. See [MCP Compatibility](/docs/rap/about/mcp-compatibility) for details on how the proxy translates between protocols.
 
 All tool constructs automatically handle Function URL creation, IAM permissions (SigV4 auth between the agent Lambda and tool Lambdas), and tool configuration registration.
 
@@ -228,8 +228,8 @@ new LambdaMCPToolSet(this, 'DatabaseMcp', {
 
 ## What's Next
 
-- **[Getting Started](/docs/using-rap/getting-started)** — try the local CLI first if you haven't already
+- **[Getting Started](/docs/infinity-runtime/getting-started)** — try the local CLI first if you haven't already
 - **[Built-in Tools](/docs/infinity-runtime/built-in-tools)** — sleep, threading, and utility tools
-- **[Build a RAP Tool](/docs/using-rap/building-a-rap-tool)** — create your own tool server
-- **[MCP Compatibility](/docs/about/mcp-compatibility)** — how the MCP proxy layer works
+- **[Build a RAP Tool](/docs/rap/using-rap/building-a-rap-tool)** — create your own tool server
+- **[MCP Compatibility](/docs/rap/about/mcp-compatibility)** — how the MCP proxy layer works
 - **[Threading](/docs/infinity-runtime/threading)** — parallel execution model

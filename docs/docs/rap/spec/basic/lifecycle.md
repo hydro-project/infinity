@@ -6,20 +6,20 @@ sidebar_position: 1
 
 The Reactive Agent Protocol defines the lifecycle of two independent participants: the **agent runtime** and the **tool provider**. Each has its own startup, execution, and shutdown behavior. Understanding both lifecycles — and how they interact — is essential for building correct RAP implementations.
 
-The runtime lifecycle is ephemeral and message-driven: it starts when a message arrives, processes it, and exits. The tool lifecycle is service-oriented: it starts independently, registers its capabilities, and processes invocations asynchronously over an indefinite lifespan. The two lifecycles intersect at two points — [tool invocation](/spec/basic/tool-invocation) and [tool result](/spec/basic/tool-result) — connected by the callback URL.
+The runtime lifecycle is ephemeral and message-driven: it starts when a message arrives, processes it, and exits. The tool lifecycle is service-oriented: it starts independently, registers its capabilities, and processes invocations asynchronously over an indefinite lifespan. The two lifecycles intersect at two points — [tool invocation](/docs/rap/spec/basic/tool-invocation) and [tool result](/docs/rap/spec/basic/tool-result) — connected by the callback URL.
 
 ## Tool Provider Lifecycle
 
-Most developers interact with RAP by building tools. A tool provider is an HTTP service that exposes a [toolset](/spec/basic/toolsets) of operations, receives invocations from agent runtimes, and delivers results asynchronously via callback URLs.
+Most developers interact with RAP by building tools. A tool provider is an HTTP service that exposes a [toolset](/docs/rap/spec/basic/toolsets) of operations, receives invocations from agent runtimes, and delivers results asynchronously via callback URLs.
 
 ### Startup
 
 When a tool provider starts, it MUST expose two HTTP endpoints:
 
-1. A **discovery endpoint** at `/.well-known/rap-toolset` that returns the tool's [toolset definition](/spec/basic/toolsets)
+1. A **discovery endpoint** at `/.well-known/rap-toolset` that returns the tool's [toolset definition](/docs/rap/spec/basic/toolsets)
 2. An **invocation endpoint** at the URL specified in the toolset's `endpoint` field
 
-The tool provider SHOULD also expose a **thread closure endpoint** at `/close_thread` to receive best-effort cleanup notifications from the runtime. See [Thread Closure](/spec/basic/thread-closure) for details.
+The tool provider SHOULD also expose a **thread closure endpoint** at `/close_thread` to receive best-effort cleanup notifications from the runtime. See [Thread Closure](/docs/rap/spec/basic/thread-closure) for details.
 
 The tool provider MUST be ready to serve both required endpoints before accepting traffic. The discovery endpoint is how runtimes learn what operations the tool supports — if it is unavailable or returns an invalid toolset, no runtime will be able to invoke the tool.
 
@@ -47,12 +47,12 @@ The tool provider is responsible for its own scaling, availability, and failure 
 
 ### Processing an Invocation
 
-When the tool provider receives a [tool invocation](/spec/basic/tool-invocation), it MUST follow this sequence:
+When the tool provider receives a [tool invocation](/docs/rap/spec/basic/tool-invocation), it MUST follow this sequence:
 
 1. **Acknowledge** — Return HTTP 200 immediately, before doing any work. This confirms receipt to the runtime.
 2. **Validate** — Verify that the `operation` field references a supported operation and that the `arguments` conform to the expected schema.
 3. **Execute** — Perform the requested operation asynchronously.
-4. **Deliver** — POST a [tool result](/spec/basic/tool-result) to the `callback_url` when execution completes.
+4. **Deliver** — POST a [tool result](/docs/rap/spec/basic/tool-result) to the `callback_url` when execution completes.
 
 ```mermaid
 sequenceDiagram
@@ -72,7 +72,7 @@ sequenceDiagram
 
 The tool MUST NOT block the HTTP acknowledgement on processing. The acknowledgement and the result are separate HTTP transactions — this decoupling is what enables the runtime to hibernate between them.
 
-If validation fails (unknown operation, malformed arguments), the tool SHOULD still acknowledge with HTTP 200 and deliver the error asynchronously as a [tool result](/spec/basic/tool-result) with an error description. The only exception is a stale `toolset_version` — in that case, the tool SHOULD return HTTP 409 Conflict so the runtime can refresh its cached toolset.
+If validation fails (unknown operation, malformed arguments), the tool SHOULD still acknowledge with HTTP 200 and deliver the error asynchronously as a [tool result](/docs/rap/spec/basic/tool-result) with an error description. The only exception is a stale `toolset_version` — in that case, the tool SHOULD return HTTP 409 Conflict so the runtime can refresh its cached toolset.
 
 ### Callback Delivery
 
@@ -80,8 +80,8 @@ After processing an invocation, the tool MUST deliver exactly one of the followi
 
 | Message | When to use |
 |---|---|
-| [`tool_result`](/spec/basic/tool-result) | The operation completed (successfully or with an error) |
-| [`oauth`](/spec/server/oauth) | The operation requires user authorization before it can proceed |
+| [`tool_result`](/docs/rap/spec/basic/tool-result) | The operation completed (successfully or with an error) |
+| [`oauth`](/docs/rap/spec/server/oauth) | The operation requires user authorization before it can proceed |
 
 Tools MUST NOT silently drop invocations. Every invocation MUST eventually produce a callback message. If the tool encounters an unrecoverable error, it MUST deliver a `tool_result` with the error description — the LLM can then reason about the failure and decide how to proceed.
 
@@ -94,16 +94,16 @@ Tools that create ongoing subscriptions have an extended lifecycle. After delive
 1. **Store** — Durably persist the `callback_url`, `group_id`, and `id` from the original invocation
 2. **Confirm** — Deliver a `tool_result` confirming the subscription was created
 3. **Listen** — Monitor the external event source for matching events
-4. **Notify** — For each matching event, deliver a [`subscription_event`](/spec/server/subscription-events) to the stored `callback_url`
+4. **Notify** — For each matching event, deliver a [`subscription_event`](/docs/rap/spec/server/subscription-events) to the stored `callback_url`
 5. **Cancel** — Stop delivering events when the subscription is explicitly cancelled
 
-Because subscription events may arrive days or weeks after the original invocation, the tool MUST store callback information durably. See [Subscription Events](/spec/server/subscription-events) for the full specification.
+Because subscription events may arrive days or weeks after the original invocation, the tool MUST store callback information durably. See [Subscription Events](/docs/rap/spec/server/subscription-events) for the full specification.
 
 ### Schema Evolution
 
 Tool providers that update their toolset definition MUST account for the fact that runtimes cache toolset definitions for the duration of an agent session. A runtime that fetched the toolset before a breaking change will continue sending invocations with the old schema.
 
-Tool providers MUST handle stale invocations gracefully — either by maintaining backward compatibility or by returning an error via the normal [tool result](/spec/basic/tool-result) path. Tool providers MUST NOT fail silently when receiving arguments that match a previous schema version.
+Tool providers MUST handle stale invocations gracefully — either by maintaining backward compatibility or by returning an error via the normal [tool result](/docs/rap/spec/basic/tool-result) path. Tool providers MUST NOT fail silently when receiving arguments that match a previous schema version.
 
 ### Shutdown
 
@@ -117,7 +117,7 @@ The protocol does not define a shutdown handshake for tool providers. When a too
 
 When a runtime closes a conversation thread, it sends a best-effort notification to every tool server so they can clean up thread-specific resources (e.g., cached sandboxes, temporary workspaces). The runtime POSTs a `{"thread_id": "..."}` payload to each tool server's `/close_thread` endpoint, where `thread_id` corresponds to the `group_id` of the closed thread.
 
-This notification is strictly best-effort — the runtime MUST NOT retry on failure, and tool servers MAY ignore it entirely. Tool servers that do handle the notification MUST always respond with HTTP 200. See [Thread Closure](/spec/basic/thread-closure) for the full specification.
+This notification is strictly best-effort — the runtime MUST NOT retry on failure, and tool servers MAY ignore it entirely. Tool servers that do handle the notification MUST always respond with HTTP 200. See [Thread Closure](/docs/rap/spec/basic/thread-closure) for the full specification.
 
 ## Concurrency
 

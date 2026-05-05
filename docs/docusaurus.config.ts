@@ -45,16 +45,6 @@ const config: Config = {
   ],
 
   plugins: [
-    [
-      '@docusaurus/plugin-content-docs',
-      {
-        id: 'spec',
-        path: 'spec',
-        routeBasePath: 'spec',
-        sidebarPath: './sidebarsSpec.ts',
-        sidebarCollapsed: false,
-      },
-    ],
     './plugins/transpile-infinity-ui',
   ],
 
@@ -68,15 +58,21 @@ const config: Config = {
       items: [
         {
           type: 'docSidebar',
-          sidebarId: 'docsSidebar',
+          sidebarId: 'infinityCodeSidebar',
           position: 'left',
-          label: 'Documentation',
+          label: 'Infinity Code',
         },
         {
-          to: '/spec/overview',
-          label: 'Specification',
+          type: 'docSidebar',
+          sidebarId: 'rapSidebar',
           position: 'left',
-          activeBaseRegex: '/spec/',
+          label: 'Reactive Agent Protocol',
+        },
+        {
+          type: 'docSidebar',
+          sidebarId: 'infinityRuntimeSidebar',
+          position: 'left',
+          label: 'Infinity Runtime',
         },
       ],
     },
@@ -86,16 +82,16 @@ const config: Config = {
         {
           title: 'Learn',
           items: [
-            { label: 'What is RAP?', to: '/docs/what-is-rap' },
-            { label: 'Architecture', to: '/docs/about/architecture' },
-            { label: 'Specification', to: '/spec/overview' },
+            { label: 'What is RAP?', to: '/docs/rap/what-is-rap' },
+            { label: 'Architecture', to: '/docs/rap/about/architecture' },
+            { label: 'Specification', to: '/docs/rap/spec/overview' },
           ],
         },
         {
           title: 'Build',
           items: [
-            { label: 'Getting Started', to: '/docs/using-rap/getting-started' },
-            { label: 'Build a RAP Tool', to: '/docs/using-rap/building-a-rap-tool' },
+            { label: 'Getting Started', to: '/docs/infinity-runtime/getting-started' },
+            { label: 'Build a RAP Tool', to: '/docs/rap/using-rap/building-a-rap-tool' },
             { label: 'Infinity Runtime', to: '/docs/infinity-runtime/overview' },
           ],
         },
