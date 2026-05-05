@@ -603,3 +603,13 @@
 }
 
 /* (Infinity Code showcase removed — now part of hero tab vignette) */
+
+/* Sidebar section headers */
+.menu__list-item > h4 {
+    margin-bottom: 0;
+}
+.menu__list-item > h4.with-border {
+    border-top: 2px solid var(--ifm-color-emphasis-500);
+    padding-top: 0.75rem;
+    margin-top: 0.5rem;
+}

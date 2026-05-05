@@ -58,11 +58,11 @@ sequenceDiagram
     Note over R: Runtime wakes, continues with result
 ```
 
-The flow begins when the runtime dispatches a normal [tool invocation](/spec/basic/tool-invocation). The tool acknowledges immediately, then checks whether it holds a valid token for the `user_id` from the invocation. If no valid token exists, the tool sends an `oauth` message containing the authorization URL instead of a `tool_result`.
+The flow begins when the runtime dispatches a normal [tool invocation](/docs/rap/spec/basic/tool-invocation). The tool acknowledges immediately, then checks whether it holds a valid token for the `user_id` from the invocation. If no valid token exists, the tool sends an `oauth` message containing the authorization URL instead of a `tool_result`.
 
 The runtime surfaces this URL to the user through whatever interface it provides — a clickable link in Slack, a CLI prompt, a web UI. The user visits the URL and completes the authorization flow directly with the OAuth provider. The provider redirects back to the tool's registered callback endpoint with an authorization code.
 
-The tool exchanges the code for an access token, stores it, and retries the original operation using the new credentials. When the operation completes, the tool delivers a normal [tool result](/spec/basic/tool-result) to the callback URL. From the runtime's perspective, the tool call simply took longer than usual — the OAuth detour is entirely transparent.
+The tool exchanges the code for an access token, stores it, and retries the original operation using the new credentials. When the operation completes, the tool delivers a normal [tool result](/docs/rap/spec/basic/tool-result) to the callback URL. From the runtime's perspective, the tool call simply took longer than usual — the OAuth detour is entirely transparent.
 
 ## Runtime Behavior
 
@@ -76,7 +76,7 @@ Tools that implement OAuth MUST detect when authorization is required before att
 
 The tool MUST handle the OAuth callback to receive authorization codes, exchange them securely for access tokens, and store the resulting tokens associated with the `user_id`. After successful authorization, the tool MUST retry the original operation using the new token and MUST send a `tool_result` to the callback URL when the operation completes, whether the retry succeeds or fails.
 
-Tools that require OAuth SHOULD include the OAuth provider identifier in the tool's [annotations](/spec/basic/toolsets#annotations) via the `requiresAuth` field, so that runtimes can inform users about authorization requirements before invocation.
+Tools that require OAuth SHOULD include the OAuth provider identifier in the tool's [annotations](/docs/rap/spec/basic/toolsets#annotations) via the `requiresAuth` field, so that runtimes can inform users about authorization requirements before invocation.
 
 ## Token Management
 

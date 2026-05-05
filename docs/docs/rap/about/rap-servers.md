@@ -58,7 +58,7 @@ Whenever a matching event occurs, the RAP server POSTs a `subscription_event` to
 
 Note that `subscription_event` uses `tool_call_id` (referencing the original subscription call), not `id` like a normal `tool_result`. This tells the runtime the message is a new event from an ongoing subscription, not the final result of a one-off call.
 
-The runtime presents each event to the LLM using _synthetic tool calls_, which enable subscription support for existing LLMs without additional training. See [Subscription Events](/docs/about/subscription-events) for more detail, including synthetic tool calls, threaded processing, and cancellation.
+The runtime presents each event to the LLM using _synthetic tool calls_, which enable subscription support for existing LLMs without additional training. See [Subscription Events](/docs/rap/about/subscription-events) for more detail, including synthetic tool calls, threaded processing, and cancellation.
 
 ## OAuth
 

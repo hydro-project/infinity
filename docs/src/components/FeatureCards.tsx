@@ -35,7 +35,7 @@ const features: Feature[] = [
   charge.succeeded — $847.00 from cus_Lx8mQ
 
 🤖 Agent:  Looking up the customer details...`,
-    link: '/docs/about/subscription-events',
+    link: '/docs/rap/about/subscription-events',
   },
   {
     icon: '⏳',
@@ -63,7 +63,7 @@ const features: Feature[] = [
 
 🤖 Agent:  Staging looks good. Ready to
             promote to production.`,
-    link: '/docs/about/rap-servers',
+    link: '/docs/rap/about/rap-servers',
   },
   {
     icon: '💤',
@@ -91,7 +91,7 @@ const features: Feature[] = [
                 2025-03-15 09:30 America/New_York"
 
 🤖 Agent:  Market is open. Checking portfolio...`,
-    link: '/docs/about/architecture#hibernation',
+    link: '/docs/rap/about/architecture#hibernation',
   },
 ];
 

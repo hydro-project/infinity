@@ -29,6 +29,16 @@ const TABS: Tab[] = [
     duration: 25000,
   },
   {
+    id: "protocol",
+    label: "∞ Protocol",
+    heading: "Reactive Agent Protocol",
+    description:
+      "The tool protocol for agents that live in the real world. Subscribe to real-time events, execute operations that take hours, and hibernate with zero compute cost. MCP-compatible.",
+    link: "/docs/rap/what-is-rap",
+    linkLabel: "Specification →",
+    duration: 18000,
+  },
+  {
     id: "runtime",
     label: "∞ Runtime",
     heading: "Infinity Runtime",
@@ -37,16 +47,6 @@ const TABS: Tab[] = [
     link: "/docs/infinity-runtime/overview",
     linkLabel: "Learn more →",
     duration: 8000,
-  },
-  {
-    id: "protocol",
-    label: "∞ Protocol",
-    heading: "Reactive Agent Protocol",
-    description:
-      "The tool protocol for agents that live in the real world. Subscribe to real-time events, execute operations that take hours, and hibernate with zero compute cost. MCP-compatible.",
-    link: "/spec/overview",
-    linkLabel: "Specification →",
-    duration: 18000,
   },
 ];
 
@@ -99,18 +99,18 @@ function Showcase({ active }: { active: number }) {
         >
           <DesktopMini active={active === 0} />
         </div>
-        <div
-          className="showcase-pane"
-          style={{ display: active === 1 ? "block" : "none" }}
-        >
-          <RuntimeDiagram active={active === 1} />
-        </div>
-        <div
-          className="showcase-pane"
-          style={{ display: active === 2 ? "block" : "none" }}
-        >
-          <AnimatedTerminal active={active === 2} />
-        </div>
+          <div
+            className="showcase-pane"
+            style={{ display: active === 1 ? "block" : "none" }}
+          >
+            <AnimatedTerminal active={active === 1} />
+          </div>
+          <div
+            className="showcase-pane"
+            style={{ display: active === 2 ? "block" : "none" }}
+          >
+            <RuntimeDiagram active={active === 2} />
+          </div>
       </div>
     </div>
   );
@@ -186,7 +186,7 @@ export default function Home(): React.JSX.Element {
             The open-source ecosystem for agents with principled concurrency.
           </p>
           <div className="hero-buttons">
-            <a href="/docs/what-is-rap" className="primary">
+            <a href="/docs/rap/what-is-rap" className="primary">
               Get Started
             </a>
             <a

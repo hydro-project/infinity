@@ -1,5 +1,5 @@
 ---
-sidebar_position: 1
+sidebar_position: 2
 title: Getting Started
 ---
 
@@ -159,8 +159,8 @@ That's a complete RAP round trip: the agent invoked the tool, the tool acknowled
 
 Now that you have a local agent running with a tool, here are good next steps:
 
-- **[Build a RAP Tool](/docs/using-rap/building-a-rap-tool)** — create your own tool server that speaks RAP
-- **[Architecture](/docs/about/architecture)** — understand the full message flow, callback lifecycle, and hibernation model
+- **[Build a RAP Tool](/docs/rap/using-rap/building-a-rap-tool)** — create your own tool server that speaks RAP
+- **[Architecture](/docs/rap/about/architecture)** — understand the full message flow, callback lifecycle, and hibernation model
 - **[Built-in Tools](/docs/infinity-runtime/built-in-tools)** — sleep, threading, and utility tools available to every agent
-- **[RAP Specification](/spec/overview)** — the full protocol reference
+- **[RAP Specification](/docs/rap/spec/overview)** — the full protocol reference
 - **[Cloud Deployment](/docs/infinity-runtime/cloud-deployment)** — deploy your agent to AWS Lambda for persistent state and real hibernation
