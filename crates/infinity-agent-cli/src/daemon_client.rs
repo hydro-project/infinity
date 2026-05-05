@@ -368,13 +368,29 @@ async fn run_client(
         DisplayEvent::Info(format!("Using provider {} ({})", provider_name, model_name)),
     ));
 
-    // If --session was provided, connect to it immediately.
+    // If --session was provided, connect to it immediately (supports prefix matching).
     if let Some(ref session_id) = session {
-        if !sessions.contains_key(session_id) {
-            return Err(format!("no session found with ID '{session_id}'").into());
-        }
+        let matches: Vec<&String> = sessions
+            .keys()
+            .filter(|k| k.starts_with(session_id.as_str()))
+            .collect();
+        let resolved = match matches.len() {
+            0 => return Err(format!("no session found matching prefix '{session_id}'").into()),
+            1 => matches[0].clone(),
+            _ => {
+                return Err(format!(
+                    "ambiguous session prefix '{session_id}' — matches: {}",
+                    matches
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+                .into());
+            }
+        };
         to_daemon.send(ClientMessage::Connect {
-            session_id: session_id.clone(),
+            session_id: resolved,
             thread_id: None,
         })?;
     }
