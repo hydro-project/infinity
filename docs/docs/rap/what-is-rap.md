@@ -1,6 +1,5 @@
 ---
 sidebar_position: 1
-slug: /what-is-rap
 title: What is RAP?
 ---
 
@@ -37,7 +36,7 @@ The result is agents that can run for days or weeks, react to events in real tim
 
 Ready to dig in? Here's where to go next:
 
-- **[Architecture](/docs/about/architecture)** — Understand how RAP's message-passing model works, including the callback lifecycle and agent hibernation.
-- **[Your First RAP Agent](/docs/using-rap/getting-started)** — A hands-on walkthrough to get a RAP agent running locally or in the cloud.
-- **[RAP Specification](/spec/overview)** — The authoritative protocol spec. Read this if you want to build your own runtime or tool server, or just want the full technical details.
+- **[Architecture](/docs/rap/about/architecture)** — Understand how RAP's message-passing model works, including the callback lifecycle and agent hibernation.
+- **[Your First RAP Agent](/docs/infinity-runtime/getting-started)** — A hands-on walkthrough to get a RAP agent running locally or in the cloud.
+- **[RAP Specification](/docs/rap/spec/overview)** — The authoritative protocol spec. Read this if you want to build your own runtime or tool server, or just want the full technical details.
 - **[Infinity Runtime](/docs/infinity-runtime/overview)** — The reference RAP runtime, written in Rust. This is where you actually run agents — locally with the CLI for development, or deployed to AWS Lambda for production.

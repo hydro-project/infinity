@@ -13,17 +13,6 @@ Infinity Code is an AI coding agent that runs locally on your machine. It reads 
 
 The agent never modifies your working copy directly. Every change lives on a `sandbox-{thread_id}` branch that you control.
 
-## Key Features
-
-![Infinity Code terminal UI](/img/screenshot-terminal-ui.png)
-
-- **Sandboxed editing** — changes happen in isolated workspaces. Supports [Jujutsu](./coding-with-jj.md) (recommended), [Git](./coding-with-git.md).
-- **Parallel threads** — the agent spawns child threads for independent sub-tasks. Each thread gets its own sandbox and reports back when done.
-- **Background sessions** — detach from a busy agent and reconnect later. Multiple sessions can run concurrently via the [daemon](./background-agents.md).
-- **Remote sessions** — connect to agents running on other machines over SSH. See [Configuring Remotes](./configuring-remotes.md).
-- **Extensible tools** — add [MCP servers](./configuring-mcp.md) and [RAP servers](./rap-servers.md) to give the agent new capabilities.
-- **Session persistence** — conversation history is saved to disk. Quit, reboot, come back — your context is intact.
-
 ## Quickstart
 
 First install the prerequisites:
@@ -82,6 +71,17 @@ npm run dev
 Then open the URL printed in your terminal (typically `http://localhost:5173`).
 
 Both modes connect to the same daemon as the CLI, so you can use all three interchangeably.
+
+## Key Features
+
+![Infinity Code terminal UI](/img/screenshot-terminal-ui.png)
+
+- **Sandboxed editing** — changes happen in isolated workspaces. Supports [Jujutsu](./coding-with-jj.md) (recommended) and [Git](./coding-with-git.md).
+- **Parallel threads** — the agent spawns child threads for independent sub-tasks. Each thread gets its own sandbox and reports back when done.
+- **Background sessions** — detach from a busy agent and reconnect later. Multiple sessions can run concurrently via the [daemon](./background-agents.md).
+- **Remote sessions** — connect to agents running on other machines over SSH. See [Configuring Remotes](./configuring-remotes.md).
+- **Extensible tools** — add [MCP servers](./configuring-mcp.md) and [RAP servers](./rap-servers.md) to give the agent new capabilities.
+- **Session persistence** — conversation history is saved to disk. Quit, reboot, come back — your context is intact.
 
 ## Terminal UI
 

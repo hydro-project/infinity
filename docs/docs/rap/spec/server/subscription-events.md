@@ -9,9 +9,9 @@ Subscription events allow tools to send multiple results over time for a single 
 
 ## Lifecycle
 
-1. The runtime invokes a subscription tool with a normal [tool invocation](/spec/basic/tool-invocation)
+1. The runtime invokes a subscription tool with a normal [tool invocation](/docs/rap/spec/basic/tool-invocation)
 2. The tool stores the `callback_url`, `group_id`, and `id` from the invocation
-3. The tool returns a confirmation as a normal [`tool_result`](/spec/basic/tool-result)
+3. The tool returns a confirmation as a normal [`tool_result`](/docs/rap/spec/basic/tool-result)
 4. When a matching event occurs (now or in the future), the tool POSTs a `subscription_event` to the stored `callback_url`
 5. The runtime processes the event (typically by injecting a synthetic tool call into conversation history)
 6. Steps 4–5 repeat for each matching event until the subscription is cancelled
@@ -82,7 +82,7 @@ Content-Type: application/json
 When a subscription event includes `"final": true`, the runtime MUST automatically remove the subscription from the thread's active tracking. This allows tools to signal completion of a subscription (e.g., when a long-running command exits) without requiring the agent to explicitly call `cancel_subscription`. The tool MUST NOT send further events after sending a final event.
 
 :::note
-Subscription events use `tool_call_id` (referencing the original subscription call), while [tool results](/spec/basic/tool-result) use `id`. This distinction tells the runtime that the message is a new event from an ongoing subscription, not the final result of a one-off call.
+Subscription events use `tool_call_id` (referencing the original subscription call), while [tool results](/docs/rap/spec/basic/tool-result) use `id`. This distinction tells the runtime that the message is a new event from an ongoing subscription, not the final result of a one-off call.
 :::
 
 ### Response
@@ -126,20 +126,20 @@ Runtimes SHOULD default to threaded processing when `associative` is not set, as
 
 Tools that support subscriptions MUST store the `callback_url`, `group_id`, and `id` from the original invocation durably, since events may arrive long after the initial tool call. The tool MUST return an initial `tool_result` confirming the subscription was created, and MUST send `subscription_event` messages for each matching event that occurs thereafter.
 
-To enable cancellation, tools SHOULD include a subscription identifier in the initial `tool_result` (e.g., `"Subscribed to pull_request events. Subscription ID: sub_abc"`). The tool result MUST include `"subscription": true` so that the runtime can [track the subscription](/spec/basic/tool-result).
+To enable cancellation, tools SHOULD include a subscription identifier in the initial `tool_result` (e.g., `"Subscribed to pull_request events. Subscription ID: sub_abc"`). The tool result MUST include `"subscription": true` so that the runtime can [track the subscription](/docs/rap/spec/basic/tool-result).
 
 ## Cancellation
 
 ### Subscription tracking
 
-When a [tool result](/spec/basic/tool-result) includes `"subscription": true`, the runtime MUST record the tool call ID as an active subscription in the **current thread's** metadata. Each thread maintains its own list of active subscriptions — ownership is implicit: a subscription belongs to the thread that recorded it. This per-thread tracking allows the runtime to provide a built-in cancellation mechanism without requiring cross-thread metadata lookups.
+When a [tool result](/docs/rap/spec/basic/tool-result) includes `"subscription": true`, the runtime MUST record the tool call ID as an active subscription in the **current thread's** metadata. Each thread maintains its own list of active subscriptions — ownership is implicit: a subscription belongs to the thread that recorded it. This per-thread tracking allows the runtime to provide a built-in cancellation mechanism without requiring cross-thread metadata lookups.
 
 ### Built-in `cancel_subscription` tool
 
 The runtime MUST provide a built-in `cancel_subscription` tool that accepts a single `tool_call_id` parameter — the ID of the original tool call that started the subscription. When invoked, the runtime:
 
 1. **Verifies the subscription exists.** The runtime checks whether the `tool_call_id` is in the current thread's active subscriptions. If not found, the tool MUST return an error. Because subscriptions are tracked per-thread, a thread can only cancel subscriptions it created.
-2. **Sends a cancellation notification.** The runtime sends a [`/cancel_tool_call`](/spec/basic/tool-cancellation) notification to all configured tool servers with the subscription's `tool_call_id` and `thread_id`. This is the same best-effort protocol used for [tool call cancellation](/spec/basic/tool-cancellation). Tool servers SHOULD stop sending further `subscription_event` messages for the cancelled subscription.
+2. **Sends a cancellation notification.** The runtime sends a [`/cancel_tool_call`](/docs/rap/spec/basic/tool-cancellation) notification to all configured tool servers with the subscription's `tool_call_id` and `thread_id`. This is the same best-effort protocol used for [tool call cancellation](/docs/rap/spec/basic/tool-cancellation). Tool servers SHOULD stop sending further `subscription_event` messages for the cancelled subscription.
 3. **Removes from tracking.** The subscription is removed from the thread's active subscriptions.
 
 The `cancel_subscription` tool executes synchronously — the result is returned immediately within the same completion turn rather than through the asynchronous callback mechanism. This ensures the cancellation cannot be interrupted by a concurrent user message.

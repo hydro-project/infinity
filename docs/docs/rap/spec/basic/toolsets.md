@@ -26,13 +26,13 @@ A toolset MUST be a JSON object with the following top-level fields:
 |---|---|---|---|
 | `name` | `string` | Yes | Unique identifier for the toolset. MUST be between 1 and 128 characters. |
 | `description` | `string` | No | Human-readable description of the toolset's purpose. |
-| `endpoint` | `string` | Yes | The HTTP endpoint URL where the runtime MUST send [tool invocations](/spec/basic/tool-invocation) for this toolset's operations. |
+| `endpoint` | `string` | Yes | The HTTP endpoint URL where the runtime MUST send [tool invocations](/docs/rap/spec/basic/tool-invocation) for this toolset's operations. |
 | `tools` | `array` | Yes | Array of [tool definitions](#tool-definition). MUST contain at least one tool. |
-| `needsMigration` | `boolean` | No | When `true`, the runtime MUST call the [migration endpoint](/spec/basic/migration) during session migration. Defaults to `false`. |
+| `needsMigration` | `boolean` | No | When `true`, the runtime MUST call the [migration endpoint](/docs/rap/spec/basic/migration) during session migration. Defaults to `false`. |
 
 ## Tool Definition
 
-Each entry in the `tools` array describes a single operation that the LLM can invoke. The tool's `name` becomes the `operation` field in [tool invocations](/spec/basic/tool-invocation), and its `description` is passed to the LLM to inform tool selection. The `inputSchema` defines the expected arguments using JSON Schema, which the runtime SHOULD validate before dispatching.
+Each entry in the `tools` array describes a single operation that the LLM can invoke. The tool's `name` becomes the `operation` field in [tool invocations](/docs/rap/spec/basic/tool-invocation), and its `description` is passed to the LLM to inform tool selection. The `inputSchema` defines the expected arguments using JSON Schema, which the runtime SHOULD validate before dispatching.
 
 ```json
 {
@@ -53,7 +53,7 @@ Each entry in the `tools` array describes a single operation that the LLM can in
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `name` | `string` | Yes | Unique operation name within the toolset. This value is sent as the `operation` field in [tool invocations](/spec/basic/tool-invocation). |
+| `name` | `string` | Yes | Unique operation name within the toolset. This value is sent as the `operation` field in [tool invocations](/docs/rap/spec/basic/tool-invocation). |
 | `description` | `string` | Yes | Human-readable description of what the tool does. This is passed to the LLM for tool selection. |
 | `inputSchema` | `object` | Yes | JSON Schema defining the expected `arguments` for this tool. MUST be a valid JSON Schema object. |
 | `annotations` | `object` | No | Optional metadata describing tool behavior. See [Annotations](#annotations). |
@@ -85,7 +85,7 @@ Tools MAY include an `annotations` object that provides metadata about their beh
 
 | Annotation | Type | Description |
 |---|---|---|
-| `requiresAuth` | `string` | Identifier for the authentication provider this tool requires. Indicates the tool may initiate an [OAuth flow](/spec/server/oauth). |
+| `requiresAuth` | `string` | Identifier for the authentication provider this tool requires. Indicates the tool may initiate an [OAuth flow](/docs/rap/spec/server/oauth). |
 | `readOnly` | `boolean` | If `true`, indicates this tool performs only read operations and does not modify external state. |
 | `destructive` | `boolean` | If `true`, indicates this tool performs destructive operations (e.g., deleting resources). Runtimes SHOULD prompt for user confirmation. |
 | `idempotent` | `boolean` | If `true`, indicates the tool can be safely retried without side effects. |
@@ -118,7 +118,7 @@ Display scripts are purely cosmetic — they do not affect tool invocation, argu
 
 Runtimes MUST load toolset definitions by fetching them from the tool server's well-known discovery endpoint. The runtime MUST NOT load toolset definitions from local files, inline configuration, or any other source. This ensures that the runtime always obtains the authoritative definition directly from the tool server.
 
-Because RAP runtimes are ephemeral and may cache toolset definitions across invocations within a session, there can be a significant delay between when a toolset was fetched and when the LLM actually invokes one of its tools. Tool implementors MUST account for this gap — a tool server that deploys breaking changes to its schema while agents hold cached definitions will receive invocations with stale arguments. Tool servers SHOULD handle such invocations gracefully by returning an error via the normal [tool result](/spec/basic/tool-result) path rather than failing silently.
+Because RAP runtimes are ephemeral and may cache toolset definitions across invocations within a session, there can be a significant delay between when a toolset was fetched and when the LLM actually invokes one of its tools. Tool implementors MUST account for this gap — a tool server that deploys breaking changes to its schema while agents hold cached definitions will receive invocations with stale arguments. Tool servers SHOULD handle such invocations gracefully by returning an error via the normal [tool result](/docs/rap/spec/basic/tool-result) path rather than failing silently.
 
 ```mermaid
 sequenceDiagram

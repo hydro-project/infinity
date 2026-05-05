@@ -61,7 +61,7 @@ Children can send results to the parent at any time using `report_to_parent`:
 📥 Result:     "Report sent to parent thread."
 ```
 
-The parent sees this as a [synthetic tool call](/docs/about/subscription-events#synthetic-tool-calls) — the same mechanism used for subscription events. The runtime injects a synthetic `receive_event` call and result into the parent's history:
+The parent sees this as a [synthetic tool call](/docs/rap/about/subscription-events#synthetic-tool-calls) — the same mechanism used for subscription events. The runtime injects a synthetic `receive_event` call and result into the parent's history:
 
 ```
 [Parent thread]
@@ -111,7 +111,7 @@ The parent sees the report via the same synthetic tool call mechanism:
 
 ## Subscription event threads
 
-When a [subscription event](/docs/about/subscription-events) arrives, the Infinity Runtime automatically spawns a temporary child thread to process it. This keeps the parent's context clean — each event gets its own fresh context window.
+When a [subscription event](/docs/rap/about/subscription-events) arrives, the Infinity Runtime automatically spawns a temporary child thread to process it. This keeps the parent's context clean — each event gets its own fresh context window.
 
 The child is seeded with the event data and instructions to process it:
 

@@ -5,7 +5,7 @@ title: Building a RAP Server
 
 # Building a RAP Server
 
-A RAP server is an HTTP service that does three things: serves a [toolset definition](/spec/basic/toolsets) so runtimes can discover it, accepts [tool invocations](/spec/basic/tool-invocation) and acknowledges them immediately, and delivers [tool results](/spec/basic/tool-result) asynchronously to a callback URL. You can build one in any language on any platform — the only requirement is HTTP.
+A RAP server is an HTTP service that does three things: serves a [toolset definition](/docs/rap/spec/basic/toolsets) so runtimes can discover it, accepts [tool invocations](/docs/rap/spec/basic/tool-invocation) and acknowledges them immediately, and delivers [tool results](/docs/rap/spec/basic/tool-result) asynchronously to a callback URL. You can build one in any language on any platform — the only requirement is HTTP.
 
 ## RAP Server Architecture
 
@@ -32,7 +32,7 @@ The runtime never waits for your tool to finish. It dispatches the invocation, g
 
 ## Defining a toolset
 
-The toolset definition tells runtimes what operations your tool supports. It's a JSON object served at `/.well-known/rap-toolset` relative to your endpoint base URL. See the [Toolsets spec](/spec/basic/toolsets) for the full schema.
+The toolset definition tells runtimes what operations your tool supports. It's a JSON object served at `/.well-known/rap-toolset` relative to your endpoint base URL. See the [Toolsets spec](/docs/rap/spec/basic/toolsets) for the full schema.
 
 ```javascript
 const TOOLSET_MANIFEST = {
@@ -57,11 +57,11 @@ const TOOLSET_MANIFEST = {
 };
 ```
 
-Each tool in the array has a `name` (which becomes the `operation` field in invocations), a `description` (passed to the LLM for tool selection), and an `inputSchema` (JSON Schema for argument validation). Tool names must be unique within the toolset and should use only letters, digits, underscores, and hyphens. Tools can optionally include a [`displayScript`](/spec/basic/toolsets#display-script) — a Rhai script that produces a human-readable string for the agent frontend to show instead of the raw tool call.
+Each tool in the array has a `name` (which becomes the `operation` field in invocations), a `description` (passed to the LLM for tool selection), and an `inputSchema` (JSON Schema for argument validation). Tool names must be unique within the toolset and should use only letters, digits, underscores, and hyphens. Tools can optionally include a [`displayScript`](/docs/rap/spec/basic/toolsets#display-script) — a Rhai script that produces a human-readable string for the agent frontend to show instead of the raw tool call.
 
 ### Annotations
 
-Tools can include optional [annotations](/spec/basic/toolsets#annotations) that inform the runtime and LLM about the tool's behavior:
+Tools can include optional [annotations](/docs/rap/spec/basic/toolsets#annotations) that inform the runtime and LLM about the tool's behavior:
 
 ```javascript
 {
@@ -77,7 +77,7 @@ Tools can include optional [annotations](/spec/basic/toolsets#annotations) that 
 
 ## Handling invocations
 
-When the runtime invokes your tool, it sends a POST with a JSON body containing the operation name, arguments, and routing information. See the [Tool Invocation spec](/spec/basic/tool-invocation) for the full field reference.
+When the runtime invokes your tool, it sends a POST with a JSON body containing the operation name, arguments, and routing information. See the [Tool Invocation spec](/docs/rap/spec/basic/tool-invocation) for the full field reference.
 
 The critical requirement: **acknowledge immediately, process asynchronously**. Your HTTP response must return before you start doing real work. On Lambda, response streaming makes this straightforward — write the acknowledgement and close the stream, then continue processing in the same handler.
 
@@ -114,7 +114,7 @@ export const handler = awslambda.streamifyResponse(async (event, responseStream)
 });
 ```
 
-The `rap-js` helper handles SigV4 signing for Lambda Function URLs. If your callback endpoint uses a different auth mechanism, you can POST directly with the [tool result format](/spec/basic/tool-result).
+The `rap-js` helper handles SigV4 signing for Lambda Function URLs. If your callback endpoint uses a different auth mechanism, you can POST directly with the [tool result format](/docs/rap/spec/basic/tool-result).
 
 ### The invocation payload
 
@@ -132,7 +132,7 @@ Your tool receives a JSON body with these fields:
 
 ## Delivering results
 
-When your tool finishes, POST a [tool result](/spec/basic/tool-result) to the `callback_url`. The `group_id` and `id` must match the original invocation so the runtime can route the result to the correct conversation and match it to the pending tool call.
+When your tool finishes, POST a [tool result](/docs/rap/spec/basic/tool-result) to the `callback_url`. The `group_id` and `id` must match the original invocation so the runtime can route the result to the correct conversation and match it to the pending tool call.
 
 ```javascript
 // What sendToolResult does under the hood:
@@ -167,7 +167,7 @@ Every invocation must produce a result. Never silently drop an invocation — th
 
 Some tools create ongoing subscriptions rather than returning a single result. A GitHub webhook listener, a stock price monitor, a Slack channel watcher — these tools deliver events over time, each one waking the agent.
 
-The pattern: acknowledge the invocation, store the callback information durably, return a confirmation as a normal tool result, then send [`subscription_event`](/spec/server/subscription-events) messages whenever matching events occur.
+The pattern: acknowledge the invocation, store the callback information durably, return a confirmation as a normal tool result, then send [`subscription_event`](/docs/rap/spec/server/subscription-events) messages whenever matching events occur.
 
 ```javascript
 import { sendToolResult, sendSubscriptionEvent } from 'rap-js';
@@ -200,13 +200,13 @@ async function handleEvent(subscription, eventData) {
 }
 ```
 
-Include `subscription: true` in the [tool result](/spec/basic/tool-result) to signal to the runtime that this tool call has started a subscription. The runtime records the tool call ID as an active subscription so the agent can later cancel it via the built-in [`cancel_subscription` protocol](/spec/server/subscription-events#cancellation).
+Include `subscription: true` in the [tool result](/docs/rap/spec/basic/tool-result) to signal to the runtime that this tool call has started a subscription. The runtime records the tool call ID as an active subscription so the agent can later cancel it via the built-in [`cancel_subscription` protocol](/docs/rap/spec/server/subscription-events#cancellation).
 
 The runtime spawns a child thread for each subscription event, giving each event a clean context window. The subscription remains active until explicitly cancelled.
 
 ## Schema evolution
 
-Runtimes cache your toolset definition for the duration of an agent session. If you deploy a breaking schema change while agents hold cached definitions, they'll send invocations with stale arguments. Your tool should handle this gracefully — either maintain backward compatibility or return a clear error via the normal tool result path. See [Loading Toolsets](/spec/basic/toolsets#loading-toolsets) for details on caching behavior.
+Runtimes cache your toolset definition for the duration of an agent session. If you deploy a breaking schema change while agents hold cached definitions, they'll send invocations with stale arguments. Your tool should handle this gracefully — either maintain backward compatibility or return a clear error via the normal tool result path. See [Loading Toolsets](/docs/rap/spec/basic/toolsets#loading-toolsets) for details on caching behavior.
 
 ## CDK integration
 
