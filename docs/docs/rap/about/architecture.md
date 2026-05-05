@@ -25,9 +25,9 @@ sequenceDiagram
     R->>R: load state, continue conversation
 ```
 
-The **agent runtime** orchestrates LLM completions and tool dispatch. It's stateless and ephemeral: start, load conversation history from storage, run the LLM, dispatch tool calls, persist state, exit. It can be a Lambda function, a container, a CLI process, anything that speaks the RAP message format. See [Agent Runtime](/docs/about/agent-runtime) for the full design.
+The **agent runtime** orchestrates LLM completions and tool dispatch. It's stateless and ephemeral: start, load conversation history from storage, run the LLM, dispatch tool calls, persist state, exit. It can be a Lambda function, a container, a CLI process, anything that speaks the RAP message format. See [Agent Runtime](/docs/rap/about/agent-runtime) for the full design.
 
-A **RAP server** is an independent HTTP service. It receives invocations, acknowledges immediately, processes asynchronously, and POSTs results to the callback URL. Tools have their own lifecycle, scaling, and failure modes. They know nothing about the agent's LLM or conversation state. See [RAP Servers](/docs/about/rap-servers) for how invocations and results work.
+A **RAP server** is an independent HTTP service. It receives invocations, acknowledges immediately, processes asynchronously, and POSTs results to the callback URL. Tools have their own lifecycle, scaling, and failure modes. They know nothing about the agent's LLM or conversation state. See [RAP Servers](/docs/rap/about/rap-servers) for how invocations and results work.
 
 ## Hibernation
 
@@ -43,7 +43,7 @@ The runtime also provides explicit sleep tools (`sleep`, `sleep_until`, `sleep_u
 
 Tools can register ongoing subscriptions that deliver events over time. A GitHub webhook listener, a stock price monitor, a Slack channel watcher: these tools send `subscription_event` messages to the callback URL whenever something happens. Each event wakes the agent.
 
-The runtime handles subscription events using synthetic tool calls, which present each event to the LLM as a natural tool call/result pair in conversation history. Events are processed in isolated child threads to keep the parent context clean. See [Subscriptions](/docs/about/subscription-events) for the full design.
+The runtime handles subscription events using synthetic tool calls, which present each event to the LLM as a natural tool call/result pair in conversation history. Events are processed in isolated child threads to keep the parent context clean. See [Subscriptions](/docs/rap/about/subscription-events) for the full design.
 
 ## Threading
 
@@ -55,4 +55,4 @@ Threading is how the runtime handles concurrent work (review multiple files in p
 
 MCP servers work as RAP tools through a proxy layer. The proxy wraps an MCP server, translates between JSON-RPC and RAP's HTTP contract, and returns results asynchronously. From the runtime's perspective, an MCP tool looks like any other RAP tool: invoked via HTTP, results arrive through the callback.
 
-You get the full MCP ecosystem while gaining async execution for the tools that need it. See [MCP Compatibility](/docs/about/mcp-compatibility) for how the proxy works, including stdio and HTTP transport modes, session continuity, and OAuth.
+You get the full MCP ecosystem while gaining async execution for the tools that need it. See [MCP Compatibility](/docs/rap/about/mcp-compatibility) for how the proxy works, including stdio and HTTP transport modes, session continuity, and OAuth.

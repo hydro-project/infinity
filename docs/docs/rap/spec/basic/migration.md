@@ -7,7 +7,7 @@ title: Migration
 
 The Reactive Agent Protocol supports **session migration** — moving an agent session from one host to another while preserving tool server state. Migration is coordinated by the agent runtime, which notifies each tool server that needs to transfer its state to a corresponding server on the destination host.
 
-Not all tool servers maintain session-specific state that requires migration. Tool servers that do MUST declare this in their [toolset manifest](/spec/basic/toolsets) and MUST implement the migration endpoint described below.
+Not all tool servers maintain session-specific state that requires migration. Tool servers that do MUST declare this in their [toolset manifest](/docs/rap/spec/basic/toolsets) and MUST implement the migration endpoint described below.
 
 ## Toolset Manifest
 
@@ -68,7 +68,7 @@ The protocol does not prescribe how tool servers transfer state between source a
 The only requirements are:
 
 1. The source server MUST NOT return HTTP 200 from `/migrate` until the destination server has fully received and is ready to serve the migrated state.
-2. After a successful migration, the source server's state for the migrated session MAY be cleaned up by the runtime via the normal [thread closure](/spec/basic/thread-closure) notification.
+2. After a successful migration, the source server's state for the migrated session MAY be cleaned up by the runtime via the normal [thread closure](/docs/rap/spec/basic/thread-closure) notification.
 
 ```mermaid
 sequenceDiagram

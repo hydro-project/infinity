@@ -22,13 +22,13 @@ Content-Type: application/json
 }
 ```
 
-The `/close_thread` path is relative to the tool server's base URL — the same base URL used to derive the `/.well-known/rap-toolset` [discovery endpoint](/spec/basic/toolsets#discovery-endpoint). For example, if the tool server's base URL is `https://tool.example.com`, the runtime POSTs to `https://tool.example.com/close_thread`.
+The `/close_thread` path is relative to the tool server's base URL — the same base URL used to derive the `/.well-known/rap-toolset` [discovery endpoint](/docs/rap/spec/basic/toolsets#discovery-endpoint). For example, if the tool server's base URL is `https://tool.example.com`, the runtime POSTs to `https://tool.example.com/close_thread`.
 
 ## Fields
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `thread_id` | `string` | Yes | The conversation thread identifier (`group_id`) of the thread being closed. This is the same value that was sent as `group_id` in [tool invocations](/spec/basic/tool-invocation) to this thread. |
+| `thread_id` | `string` | Yes | The conversation thread identifier (`group_id`) of the thread being closed. This is the same value that was sent as `group_id` in [tool invocations](/docs/rap/spec/basic/tool-invocation) to this thread. |
 
 ## Response
 
@@ -81,7 +81,7 @@ The runtime SHOULD send all notifications concurrently and MUST NOT block the th
 
 ## Security Considerations
 
-Tool servers MUST validate that `/close_thread` requests are authentic — for example, by requiring the same authentication mechanism used for [tool invocations](/spec/basic/tool-invocation) (AWS SigV4, bearer tokens, mutual TLS, etc.). An unauthenticated `/close_thread` endpoint would allow an attacker to trigger resource cleanup for arbitrary threads, potentially disrupting active conversations.
+Tool servers MUST validate that `/close_thread` requests are authentic — for example, by requiring the same authentication mechanism used for [tool invocations](/docs/rap/spec/basic/tool-invocation) (AWS SigV4, bearer tokens, mutual TLS, etc.). An unauthenticated `/close_thread` endpoint would allow an attacker to trigger resource cleanup for arbitrary threads, potentially disrupting active conversations.
 
 Tool servers MUST NOT expose sensitive information about thread state in the response body. The response SHOULD be an empty 200 OK. Tool servers SHOULD rate-limit the `/close_thread` endpoint to prevent abuse.
 

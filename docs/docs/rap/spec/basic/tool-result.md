@@ -5,7 +5,7 @@ title: Tool Result
 
 # Tool Result
 
-A tool result is a message sent from a tool to the runtime, delivering the outcome of a completed operation. The tool POSTs the result to the `callback_url` provided in the original [tool invocation](/spec/basic/tool-invocation).
+A tool result is a message sent from a tool to the runtime, delivering the outcome of a completed operation. The tool POSTs the result to the `callback_url` provided in the original [tool invocation](/docs/rap/spec/basic/tool-invocation).
 
 ## Request
 
@@ -37,7 +37,7 @@ Content-Type: application/json
 | `call_id` | `string \| null` | No | Secondary call identifier. If the original invocation included a `call_id`, it MUST be echoed here. |
 | `text` | `string` | Yes | Result content. MAY be plain text or JSON-encoded structured data. |
 | `display_as` | `array` | No | An array of display segments for human-facing UIs. Each segment is an object with `type` and `content` fields. Runtimes SHOULD iterate the array and render the first segment type they support. The LLM still receives the full `text`. See [Display Segments](#display-segments). |
-| `subscription` | `boolean` | No | When `true`, indicates that this tool call has started a [subscription](/spec/server/subscription-events). The runtime SHOULD record the tool call ID as an active subscription in the current thread's metadata so the agent can later cancel it. Defaults to `false`. |
+| `subscription` | `boolean` | No | When `true`, indicates that this tool call has started a [subscription](/docs/rap/spec/server/subscription-events). The runtime SHOULD record the tool call ID as an active subscription in the current thread's metadata so the agent can later cancel it. Defaults to `false`. |
 
 ## Response
 
@@ -166,7 +166,7 @@ There is no separate error message type. If the tool encounters an error during 
 
 The LLM receives this as the tool's response and can decide how to handle it — retry, inform the user, or try a different approach.
 
-Tools MUST NOT silently drop errors. Every invocation MUST eventually produce either a `tool_result` or an [`oauth`](/spec/server/oauth) message.
+Tools MUST NOT silently drop errors. Every invocation MUST eventually produce either a `tool_result` or an [`oauth`](/docs/rap/spec/server/oauth) message.
 
 ### Error Conventions
 

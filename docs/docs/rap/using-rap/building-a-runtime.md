@@ -50,7 +50,7 @@ In-memory state is fine for prototyping, but a production runtime needs durable 
 
 ## 2. Toolset discovery
 
-RAP runtimes don't hardcode tool definitions. Instead, they discover tools dynamically by fetching [toolset definitions](/spec/basic/toolsets) from each tool server's well-known endpoint. The runtime is configured with a list of tool server base URLs and fetches `/.well-known/rap-toolset` from each on startup.
+RAP runtimes don't hardcode tool definitions. Instead, they discover tools dynamically by fetching [toolset definitions](/docs/rap/spec/basic/toolsets) from each tool server's well-known endpoint. The runtime is configured with a list of tool server base URLs and fetches `/.well-known/rap-toolset` from each on startup.
 
 ```typescript
 interface RapTool {
@@ -132,11 +132,11 @@ async function loadToolsets(): Promise<ResolvedTool[]> {
 }
 ```
 
-This follows the [Toolsets spec](/spec/basic/toolsets#loading-toolsets): toolsets are fetched from the discovery endpoint, cached for the session, and validated for name uniqueness. The runtime never loads tool definitions from local config — the tool server is the authoritative source.
+This follows the [Toolsets spec](/docs/rap/spec/basic/toolsets#loading-toolsets): toolsets are fetched from the discovery endpoint, cached for the session, and validated for name uniqueness. The runtime never loads tool definitions from local config — the tool server is the authoritative source.
 
 ## 3. Tool dispatch
 
-When the LLM calls a tool, the runtime looks up the endpoint from the resolved tool registry and POSTs the [invocation](/spec/basic/tool-invocation). The tool acknowledges immediately — the runtime does not wait for the actual result:
+When the LLM calls a tool, the runtime looks up the endpoint from the resolved tool registry and POSTs the [invocation](/docs/rap/spec/basic/tool-invocation). The tool acknowledges immediately — the runtime does not wait for the actual result:
 
 ```typescript
 async function dispatchToolCall(
@@ -273,7 +273,7 @@ app.post('/callback', async (req, res) => {
   if (type === 'subscription_event') {
     // Subscription events require synthetic tool call generation
     // to present the event to the LLM correctly.
-    // See: /docs/about/subscription-events#synthetic-tool-calls
+    // See: /docs/rap/about/subscription-events#synthetic-tool-calls
     // This is not covered in this tutorial.
     console.log(`Subscription event received for ${group_id} — not handled in this example`);
   }
@@ -317,11 +317,11 @@ The runtime discovers tools from the configured tool servers, calls the LLM, whi
 
 This is a minimal runtime to demonstrate the protocol. A production runtime would add:
 
-- **Subscription event handling** — requires generating [synthetic tool calls](/docs/about/subscription-events#synthetic-tool-calls) to present events to the LLM in a way it can reason about. See [Subscription Events](/docs/about/subscription-events) for the full design.
-- **Concurrency control** — serialize messages within a thread (e.g. with a queue or database lock). See [Agent Runtime](/docs/about/agent-runtime#interruption-model).
-- **Hibernation** — for a serverless deployment, replace the Express server with a Lambda triggered by SQS, and use scheduled messages for sleep. See [Agent Hibernation](/docs/about/architecture#hibernation).
+- **Subscription event handling** — requires generating [synthetic tool calls](/docs/rap/about/subscription-events#synthetic-tool-calls) to present events to the LLM in a way it can reason about. See [Subscription Events](/docs/rap/about/subscription-events) for the full design.
+- **Concurrency control** — serialize messages within a thread (e.g. with a queue or database lock). See [Agent Runtime](/docs/rap/about/agent-runtime#interruption-model).
+- **Hibernation** — for a serverless deployment, replace the Express server with a Lambda triggered by SQS, and use scheduled messages for sleep. See [Agent Hibernation](/docs/rap/about/architecture#hibernation).
 - **Authentication** — sign requests to tool servers with SigV4 or bearer tokens, and authenticate callback requests to prevent unauthorized message injection.
 - **Streaming** — stream LLM responses to the user instead of waiting for the full completion.
-- **Toolset validation** — validate fetched toolset definitions against the [schema requirements](/spec/basic/toolsets#validation) before making tools available to the LLM.
+- **Toolset validation** — validate fetched toolset definitions against the [schema requirements](/docs/rap/spec/basic/toolsets#validation) before making tools available to the LLM.
 
 The [Infinity Runtime](/docs/infinity-runtime/overview) is a production-grade implementation that handles all of these.

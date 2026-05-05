@@ -23,14 +23,14 @@ Content-Type: application/json
 }
 ```
 
-The `/cancel_tool_call` path is relative to the tool server's base URL — the same base URL used to derive the `/.well-known/rap-toolset` [discovery endpoint](/spec/basic/toolsets#discovery-endpoint). For example, if the tool server's base URL is `https://tool.example.com`, the runtime POSTs to `https://tool.example.com/cancel_tool_call`.
+The `/cancel_tool_call` path is relative to the tool server's base URL — the same base URL used to derive the `/.well-known/rap-toolset` [discovery endpoint](/docs/rap/spec/basic/toolsets#discovery-endpoint). For example, if the tool server's base URL is `https://tool.example.com`, the runtime POSTs to `https://tool.example.com/cancel_tool_call`.
 
 ## Fields
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `thread_id` | `string` | Yes | The conversation thread identifier (`group_id`) of the thread containing the cancelled tool call. This is the same value that was sent as `group_id` in the original [tool invocation](/spec/basic/tool-invocation). |
-| `tool_call_id` | `string` | Yes | The unique identifier of the tool call to cancel. This is the same value that was sent as `id` in the original [tool invocation](/spec/basic/tool-invocation). |
+| `thread_id` | `string` | Yes | The conversation thread identifier (`group_id`) of the thread containing the cancelled tool call. This is the same value that was sent as `group_id` in the original [tool invocation](/docs/rap/spec/basic/tool-invocation). |
+| `tool_call_id` | `string` | Yes | The unique identifier of the tool call to cancel. This is the same value that was sent as `id` in the original [tool invocation](/docs/rap/spec/basic/tool-invocation). |
 
 ## Response
 
@@ -62,7 +62,7 @@ When a tool server receives a `/cancel_tool_call` notification, it MAY attempt t
 - **Long-running HTTP requests** — Abort pending upstream requests or API calls.
 - **Computation tools** — Stop ongoing computation and release allocated resources.
 
-Tool servers MAY still send a [tool result](/spec/basic/tool-result) after receiving a cancellation notification — for example, to report partial results or confirm the cancellation. The runtime MUST be prepared to receive tool results for cancelled tool calls and SHOULD handle them gracefully (typically by ignoring them, since the runtime has already injected a synthetic "interrupted" result into the conversation).
+Tool servers MAY still send a [tool result](/docs/rap/spec/basic/tool-result) after receiving a cancellation notification — for example, to report partial results or confirm the cancellation. The runtime MUST be prepared to receive tool results for cancelled tool calls and SHOULD handle them gracefully (typically by ignoring them, since the runtime has already injected a synthetic "interrupted" result into the conversation).
 
 ```mermaid
 sequenceDiagram
@@ -86,7 +86,7 @@ The runtime SHOULD send all notifications concurrently and MUST NOT block the ca
 
 ## Security Considerations
 
-Tool servers MUST validate that `/cancel_tool_call` requests are authentic — for example, by requiring the same authentication mechanism used for [tool invocations](/spec/basic/tool-invocation) (AWS SigV4, bearer tokens, mutual TLS, etc.). An unauthenticated `/cancel_tool_call` endpoint would allow an attacker to cancel in-flight operations for arbitrary tool calls, potentially disrupting active agent workflows.
+Tool servers MUST validate that `/cancel_tool_call` requests are authentic — for example, by requiring the same authentication mechanism used for [tool invocations](/docs/rap/spec/basic/tool-invocation) (AWS SigV4, bearer tokens, mutual TLS, etc.). An unauthenticated `/cancel_tool_call` endpoint would allow an attacker to cancel in-flight operations for arbitrary tool calls, potentially disrupting active agent workflows.
 
 Tool servers MUST NOT expose sensitive information about tool call state in the response body. The response SHOULD be an empty 200 OK. Tool servers SHOULD rate-limit the `/cancel_tool_call` endpoint to prevent abuse.
 
