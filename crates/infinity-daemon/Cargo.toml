@@ -46,6 +46,7 @@ nix = { version = "0.31", features = ["signal"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile = { workspace = true }
 rig-mock = { path = "../rig-mock" }
+insta = { workspace = true }
 
 [features]
 bundled-web = ["dep:include_dir"]

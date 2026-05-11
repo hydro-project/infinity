@@ -1,0 +1,92 @@
+---
+source: crates/infinity-daemon/src/session/agent_loop.rs
+assertion_line: 770
+expression: compaction_child_req.chat_history
+---
+[
+  {
+    "role": "assistant",
+    "id": null,
+    "content": [
+      {
+        "text": "[Compacted conversation summary]\nSummary of first round"
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "second message"
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "id": null,
+    "content": [
+      {
+        "text": "second response"
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "third message"
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "id": null,
+    "content": [
+      {
+        "text": "third response"
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "fourth message"
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "id": null,
+    "content": [
+      {
+        "id": "[id]",
+        "call_id": null,
+        "function": {
+          "name": "__harness_begin_compaction__",
+          "arguments": {}
+        },
+        "signature": null,
+        "additional_params": null
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "toolresult",
+        "id": "[id]",
+        "content": [
+          {
+            "type": "text",
+            "text": "[compaction_instructions]"
+          }
+        ]
+      }
+    ]
+  }
+]

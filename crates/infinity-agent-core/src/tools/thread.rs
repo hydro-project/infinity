@@ -87,7 +87,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
 
         let new_thread_id = match self
             .conversation_store
-            .spawn_thread(&context.group_id, id, false)
+            .spawn_thread(&context.group_id, id, false, None)
             .await
         {
             Ok(id) => id,
