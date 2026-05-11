@@ -15,11 +15,14 @@ use tokio::sync::mpsc;
 // ── MockStreamingResponse ──
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MockStreamingResponse;
+pub struct MockStreamingResponse {
+    #[serde(default)]
+    pub usage: Option<Usage>,
+}
 
 impl GetTokenUsage for MockStreamingResponse {
     fn token_usage(&self) -> Option<Usage> {
-        None
+        self.usage
     }
 }
 
@@ -136,7 +139,14 @@ impl MockModelController {
 
     /// Send the final response marker and drop the sender to close the stream.
     pub fn finish(&mut self) {
-        self.send_chunk(RawStreamingChoice::FinalResponse(MockStreamingResponse));
+        self.finish_with_usage(None);
+    }
+
+    /// Send the final response marker with custom token usage and drop the sender.
+    pub fn finish_with_usage(&mut self, usage: Option<Usage>) {
+        self.send_chunk(RawStreamingChoice::FinalResponse(MockStreamingResponse {
+            usage,
+        }));
         self.current_tx.take(); // drop closes the channel
     }
 
