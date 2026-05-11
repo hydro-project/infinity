@@ -271,18 +271,23 @@ impl ConversationStore for DsqlConversationStore {
         parent_thread_id: &str,
         spawn_tool_call_id: &str,
         is_for_subscription_event: bool,
+        spawn_order_override: Option<usize>,
     ) -> Result<String, DsqlError> {
         let new_thread_id = uuid::Uuid::new_v4().to_string();
 
-        let spawn_message_order: Option<i64> = sqlx::query_scalar(
-            r#"SELECT COALESCE(MAX(message_order), 0)
-            FROM conversation_history WHERE session_id = $1"#,
-        )
-        .bind(parent_thread_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| DsqlError(format!("Failed to get current message order: {}", e)))?;
-        let spawn_message_order = spawn_message_order.unwrap_or(0);
+        let spawn_message_order = if let Some(order) = spawn_order_override {
+            order as i64
+        } else {
+            let order: Option<i64> = sqlx::query_scalar(
+                r#"SELECT COALESCE(MAX(message_order), 0)
+                FROM conversation_history WHERE session_id = $1"#,
+            )
+            .bind(parent_thread_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| DsqlError(format!("Failed to get current message order: {}", e)))?;
+            order.unwrap_or(0)
+        };
 
         let root_thread_id: String = sqlx::query_scalar(
             r#"SELECT root_thread_id FROM thread_hierarchy WHERE thread_id = $1"#,
