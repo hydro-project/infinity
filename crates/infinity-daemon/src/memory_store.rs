@@ -765,6 +765,7 @@ impl ConversationStore for InMemoryConversationStore {
         parent_thread_id: &str,
         spawn_tool_call_id: &str,
         is_for_subscription_event: bool,
+        spawn_order_override: Option<usize>,
     ) -> Result<String, MemoryError> {
         self.ensure_thread_loaded(parent_thread_id);
         let new_id = uuid::Uuid::new_v4().to_string();
@@ -773,10 +774,9 @@ impl ConversationStore for InMemoryConversationStore {
         {
             let threads = self.threads.lock().expect("bug: mutex poisoned");
             let msgs = self.messages.lock().expect("bug: mutex poisoned");
-            spawn_message_order = msgs
-                .get(parent_thread_id)
-                .map(|v| v.len() as i64)
-                .unwrap_or(0);
+            spawn_message_order = spawn_order_override
+                .unwrap_or_else(|| msgs.get(parent_thread_id).map(|v| v.len()).unwrap_or(0))
+                as i64;
             root = threads
                 .get(parent_thread_id)
                 .map(|t| t.root_thread_id.clone())
@@ -1244,7 +1244,7 @@ mod tests {
             .expect("append root messages");
 
         let child = store
-            .spawn_thread("root", "tc-1", false)
+            .spawn_thread("root", "tc-1", false, None)
             .await
             .expect("spawn child thread");
 
@@ -1295,7 +1295,7 @@ mod tests {
             .expect("append root messages");
 
         let child = store
-            .spawn_thread("root", "tc-1", false)
+            .spawn_thread("root", "tc-1", false, None)
             .await
             .expect("spawn child thread");
         store
@@ -1307,7 +1307,7 @@ mod tests {
             .expect("append child messages");
 
         let grandchild = store
-            .spawn_thread(&child, "tc-2", false)
+            .spawn_thread(&child, "tc-2", false, None)
             .await
             .expect("spawn grandchild thread");
         store
@@ -1390,7 +1390,7 @@ mod tests {
             .expect("save compaction summary");
 
         let child = store
-            .spawn_thread("root", "tc-1", false)
+            .spawn_thread("root", "tc-1", false, None)
             .await
             .expect("spawn child thread");
         store
@@ -1444,7 +1444,7 @@ mod tests {
             .expect("save later compaction summary");
 
         let child = store
-            .spawn_thread("root", "tc-1", false)
+            .spawn_thread("root", "tc-1", false, None)
             .await
             .expect("spawn child thread");
         store
@@ -1488,7 +1488,7 @@ mod tests {
             .expect("save root compaction summary");
 
         let child = store
-            .spawn_thread("root", "tc-1", false)
+            .spawn_thread("root", "tc-1", false, None)
             .await
             .expect("spawn child thread");
         store
