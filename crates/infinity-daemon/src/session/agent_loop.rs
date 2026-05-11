@@ -224,7 +224,7 @@ mod tests {
                     .await
                     .expect("ensure root thread");
                 let child_id = conv
-                    .spawn_thread("root", "tc-spawn", false)
+                    .spawn_thread("root", "tc-spawn", false, None)
                     .await
                     .expect("spawn child thread");
 
@@ -369,7 +369,6 @@ mod tests {
     /// 4. Tool result arrives, apply_compaction truncates history
     /// 5. History has [summary, tool_result] with no matching tool_call
     #[tokio::test(flavor = "current_thread")]
-    #[ignore = "known bug: compaction truncates pending tool call from history"]
     async fn compaction_during_tool_call_corrupts_history() {
         use infinity_agent_core::tools::thread::CloseThreadTool;
         use rig::completion::Usage;
@@ -564,6 +563,220 @@ mod tests {
                     !has_orphaned_tool_result,
                     "History is corrupted: tool result has no matching tool_call after compaction. History: {:#?}",
                     history
+                );
+            })
+            .await;
+    }
+
+    /// Same as above but triggers compaction TWICE on the same worker without
+    /// it reloading from the store. Exposes the mismatch between in-memory
+    /// indices and absolute store orders after a prior compaction.
+    #[tokio::test(flavor = "current_thread")]
+    async fn second_compaction_during_tool_call_after_prior_compaction() {
+        use infinity_agent_core::tools::thread::CloseThreadTool;
+        use rig::completion::Usage;
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (conv, state, _dir) = tmp_stores();
+                let (model, mut ctrl) = mock_model();
+                conv.ensure_root_thread("t1")
+                    .await
+                    .expect("ensure root thread");
+
+                use async_trait::async_trait;
+                struct AsyncTool;
+                #[async_trait]
+                impl Tool<InMemoryMessageSender> for AsyncTool {
+                    fn name(&self) -> &str {
+                        "async_tool"
+                    }
+                    fn description(&self) -> &str {
+                        "a"
+                    }
+                    fn parameters(&self) -> serde_json::Value {
+                        serde_json::json!({"type":"object","properties":{}})
+                    }
+                    async fn execute(
+                        &self,
+                        _: serde_json::Value,
+                        _: String,
+                        _: Option<String>,
+                        _: &infinity_agent_core::tools::ToolContext<InMemoryMessageSender>,
+                    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                        Ok(())
+                    }
+                }
+
+                let tools: Vec<Box<dyn Tool<InMemoryMessageSender>>> = vec![
+                    Box::new(AsyncTool),
+                    Box::new(CloseThreadTool::<_, rap_client::http::SimpleHttpClient> {
+                        conversation_store: conv.clone(),
+                        rap_notifier: None,
+                    }),
+                ];
+
+                // context_window = 100
+                let (tx, _idle_rx, _) =
+                    spawn_test_agent_loop_with_tools("t1", conv.clone(), state, model, tools, 100);
+
+                let find_child_thread_id =
+                    |req: &rig::completion::CompletionRequest| -> String {
+                        req.chat_history
+                            .iter()
+                            .find_map(|m| {
+                                if let rig::message::Message::User { content } = m
+                                    && let UserContent::ToolResult(r) = content.first()
+                                    && let rig::message::ToolResultContent::Text(t) =
+                                        r.content.first()
+                                    && t.text.contains("close_thread with your thread ID")
+                                {
+                                    let start = t.text.find('(')? + 1;
+                                    let end = t.text.find(')')?;
+                                    Some(t.text[start..end].to_owned())
+                                } else {
+                                    None
+                                }
+                            })
+                            .expect("should find child thread ID")
+                    };
+
+                let is_compaction_req = |req: &rig::completion::CompletionRequest| -> bool {
+                    req.chat_history.iter().any(|m| {
+                        if let rig::message::Message::User { content } = m
+                            && let UserContent::ToolResult(r) = content.first()
+                            && let rig::message::ToolResultContent::Text(t) = r.content.first()
+                        {
+                            t.text.contains("compaction thread")
+                        } else {
+                            false
+                        }
+                    })
+                };
+
+                let handle_compaction_child =
+                    |ctrl: &mut rig_mock::MockModelController,
+                     req: &rig::completion::CompletionRequest,
+                     summary: &str| {
+                        let child_thread_id = find_child_thread_id(req);
+                        ctrl.send_tool_call(
+                            "tc-close",
+                            "close_thread",
+                            serde_json::json!({
+                                "thread_id": child_thread_id,
+                                "report_to_parent": summary
+                            }),
+                        );
+                        ctrl.finish();
+                    };
+
+                let high_usage = Some(Usage {
+                    input_tokens: 76,
+                    output_tokens: 10,
+                    total_tokens: 86,
+                    cached_input_tokens: 0,
+                });
+
+                // ── FIRST ROUND: text response + compaction (no tool call) ──
+                // This creates a compaction with up_to_order = 2 (user + assistant),
+                // so the offset will be non-zero for the second round.
+
+                tx.send(user_text_input("t1", "first message"))
+                    .expect("send");
+                let _req1 = ctrl.next_request().await;
+                ctrl.send_text("first response");
+                ctrl.finish_with_usage(high_usage);
+
+                // Compaction child spawns (no pending tool call, safe_point = history.len() = 2)
+                let compaction_req1 = ctrl.next_request().await;
+                assert!(is_compaction_req(&compaction_req1));
+                handle_compaction_child(&mut ctrl, &compaction_req1, "Summary of first round");
+
+                // Worker idles after first compaction. Send more messages to build history.
+                tx.send(user_text_input("t1", "second message"))
+                    .expect("send");
+                let _req2 = ctrl.next_request().await;
+                ctrl.send_text("second response");
+                ctrl.finish();
+
+                tx.send(user_text_input("t1", "third message"))
+                    .expect("send");
+                let _req3 = ctrl.next_request().await;
+                ctrl.send_text("third response");
+                ctrl.finish();
+
+                // ── SECOND ROUND: tool call + compaction after prior compaction ──
+                // After reload, compacted_up_to = Some(2), in-memory history:
+                //   [summary, second_msg, second_resp, third_msg, third_resp, fourth_msg, tc-2]
+                // safe_spawn_point without offset = 6 (in-memory index)
+                // safe_spawn_point with offset = 6 + (2-1) = 7 (absolute store order)
+                // Store has 8 messages (0..8). Cutoff 6 misses "fourth message",
+                // cutoff 7 includes it.
+
+                tx.send(user_text_input("t1", "fourth message"))
+                    .expect("send");
+                let _req4 = ctrl.next_request().await;
+                ctrl.send_tool_call("tc-2", "async_tool", serde_json::json!({}));
+                ctrl.finish_with_usage(high_usage);
+
+                // Send tool result before compaction child finishes
+                tx.send(AgentMessage::Input(
+                    Box::new(InputMessage {
+                        content: InputMessageContent::User(UserContent::ToolResult(
+                            rig::message::ToolResult {
+                                id: "tc-2".into(),
+                                call_id: None,
+                                content: rig::OneOrMany::one(
+                                    rig::message::ToolResultContent::Text(rig::agent::Text {
+                                        text: "second tool result".into(),
+                                    }),
+                                ),
+                            },
+                        )),
+                        group_id: "t1".into(),
+                        metadata: None,
+                        synthetic: None,
+                        display_as: None,
+                        subscription: false,
+                    }),
+                    uuid::Uuid::new_v4().to_string(),
+                ))
+                .expect("send tool result 2");
+
+                // Handle both requests for second round
+                let req_c = ctrl.next_request().await;
+                let compaction_child_req = if is_compaction_req(&req_c) {
+                    let r = req_c;
+                    handle_compaction_child(&mut ctrl, &r, "Summary of second round");
+                    let _req_d = ctrl.next_request().await;
+                    ctrl.send_text("processed second tool");
+                    ctrl.finish();
+                    r
+                } else {
+                    ctrl.send_text("processed second tool");
+                    ctrl.finish();
+                    let req_d = ctrl.next_request().await;
+                    handle_compaction_child(&mut ctrl, &req_d, "Summary of second round");
+                    req_d
+                };
+
+                // Snapshot the compaction child's inherited history to verify:
+                // - It includes "fourth message" (the last msg before the tool call)
+                // - It does NOT include tc-2 (excluded by safe point)
+                insta::assert_json_snapshot!(
+                    "second_compaction_child_history",
+                    compaction_child_req.chat_history,
+                    {
+                        "[].content[].id" => "[id]",
+                        "[].content[].content[].text" => insta::dynamic_redaction(|value, _| {
+                            let s = value.as_str().unwrap_or("");
+                            if s.contains("compaction thread") {
+                                insta::internals::Content::String("[compaction_instructions]".into())
+                            } else {
+                                value
+                            }
+                        })
+                    }
                 );
             })
             .await;

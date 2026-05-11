@@ -106,6 +106,7 @@ pub trait ConversationStore: Send + Sync + Clone {
         parent_thread_id: &str,
         spawn_tool_call_id: &str,
         is_for_subscription_event: bool,
+        spawn_order_override: Option<usize>,
     ) -> Result<String, Self::Error>;
 
     async fn is_thread_closed(&self, thread_id: &str) -> Result<bool, Self::Error>;

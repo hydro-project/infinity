@@ -471,6 +471,36 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         std::mem::take(&mut *self.interrupted_tool_calls.borrow_mut())
     }
 
+    /// Compute a safe spawn point that excludes trailing unanswered tool calls.
+    /// Returns an absolute store order (accounting for prior compaction offset)
+    /// suitable for use as `spawn_order_override`.
+    pub fn safe_spawn_point(&self) -> usize {
+        // TODO: when we support parallel tool calls, we may need to walk back across
+        // tool results if there is an unresolved tool call remaining in the group.
+        let history = self.history.borrow();
+        let processed = self.processed_tool_calls.borrow();
+        let safe = history
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, msg)| {
+                if let InfinityMessage::ToolCall { call, .. } = msg {
+                    processed.contains(call.id.as_str())
+                } else {
+                    true
+                }
+            })
+            .map_or(0, |(i, _)| i + 1); // +1: safe point is exclusive (after the last safe message)
+        // Convert in-memory index to absolute store order by adding the offset
+        // from any prior compaction. The -1 accounts for the compaction summary
+        // message occupying slot 0 in the in-memory history.
+        let offset = self
+            .compacted_up_to
+            .borrow()
+            .map_or(0, |prev| prev as usize - 1);
+        safe + offset
+    }
+
     /// Record a subscription in the current thread's metadata. The
     /// `tool_call_id` is the ID of the tool call whose result had
     /// `subscription: true`. Ownership is implicit — a subscription is
@@ -549,8 +579,13 @@ where
         .is_some_and(|s| matches!(s, SyntheticKind::Tagged(TaggedSyntheticKind::Compaction)))
     {
         let spawn_call_id = uuid::Uuid::new_v4().to_string();
+
+        // Compute a safe compaction point: exclude trailing unanswered tool calls
+        // from the compaction range so they aren't lost when apply_compaction runs.
+        let safe_point = current_history.safe_spawn_point();
+
         let sub_thread_id = conversation_store
-            .spawn_thread(&input_msg.group_id, &spawn_call_id, false)
+            .spawn_thread(&input_msg.group_id, &spawn_call_id, false, Some(safe_point))
             .await
             .map_err(|e| Box::new(e) as BoxError)?;
         conversation_store
@@ -564,35 +599,10 @@ where
             input_msg.group_id
         );
 
-        // Write spawn tool call + result directly to child's store.
-        // If the parent's history ends with an unanswered tool call, prepend
-        // a synthetic "interrupted" result so the child doesn't have two
-        // consecutive assistant tool calls without a tool_result in between.
-        let mut child_messages: Vec<(InfinityMessage, String)> = Vec::new();
-        if let Some(InfinityMessage::ToolCall {
-            call: pending_call, ..
-        }) = current_history.history.borrow().last()
-            && !current_history
-                .processed_tool_calls
-                .borrow()
-                .contains(pending_call.id.as_str())
-        {
-            let interrupted_result = InfinityMessage::ToolResult {
-                result: ToolResult {
-                    id: pending_call.id.clone(),
-                    call_id: pending_call.call_id.clone(),
-                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                        text: "Tool call interrupted by compaction".to_owned(),
-                    })),
-                },
-                display_segments: None,
-            };
-            child_messages.push((
-                interrupted_result,
-                format!("{}-interrupted", pending_call.id),
-            ));
-        }
-
+        // Write spawn tool call directly to child's store.
+        // No need to prepend an "interrupted" result for trailing tool calls
+        // because the safe_spawn_point already excludes them from the child's
+        // inherited history.
         let spawn_tool_call = InfinityMessage::ToolCall {
             call: rig::message::ToolCall {
                 id: spawn_call_id.clone(),
@@ -606,12 +616,14 @@ where
             },
             display_as: None,
         };
-        child_messages.push((
-            spawn_tool_call,
-            format!("{}-compaction-call", spawn_call_id),
-        ));
         conversation_store
-            .append_messages(&sub_thread_id, child_messages)
+            .append_messages(
+                &sub_thread_id,
+                vec![(
+                    spawn_tool_call,
+                    format!("{}-compaction-call", spawn_call_id),
+                )],
+            )
             .await
             .map_err(|e| Box::new(e) as BoxError)?;
 
@@ -768,8 +780,17 @@ where
                 original_tool_call_id
             );
 
+            // Compute safe point excluding trailing unanswered tool calls,
+            // so the child doesn't inherit them as "interrupted".
+            let safe_point = current_history.safe_spawn_point();
+
             let sub_thread_id = conversation_store
-                .spawn_thread(&input_msg.group_id, &original_tool_call_id, true)
+                .spawn_thread(
+                    &input_msg.group_id,
+                    &original_tool_call_id,
+                    true,
+                    Some(safe_point),
+                )
                 .await
                 .map_err(|e| Box::new(e) as BoxError)?;
 
@@ -790,36 +811,10 @@ where
                 return Err("Synthetic subscription event is not a tool result".into());
             };
 
-            // If the parent's history ends with an unanswered tool call (e.g.
-            // sleep_until_event_or_input), the child will inherit that via
-            // load_history_with_ancestors. We must prepend a synthetic
-            // "interrupted" result so the child's conversation doesn't have
-            // two consecutive assistant tool calls without a tool_result in
-            // between, which would cause a 400 Bad Request from the API.
+            // No need to prepend an "interrupted" result for trailing tool calls
+            // because the safe_spawn_point already excludes them from the child's
+            // inherited history.
             let mut child_messages: Vec<(InfinityMessage, String)> = Vec::new();
-            if let Some(InfinityMessage::ToolCall {
-                call: pending_call, ..
-            }) = current_history.history.borrow().last()
-                && !current_history
-                    .processed_tool_calls
-                    .borrow()
-                    .contains(pending_call.id.as_str())
-            {
-                let interrupted_result = InfinityMessage::ToolResult {
-                    result: ToolResult {
-                        id: pending_call.id.clone(),
-                        call_id: pending_call.call_id.clone(),
-                        content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                            text: "Tool call interrupted by subscription event".to_owned(),
-                        })),
-                    },
-                    display_segments: None,
-                };
-                child_messages.push((
-                    interrupted_result,
-                    format!("{}-interrupted", pending_call.id),
-                ));
-            }
 
             // Write event + spawn tool calls directly to child's store
             let event_tool_call = InfinityMessage::ToolCall {
@@ -1455,6 +1450,7 @@ mod tests {
             _parent_thread_id: &str,
             _spawn_tool_call_id: &str,
             _is_for_subscription_event: bool,
+            _spawn_order_override: Option<usize>,
         ) -> Result<String, TestError> {
             Ok("sub-thread-1".to_owned())
         }

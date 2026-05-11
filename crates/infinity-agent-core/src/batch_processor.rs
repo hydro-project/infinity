@@ -448,7 +448,13 @@ mod tests {
         ) -> Result<(), E> {
             Ok(())
         }
-        async fn spawn_thread(&self, _: &str, _: &str, _: bool) -> Result<String, E> {
+        async fn spawn_thread(
+            &self,
+            _: &str,
+            _: &str,
+            _: bool,
+            _: Option<usize>,
+        ) -> Result<String, E> {
             Ok("child".into())
         }
         async fn is_thread_closed(&self, id: &str) -> Result<bool, E> {

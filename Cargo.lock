@@ -2129,6 +2129,7 @@ dependencies = [
  "include_dir",
  "infinity-agent-core",
  "infinity-protocol",
+ "insta",
  "nix",
  "rap-client",
  "rap-protocol",
