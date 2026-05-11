@@ -309,4 +309,262 @@ mod tests {
             })
             .await;
     }
+
+    fn spawn_test_agent_loop_with_tools(
+        session_id: &str,
+        conv: InMemoryConversationStore,
+        state: InMemoryStateStore,
+        model: rig_mock::MockCompletionModel,
+        tools: Vec<Box<dyn Tool<InMemoryMessageSender>>>,
+        context_window: usize,
+    ) -> (
+        mpsc::UnboundedSender<AgentMessage>,
+        mpsc::UnboundedReceiver<()>,
+        ActiveThreads,
+    ) {
+        let (agent_tx, agent_rx) = mpsc::unbounded_channel();
+        let (idle_tx, idle_rx) = mpsc::unbounded_channel();
+        let (input_tx, mut input_adapter_rx) = mpsc::unbounded_channel::<(InputMessage, String)>();
+        let agent_tx_clone = agent_tx.clone();
+        tokio::task::spawn_local(async move {
+            while let Some((msg, id)) = input_adapter_rx.recv().await {
+                if agent_tx_clone
+                    .send(AgentMessage::Input(Box::new(msg), id))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let sender = InMemoryMessageSender::new(input_tx);
+        let subscriber_map: SubscriberMap = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let active_threads = Arc::new(std::sync::Mutex::new(HashSet::new()));
+
+        tokio::task::spawn_local(agent_loop(
+            session_id.into(),
+            agent_rx,
+            Arc::new(model),
+            conv,
+            state,
+            sender,
+            String::new(),
+            Arc::new(tools),
+            Arc::new(None),
+            None,
+            Arc::new(std::sync::RwLock::new(None)),
+            Arc::new(std::sync::RwLock::new(None)),
+            subscriber_map,
+            active_threads.clone(),
+            idle_tx,
+            context_window,
+        ));
+
+        (agent_tx, idle_rx, active_threads)
+    }
+
+    /// Reproduces corruption when compaction triggers mid-tool-call:
+    /// 1. User sends input, model responds with async tool call + high token usage
+    /// 2. Compaction triggers, spawns child thread
+    /// 3. Child thread summarizes and calls close_thread (saves summary, sends CompactionComplete)
+    /// 4. Tool result arrives, apply_compaction truncates history
+    /// 5. History has [summary, tool_result] with no matching tool_call
+    #[tokio::test(flavor = "current_thread")]
+    async fn compaction_during_tool_call_corrupts_history() {
+        use infinity_agent_core::tools::thread::CloseThreadTool;
+        use rig::completion::Usage;
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (conv, state, _dir) = tmp_stores();
+                let (model, mut ctrl) = mock_model();
+                conv.ensure_root_thread("t1")
+                    .await
+                    .expect("ensure root thread");
+
+                use async_trait::async_trait;
+                struct AsyncTool;
+                #[async_trait]
+                impl Tool<InMemoryMessageSender> for AsyncTool {
+                    fn name(&self) -> &str {
+                        "async_tool"
+                    }
+                    fn description(&self) -> &str {
+                        "a"
+                    }
+                    fn parameters(&self) -> serde_json::Value {
+                        serde_json::json!({"type":"object","properties":{}})
+                    }
+                    async fn execute(
+                        &self,
+                        _: serde_json::Value,
+                        _: String,
+                        _: Option<String>,
+                        _: &infinity_agent_core::tools::ToolContext<InMemoryMessageSender>,
+                    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                        Ok(())
+                    }
+                }
+
+                let tools: Vec<Box<dyn Tool<InMemoryMessageSender>>> =
+                    vec![
+                        Box::new(AsyncTool),
+                        Box::new(CloseThreadTool::<_, rap_client::http::SimpleHttpClient> {
+                            conversation_store: conv.clone(),
+                            rap_notifier: None,
+                        }),
+                    ];
+
+                // context_window = 100, so 76 input tokens triggers compaction
+                let (tx, _idle_rx, _) =
+                    spawn_test_agent_loop_with_tools("t1", conv.clone(), state, model, tools, 100);
+
+                // 1. User sends input, model responds with async tool call
+                tx.send(user_text_input("t1", "do something"))
+                    .expect("send user input");
+                let _req = ctrl.next_request().await;
+                ctrl.send_tool_call("tc-1", "async_tool", serde_json::json!({}));
+                ctrl.finish_with_usage(Some(Usage {
+                    input_tokens: 76,
+                    output_tokens: 10,
+                    total_tokens: 86,
+                    cached_input_tokens: 0,
+                }));
+
+                // 2. Compaction triggers. Send the tool result BEFORE the compaction
+                //    child finishes (simulating a fast tool execution).
+                tx.send(AgentMessage::Input(
+                    Box::new(InputMessage {
+                        content: InputMessageContent::User(UserContent::ToolResult(
+                            rig::message::ToolResult {
+                                id: "tc-1".into(),
+                                call_id: None,
+                                content: rig::OneOrMany::one(
+                                    rig::message::ToolResultContent::Text(rig::agent::Text {
+                                        text: "tool execution result".into(),
+                                    }),
+                                ),
+                            },
+                        )),
+                        group_id: "t1".into(),
+                        metadata: None,
+                        synthetic: None,
+                        display_as: None,
+                        subscription: false,
+                    }),
+                    uuid::Uuid::new_v4().to_string(),
+                ))
+                .expect("send tool result");
+
+                // The parent processes the tool result and calls the model.
+                // But first, the compaction child also gets a model request.
+                // We need to handle both — order depends on scheduling.
+                // Handle whichever comes first.
+                let req2 = ctrl.next_request().await;
+
+                // Determine if this is the compaction child or the parent's tool result
+                let is_compaction_child = req2.chat_history.iter().any(|m| {
+                    if let rig::message::Message::User { content } = m
+                        && let UserContent::ToolResult(r) = content.first()
+                        && let rig::message::ToolResultContent::Text(t) = r.content.first()
+                    {
+                        t.text.contains("compaction thread")
+                    } else {
+                        false
+                    }
+                });
+
+                let find_child_thread_id =
+                    |req: &rig::completion::CompletionRequest| -> String {
+                        req.chat_history
+                            .iter()
+                            .find_map(|m| {
+                                if let rig::message::Message::User { content } = m
+                                    && let UserContent::ToolResult(r) = content.first()
+                                    && let rig::message::ToolResultContent::Text(t) =
+                                        r.content.first()
+                                    && t.text.contains("close_thread with your thread ID")
+                                {
+                                    let start = t.text.find('(')? + 1;
+                                    let end = t.text.find(')')?;
+                                    Some(t.text[start..end].to_owned())
+                                } else {
+                                    None
+                                }
+                            })
+                            .expect("should find child thread ID")
+                    };
+
+                let handle_compaction_child =
+                    |ctrl: &mut rig_mock::MockModelController,
+                     req: &rig::completion::CompletionRequest| {
+                        let child_thread_id = find_child_thread_id(req);
+                        ctrl.send_tool_call(
+                            "tc-close",
+                            "close_thread",
+                            serde_json::json!({
+                                "thread_id": child_thread_id,
+                                "report_to_parent": "Summary of conversation so far"
+                            }),
+                        );
+                        ctrl.finish();
+                    };
+
+                if is_compaction_child {
+                    handle_compaction_child(&mut ctrl, &req2);
+                    let _req3 = ctrl.next_request().await;
+                    ctrl.send_text("processed tool result");
+                    ctrl.finish();
+                } else {
+                    ctrl.send_text("processed tool result");
+                    ctrl.finish();
+                    let compaction_req = ctrl.next_request().await;
+                    handle_compaction_child(&mut ctrl, &compaction_req);
+                }
+
+                // 3. After CompactionComplete is applied, send a user message to
+                //    trigger a model call so we can inspect the history.
+
+                tx.send(user_text_input("t1", "what happened?"))
+                    .expect("send follow-up");
+
+                // 4. Inspect the history for corruption.
+                let req_final = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    ctrl.next_request(),
+                )
+                .await
+                .expect("timed out waiting for final model request");
+
+                let history: Vec<_> = req_final.chat_history.into_iter().collect();
+
+                // BUG: After apply_compaction, history has tool_result("tc-1")
+                // but no matching tool_call (it was compacted away).
+                let has_orphaned_tool_result = history.iter().enumerate().any(|(i, m)| {
+                    if let rig::message::Message::User { content } = m
+                        && let UserContent::ToolResult(r) = content.first()
+                        && let rig::message::ToolResultContent::Text(t) = r.content.first()
+                        && t.text.contains("tool execution result")
+                    {
+                        !history[..i].iter().any(|prev| {
+                            if let rig::message::Message::Assistant { content, .. } = prev {
+                                content.iter().any(|c| {
+                                    matches!(c, rig::message::AssistantContent::ToolCall(tc) if tc.id == "tc-1")
+                                })
+                            } else {
+                                false
+                            }
+                        })
+                    } else {
+                        false
+                    }
+                });
+
+                assert!(
+                    !has_orphaned_tool_result,
+                    "History is corrupted: tool result has no matching tool_call after compaction. History: {:#?}",
+                    history
+                );
+            })
+            .await;
+    }
 }
