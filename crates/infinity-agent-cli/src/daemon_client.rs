@@ -127,7 +127,7 @@ fn daemon_msg_to_display(
     })
 }
 
-async fn ensure_daemon_running() -> Result<UnixStream, BoxError> {
+pub(crate) async fn ensure_daemon_running() -> Result<UnixStream, BoxError> {
     if let Ok(stream) = UnixStream::connect(&infinity_protocol::socket_path()).await {
         return Ok(stream);
     }
