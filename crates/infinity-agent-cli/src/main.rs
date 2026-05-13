@@ -7,6 +7,8 @@ mod daemon_client;
 
 use infinity_agent_cli::install;
 
+mod acp_server;
+
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Infinity Agent CLI
@@ -55,6 +57,8 @@ enum Commands {
         #[command(subcommand)]
         action: RemoteCommands,
     },
+    /// Run as an ACP (Agent Client Protocol) stdio server
+    Acp,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -110,7 +114,12 @@ async fn main() -> Result<(), BoxError> {
 
     std::fs::create_dir_all(".infinity").ok();
     if !matches!(cli.command, Some(Commands::Daemon { .. })) {
-        let log_file = std::fs::File::create(".infinity/cli.log").ok();
+        let log_name = if matches!(cli.command, Some(Commands::Acp)) {
+            "acp.log"
+        } else {
+            "cli.log"
+        };
+        let log_file = std::fs::File::create(format!(".infinity/{log_name}")).ok();
         if let Some(file) = log_file {
             tracing_subscriber::fmt()
                 .with_env_filter(EnvFilter::from_default_env())
@@ -128,6 +137,7 @@ async fn async_main(cli: Cli) -> Result<(), BoxError> {
     // Handle subcommands
     if let Some(command) = cli.command {
         return match command {
+            Commands::Acp => acp_server::run().await,
             Commands::Update { features } => install::run_self_update(features.as_deref()).await,
             Commands::Daemon { action } => match action {
                 Some(DaemonCommands::Stop) => {
