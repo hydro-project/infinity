@@ -37,8 +37,9 @@ http-body-util = "0.1"
 reqwest = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
-tokio-util = { version = "0.7", features = ["codec"] }
+tokio-util = { version = "0.7", features = ["codec", "compat"] }
 bytes = "1"
+agent-client-protocol = { version = "0.11.1", features = ["unstable_session_model"] }
 
 [features]
 bundled-web = ["infinity-daemon/bundled-web"]
