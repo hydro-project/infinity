@@ -121,6 +121,23 @@ impl LocalBackend {
         std::fs::create_dir_all(&base)?;
         tempfile::tempdir_in(&base)
     }
+
+    /// Deterministic per-sandbox tmp dir path. Persists across commands and
+    /// agent resumes; only cleaned up in `cleanup_sandbox_permanently`.
+    fn tmp_dir_for(remote_uri: &str, group_id: &str) -> PathBuf {
+        Self::sandboxes_dir_for(remote_uri).join(format!(".tmpdir-{group_id}"))
+    }
+
+    /// Look up the persistent tmp dir for a sandbox_dir by finding the
+    /// matching cache entry. Creates the directory if it doesn't exist.
+    fn get_or_create_tmp_dir(&self, sandbox_dir: &Path) -> Option<PathBuf> {
+        let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = cache.values().find(|e| e.dir == sandbox_dir)?;
+        let tmp = Self::tmp_dir_for(&entry.state.remote_uri, &entry.state.group_id);
+        drop(cache);
+        let _ = std::fs::create_dir_all(&tmp);
+        Some(tmp)
+    }
 }
 
 /// Check if a jj bookmark's commit is empty (no changes) using a synchronous command.
@@ -320,8 +337,10 @@ impl SandboxBackend for LocalBackend {
         if cfg!(target_os = "macos") && self.sandbox_enabled {
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
-            let tmp = tempfile::tempdir().map_err(SandboxError::Io)?;
-            let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
+            let tmp_dir = self
+                .get_or_create_tmp_dir(sandbox_dir)
+                .ok_or_else(|| SandboxError::Other("no cached sandbox for tmp dir".to_owned()))?;
+            let abs_tmp = tmp_dir.canonicalize().map_err(SandboxError::Io)?;
 
             let mut writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
             for p in extra_writable {
@@ -383,13 +402,15 @@ impl SandboxBackend for LocalBackend {
 
             Ok(SpawnedCommand {
                 child,
-                _keepalive: Some(Box::new(tmp)),
+                _keepalive: None,
             })
         } else if cfg!(target_os = "linux") && self.sandbox_enabled {
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
-            let tmp = tempfile::tempdir().map_err(SandboxError::Io)?;
-            let abs_tmp = tmp.path().canonicalize().map_err(SandboxError::Io)?;
+            let tmp_dir = self
+                .get_or_create_tmp_dir(sandbox_dir)
+                .ok_or_else(|| SandboxError::Other("no cached sandbox for tmp dir".to_owned()))?;
+            let abs_tmp = tmp_dir.canonicalize().map_err(SandboxError::Io)?;
             let tmp_str = abs_tmp.to_string_lossy();
 
             let mut writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
@@ -441,7 +462,7 @@ impl SandboxBackend for LocalBackend {
 
             Ok(SpawnedCommand {
                 child,
-                _keepalive: Some(Box::new(tmp)),
+                _keepalive: None,
             })
         } else {
             let mut cmd = tokio::process::Command::new(program);
@@ -547,6 +568,12 @@ impl SandboxBackend for LocalBackend {
             SandboxMode::Direct => {
                 tracing::info!(group_id = %group_id, "direct mode — nothing to clean up");
             }
+        }
+
+        // Clean up the persistent tmp dir for this sandbox.
+        let tmp_dir = Self::tmp_dir_for(&entry.state.remote_uri, group_id);
+        if tmp_dir.exists() {
+            let _ = std::fs::remove_dir_all(&tmp_dir);
         }
 
         Ok(())
