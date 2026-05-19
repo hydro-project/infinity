@@ -1,5 +1,8 @@
 // Components
+export { ChatView } from "./components/ChatView";
+export type { ChatViewHandle } from "./components/ChatView";
 export { MessageList } from "./components/MessageList";
+export type { MessageListHandle } from "./components/MessageList";
 export { MessageItem } from "./components/MessageItem";
 export { SessionSidebar } from "./components/SessionSidebar";
 export { InputBar } from "./components/InputBar";

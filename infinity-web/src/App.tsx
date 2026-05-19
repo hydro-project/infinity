@@ -5,7 +5,7 @@ import { workerFactory } from "./workerFactory";
 import {
   msgTag,
   msgPayload,
-  MessageList,
+  ChatView,
   SessionSidebar,
   MigratePicker,
   DiffView,
@@ -893,7 +893,7 @@ export function App() {
         <div className={css.mainBody}>
           {!hasViews && (
             <div style={{ height: "100%" }}>
-              <MessageList
+              <ChatView
                 messages={messages}
                 generation={msgState.gen}
                 spinner={spinner}
@@ -942,7 +942,7 @@ export function App() {
             </button>
           </div>
           <div className={chatCss.chatPanelBody}>
-            <MessageList
+            <ChatView
               messages={messages}
               generation={msgState.gen}
               spinner={spinner}
