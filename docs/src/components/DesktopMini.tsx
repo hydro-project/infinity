@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
-import { SessionSidebar, MessageList, DiffView } from "infinity-ui";
+import { SessionSidebar, ChatView, DiffView } from "infinity-ui";
 import type { SessionInfo, MessageItemType, SpinnerState } from "infinity-ui";
 import "infinity-ui/theme.css";
 import chatCss from "infinity-ui/components/ChatPanel.module.css";
@@ -760,7 +760,7 @@ export default function DesktopMini({
           <span className={chatCss.chatPanelTitle}>Chat</span>
         </div>
         <div className={chatCss.chatPanelBody}>
-          <MessageList
+          <ChatView
             messages={state.messages}
             generation={gen}
             spinner={state.spinner}
