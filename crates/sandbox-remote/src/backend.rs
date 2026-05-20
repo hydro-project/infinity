@@ -159,10 +159,7 @@ impl SandboxBackend for EfsBackend {
             .spawn()
             .map_err(|e| SandboxError::CommandError(format!("failed to spawn command: {e}")))?;
 
-        Ok(SpawnedCommand {
-            child,
-            _keepalive: None,
-        })
+        Ok(SpawnedCommand { child })
     }
 
     /// Push the sandbox's working copy back to the EFS bare repo.
