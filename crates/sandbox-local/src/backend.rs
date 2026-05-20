@@ -400,10 +400,7 @@ impl SandboxBackend for LocalBackend {
                 .spawn()
                 .map_err(|e| SandboxError::CommandError(format!("failed to spawn command: {e}")))?;
 
-            Ok(SpawnedCommand {
-                child,
-                _keepalive: None,
-            })
+            Ok(SpawnedCommand { child })
         } else if cfg!(target_os = "linux") && self.sandbox_enabled {
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
@@ -460,10 +457,7 @@ impl SandboxBackend for LocalBackend {
                 .spawn()
                 .map_err(|e| SandboxError::CommandError(format!("failed to spawn command: {e}")))?;
 
-            Ok(SpawnedCommand {
-                child,
-                _keepalive: None,
-            })
+            Ok(SpawnedCommand { child })
         } else {
             let mut cmd = tokio::process::Command::new(program);
             cmd.args(args)
@@ -478,10 +472,7 @@ impl SandboxBackend for LocalBackend {
                 .spawn()
                 .map_err(|e| SandboxError::CommandError(format!("failed to spawn command: {e}")))?;
 
-            Ok(SpawnedCommand {
-                child,
-                _keepalive: None,
-            })
+            Ok(SpawnedCommand { child })
         }
     }
 
