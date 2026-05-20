@@ -5,12 +5,9 @@ use async_trait::async_trait;
 use crate::error::SandboxError;
 use crate::types::RepoState;
 
-/// A spawned command with its child process handle and any resources
-/// that must stay alive until the process exits.
+/// A spawned command with its child process handle.
 pub struct SpawnedCommand {
     pub child: tokio::process::Child,
-    /// Temp resources (e.g. sandbox tmpdir) that must outlive the child process.
-    pub _keepalive: Option<Box<dyn std::any::Any + Send>>,
 }
 
 /// Trait for the sandbox backend.
