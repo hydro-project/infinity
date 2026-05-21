@@ -2,170 +2,169 @@
 /* Theme variables are provided by infinity-ui/src/theme.css */
 
 :global(*) {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
 }
 
 :global(html),
 :global(body),
 :global(#root) {
-    height: 100%;
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--font-sans);
-    font-size: 14px;
-    line-height: 1.6;
-    -webkit-font-smoothing: antialiased;
-    transition:
-        background 0.3s,
-        color 0.3s;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  transition:
+    background 0.3s,
+    color 0.3s;
 }
 
 .root {
-    position: relative;
-    height: 100%;
-    margin-left: max(24px, var(--sidebar-offset, 24px));
-    margin-right: var(--chat-panel-offset, 24px);
+  position: relative;
+  height: 100%;
+  margin-left: max(8px, var(--sidebar-offset, 24px));
+  margin-right: var(--chat-panel-offset, 24px);
 }
 
 /* ── View tab navbar ── */
 
 .topRight {
-    position: fixed;
-    top: 16px;
-    right: var(--chat-panel-offset, 24px);
-    z-index: 5;
-    display: flex;
-    gap: 8px;
-    align-items: center;
+  position: fixed;
+  top: 16px;
+  right: var(--chat-panel-offset, 24px);
+  z-index: 5;
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 
 .infoPill {
-    background: var(--glass-bg);
-    backdrop-filter: blur(24px) saturate(1.4);
-    -webkit-backdrop-filter: blur(24px) saturate(1.4);
-    border: 1px solid var(--glass-border);
-    box-shadow: 0 4px 16px var(--glass-shadow);
-    border-radius: 20px;
-    padding: 6px 14px;
-    font-size: 12px;
-    color: var(--text-dim);
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    white-space: nowrap;
+  background: var(--glass-bg);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 4px 16px var(--glass-shadow);
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-size: 12px;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
 }
 
 .themePill {
-    background: var(--glass-bg);
-    backdrop-filter: blur(24px) saturate(1.4);
-    -webkit-backdrop-filter: blur(24px) saturate(1.4);
-    border: 1px solid var(--glass-border);
-    box-shadow: 0 4px 16px var(--glass-shadow);
-    color: var(--text-dim);
-    font-size: 14px;
-    width: 36px;
-    height: 36px;
-    border-radius: 20px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background 0.15s;
+  background: var(--glass-bg);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 4px 16px var(--glass-shadow);
+  color: var(--text-dim);
+  font-size: 14px;
+  width: 36px;
+  height: 36px;
+  border-radius: 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
 }
 .themePill:hover {
-    background: var(--bg-hover);
+  background: var(--bg-hover);
 }
 
 .hostPill {
-    background: var(--glass-bg);
-    backdrop-filter: blur(24px) saturate(1.4);
-    -webkit-backdrop-filter: blur(24px) saturate(1.4);
-    border: 1px solid var(--glass-border);
-    box-shadow: 0 4px 16px var(--glass-shadow);
-    border-radius: 20px;
-    padding: 6px 14px;
-    font-size: 12px;
-    color: var(--text-dim);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    white-space: nowrap;
-    transition: background 0.15s;
+  background: var(--glass-bg);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 4px 16px var(--glass-shadow);
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  transition: background 0.15s;
 }
 .hostPill:hover {
-    background: var(--bg-hover);
+  background: var(--bg-hover);
 }
 
 /* ── View tab navbar ── */
 
 .viewNav {
-    display: flex;
-    gap: 4px;
-    padding: 20px 16px 8px 12px;
+  display: flex;
+  gap: 4px;
+  padding: 20px 16px 8px 12px;
 }
 
 .viewTab {
-    z-index: 100;
-    background: var(--glass-bg);
-    backdrop-filter: blur(24px) saturate(1.4);
-    -webkit-backdrop-filter: blur(24px) saturate(1.4);
-    border: 1px solid var(--glass-border);
-    box-shadow: 0 4px 16px var(--glass-shadow);
-    border-radius: 16px;
-    padding: 6px 14px;
-    font-size: 12px;
-    font-family: var(--font-sans);
-    color: var(--text-dim);
-    cursor: pointer;
-    transition:
-        background 0.15s,
-        color 0.15s;
+  z-index: 100;
+  background: var(--glass-bg);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 4px 16px var(--glass-shadow);
+  border-radius: 16px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-family: var(--font-sans);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
 }
 .viewTab:hover {
-    background: var(--bg-hover);
+  background: var(--bg-hover);
 }
 .viewTabActive {
-    composes: viewTab;
-    background: var(--accent);
-    color: #fff;
-    border-color: var(--accent);
+  composes: viewTab;
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
 }
 .viewTabActive:hover {
-    background: var(--accent);
+  background: var(--accent);
 }
 
 .mainContent {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
 }
 
 .mainBody {
-    flex: 1;
-    overflow: hidden;
+  flex: 1;
+  overflow: hidden;
 }
 
 /* ── Chat right panel: styles in infinity-ui/src/components/ChatPanel.module.css ── */
 
 .archivePill {
-    composes: themePill;
+  composes: themePill;
 }
 
 .chatIdleDot {
-    width: 100px;
-    height: 20px;
-    border-radius: 4px;
-    background: var(--text-muted);
-    opacity: 0.3;
+  width: 100px;
+  height: 20px;
+  border-radius: 4px;
+  background: var(--text-muted);
+  opacity: 0.3;
 }
 
 .chatSpinnerPortal {
-    display: flex;
-    align-items: center;
+  display: flex;
+  align-items: center;
 }
 .chatSpinnerPortal span {
-    display: none;
+  display: none;
 }
-
