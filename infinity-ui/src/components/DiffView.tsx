@@ -78,22 +78,54 @@ export const DiffView = memo(function DiffView({
   const [expandedItems, setExpandedItems] = useState<string[]>();
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
 
-  const diffCacheRef = useRef<Map<string, { old: string; new: string; fileDiff: ReturnType<typeof parseDiffFromFile>; version: number }>>(new Map());
+  const diffCacheRef = useRef<
+    Map<
+      string,
+      {
+        old: string;
+        new: string;
+        fileDiff: ReturnType<typeof parseDiffFromFile>;
+        version: number;
+      }
+    >
+  >(new Map());
 
   const items: CodeViewItem[] = useMemo(() => {
     const cache = diffCacheRef.current;
     return sorted.map((f) => {
       const cached = cache.get(f.path);
-      if (cached && cached.old === f.oldContents && cached.new === f.newContents) {
-        return { type: "diff" as const, id: `diff:${f.path}`, fileDiff: cached.fileDiff };
+      if (
+        cached &&
+        cached.old === f.oldContents &&
+        cached.new === f.newContents
+      ) {
+        return {
+          type: "diff" as const,
+          id: `diff:${f.path}`,
+          fileDiff: cached.fileDiff,
+          version: cached.version,
+        };
       }
       const version = cached ? cached.version + 1 : 0;
       const fileDiff = parseDiffFromFile(
-        { name: f.path, contents: f.oldContents, cacheKey: `${f.path}:old:${version}` },
-        { name: f.path, contents: f.newContents, cacheKey: `${f.path}:new:${version}` },
+        {
+          name: f.path,
+          contents: f.oldContents,
+          cacheKey: `${f.path}:old:${version}`,
+        },
+        {
+          name: f.path,
+          contents: f.newContents,
+          cacheKey: `${f.path}:new:${version}`,
+        },
       );
-      cache.set(f.path, { old: f.oldContents, new: f.newContents, fileDiff, version });
-      return { type: "diff" as const, id: `diff:${f.path}`, fileDiff };
+      cache.set(f.path, {
+        old: f.oldContents,
+        new: f.newContents,
+        fileDiff,
+        version,
+      });
+      return { type: "diff" as const, id: `diff:${f.path}`, fileDiff, version };
     });
   }, [sorted]);
 
