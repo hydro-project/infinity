@@ -753,9 +753,9 @@ export function App() {
   }, [hasViews]);
 
   // Edge hover zones for unpinned panels, with velocity-based flick detection
-  const EDGE_SIZE = 32;
+  const EDGE_SIZE = 16;
   const DEHOVER_BUFFER = 40;
-  const VELOCITY_THRESHOLD = 6400; // px/s
+  const VELOCITY_THRESHOLD = 3200; // px/s
   const SMOOTHING = 0.3; // exponential moving average factor
   const lastMouseRef = useRef({ x: 0, t: 0, vx: 0 });
   useEffect(() => {
@@ -912,7 +912,11 @@ export function App() {
                 height: "100%",
               }}
             >
-              <DiffView files={views.diff.files ?? []} theme={resolved} workerFactory={workerFactory} />
+              <DiffView
+                files={views.diff.files ?? []}
+                theme={resolved}
+                workerFactory={workerFactory}
+              />
             </div>
           )}
           {hasViews && activeTab !== "diff" && (
