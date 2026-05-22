@@ -14,6 +14,7 @@ members = [
     "crates/infinity-daemon",
     "crates/infinity-provider-bedrock",
     "crates/rig-mock",
+    "crates/infinity-slack-bot",
 ]
 resolver = "2"
 
@@ -41,7 +42,7 @@ aws-sdk-dynamodb = { version = "1", default-features = false }
 aws-sdk-sqs = { version = "1", default-features = false }
 aws-sdk-scheduler = { version = "1", default-features = false }
 aws-sdk-dsql = { version = "1", default-features = false }
-aws-config = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client"] }
+aws-config = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client", "credentials-process"] }
 aws-types = { version = "1", default-features = false }
 aws-sigv4 = { version = "1", default-features = false }
 aws-credential-types = { version = "1", default-features = false }
