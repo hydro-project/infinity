@@ -1,0 +1,39 @@
+[package]
+name = "infinity-slack-bot"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "infinity_slack_bot"
+path = "src/lib.rs"
+
+[dependencies]
+infinity-protocol = { path = "../infinity-protocol" }
+
+hydro_lang = "0.17.0-alpha.2"
+stageleft = "0.14.0"
+ctor = "0.2"
+
+tokio = { workspace = true, features = ["full"] }
+tokio-stream = { version = "0.1", default-features = false }
+tokio-util = { version = "0.7", features = ["codec"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+reqwest = { workspace = true }
+bytes = "1"
+
+[dev-dependencies]
+hydro_lang = { version = "0.17.0-alpha.2", features = ["deploy"] }
+hydro_deploy = "0.17.0-alpha.1"
+futures = "0.3"
+
+[build-dependencies]
+stageleft_tool = "0.14.0"
+
+[lints]
+workspace = true
