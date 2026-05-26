@@ -125,6 +125,20 @@ impl LocalBackend {
         std::fs::create_dir_all(&base)?;
         tempfile::tempdir_in(&base)
     }
+
+    /// Get the canonicalized tmp dir path for a sandbox from the cache.
+    fn tmp_dir_for_sandbox(&self, sandbox_dir: &Path) -> Result<PathBuf, SandboxError> {
+        let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = cache
+            .values()
+            .find(|e| e.dir == sandbox_dir)
+            .ok_or_else(|| SandboxError::Other("no cached sandbox for tmp dir".to_owned()))?;
+        entry
+            .tmp_dir
+            .path()
+            .canonicalize()
+            .map_err(SandboxError::Io)
+    }
 }
 
 /// Check if a jj bookmark's commit is empty (no changes) using a synchronous command.
@@ -270,7 +284,7 @@ impl SandboxBackend for LocalBackend {
 
         // Store in cache for future reuse.
         {
-            let tmp_dir = Self::make_tempdir(&state.remote_uri).map_err(SandboxError::Io)?;
+            let tmp_dir = tempfile::tempdir().map_err(SandboxError::Io)?;
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             cache.insert(
                 state.group_id.clone(),
@@ -324,17 +338,7 @@ impl SandboxBackend for LocalBackend {
         if cfg!(target_os = "macos") && self.sandbox_enabled {
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
-            let abs_tmp = {
-                let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-                let entry = cache
-                    .values()
-                    .find(|e| e.dir == sandbox_dir)
-                    .ok_or_else(|| {
-                        SandboxError::Other("no cached sandbox for tmp dir".to_owned())
-                    })?;
-                entry.tmp_dir.path().to_path_buf()
-            };
-            let abs_tmp = abs_tmp.canonicalize().map_err(SandboxError::Io)?;
+            let abs_tmp = self.tmp_dir_for_sandbox(sandbox_dir)?;
 
             let mut writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
             for p in extra_writable {
@@ -398,17 +402,7 @@ impl SandboxBackend for LocalBackend {
         } else if cfg!(target_os = "linux") && self.sandbox_enabled {
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
-            let abs_tmp = {
-                let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-                let entry = cache
-                    .values()
-                    .find(|e| e.dir == sandbox_dir)
-                    .ok_or_else(|| {
-                        SandboxError::Other("no cached sandbox for tmp dir".to_owned())
-                    })?;
-                entry.tmp_dir.path().to_path_buf()
-            };
-            let abs_tmp = abs_tmp.canonicalize().map_err(SandboxError::Io)?;
+            let abs_tmp = self.tmp_dir_for_sandbox(sandbox_dir)?;
             let tmp_str = abs_tmp.to_string_lossy();
 
             let mut writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
