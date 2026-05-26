@@ -15,6 +15,10 @@ use sandbox_core::types::{RepoState, SandboxMode};
 struct CachedSandbox {
     dir: PathBuf,
     state: RepoState,
+    /// Per-sandbox tmp dir. Persists across commands within the same session;
+    /// cleaned up automatically on Drop (best-effort, matches `.gitignore`
+    /// lifecycle semantics).
+    tmp_dir: tempfile::TempDir,
 }
 
 /// Local sandbox backend.
@@ -120,23 +124,6 @@ impl LocalBackend {
         let base = Self::sandboxes_dir_for(remote_uri);
         std::fs::create_dir_all(&base)?;
         tempfile::tempdir_in(&base)
-    }
-
-    /// Deterministic per-sandbox tmp dir path. Persists across commands and
-    /// agent resumes; only cleaned up in `cleanup_sandbox_permanently`.
-    fn tmp_dir_for(remote_uri: &str, group_id: &str) -> PathBuf {
-        Self::sandboxes_dir_for(remote_uri).join(format!(".tmpdir-{group_id}"))
-    }
-
-    /// Look up the persistent tmp dir for a sandbox_dir by finding the
-    /// matching cache entry. Creates the directory if it doesn't exist.
-    fn get_or_create_tmp_dir(&self, sandbox_dir: &Path) -> Option<PathBuf> {
-        let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = cache.values().find(|e| e.dir == sandbox_dir)?;
-        let tmp = Self::tmp_dir_for(&entry.state.remote_uri, &entry.state.group_id);
-        drop(cache);
-        let _ = std::fs::create_dir_all(&tmp);
-        Some(tmp)
     }
 }
 
@@ -283,12 +270,14 @@ impl SandboxBackend for LocalBackend {
 
         // Store in cache for future reuse.
         {
+            let tmp_dir = Self::make_tempdir(&state.remote_uri).map_err(SandboxError::Io)?;
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             cache.insert(
                 state.group_id.clone(),
                 CachedSandbox {
                     dir: sandbox_dir.clone(),
                     state: state.clone(),
+                    tmp_dir,
                 },
             );
         }
@@ -305,8 +294,6 @@ impl SandboxBackend for LocalBackend {
     /// When sandboxing is enabled, uses `sandbox-exec` on macOS or `bwrap`
     /// on Linux to restrict filesystem write access to only the sandbox
     /// directory. On other platforms, runs the command directly.
-    /// The temp directory for `TMPDIR` is stored in the returned
-    /// `SpawnedCommand` so it outlives the child process.
     async fn spawn_command(
         &self,
         sandbox_dir: &Path,
@@ -337,10 +324,17 @@ impl SandboxBackend for LocalBackend {
         if cfg!(target_os = "macos") && self.sandbox_enabled {
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
-            let tmp_dir = self
-                .get_or_create_tmp_dir(sandbox_dir)
-                .ok_or_else(|| SandboxError::Other("no cached sandbox for tmp dir".to_owned()))?;
-            let abs_tmp = tmp_dir.canonicalize().map_err(SandboxError::Io)?;
+            let abs_tmp = {
+                let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+                let entry = cache
+                    .values()
+                    .find(|e| e.dir == sandbox_dir)
+                    .ok_or_else(|| {
+                        SandboxError::Other("no cached sandbox for tmp dir".to_owned())
+                    })?;
+                entry.tmp_dir.path().to_path_buf()
+            };
+            let abs_tmp = abs_tmp.canonicalize().map_err(SandboxError::Io)?;
 
             let mut writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
             for p in extra_writable {
@@ -404,10 +398,17 @@ impl SandboxBackend for LocalBackend {
         } else if cfg!(target_os = "linux") && self.sandbox_enabled {
             let sandbox_dir_str = abs_sandbox.to_string_lossy();
 
-            let tmp_dir = self
-                .get_or_create_tmp_dir(sandbox_dir)
-                .ok_or_else(|| SandboxError::Other("no cached sandbox for tmp dir".to_owned()))?;
-            let abs_tmp = tmp_dir.canonicalize().map_err(SandboxError::Io)?;
+            let abs_tmp = {
+                let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+                let entry = cache
+                    .values()
+                    .find(|e| e.dir == sandbox_dir)
+                    .ok_or_else(|| {
+                        SandboxError::Other("no cached sandbox for tmp dir".to_owned())
+                    })?;
+                entry.tmp_dir.path().to_path_buf()
+            };
+            let abs_tmp = abs_tmp.canonicalize().map_err(SandboxError::Io)?;
             let tmp_str = abs_tmp.to_string_lossy();
 
             let mut writable = extra_writable_paths(sandbox_dir, Some(&abs_tmp));
@@ -561,11 +562,7 @@ impl SandboxBackend for LocalBackend {
             }
         }
 
-        // Clean up the persistent tmp dir for this sandbox.
-        let tmp_dir = Self::tmp_dir_for(&entry.state.remote_uri, group_id);
-        if tmp_dir.exists() {
-            let _ = std::fs::remove_dir_all(&tmp_dir);
-        }
+        // tmp_dir is cleaned up automatically when `entry` is dropped.
 
         Ok(())
     }
