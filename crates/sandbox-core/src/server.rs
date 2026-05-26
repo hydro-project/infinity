@@ -2217,7 +2217,7 @@ fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
             },
             ToolDef {
                 name: "execute_command".to_owned(),
-                description: "Execute a bash command in a sandboxed copy of the repository. The sandbox is an isolated temporary directory with the repo's current state. There is no need to cd to the repo directory when running commands. /tmp is not writable inside the sandbox; use $TMPDIR or mktemp for temporary files. If you filter or truncate command output (e.g. with grep, tail, or head), use tee to also save the full output to a tempfile so you can inspect it later without re-running the command.".to_owned(),
+                description: "Execute a bash command in a sandboxed copy of the repository. The sandbox is an isolated temporary directory with the repo's current state. There is no need to cd to the repo directory when running commands. /tmp is not writable inside the sandbox; use $TMPDIR or mktemp for temporary files. $TMPDIR is stable across commands but may be garbage collected if unused for extended periods. To persist a file reliably, write it to the working copy as a tracked file. If you filter or truncate command output (e.g. with grep, tail, or head), use tee to also save the full output to a tempfile so you can inspect it later without re-running the command.".to_owned(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
