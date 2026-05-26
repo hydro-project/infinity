@@ -107,16 +107,13 @@ async fn jj_execute_command_preserves_description() {
 }
 
 /// Verify that TMPDIR inside a sandboxed command does not point inside the
-/// sandbox working directory. If TMPDIR were inside the sandbox worktree,
+/// sandbox repo directory (or vice versa). If TMPDIR were inside the repo,
 /// temp files would be committed by jj snapshots and pollute the working copy.
-///
-/// TMPDIR is allowed to be inside the original repo (under .infinity/.sandboxes/)
-/// since that path is not tracked by jj.
 ///
 /// Only tests the platform-sandboxed path (bwrap/sandbox-exec) since the
 /// unsandboxed path inherits the parent's TMPDIR without managing it.
 #[tokio::test]
-async fn sandboxed_tmpdir_is_not_inside_sandbox_workdir() {
+async fn sandboxed_tmpdir_is_not_inside_sandbox_repo() {
     let _ = tracing_subscriber::fmt::try_init();
 
     let tmp = jj_init_with_file("README.md", "hello\n");
@@ -166,11 +163,12 @@ async fn sandboxed_tmpdir_is_not_inside_sandbox_workdir() {
 
     let tmpdir = Path::new(tmpdir_val);
     let pwd = Path::new(pwd_val);
+    let repo_canon = repo.canonicalize().expect("canonicalize repo");
 
-    // TMPDIR must not be inside the sandbox working dir (where jj snapshots).
+    // TMPDIR must not be inside the repo (or the sandbox working dir).
     assert!(
-        !tmpdir.starts_with(pwd),
-        "TMPDIR ({tmpdir_val}) must not be inside the sandbox workdir ({pwd_val})"
+        !tmpdir.starts_with(&repo_canon) && !tmpdir.starts_with(pwd),
+        "TMPDIR ({tmpdir_val}) must not be inside the repo ({repo_canon:?}) or sandbox ({pwd_val})"
     );
     // The sandbox working dir must not be inside TMPDIR either.
     assert!(
