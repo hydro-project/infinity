@@ -342,6 +342,38 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
             return Ok(());
         }
 
+        // Prevent closing the root thread
+        let Some((parent_id, spawn_tool_call_id)) = self
+            .conversation_store
+            .get_thread_parent_info(thread_id)
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+        else {
+            let tool_result = InputMessage {
+                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                    id: id.clone(),
+                    call_id,
+                    content: OneOrMany::one(ToolResultContent::Text(Text {
+                        text:
+                            "Error: cannot close the root thread. Only child threads can be closed."
+                                .to_owned(),
+                    })),
+                })),
+                group_id: context.group_id.clone(),
+                metadata: None,
+                synthetic: None,
+                display_as: None,
+                subscription: false,
+            };
+
+            context
+                .message_sender
+                .send_to_input_queue(tool_result, &context.group_id, &id)
+                .await?;
+
+            return Ok(());
+        };
+
         let report = args.get("report_to_parent").and_then(|v| v.as_str());
 
         self.conversation_store
@@ -359,53 +391,46 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
             .unwrap_or(false);
 
         if is_compaction {
-            if let Some((parent_id, _)) = self
-                .conversation_store
-                .get_thread_parent_info(thread_id)
-                .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
-            {
-                if let Some(report_text) = report {
-                    let up_to_order = self
-                        .conversation_store
-                        .get_thread_spawn_order(thread_id)
-                        .await
-                        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
-                        .unwrap_or(0);
-                    self.conversation_store
-                        .save_compaction_summary(&parent_id, report_text, up_to_order)
-                        .await
-                        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-                    tracing::info!(
-                        "Stored compaction summary for thread {} up to order {}",
-                        parent_id,
-                        up_to_order
-                    );
-                }
-
-                // Notify the parent thread to apply the compaction
-                let notify_msg = InputMessage {
-                    content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                        id: String::new(),
-                        call_id: None,
-                        content: OneOrMany::one(ToolResultContent::Text(Text {
-                            text: "Compaction complete".to_owned(),
-                        })),
-                    })),
-                    group_id: parent_id,
-                    metadata: None,
-                    synthetic: Some(SyntheticKind::Tagged(
-                        TaggedSyntheticKind::CompactionComplete,
-                    )),
-                    display_as: None,
-                    subscription: false,
-                };
-                let notify_group_id = notify_msg.group_id.clone();
-                context
-                    .message_sender
-                    .send_to_input_queue(notify_msg, &notify_group_id, &id)
-                    .await?;
+            if let Some(report_text) = report {
+                let up_to_order = self
+                    .conversation_store
+                    .get_thread_spawn_order(thread_id)
+                    .await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+                    .unwrap_or(0);
+                self.conversation_store
+                    .save_compaction_summary(&parent_id, report_text, up_to_order)
+                    .await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+                tracing::info!(
+                    "Stored compaction summary for thread {} up to order {}",
+                    parent_id,
+                    up_to_order
+                );
             }
+
+            // Notify the parent thread to apply the compaction
+            let notify_msg = InputMessage {
+                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                    id: String::new(),
+                    call_id: None,
+                    content: OneOrMany::one(ToolResultContent::Text(Text {
+                        text: "Compaction complete".to_owned(),
+                    })),
+                })),
+                group_id: parent_id,
+                metadata: None,
+                synthetic: Some(SyntheticKind::Tagged(
+                    TaggedSyntheticKind::CompactionComplete,
+                )),
+                display_as: None,
+                subscription: false,
+            };
+            let notify_group_id = notify_msg.group_id.clone();
+            context
+                .message_sender
+                .send_to_input_queue(notify_msg, &notify_group_id, &id)
+                .await?;
             if let Some(ref notifier) = self.rap_notifier {
                 notifier.notify_thread_closed(thread_id).await;
             }
@@ -418,58 +443,49 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
             .await
             .unwrap_or(false);
 
-        if let Some((parent_id, spawn_tool_call_id)) = self
-            .conversation_store
-            .get_thread_parent_info(thread_id)
-            .await
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
-        {
-            let report_text = if is_subscription {
-                report.map(|report_text| format!(
-                        "An event from your subscription {} was processed by a child thread {}. The subscription remains active. Report from the child:\n{}",
-                        spawn_tool_call_id, thread_id, report_text
-                    ))
-            } else if let Some(report_text) = report {
-                Some(format!(
-                    "Child thread with ID {} has shut down. Report from child thread: {}",
-                    thread_id, report_text
+        let report_text = if is_subscription {
+            report.map(|report_text| format!(
+                    "An event from your subscription {} was processed by a child thread {}. The subscription remains active. Report from the child:\n{}",
+                    spawn_tool_call_id, thread_id, report_text
                 ))
-            } else {
-                Some(format!("Child thread with ID {} has shut down", thread_id))
+        } else if let Some(report_text) = report {
+            Some(format!(
+                "Child thread with ID {} has shut down. Report from child thread: {}",
+                thread_id, report_text
+            ))
+        } else {
+            Some(format!("Child thread with ID {} has shut down", thread_id))
+        };
+
+        if let Some(report_text) = report_text {
+            tracing::info!(
+                "Sending report from thread {} to parent {} via tool call {}",
+                thread_id,
+                parent_id,
+                spawn_tool_call_id
+            );
+
+            let report_message = InputMessage {
+                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                    id: String::new(),
+                    call_id: None,
+                    content: OneOrMany::one(ToolResultContent::Text(Text { text: report_text })),
+                })),
+                group_id: parent_id,
+                metadata: None,
+                synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
+                    tool_call_id: spawn_tool_call_id,
+                    child_thread_id: thread_id.to_owned(),
+                })),
+                display_as: None,
+                subscription: false,
             };
 
-            if let Some(report_text) = report_text {
-                tracing::info!(
-                    "Sending report from thread {} to parent {} via tool call {}",
-                    thread_id,
-                    parent_id,
-                    spawn_tool_call_id
-                );
-
-                let report_message = InputMessage {
-                    content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                        id: String::new(),
-                        call_id: None,
-                        content: OneOrMany::one(ToolResultContent::Text(Text {
-                            text: report_text,
-                        })),
-                    })),
-                    group_id: parent_id,
-                    metadata: None,
-                    synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
-                        tool_call_id: spawn_tool_call_id,
-                        child_thread_id: thread_id.to_owned(),
-                    })),
-                    display_as: None,
-                    subscription: false,
-                };
-
-                let report_group_id = report_message.group_id.clone();
-                context
-                    .message_sender
-                    .send_to_input_queue(report_message, &report_group_id, &id)
-                    .await?;
-            }
+            let report_group_id = report_message.group_id.clone();
+            context
+                .message_sender
+                .send_to_input_queue(report_message, &report_group_id, &id)
+                .await?;
         }
 
         // Best-effort: notify RAP tool servers that this thread has been closed
