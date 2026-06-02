@@ -458,8 +458,11 @@ impl SessionManager {
         let needs_restart = if let Some(session) = self.sessions.get(session_id) {
             session.agent_task.is_finished()
         } else {
+            // Session isn't running in memory. It needs a restart if it exists in the
+            // store at all — either it was shut down cleanly, or the daemon restarted
+            // while it was still running (in which case shut_down may be false).
             let store = self.session_store.lock().await;
-            store.is_shut_down(session_id)
+            store.sessions.contains_key(session_id)
         };
 
         // if client_tx is None, that means this is for a RAP callback, but if the agent was shut down,
