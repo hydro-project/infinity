@@ -1,0 +1,16 @@
+THIRD-PARTY SOFTWARE NOTICES AND INFORMATION
+
+This project incorporates components from the projects listed below.
+
+{{#each licenses}}
+================================================================================
+License: {{name}}
+
+Used by:
+{{#each used_by}}
+  {{crate.name}} {{crate.version}}
+{{/each}}
+
+--------------------------------------------------------------------------------
+{{{text}}}
+{{/each}}

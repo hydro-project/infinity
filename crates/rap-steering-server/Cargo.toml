@@ -2,6 +2,7 @@
 name = "rap-steering-server"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
 
 [dependencies]
 rap-protocol = { path = "../rap-protocol" }
