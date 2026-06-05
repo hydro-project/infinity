@@ -74,8 +74,6 @@ Both modes connect to the same daemon as the CLI, so you can use all three inter
 
 ## Key Features
 
-![Infinity Code terminal UI](/img/screenshot-terminal-ui.png)
-
 - **Sandboxed editing** — changes happen in isolated workspaces. Supports [Jujutsu](./coding-with-jj.md) (recommended) and [Git](./coding-with-git.md).
 - **Parallel threads** — the agent spawns child threads for independent sub-tasks. Each thread gets its own sandbox and reports back when done.
 - **Background sessions** — detach from a busy agent and reconnect later. Multiple sessions can run concurrently via the [daemon](./background-agents.md).
@@ -97,12 +95,6 @@ The TUI runs anywhere you have a terminal. Start it with `infinity` in any repo.
 | `/compact` | `Ctrl+K` | Trigger context compaction |
 
 [Ghostty](https://ghostty.org) provides the best experience with the TUI.
-
-## Desktop App
-
-![Infinity Code desktop UI](/img/screenshot-desktop-ui.png)
-
-A native desktop interface for managing sessions, watching live thread activity, and reviewing agent changes visually.
 
 ## Next steps
 
