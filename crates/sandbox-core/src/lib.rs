@@ -1,6 +1,6 @@
-pub mod git;
 pub mod callback;
 pub mod error;
+pub mod git;
 pub mod jj;
 pub mod metadata;
 pub mod sandbox;

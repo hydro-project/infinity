@@ -318,7 +318,7 @@ pub async fn handle_client_channels(
                 .collect(),
             default_model_name: mgr.default_model_name.clone(),
             default_context_window: mgr.default_context_window,
-            provider_name: "bedrock".to_string(),
+            provider_name: "bedrock".to_owned(),
             remotes,
         });
     }

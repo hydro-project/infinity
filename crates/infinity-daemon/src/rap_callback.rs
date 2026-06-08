@@ -27,9 +27,7 @@ pub async fn start_callback_server(
 ) -> Result<Arc<Mutex<SessionManager>>, BoxError> {
     let (listener, callback_url) = rap_client::callback_server::bind_callback_listener().await?;
 
-    let session_manager = Arc::new(Mutex::new(
-        SessionManager::new(state_dir, callback_url).await?,
-    ));
+    let session_manager = Arc::new(Mutex::new(SessionManager::new(state_dir, callback_url)?));
 
     // Use a channel to bridge from the Send-required callback server
     // to the LocalSet where SessionManager lives.
