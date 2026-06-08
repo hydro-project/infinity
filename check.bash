@@ -37,4 +37,21 @@ step "Tests"
 cargo test --all-targets || fail "tests failed"
 pass "All tests passed"
 
+step "THIRD-PARTY file"
+if command -v cargo-about > /dev/null 2>&1; then
+    EXPECTED="$(mktemp)"
+    cp THIRD-PARTY "$EXPECTED" 2>/dev/null || true
+    bash scripts/generate-third-party.sh > /dev/null 2>&1
+    if [ -f "$EXPECTED" ] && diff -q "$EXPECTED" THIRD-PARTY > /dev/null 2>&1; then
+        pass "THIRD-PARTY file is up to date"
+    elif [ ! -f "$EXPECTED" ] || [ ! -s "$EXPECTED" ]; then
+        pass "THIRD-PARTY file generated (commit it)"
+    else
+        fail "THIRD-PARTY file is stale (run 'bash scripts/generate-third-party.sh' and commit)"
+    fi
+    rm -f "$EXPECTED"
+else
+    echo "  (skipped: cargo-about not installed)"
+fi
+
 echo -e "\n${GREEN}${BOLD}All checks passed.${RESET}"
