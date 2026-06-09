@@ -4,6 +4,10 @@
   "license": "Apache-2.0",
   "type": "module",
   "main": "src/index.ts",
+  "scripts": {
+    "format": "prettier --write \"src/**/*.{tsx,ts,css}\"",
+    "format:check": "prettier --check \"src/**/*.{tsx,ts,css}\""
+  },
   "dependencies": {
     "@pierre/diffs": "^1.2.1",
     "@pierre/trees": "^0.0.1-beta.4",

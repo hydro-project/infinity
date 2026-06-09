@@ -1,252 +1,383 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useRef } from "react";
 
-interface ChildNode {
-  label: string;
-  x: number;
-}
+/**
+ * RuntimeDiagram — visualizes time-slicing.
+ *
+ * Phase 1 ("Traditional"): agents hold resources even while idle.
+ * Phase 2 ("Infinity"): idle gaps collapse; active blocks bin-pack into minimal rows.
+ */
 
-const CHILDREN: ChildNode[] = [
-  { label: "Review auth.ts", x: 100 },
-  { label: "Run tests", x: 300 },
-  { label: "Update docs", x: 500 },
+const COLORS = [
+  "#79c0ff",
+  "#7ee787",
+  "#b392f0",
+  "#ffa657",
+  "#f97583",
+  "#56d4dd",
+];
+const AGENT_LABELS = [
+  "Agent A",
+  "Agent B",
+  "Agent C",
+  "Agent D",
+  "Agent E",
+  "Agent F",
 ];
 
-const PARENT_X = 300;
-const PARENT_Y = 60;
-const CHILD_Y = 280;
-const NODE_W = 150;
-const NODE_H = 44;
-const CYCLE_MS = 8000;
+interface Segment {
+  start: number;
+  end: number;
+  active: boolean;
+}
 
-type Phase =
-  | "idle"
-  | "spawn0"
-  | "spawn1"
-  | "spawn2"
-  | "reporting"
-  | "done0"
-  | "done1"
-  | "done2";
-
-const PHASE_SCHEDULE: { phase: Phase; at: number }[] = [
-  { phase: "idle", at: 0 },
-  { phase: "spawn0", at: 1000 },
-  { phase: "spawn1", at: 2000 },
-  { phase: "spawn2", at: 3000 },
-  { phase: "reporting", at: 3500 },
-  { phase: "done0", at: 6000 },
-  { phase: "done1", at: 6500 },
-  { phase: "done2", at: 7000 },
+const TIMELINES: Segment[][] = [
+  // Agent A
+  [
+    { start: 0, end: 8, active: true },
+    { start: 8, end: 30, active: false },
+    { start: 30, end: 38, active: true },
+    { start: 38, end: 72, active: false },
+    { start: 72, end: 82, active: true },
+    { start: 82, end: 100, active: false },
+  ],
+  // Agent B
+  [
+    { start: 0, end: 15, active: false },
+    { start: 15, end: 25, active: true },
+    { start: 25, end: 55, active: false },
+    { start: 55, end: 65, active: true },
+    { start: 65, end: 100, active: false },
+  ],
+  // Agent C
+  [
+    { start: 0, end: 35, active: false },
+    { start: 35, end: 50, active: true },
+    { start: 50, end: 80, active: false },
+    { start: 80, end: 92, active: true },
+    { start: 92, end: 100, active: false },
+  ],
+  // Agent D
+  [
+    { start: 0, end: 5, active: false },
+    { start: 5, end: 12, active: true },
+    { start: 12, end: 60, active: false },
+    { start: 60, end: 70, active: true },
+    { start: 70, end: 85, active: false },
+    { start: 85, end: 95, active: true },
+    { start: 95, end: 100, active: false },
+  ],
+  // Agent E
+  [
+    { start: 0, end: 20, active: false },
+    { start: 20, end: 30, active: true },
+    { start: 30, end: 68, active: false },
+    { start: 68, end: 78, active: true },
+    { start: 78, end: 100, active: false },
+  ],
+  // Agent F
+  [
+    { start: 0, end: 42, active: false },
+    { start: 42, end: 52, active: true },
+    { start: 52, end: 88, active: false },
+    { start: 88, end: 100, active: true },
+  ],
 ];
 
-function phaseIndex(phase: Phase): number {
-  return PHASE_SCHEDULE.findIndex((p) => p.phase === phase);
+// Collect all active segments with metadata
+interface ActiveBlock {
+  agentIdx: number;
+  start: number;
+  end: number;
+  color: string;
+  // Computed: which packed row this block goes into
+  packedRow: number;
 }
+
+const ACTIVE_BLOCKS: ActiveBlock[] = [];
+for (let i = 0; i < TIMELINES.length; i++) {
+  for (const seg of TIMELINES[i]) {
+    if (seg.active) {
+      ACTIVE_BLOCKS.push({
+        agentIdx: i,
+        start: seg.start,
+        end: seg.end,
+        color: COLORS[i],
+        packedRow: 0,
+      });
+    }
+  }
+}
+// Sort by start time for greedy bin-packing
+ACTIVE_BLOCKS.sort((a, b) => a.start - b.start);
+// First-fit bin packing
+const rowEnds: number[] = [];
+for (const block of ACTIVE_BLOCKS) {
+  let placed = false;
+  for (let r = 0; r < rowEnds.length; r++) {
+    if (rowEnds[r] <= block.start) {
+      block.packedRow = r;
+      rowEnds[r] = block.end;
+      placed = true;
+      break;
+    }
+  }
+  if (!placed) {
+    block.packedRow = rowEnds.length;
+    rowEnds.push(block.end);
+  }
+}
+const PACKED_ROW_COUNT = rowEnds.length;
+
+// Layout constants
+const SVG_W = 800;
+const SVG_H = 300;
+const LANE_H = 28;
+const MARGIN_LEFT = 40;
+const MARGIN_RIGHT = 60;
+const TRACK_W = SVG_W - MARGIN_LEFT - MARGIN_RIGHT;
+
+const TRAD_TOP = 30;
+const TRAD_LANE_PITCH = 48;
+
+const SLICED_TOP = TRAD_TOP;
+const SLICED_LANE_PITCH = LANE_H + 6;
+
+type Phase = "initial" | "highlight" | "sliced";
 
 export default function RuntimeDiagram({
   active,
 }: {
   active: boolean;
 }): React.JSX.Element {
-  const [phase, setPhase] = useState<Phase>("idle");
-
-  const runCycle = useCallback(() => {
-    const timers: ReturnType<typeof setTimeout>[] = [];
-    for (const { phase: p, at } of PHASE_SCHEDULE) {
-      timers.push(setTimeout(() => setPhase(p), at));
-    }
-    return timers;
-  }, []);
+  const [phase, setPhase] = useState<Phase>("initial");
+  const timerRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   useEffect(() => {
+    timerRef.current.forEach(clearTimeout);
+    timerRef.current = [];
+
     if (!active) {
-      setPhase("idle");
+      setPhase("initial");
       return;
     }
-    let timers = runCycle();
+
+    setPhase("initial");
+
+    const schedule = (fn: () => void, ms: number) => {
+      timerRef.current.push(setTimeout(fn, ms));
+    };
+
+    // Phase 1: show initial (2.5s)
+    // Phase 2: highlight idle in red (3s)
+    // Phase 3: collapse to sliced (5s)
+    schedule(() => setPhase("highlight"), 2500);
+    schedule(() => setPhase("sliced"), 5500);
+    // Cycle back
+    schedule(() => setPhase("initial"), 10500);
+
     const interval = setInterval(() => {
-      timers.forEach(clearTimeout);
-      timers = runCycle();
-    }, CYCLE_MS);
+      setPhase("initial");
+      schedule(() => setPhase("highlight"), 2500);
+      schedule(() => setPhase("sliced"), 5500);
+      schedule(() => setPhase("initial"), 10500);
+    }, 11000);
+
     return () => {
-      timers.forEach(clearTimeout);
+      timerRef.current.forEach(clearTimeout);
       clearInterval(interval);
     };
-  }, [runCycle, active]);
+  }, [active]);
 
-  const currentIdx = phaseIndex(phase);
-  const childVisible = (i: number) =>
-    currentIdx >= phaseIndex(("spawn" + i) as Phase);
-  const childDone = (i: number) =>
-    currentIdx >= phaseIndex(("done" + i) as Phase);
-  const showPulses = currentIdx >= phaseIndex("reporting");
+  const isHighlight = phase === "highlight";
+  const isSliced = phase === "sliced";
 
   return (
-    <div style={{ width: "100%", maxWidth: 600, margin: "0 auto" }}>
-      <svg
-        viewBox="0 0 600 380"
-        width="100%"
-        height="100%"
-        style={{ overflow: "visible" }}
+    <div
+      style={{
+        width: "100%",
+        maxWidth: 900,
+        margin: "0 auto",
+        padding: "16px 16px",
+      }}
+    >
+      {/* Header label */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          marginBottom: 8,
+        }}
       >
-        <defs>
-          <style>{`
-            .rt-node {
-              transition: opacity 0.4s ease, transform 0.4s ease;
-            }
-            .rt-line {
-              transition: opacity 0.4s ease;
-            }
-            @keyframes rt-pulse-up {
-              0% { offset-distance: 100%; opacity: 0; }
-              10% { opacity: 1; }
-              90% { opacity: 1; }
-              100% { offset-distance: 0%; opacity: 0; }
-            }
-            @keyframes rt-glow {
-              0%, 100% { opacity: 0.4; }
-              50% { opacity: 0.8; }
-            }
-          `}</style>
-          {CHILDREN.map((child, i) => (
-            <path
-              key={`path-${i}`}
-              id={`conn-${i}`}
-              d={`M ${PARENT_X} ${PARENT_Y + NODE_H} C ${PARENT_X} ${(PARENT_Y + CHILD_Y) / 2}, ${child.x} ${(PARENT_Y + CHILD_Y) / 2}, ${child.x} ${CHILD_Y}`}
-              fill="none"
-            />
-          ))}
-        </defs>
+        <span
+          style={{
+            fontSize: 13,
+            fontWeight: 600,
+            color: isSliced
+              ? "#28c840"
+              : isHighlight
+                ? "#f85149"
+                : "var(--ifm-color-emphasis-600)",
+            fontFamily: "system-ui, sans-serif",
+            transition: "color 0.5s ease",
+          }}
+        >
+          {isSliced
+            ? "∞ Infinity — Time-Sliced"
+            : isHighlight
+              ? "Traditional — Wasted Resources"
+              : "Traditional Agent Runtime"}
+        </span>
+      </div>
 
-        {/* Connection lines */}
-        {CHILDREN.map((child, i) => (
-          <use
-            key={`line-${i}`}
-            href={`#conn-${i}`}
-            stroke="var(--ifm-color-emphasis-300)"
-            strokeWidth="2"
-            className="rt-line"
-            style={{ opacity: childVisible(i) ? 1 : 0 }}
-          />
-        ))}
+      <svg
+        viewBox={`0 0 ${SVG_W} ${SVG_H}`}
+        width="100%"
+        style={{ overflow: "visible", display: "block" }}
+      >
+        {/* Time axis (at top) */}
+        <line
+          x1={MARGIN_LEFT}
+          y1={12}
+          x2={SVG_W - MARGIN_RIGHT}
+          y2={12}
+          stroke="var(--ifm-color-emphasis-400)"
+          strokeWidth="1"
+        />
+        <text
+          x={MARGIN_LEFT + 5}
+          y={4}
+          textAnchor="start"
+          fill="var(--ifm-color-emphasis-600)"
+          fontSize="11"
+          fontFamily="system-ui, sans-serif"
+        >
+          time →
+        </text>
 
-        {/* Pulse dots traveling up connections */}
-        {CHILDREN.map((_, i) =>
-          showPulses && childVisible(i) && !childDone(i) ? (
-            <React.Fragment key={`pulses-${i}`}>
-              <circle
-                r="5"
-                fill="var(--ifm-color-primary)"
-                style={{
-                  offsetPath: `path("M ${CHILDREN[i].x} ${CHILD_Y} C ${CHILDREN[i].x} ${(PARENT_Y + CHILD_Y) / 2}, ${PARENT_X} ${(PARENT_Y + CHILD_Y) / 2}, ${PARENT_X} ${PARENT_Y + NODE_H}")`,
-                  animation: `rt-pulse-up 1.5s ease-in-out infinite`,
-                  animationDelay: `${i * 0.4}s`,
-                }}
-              />
-              <circle
-                r="5"
-                fill="var(--ifm-color-primary)"
-                style={{
-                  offsetPath: `path("M ${CHILDREN[i].x} ${CHILD_Y} C ${CHILDREN[i].x} ${(PARENT_Y + CHILD_Y) / 2}, ${PARENT_X} ${(PARENT_Y + CHILD_Y) / 2}, ${PARENT_X} ${PARENT_Y + NODE_H}")`,
-                  animation: `rt-pulse-up 1.5s ease-in-out infinite`,
-                  animationDelay: `${i * 0.4 + 0.75}s`,
-                }}
-              />
-            </React.Fragment>
-          ) : null,
-        )}
+        {/* Resource axis label */}
+        <text
+          x={12}
+          y={TRAD_TOP + 60}
+          textAnchor="middle"
+          fill="var(--ifm-color-emphasis-600)"
+          fontSize="11"
+          fontFamily="system-ui, sans-serif"
+          transform={`rotate(-90, 12, ${TRAD_TOP + 60})`}
+        >
+          ← compute × memory
+        </text>
 
-        {/* Parent node */}
-        <g>
-          <rect
-            x={PARENT_X - NODE_W / 2}
-            y={PARENT_Y}
-            width={NODE_W}
-            height={NODE_H}
-            rx={10}
-            fill="var(--ifm-background-surface-color)"
-            stroke="var(--ifm-color-primary)"
-            strokeWidth="2"
-          />
-          {/* Gentle glow */}
-          <rect
-            x={PARENT_X - NODE_W / 2}
-            y={PARENT_Y}
-            width={NODE_W}
-            height={NODE_H}
-            rx={10}
-            fill="none"
-            stroke="var(--ifm-color-primary)"
-            strokeWidth="4"
-            style={{ animation: "rt-glow 2s ease-in-out infinite" }}
-          />
-          <text
-            x={PARENT_X}
-            y={PARENT_Y + NODE_H / 2 + 1}
-            textAnchor="middle"
-            dominantBaseline="central"
-            fill="var(--ifm-font-color-base)"
-            fontSize="14"
-            fontWeight="600"
-            fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
-          >
-            Parent
-          </text>
-        </g>
-
-        {/* Child nodes */}
-        {CHILDREN.map((child, i) => {
-          const visible = childVisible(i);
-          const done = childDone(i);
+        {/* Traditional: idle segments (dashed outlines) */}
+        {TIMELINES.map((timeline, agentIdx) => {
+          const color = COLORS[agentIdx];
+          const tradY = TRAD_TOP + agentIdx * TRAD_LANE_PITCH;
           return (
-            <g
-              key={`child-${i}`}
-              className="rt-node"
-              style={{
-                opacity: visible ? 1 : 0,
-                transform: visible ? "translateY(0)" : "translateY(-20px)",
-              }}
-            >
-              <rect
-                x={child.x - NODE_W / 2}
-                y={CHILD_Y}
-                width={NODE_W}
-                height={NODE_H}
-                rx={10}
-                fill="var(--ifm-background-surface-color)"
-                stroke={done ? "#28c840" : "var(--ifm-color-emphasis-200)"}
-                strokeWidth="2"
-                style={{ transition: "stroke 0.3s ease" }}
-              />
-              <text
-                x={child.x}
-                y={CHILD_Y + (done ? 17 : NODE_H / 2 + 1)}
-                textAnchor="middle"
-                dominantBaseline="central"
-                fill="var(--ifm-font-color-base)"
-                fontSize="12"
-                fontWeight="500"
-                fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
-              >
-                {child.label}
-              </text>
-              {done && (
-                <text
-                  x={child.x}
-                  y={CHILD_Y + 32}
-                  textAnchor="middle"
-                  dominantBaseline="central"
-                  fill="#28c840"
-                  fontSize="11"
-                  fontWeight="600"
-                  fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
-                >
-                  done ✓
-                </text>
-              )}
+            <g key={`idle-${agentIdx}`}>
+              {timeline
+                .filter((seg) => !seg.active)
+                .map((seg, segIdx) => {
+                  const x = MARGIN_LEFT + (seg.start / 100) * TRACK_W;
+                  const w = ((seg.end - seg.start) / 100) * TRACK_W;
+                  return (
+                    <rect
+                      key={segIdx}
+                      x={x}
+                      y={tradY}
+                      width={w}
+                      height={LANE_H}
+                      rx={4}
+                      fill={isHighlight ? "rgba(248,81,73,0.15)" : "none"}
+                      stroke={isHighlight ? "#f85149" : color}
+                      strokeWidth="1.5"
+                      strokeDasharray={isHighlight ? "0" : "4 3"}
+                      opacity={isSliced ? 0 : isHighlight ? 0.8 : 0.3}
+                      style={{
+                        transition: "all 0.6s cubic-bezier(0.4, 0, 0.2, 1)",
+                      }}
+                    />
+                  );
+                })}
             </g>
           );
         })}
+
+        {/* Active blocks — animate between traditional position and packed position */}
+        {ACTIVE_BLOCKS.map((block, idx) => {
+          const x = MARGIN_LEFT + (block.start / 100) * TRACK_W;
+          const w = ((block.end - block.start) / 100) * TRACK_W;
+          const tradY = TRAD_TOP + block.agentIdx * TRAD_LANE_PITCH;
+          const slicedY = SLICED_TOP + block.packedRow * SLICED_LANE_PITCH;
+          const offset = isSliced ? slicedY - tradY : 0;
+
+          return (
+            <rect
+              key={idx}
+              x={x}
+              y={tradY}
+              width={w}
+              height={LANE_H}
+              rx={4}
+              fill={block.color}
+              opacity={0.85}
+              style={{
+                transform: `translateY(${offset}px)`,
+                transition: "transform 0.8s cubic-bezier(0.4, 0, 0.2, 1)",
+              }}
+            />
+          );
+        })}
+
+        {/* Agent labels (traditional view) */}
+        {AGENT_LABELS.map((label, agentIdx) => {
+          const tradY = TRAD_TOP + agentIdx * TRAD_LANE_PITCH;
+          return (
+            <text
+              key={agentIdx}
+              x={SVG_W - MARGIN_RIGHT + 8}
+              y={tradY + LANE_H / 2 + 1}
+              textAnchor="start"
+              dominantBaseline="central"
+              fill={COLORS[agentIdx]}
+              fontSize="11"
+              fontWeight="500"
+              fontFamily="system-ui, sans-serif"
+              opacity={isSliced ? 0 : 1}
+              style={{
+                transition: "opacity 0.8s cubic-bezier(0.4, 0, 0.2, 1)",
+              }}
+            >
+              {label}
+            </text>
+          );
+        })}
+
+        {/* Annotation for sliced view */}
+        {isSliced && (
+          <g>
+            <line
+              x1={SVG_W - MARGIN_RIGHT + 8}
+              y1={SLICED_TOP}
+              x2={SVG_W - MARGIN_RIGHT + 8}
+              y2={SLICED_TOP + PACKED_ROW_COUNT * SLICED_LANE_PITCH}
+              stroke="#28c840"
+              strokeWidth="1.5"
+              opacity={0.6}
+            />
+            <text
+              x={SVG_W - MARGIN_RIGHT}
+              y={SLICED_TOP + PACKED_ROW_COUNT * SLICED_LANE_PITCH + 24}
+              textAnchor="end"
+              fill="#28c840"
+              fontSize="11"
+              fontWeight="500"
+              fontFamily="system-ui, sans-serif"
+              opacity={0.8}
+            >
+              ↕ only active slices use compute
+            </text>
+          </g>
+        )}
       </svg>
     </div>
   );
