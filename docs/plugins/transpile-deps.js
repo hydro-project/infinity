@@ -1,11 +1,14 @@
 const path = require("path");
 
-module.exports = function pluginTranspileInfinityUI() {
+module.exports = function pluginTranspileDeps() {
   return {
-    name: "transpile-infinity-ui",
+    name: "transpile-deps",
     configureWebpack(config) {
       const infinityUiPath = path.dirname(
-        require.resolve("infinity-ui/package.json")
+        require.resolve("infinity-ui/package.json"),
+      );
+      const themePath = path.dirname(
+        require.resolve("@hydro-project/docusaurus-theme/package.json"),
       );
 
       return {
@@ -13,7 +16,10 @@ module.exports = function pluginTranspileInfinityUI() {
           rules: [
             {
               test: /\.tsx?$/,
-              include: [path.join(infinityUiPath, "src")],
+              include: [
+                path.join(infinityUiPath, "src"),
+                path.join(themePath, "src"),
+              ],
               use: [
                 {
                   loader: require.resolve("babel-loader"),
