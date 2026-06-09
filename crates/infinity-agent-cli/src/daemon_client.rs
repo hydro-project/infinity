@@ -346,6 +346,9 @@ async fn run_client(
             model_id: m.model_id,
             additional_request_params: None,
             context_window: m.context_window,
+            // Not sent over the protocol; only the daemon uses this when
+            // invoking the model.
+            max_output_tokens: None,
         })
         .collect();
 

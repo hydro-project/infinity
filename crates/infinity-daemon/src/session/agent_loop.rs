@@ -37,6 +37,7 @@ pub async fn agent_loop<Mdl>(
     active_threads: ActiveThreads,
     idle_tx: mpsc::UnboundedSender<()>,
     context_window: usize,
+    max_output_tokens: Option<u64>,
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
@@ -106,6 +107,7 @@ pub async fn agent_loop<Mdl>(
                 active_model_id.clone(),
                 idle_tx.clone(),
                 context_window,
+                max_output_tokens,
             ),
         ));
 
@@ -208,6 +210,7 @@ mod tests {
             active_threads.clone(),
             idle_tx,
             0,
+            None,
         ));
 
         (agent_tx, idle_rx, active_threads)
@@ -357,6 +360,7 @@ mod tests {
             active_threads.clone(),
             idle_tx,
             context_window,
+            None,
         ));
 
         (agent_tx, idle_rx, active_threads)

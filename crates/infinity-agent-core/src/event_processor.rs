@@ -975,6 +975,7 @@ pub fn run_completion<'a: 'b, 'b, Mdl, C, S, M>(
     extra_system_prompt: Option<&'a str>,
     additional_request_params: Option<&'a serde_json::Value>,
     model_id_override: Option<&'a str>,
+    max_output_tokens: Option<u64>,
     cancel_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> impl futures_util::Stream<Item = Result<CompletionEvent<Mdl::StreamingResponse>, BoxError>> + 'b
 where
@@ -1007,7 +1008,7 @@ where
                     documents: vec![],
                     tools: tools.to_vec(),
                     temperature: None,
-                    max_tokens: None,
+                    max_tokens: max_output_tokens,
                     tool_choice: None,
                     additional_params: {
                         let mut base = serde_json::json!({
@@ -1035,7 +1036,7 @@ where
                     // there must be no trailing reasoning because we drop it when retrying post-initiation
                     return;
                 }
-                _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                _ = tokio::time::sleep(Duration::from_secs(60)) => {
                     if retry_count < 10 {
                         yield CompletionEvent::Info("Stream error (timeout initiating request), retrying...".to_owned());
                         retry_count += 1;
@@ -1066,10 +1067,10 @@ where
                         }
                         retry_count += 1;
                         continue 'outer;
-                    } else if (err_str.contains("unexpected end of stream") || err_str.contains("unexpected error when processing the request")) && retry_count < 10 {
-                        tracing::warn!("Stream error (unexpected end), retrying...");
+                    } else if (err_str.contains("unexpected end of stream") || err_str.contains("unexpected error when processing the request") || err_str.contains("is unable to process your request")) && retry_count < 10 {
+                        tracing::warn!("Stream error ({err_str}), retrying...");
 
-                        yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_owned());
+                        yield CompletionEvent::Info(format!("Stream error ({err_str}), retrying..."));
                         tokio::select! {
                             _ = tokio::time::sleep(Duration::from_secs(5)) => {}
                             _ = &mut cancel_rx => {
@@ -2159,6 +2160,7 @@ mod tests {
                         None,
                         None,
                         None,
+                        None,
                         cancel_rx,
                     );
                     tokio::pin!(stream);
@@ -2217,6 +2219,7 @@ mod tests {
                         &ctx,
                         "thread-1",
                         "msg-1",
+                        None,
                         None,
                         None,
                         None,
@@ -2281,6 +2284,7 @@ mod tests {
                         &ctx,
                         "thread-1",
                         "msg-1",
+                        None,
                         None,
                         None,
                         None,
@@ -2363,6 +2367,7 @@ mod tests {
                         &ctx,
                         "thread-1",
                         "msg-1",
+                        None,
                         None,
                         None,
                         None,
@@ -2481,6 +2486,7 @@ mod tests {
                         None,
                         None,
                         None,
+                        None,
                         cancel_rx,
                     );
                     tokio::pin!(stream);
@@ -2560,6 +2566,7 @@ mod tests {
                         &ctx,
                         "thread-1",
                         "msg-1",
+                        None,
                         None,
                         None,
                         None,
@@ -2666,6 +2673,7 @@ mod tests {
                         None,
                         None,
                         None,
+                        None,
                         cancel_rx,
                     );
                     tokio::pin!(stream);
@@ -2721,6 +2729,7 @@ mod tests {
                         &ctx,
                         "thread-1",
                         "msg-1",
+                        None,
                         None,
                         None,
                         None,
@@ -2786,6 +2795,7 @@ mod tests {
                         &ctx,
                         "thread-1",
                         "msg-1",
+                        None,
                         None,
                         None,
                         None,
@@ -2863,6 +2873,7 @@ mod tests {
                         &ctx,
                         "thread-1",
                         "msg-1",
+                        None,
                         None,
                         None,
                         None,
