@@ -44,6 +44,10 @@ pub enum ClientMessage {
         /// Otherwise, the name of a remote.
         #[serde(default)]
         location: Option<String>,
+        /// Optional model id to use for the new session. `None` uses the
+        /// daemon's default model.
+        #[serde(default)]
+        model_id: Option<String>,
     },
     /// Connect to an existing session (optionally a specific thread).
     Connect {

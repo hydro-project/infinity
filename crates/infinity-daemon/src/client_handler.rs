@@ -398,7 +398,7 @@ pub async fn handle_client_channels(
                 }
 
                 match msg {
-                    ClientMessage::CreateSession { cwd, location } => {
+                    ClientMessage::CreateSession { cwd, location, model_id } => {
                         if let Some(rname) = location {
                             let rd = {
                                 let mgr = session_manager.lock().await;
@@ -407,7 +407,7 @@ pub async fn handle_client_channels(
                             if let Some(rd) = rd {
                                 match rd.open_raw_connection(&rname).await {
                                     Ok((tx, rx)) => {
-                                        let _ = tx.send(ClientMessage::CreateSession { cwd, location: None });
+                                        let _ = tx.send(ClientMessage::CreateSession { cwd, location: None, model_id });
                                         remote_proxy_tx = Some(tx);
                                         remote_proxy_rx = Some(rx);
                                         active_remote_name = Some(rname);
@@ -431,7 +431,7 @@ pub async fn handle_client_channels(
                             let mut emit = async |msg: DaemonMessage| {
                                 let _ = daemon_tx.send(msg);
                             };
-                            match mgr.create_session(&cwd, &mut emit).await {
+                            match mgr.create_session(&cwd, model_id, &mut emit).await {
                                 Ok(sid) => {
                                     mgr.attach_client(&sid, client_tx.clone(), false).await;
                                     attached_session_id = Some(sid);
