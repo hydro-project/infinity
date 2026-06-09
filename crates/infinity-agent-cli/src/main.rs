@@ -178,7 +178,7 @@ async fn async_main(cli: Cli) -> Result<(), BoxError> {
                     }
                     install::run_update().await
                 }
-              },
+            },
             Commands::Remote { action } => match action {
                 RemoteCommands::Add { name, args } => {
                     if args.first().map(|s| s.as_str()) != Some("ssh") {
