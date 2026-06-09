@@ -89,7 +89,7 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    pub async fn new(state_dir: PathBuf, callback_url: String) -> Result<Self, BoxError> {
+    pub fn new(state_dir: PathBuf, callback_url: String) -> Result<Self, BoxError> {
         std::fs::create_dir_all(&state_dir).ok();
         let sessions_path = state_dir.join("sessions.json");
         let (change_tx, mut change_rx) = mpsc::unbounded_channel::<String>();
@@ -368,8 +368,7 @@ impl SessionManager {
                 active_threads.clone(),
                 shutdown_rx,
                 spawned_servers,
-            )
-            .await?;
+            )?;
 
         let session = Session {
             session_id: session_id.clone(),
@@ -602,7 +601,11 @@ impl SessionManager {
         clippy::too_many_arguments,
         reason = "session setup requires many dependencies"
     )]
-    async fn start_agent_loop(
+    #[expect(
+        clippy::type_complexity,
+        reason = "return type mirrors spawn_agent_loop"
+    )]
+    fn start_agent_loop(
         &self,
         session_id: String,
         agent_rx: mpsc::UnboundedReceiver<AgentMessage>,
