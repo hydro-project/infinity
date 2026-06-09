@@ -1,12 +1,12 @@
-# Infinity
+# [Infinity](https://infinity.hydro.run)
 
 A tool protocol, agent runtime, and coding harness for principled agent concurrency.
 
 Infinity is an ecosystem for building AI agents that can wait for things, work in parallel, and cost nothing when idle. It consists of three layers:
 
-- **[Reactive Agent Protocol (RAP)](#reactive-agent-protocol-rap)**: An async tool protocol with native support for subscriptions, long-running operations, and agent hibernation.
-- **[Infinity Runtime](#infinity-runtime)**: A time-sliced agent runtime that processes work in short bursts and releases resources between them, whether deployed as a serverless function or running as a local daemon.
-- **[Infinity Code](#infinity-code)**: A coding agent built on the runtime, with sandboxed editing, durable concurrent threads, and background sessions.
+- **[Reactive Agent Protocol (RAP)](https://infinity.hydro.run/docs/rap/what-is-rap)**: An async tool protocol with native support for subscriptions, long-running operations, and agent hibernation.
+- **[Infinity Runtime](https://infinity.hydro.run/docs/infinity-runtime/overview)**: A time-sliced agent runtime that processes work in short bursts and releases resources between them, whether deployed as a serverless function or running as a local daemon.
+- **[Infinity Code](https://infinity.hydro.run/docs/infinity-code/overview)**: A coding agent built on the runtime, with sandboxed editing, durable concurrent threads, and background sessions.
 
 ## Core Capabilities
 
@@ -62,37 +62,11 @@ To update: `infinity update`
 
 ### Build a RAP Agent
 
-See the [Getting Started guide](docs/docs/infinity-runtime/getting-started.md) for a walkthrough of running a RAP agent locally with a custom tool server.
+See the [Getting Started guide](https://infinity.hydro.run/docs/infinity-runtime/getting-started) for a walkthrough of running a RAP agent locally with a custom tool server.
 
 ### Deploy to Production
 
-The cloud runtime deploys to AWS Lambda via CDK. Agents persist state to Aurora DSQL, route messages through SQS FIFO, and hibernate at true zero compute. See [Cloud Deployment](docs/docs/infinity-runtime/cloud-deployment.mdx).
-
-## Documentation
-
-### RAP (Reactive Agent Protocol)
-
-- [What is RAP?](docs/docs/rap/what-is-rap.md): Motivation, capabilities, and when to use it
-- [Architecture](docs/docs/rap/about/architecture.md): Message flow, callbacks, hibernation, and threading
-- [RAP Specification](docs/docs/rap/spec/overview.md): The authoritative protocol reference
-- [Building a RAP Tool](docs/docs/rap/using-rap/building-a-rap-tool.md): Create your own async tool server
-- [Building a Runtime](docs/docs/rap/using-rap/building-a-runtime.md): Implement the runtime contract
-
-### Infinity Runtime
-
-- [Overview](docs/docs/infinity-runtime/overview.md): Time-sliced architecture and deployment options
-- [Getting Started](docs/docs/infinity-runtime/getting-started.md): Run a local RAP agent
-- [Threading](docs/docs/infinity-runtime/threading.md): Spawn threads, report results, process events
-- [Built-in Tools](docs/docs/infinity-runtime/built-in-tools.md): Sleep, threading, and subscriptions
-
-### Infinity Code
-
-- [Overview](docs/docs/infinity-code/overview.md): Installation, first run, slash commands
-- [Coding with Jujutsu](docs/docs/infinity-code/coding-with-jj.md): Jujutsu workspace sandboxes
-- [Coding with Git](docs/docs/infinity-code/coding-with-git.md): Git worktree sandboxes
-- [Background Agents](docs/docs/infinity-code/background-agents.md): Multiple sessions, backgrounding, persistence
-- [Configuring MCP](docs/docs/infinity-code/configuring-mcp.md): Adding MCP servers
-- [RAP Servers](docs/docs/infinity-code/rap-servers.md): Sandbox, steering, GitHub event poller
+The cloud runtime deploys to AWS Lambda via CDK. Agents persist state to Aurora DSQL, route messages through SQS FIFO, and hibernate at true zero compute. See [Cloud Deployment](https://infinity.hydro.run/docs/infinity-runtime/cloud-deployment).
 
 ## Project Structure
 

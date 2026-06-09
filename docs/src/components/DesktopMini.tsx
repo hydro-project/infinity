@@ -296,7 +296,12 @@ interface AnimState {
   sessions: Record<string, SessionInfo>;
   messages: MessageItemType[];
   spinner: SpinnerState | null;
-  diffFiles: { path: string; status: "modified" | "added"; oldContents: string; newContents: string }[];
+  diffFiles: {
+    path: string;
+    status: "modified" | "added";
+    oldContents: string;
+    newContents: string;
+  }[];
   chatVisible: boolean;
   typingInput: string;
 }

@@ -1,69 +1,69 @@
 /* ── Infinity UI theme variables ── */
 
 :root {
-    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: "JetBrains Mono", "Fira Code", monospace;
-    --max-width: 800px;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+  --max-width: 800px;
 
-    /* Dark theme (default) */
-    --bg: #0a0a0a;
-    --bg-surface: #141414;
-    --bg-hover: #1a1a1a;
-    --bg-user: #1a1a2e;
-    --border: #222;
-    --text: #e0e0e0;
-    --text-dim: #888;
-    --text-muted: #555;
-    --accent: #0096ff;
-    --accent-green: #0fdba2;
-    --accent-yellow: #f0d050;
-    --accent-orange: #f0a040;
-    --accent-red: #e04040;
-    --glass-bg: rgba(20, 20, 20, 0.7);
-    --glass-border: rgba(255, 255, 255, 0.08);
-    --glass-shadow: rgba(0, 0, 0, 0.4);
+  /* Dark theme (default) */
+  --bg: #0a0a0a;
+  --bg-surface: #141414;
+  --bg-hover: #1a1a1a;
+  --bg-user: #1a1a2e;
+  --border: #222;
+  --text: #e0e0e0;
+  --text-dim: #888;
+  --text-muted: #555;
+  --accent: #0096ff;
+  --accent-green: #0fdba2;
+  --accent-yellow: #f0d050;
+  --accent-orange: #f0a040;
+  --accent-red: #e04040;
+  --glass-bg: rgba(20, 20, 20, 0.7);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-shadow: rgba(0, 0, 0, 0.4);
 
-    /* Streamdown design tokens (dark) */
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --border-sd: oklch(0.269 0 0);
-    --input: oklch(0.269 0 0);
-    --primary: oklch(0.985 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --radius: 0.5rem;
+  /* Streamdown design tokens (dark) */
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --border-sd: oklch(0.269 0 0);
+  --input: oklch(0.269 0 0);
+  --primary: oklch(0.985 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --radius: 0.5rem;
 }
 
 [data-theme="light"] {
-    --bg: #f5f5f7;
-    --bg-surface: #ffffff;
-    --bg-hover: #eee;
-    --bg-user: #e8eaf6;
-    --border: #ddd;
-    --text: #1a1a1a;
-    --text-dim: #666;
-    --text-muted: #999;
-    --accent: #0071e3;
-    --accent-green: #09b87e;
-    --accent-yellow: #e0c030;
-    --accent-orange: #d48a20;
-    --accent-red: #d03030;
-    --glass-bg: rgba(255, 255, 255, 0.6);
-    --glass-border: rgba(0, 0, 0, 0.08);
-    --glass-shadow: rgba(0, 0, 0, 0.1);
+  --bg: #f5f5f7;
+  --bg-surface: #ffffff;
+  --bg-hover: #eee;
+  --bg-user: #e8eaf6;
+  --border: #ddd;
+  --text: #1a1a1a;
+  --text-dim: #666;
+  --text-muted: #999;
+  --accent: #0071e3;
+  --accent-green: #09b87e;
+  --accent-yellow: #e0c030;
+  --accent-orange: #d48a20;
+  --accent-red: #d03030;
+  --glass-bg: rgba(255, 255, 255, 0.6);
+  --glass-border: rgba(0, 0, 0, 0.08);
+  --glass-shadow: rgba(0, 0, 0, 0.1);
 
-    /* Streamdown design tokens (light) */
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --border-sd: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
+  /* Streamdown design tokens (light) */
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --border-sd: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
 }

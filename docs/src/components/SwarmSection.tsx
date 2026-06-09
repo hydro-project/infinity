@@ -1,12 +1,13 @@
-import React from 'react';
+import React from "react";
 
 export default function SwarmSection(): React.JSX.Element {
   return (
     <section className="swarm-section">
-      <h2>Designed for Swarms</h2>
+      <h2>Agent-Native Concurrency</h2>
       <p>
-        Agents spawn child threads for parallel work. Each child reports back
-        via subscriptions — the parent stays focused while the swarm fans out.
+        Threads, sleep, and yield are first-class primitives exposed directly to
+        agents. Spawn parallel work, await results, and release resources while
+        idle, all through the same tool interface agents already use.
       </p>
       <div className="comparison-grid">
         <div className="swarm-blurb">
@@ -18,12 +19,15 @@ export default function SwarmSection(): React.JSX.Element {
             subscription mechanism that powers real-time events.
           </p>
           <p>
-            The parent never blocks. Reports arrive as subscription events —
-            the parent sees them in-context and decides what to do next. Children
+            The parent never blocks. Reports arrive as subscription events and
+            the parent sees them in-context, deciding what to do next. Children
             can send multiple interim reports before closing, giving the parent
             a live view of swarm progress.
           </p>
-          <a href="/docs/infinity-runtime/threading" className="feature-learn-more">
+          <a
+            href="/docs/infinity-runtime/threading"
+            className="feature-learn-more"
+          >
             Threading docs →
           </a>
         </div>
