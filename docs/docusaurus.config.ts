@@ -56,12 +56,6 @@ const config: Config = {
       items: [
         {
           type: "docSidebar",
-          sidebarId: "infinityCodeSidebar",
-          position: "left",
-          label: "Infinity Code",
-        },
-        {
-          type: "docSidebar",
           sidebarId: "rapSidebar",
           position: "left",
           label: "Reactive Agent Protocol",
@@ -71,6 +65,12 @@ const config: Config = {
           sidebarId: "infinityRuntimeSidebar",
           position: "left",
           label: "Infinity Runtime",
+        },
+        {
+          type: "docSidebar",
+          sidebarId: "infinityCodeSidebar",
+          position: "left",
+          label: "Infinity Code",
         },
         {
           href: "https://github.com/hydro-project/infinity",

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState } from "react";
 
 interface Feature {
   icon: string;
@@ -10,11 +10,11 @@ interface Feature {
 
 const features: Feature[] = [
   {
-    icon: '🔔',
-    title: 'Subscriptions',
+    icon: "🔔",
+    title: "Subscriptions",
     description: (
       <>
-        Tools register ongoing subscriptions — GitHub webhooks, price feeds,
+        Tools register ongoing subscriptions: GitHub webhooks, price feeds,
         monitoring alerts. Each event wakes the agent, which processes it in an
         isolated thread and goes back to sleep. The subscription persists across
         hibernations.
@@ -35,17 +35,17 @@ const features: Feature[] = [
   charge.succeeded — $847.00 from cus_Lx8mQ
 
 🤖 Agent:  Looking up the customer details...`,
-    link: '/docs/rap/about/subscription-events',
+    link: "/docs/rap/about/subscription-events",
   },
   {
-    icon: '⏳',
-    title: 'Long-running tools',
+    icon: "⏳",
+    title: "Long-running tools",
     description: (
       <>
-        Tool calls are fire-and-forget. The agent dispatches a request and
-        goes into hibernation. When the tool finishes — minutes or hours
-        later — it POSTs the result and the agent resumes. No compute is
-        consumed while waiting.
+        Tool calls are fire-and-forget. The agent dispatches a request and goes
+        into hibernation. When the tool finishes, minutes or hours later, it
+        POSTs the result and the agent resumes. No compute is consumed while
+        waiting.
       </>
     ),
     code: `🔧 Tool call:  deploy_to_staging({
@@ -63,15 +63,15 @@ const features: Feature[] = [
 
 🤖 Agent:  Staging looks good. Ready to
             promote to production.`,
-    link: '/docs/rap/about/rap-servers',
+    link: "/docs/rap/about/rap-servers",
   },
   {
-    icon: '💤',
-    title: 'Hibernation',
+    icon: "💤",
+    title: "Hibernation",
     description: (
       <>
         When there's nothing to do, the agent shuts down completely. No idle
-        process, no polling, no cost. It wakes instantly when a message arrives —
+        process, no polling, no cost. It wakes instantly when a message arrives:
         user input, tool result, or external event. Agents can run for years at
         near-zero cost.
       </>
@@ -91,7 +91,7 @@ const features: Feature[] = [
                 2025-03-15 09:30 America/New_York"
 
 🤖 Agent:  Market is open. Checking portfolio...`,
-    link: '/docs/rap/about/architecture#hibernation',
+    link: "/docs/rap/about/architecture#hibernation",
   },
 ];
 
@@ -105,13 +105,15 @@ export default function FeatureCards(): React.JSX.Element {
 
   return (
     <section className="features-section">
-      <h2 style={{ fontSize: "2.5rem" }}>Built for agents that live in the real world</h2>
+      <h2 style={{ fontSize: "2.5rem" }}>
+        Built for agents that live in the real world
+      </h2>
       <div className="features-tabbed">
         <div className="features-left">
           {features.map((feature, i) => (
             <button
               key={feature.title}
-              className={`feature-tab ${i === active ? 'feature-tab--active' : ''}`}
+              className={`feature-tab ${i === active ? "feature-tab--active" : ""}`}
               onClick={() => switchTab(i)}
               type="button"
             >
@@ -124,7 +126,9 @@ export default function FeatureCards(): React.JSX.Element {
           ))}
         </div>
         <div className="features-right">
-          <pre><code>{features[active].code}</code></pre>
+          <pre>
+            <code>{features[active].code}</code>
+          </pre>
           <a href={features[active].link} className="feature-learn-more">
             Learn more →
           </a>

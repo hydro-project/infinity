@@ -48,6 +48,14 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      - name: Check docs formatting
+        run: |
+          cd docs && npm ci && npx prettier --check "src/**/*.{tsx,ts,css}" "docusaurus.config.ts"
+
+      - name: Check infinity-ui formatting
+        run: |
+          cd infinity-ui && npm ci && npx prettier --check "src/**/*.{tsx,ts,css}"
+
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 

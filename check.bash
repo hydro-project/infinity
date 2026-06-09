@@ -23,7 +23,23 @@ export RUST_BACKTRACE=1
 step "Formatting"
 # Suppress diff output so AI agents run `cargo fmt` instead of manually applying each diff.
 cargo fmt --all --check > /dev/null 2>&1 || fail "formatting issues found (run 'cargo fmt --all' to fix)"
-pass "All code is formatted"
+pass "All Rust code is formatted"
+
+step "Docs formatting"
+if [ -f docs/node_modules/.bin/prettier ]; then
+    (cd docs && npx prettier --check "src/**/*.{tsx,ts,css}" "docusaurus.config.ts") || fail "docs formatting issues found (run 'cd docs && npm run format' to fix)"
+    pass "All docs code is formatted"
+else
+    echo "  (skipped: docs node_modules not installed)"
+fi
+
+step "infinity-ui formatting"
+if [ -f infinity-ui/node_modules/.bin/prettier ]; then
+    (cd infinity-ui && npx prettier --check "src/**/*.{tsx,ts,css}") || fail "infinity-ui formatting issues found (run 'cd infinity-ui && npm run format' to fix)"
+    pass "All infinity-ui code is formatted"
+else
+    echo "  (skipped: infinity-ui node_modules not installed)"
+fi
 
 step "Clippy (warnings denied)"
 cargo clippy --all-targets -- -D warnings || fail "clippy warnings found"

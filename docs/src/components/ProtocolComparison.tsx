@@ -1,11 +1,12 @@
-import React from 'react';
+import React from "react";
 
 export default function ProtocolComparison(): React.JSX.Element {
   return (
     <section className="comparison-section">
       <h2>Backwards-Compatible with MCP.</h2>
       <p>
-        RAP includes a compatibility layer for MCP servers. RAP agents can hibernate during MCP tool calls — whether that takes 100ms or 3 days.
+        RAP includes a compatibility layer for MCP servers. RAP agents can
+        hibernate during MCP tool calls, whether that takes 100ms or 3 days.
       </p>
       <div className="comparison-grid">
         <div className="comparison-card">
