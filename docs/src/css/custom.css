@@ -1,28 +1,4 @@
-:root {
-    --ifm-color-primary: #3a7bd5;
-    --ifm-color-primary-dark: #2e6bc4;
-    --ifm-color-primary-darker: #2b64b9;
-    --ifm-color-primary-darkest: #235298;
-    --ifm-color-primary-light: #4f8bdb;
-    --ifm-color-primary-lighter: #5a93de;
-    --ifm-color-primary-lightest: #7eade7;
-    --ifm-font-family-base:
-        -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
-        sans-serif;
-    --ifm-code-font-size: 95%;
-}
-
-[data-theme="dark"] {
-    --ifm-color-primary: #79b8ff;
-    --ifm-color-primary-dark: #5aa8ff;
-    --ifm-color-primary-darker: #4aa0ff;
-    --ifm-color-primary-darkest: #1c88ff;
-    --ifm-color-primary-light: #98c8ff;
-    --ifm-color-primary-lighter: #a8d0ff;
-    --ifm-color-primary-lightest: #d6e9ff;
-    --ifm-background-color: #0a0a0f;
-    --ifm-background-surface-color: #12121a;
-}
+@import "@hydro-project/docusaurus-theme/src/css/shared.css";
 
 /* Hero */
 .hero-section {
