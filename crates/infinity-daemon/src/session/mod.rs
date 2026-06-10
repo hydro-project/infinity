@@ -215,8 +215,16 @@ impl SessionManager {
     pub async fn create_session(
         &mut self,
         cwd: &Path,
+        model_id: Option<String>,
         emit: &mut impl AsyncFnMut(DaemonMessage),
     ) -> Result<String, BoxError> {
+        // If a specific model was requested, it must be one of the available
+        // models — otherwise surface an error rather than silently falling back.
+        if let Some(ref id) = model_id
+            && !self.available_models.iter().any(|m| &m.model_id == id)
+        {
+            return Err(format!("unknown model id: {id}").into());
+        }
         let session_id = uuid::Uuid::new_v4().to_string();
         {
             let mut store = self.session_store.lock().await;
@@ -232,8 +240,9 @@ impl SessionManager {
             .map_err(|e| format!("failed to ensure root thread: {e}"))?;
         self.conversation_store
             .set_last_updated(&session_id, &chrono::Utc::now().to_rfc3339());
-        emit(self.build_connected(&session_id, &session_id)).await;
-        self.start_session(session_id.clone(), cwd, emit).await?;
+        emit(self.build_connected_with_model(&session_id, &session_id, model_id.as_deref())).await;
+        self.start_session(session_id.clone(), cwd, model_id, emit)
+            .await?;
         Ok(session_id)
     }
 
@@ -251,14 +260,38 @@ impl SessionManager {
     }
 
     fn build_connected(&self, session_id: &str, thread_id: &str) -> DaemonMessage {
+        self.build_connected_with_model(session_id, thread_id, None)
+    }
+
+    fn build_connected_with_model(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+        model_id: Option<&str>,
+    ) -> DaemonMessage {
+        let model = self.select_model(model_id);
         DaemonMessage::Connected {
             session_id: session_id.to_owned(),
             thread_id: thread_id.to_owned(),
-            model_name: self.default_model_name.clone(),
-            context_window: self.default_context_window,
+            model_name: model.display_name.clone(),
+            context_window: model.context_window,
             title: self.conversation_store.get_thread_title(session_id),
             total_tokens_used: self.conversation_store.get_total_tokens_used(session_id),
         }
+    }
+
+    /// Select the model entry for an optional model id, falling back to the
+    /// default model (index 0) when `model_id` is `None`. A `Some` model id is
+    /// expected to have been validated by the caller (see `create_session`).
+    fn select_model(&self, model_id: Option<&str>) -> &model_picker::ModelEntry {
+        model_id
+            .map(|id| {
+                self.available_models
+                    .iter()
+                    .find(|m| m.model_id == id)
+                    .expect("bug: model id should be validated in create_session")
+            })
+            .unwrap_or(&self.available_models[0])
     }
 
     /// Internal: spin up the agent loop for a session.
@@ -266,6 +299,7 @@ impl SessionManager {
         &mut self,
         session_id: String,
         cwd: &Path,
+        model_id: Option<String>,
         emit: &mut impl AsyncFnMut(DaemonMessage),
     ) -> Result<(), BoxError> {
         if self.sessions.contains_key(&session_id) {
@@ -368,6 +402,7 @@ impl SessionManager {
                 active_threads.clone(),
                 shutdown_rx,
                 spawned_servers,
+                model_id,
             )?;
 
         let session = Session {
@@ -476,7 +511,10 @@ impl SessionManager {
                 let _ = store.save();
             }
             let cwd = self.session_store.lock().await.get_cwd(session_id).clone();
-            if let Err(e) = self.start_session(session_id.to_owned(), &cwd, emit).await {
+            if let Err(e) = self
+                .start_session(session_id.to_owned(), &cwd, None, emit)
+                .await
+            {
                 tracing::error!("failed to restart session: {e}");
                 return false;
             }
@@ -619,6 +657,7 @@ impl SessionManager {
         active_threads: ActiveThreads,
         shutdown_rx: oneshot::Receiver<()>,
         spawned_servers: Vec<tokio::process::Child>,
+        model_id: Option<String>,
     ) -> Result<
         (
             String,
@@ -629,13 +668,15 @@ impl SessionManager {
         ),
         BoxError,
     > {
-        let default = &self.available_models[0]; // already validated in new()
-        let model_name = default.display_name.clone();
-        let context_window = default.context_window;
+        // Select the requested model, falling back to the default (index 0).
+        // A `Some` model id is already validated in `create_session`.
+        let selected = self.select_model(model_id.as_deref());
+        let model_name = selected.display_name.clone();
+        let context_window = selected.context_window;
 
         let (idle_tx, handle, subscriber_map) = {
             let client = rig_bedrock::client::Client::from_env();
-            let model = client.completion_model(&default.model_id);
+            let model = client.completion_model(&selected.model_id);
 
             spawn_agent_loop(
                 session_id,
@@ -649,7 +690,7 @@ impl SessionManager {
                 rap_tools,
                 tool_server_urls,
                 extra_system_prompt,
-                default.additional_request_params.clone(),
+                selected.additional_request_params.clone(),
                 active_threads,
                 shutdown_rx,
                 spawned_servers,

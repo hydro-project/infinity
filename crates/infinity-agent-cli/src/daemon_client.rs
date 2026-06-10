@@ -185,6 +185,7 @@ pub async fn run_headless(message: String) -> Result<(), BoxError> {
     let msg = ClientMessage::CreateSession {
         cwd,
         location: None,
+        model_id: None,
     };
     framed.send(Bytes::from(serde_json::to_vec(&msg)?)).await?;
 
@@ -416,6 +417,9 @@ async fn run_client(
 
     let mut active_session: Option<String> = None;
     let mut pending_input: Vec<String> = Vec::new();
+    // The model id most recently selected via the model picker. Stored locally so
+    // it can be passed when creating new sessions, even if no session is active.
+    let mut selected_model_id: Option<String> = None;
     let mut terminal_result: Option<Result<Result<bool, BoxError>, tokio::task::JoinError>> = None;
     let mut pending_soft_detach = false;
 
@@ -517,10 +521,14 @@ async fn run_client(
 
                 idx = model_switch_rx.recv() => {
                     let Some(idx) = idx else { break };
-                    if let (Some(sid), Some(entry)) = (&active_session, models_for_switch.get(idx)) {
-                        let _ = to_daemon.send(ClientMessage::SwitchModel {
-                            session_id: sid.clone(), model_id: entry.model_id.clone(),
-                        });
+                    if let Some(entry) = models_for_switch.get(idx) {
+                        // Remember the selection locally so new sessions use it.
+                        selected_model_id = Some(entry.model_id.clone());
+                        if let Some(sid) = &active_session {
+                            let _ = to_daemon.send(ClientMessage::SwitchModel {
+                                session_id: sid.clone(), model_id: entry.model_id.clone(),
+                            });
+                        }
                     }
                 }
 
@@ -547,7 +555,7 @@ async fn run_client(
                         }
                     } else {
                         pending_input.push(text);
-                        let _ = to_daemon.send(ClientMessage::CreateSession { cwd: cwd.clone(), location: None });
+                        let _ = to_daemon.send(ClientMessage::CreateSession { cwd: cwd.clone(), location: None, model_id: selected_model_id.clone() });
                     }
                 }
             }

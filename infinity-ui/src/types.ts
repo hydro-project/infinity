@@ -143,7 +143,13 @@ export type DaemonMessage =
 /* ── Client → Daemon messages ── */
 
 export type ClientMessage =
-  | { CreateSession: { cwd: string; location: string | null } }
+  | {
+      CreateSession: {
+        cwd: string;
+        location: string | null;
+        model_id?: string | null;
+      };
+    }
   | { Connect: { session_id: string; thread_id: string | null } }
   | { UserInput: { session_id: string; text: string } }
   | "Disconnect"
