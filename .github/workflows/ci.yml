@@ -50,11 +50,11 @@ jobs:
 
       - name: Check docs formatting
         run: |
-          cd docs && npm ci && npx prettier --check "src/**/*.{tsx,ts,css}" "docusaurus.config.ts"
+          cd docs && npm ci && npm run format:check
 
       - name: Check infinity-ui formatting
         run: |
-          cd infinity-ui && npm ci && npx prettier --check "src/**/*.{tsx,ts,css}"
+          cd infinity-ui && npm ci && npm run format:check
 
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
