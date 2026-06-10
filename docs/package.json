@@ -15,7 +15,7 @@
     "typecheck": "tsc",
     "format": "prettier --write \"src/**/*.{tsx,ts,css}\" \"docusaurus.config.ts\"",
     "format:check": "prettier --check \"src/**/*.{tsx,ts,css}\" \"docusaurus.config.ts\"",
-    "postinstall": "degit hydro-project/hydro/hydro-docusaurus-theme#53901b1b2642fec45bcc84bce2767e8b067f1135 node_modules/@hydro-project/docusaurus-theme"
+    "postinstall": "degit hydro-project/hydro/hydro-docusaurus-theme#main node_modules/@hydro-project/docusaurus-theme"
   },
   "dependencies": {
     "@docusaurus/core": "3.9.2",
