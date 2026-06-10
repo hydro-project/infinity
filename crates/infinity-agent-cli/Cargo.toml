@@ -21,7 +21,7 @@ infinity-daemon = { path = "../infinity-daemon" }
 rig-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "io-util", "io-std", "sync", "process", "net"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "io-util", "io-std", "sync", "process", "net", "time"] }
 futures-util = { workspace = true }
 async-trait = { workspace = true }
 uuid = { workspace = true }

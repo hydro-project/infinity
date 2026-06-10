@@ -25,7 +25,17 @@ pub struct InstallArgs {
     pub path: Option<String>,
 }
 
-pub use infinity_daemon::config::{load_config, user_config_path};
+/// Arguments for `infinity provider install <id> --crate ...`.
+pub struct ProviderInstallArgs {
+    /// Provider id to register in providers.json (e.g. "bedrock").
+    pub id: String,
+    pub crate_name: String,
+    pub git: Option<String>,
+    pub path: Option<String>,
+}
+
+pub use infinity_daemon::config::{load_config, providers_config_path, user_config_path};
+use infinity_daemon::models::{ProviderConfig, ProvidersConfig, load_providers_config};
 
 fn draw_spinner(
     viewport: &mut InlineViewport,
@@ -203,6 +213,89 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
     Ok(())
 }
 
+/// Install a model provider crate and register it under the given id in
+/// `~/.infinity/providers.json`. The crate's binary (assumed to share the
+/// crate's name) becomes the provider's command.
+pub async fn run_provider_install(args: ProviderInstallArgs) -> Result<(), BoxError> {
+    cterm::enable_raw_mode()?;
+    let mut viewport = InlineViewport::new(2)?;
+
+    viewport.print_line_above(Line::from(Span::styled(
+        format!(
+            "Installing {} as provider '{}'...",
+            args.crate_name, args.id
+        ),
+        Style::default().fg(Color::Yellow),
+    )))?;
+
+    if let Err(e) = run_cargo_install(
+        &mut viewport,
+        &args.crate_name,
+        args.git.as_deref(),
+        args.path.as_deref(),
+        &[],
+    )
+    .await
+    {
+        viewport.print_line_above(Line::from(Span::styled(
+            format!("✗ {e}"),
+            Style::default().fg(Color::Red),
+        )))?;
+        viewport.draw(2, |_| {})?;
+        terminal::cleanup()?;
+        return Err(e);
+    }
+
+    // Update user providers.json (created on first install).
+    let config_path = providers_config_path()?;
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut config = if config_path.exists() {
+        load_providers_config(&config_path)?
+    } else {
+        ProvidersConfig::default()
+    };
+
+    if config.get(&args.id).is_some() {
+        viewport.print_line_above(Line::from(Span::styled(
+            format!("Replacing existing entry for provider '{}'", args.id),
+            Style::default().fg(Color::Yellow),
+        )))?;
+    }
+    let canonical_path = match args.path {
+        Some(p) => Some(
+            std::fs::canonicalize(&p)
+                .map_err(|e| format!("failed to canonicalize install path {p}: {e}"))?
+                .to_string_lossy()
+                .to_string(),
+        ),
+        None => None,
+    };
+    config.upsert(
+        args.id.clone(),
+        ProviderConfig {
+            command: vec![args.crate_name.clone()],
+            crate_name: Some(args.crate_name.clone()),
+            git: args.git.clone(),
+            path: canonical_path,
+        },
+    );
+    std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+
+    viewport.print_line_above(Line::from(Span::styled(
+        format!(
+            "✓ Installed and registered provider '{}' in {}",
+            args.id,
+            config_path.display()
+        ),
+        Style::default().fg(Color::Green),
+    )))?;
+    viewport.draw(2, |_| {})?;
+    terminal::cleanup()?;
+    Ok(())
+}
+
 /// Update RAP tools, printing progress into an existing viewport. Returns names of failures.
 async fn update_rap_tools(viewport: &mut InlineViewport) -> Result<Vec<String>, BoxError> {
     let config_path = user_config_path()?;
@@ -259,6 +352,103 @@ async fn update_rap_tools(viewport: &mut InlineViewport) -> Result<Vec<String>, 
         viewport.draw(2, |_| {})?;
     }
     Ok(failed)
+}
+
+/// Update model providers that have a recorded source, printing progress
+/// into an existing viewport. Returns ids of failures.
+async fn update_providers(viewport: &mut InlineViewport) -> Result<Vec<String>, BoxError> {
+    let config_path = providers_config_path()?;
+    if !config_path.exists() {
+        viewport.print_line_above(Line::from(Span::styled(
+            "No model providers configuration found",
+            Style::default().fg(Color::DarkGray),
+        )))?;
+        return Ok(vec![]);
+    }
+    let config = load_providers_config(&config_path)?;
+    let installable: Vec<(String, String, Option<String>, Option<String>)> = config
+        .providers
+        .iter()
+        .filter_map(|(id, provider)| {
+            provider.crate_name.as_ref().map(|crate_name| {
+                (
+                    id.clone(),
+                    crate_name.clone(),
+                    provider.git.clone(),
+                    provider.path.clone(),
+                )
+            })
+        })
+        .collect();
+
+    if installable.is_empty() {
+        viewport.print_line_above(Line::from(Span::styled(
+            format!(
+                "No model providers with recorded sources in {}",
+                config_path.display()
+            ),
+            Style::default().fg(Color::DarkGray),
+        )))?;
+        return Ok(vec![]);
+    }
+
+    viewport.print_line_above(Line::from(Span::styled(
+        format!("Updating {} model provider(s)...", installable.len()),
+        Style::default().fg(Color::Yellow),
+    )))?;
+
+    let mut failed = Vec::new();
+    for (id, crate_name, git, path) in &installable {
+        viewport.print_line_above(Line::from(Span::styled(
+            format!("→ Updating provider '{id}' ({crate_name})..."),
+            Style::default().fg(Color::Cyan),
+        )))?;
+        viewport.draw(2, |_| {})?;
+
+        match run_cargo_install(viewport, crate_name, git.as_deref(), path.as_deref(), &[]).await {
+            Ok(()) => {
+                viewport.print_line_above(Line::from(Span::styled(
+                    format!("  ✓ {id}"),
+                    Style::default().fg(Color::Green),
+                )))?;
+            }
+            Err(e) => {
+                viewport.print_line_above(Line::from(Span::styled(
+                    format!("  ✗ {id}: {e}"),
+                    Style::default().fg(Color::Red),
+                )))?;
+                failed.push(id.clone());
+            }
+        }
+        viewport.draw(2, |_| {})?;
+    }
+    Ok(failed)
+}
+
+/// `infinity provider update` — re-install all providers with recorded sources.
+pub async fn run_provider_update() -> Result<(), BoxError> {
+    cterm::enable_raw_mode()?;
+    let mut viewport = InlineViewport::new(2)?;
+
+    let failed = update_providers(&mut viewport).await?;
+
+    let summary = if failed.is_empty() {
+        Span::styled("✓ All providers updated", Style::default().fg(Color::Green))
+    } else {
+        Span::styled(
+            format!("✗ {} provider(s) failed to update", failed.len()),
+            Style::default().fg(Color::Red),
+        )
+    };
+    viewport.print_line_above(Line::from(summary))?;
+    viewport.draw(2, |_| {})?;
+    terminal::cleanup()?;
+
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err("some providers failed to update".into())
+    }
 }
 
 /// Returns the list of cargo features this binary was compiled with.
@@ -387,12 +577,14 @@ pub async fn run_self_update(features_override: Option<&str>) -> Result<(), BoxE
     }
 
     let rap_failed = update_rap_tools(&mut viewport).await?;
+    let provider_failed = update_providers(&mut viewport).await?;
 
-    let summary = if rap_failed.is_empty() {
+    let failed_count = rap_failed.len() + provider_failed.len();
+    let summary = if failed_count == 0 {
         Span::styled("✓ Everything updated", Style::default().fg(Color::Green))
     } else {
         Span::styled(
-            format!("✗ {} RAP tool(s) failed to update", rap_failed.len()),
+            format!("✗ {failed_count} component(s) failed to update"),
             Style::default().fg(Color::Red),
         )
     };
@@ -400,9 +592,9 @@ pub async fn run_self_update(features_override: Option<&str>) -> Result<(), BoxE
     viewport.draw(2, |_| {})?;
     terminal::cleanup()?;
 
-    if rap_failed.is_empty() {
+    if failed_count == 0 {
         Ok(())
     } else {
-        Err("some tools failed to update".into())
+        Err("some components failed to update".into())
     }
 }

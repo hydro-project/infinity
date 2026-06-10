@@ -68,8 +68,13 @@ cd InfinityAgents
 Build and run the CLI:
 
 ```bash
+# One-time setup: install the Bedrock model provider and register it
+cargo run -p infinity-agent-cli -- provider install bedrock --crate infinity-provider-bedrock --path crates/infinity-provider-bedrock
+
 cargo run -p infinity-agent-cli
 ```
+
+The agent invokes models through [provider processes](/docs/infinity-runtime/model-providers) registered in `~/.infinity/providers.json` — the first command installs the Bedrock provider binary and registers it there. At least one provider must be installed before the agent can start.
 
 The first build will take a few minutes while Cargo downloads and compiles dependencies. Subsequent runs are fast.
 
@@ -161,6 +166,7 @@ Now that you have a local agent running with a tool, here are good next steps:
 
 - **[Build a RAP Tool](/docs/rap/using-rap/building-a-rap-tool)** — create your own tool server that speaks RAP
 - **[Architecture](/docs/rap/about/architecture)** — understand the full message flow, callback lifecycle, and hibernation model
+- **[Model Providers](/docs/infinity-runtime/model-providers)** — how the runtime invokes models, and how to write your own provider
 - **[Built-in Tools](/docs/infinity-runtime/built-in-tools)** — sleep, threading, and utility tools available to every agent
 - **[RAP Specification](/docs/rap/spec/overview)** — the full protocol reference
 - **[Cloud Deployment](/docs/infinity-runtime/cloud-deployment)** — deploy your agent to AWS Lambda for persistent state and real hibernation

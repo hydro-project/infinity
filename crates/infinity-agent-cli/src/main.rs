@@ -41,6 +41,11 @@ enum Commands {
         #[command(subcommand)]
         action: RapCommands,
     },
+    /// Model provider management
+    Provider {
+        #[command(subcommand)]
+        action: ProviderCommands,
+    },
     /// Update the CLI itself
     Update {
         /// Comma-separated list of features to pass to cargo install (overrides auto-detected features)
@@ -107,8 +112,31 @@ enum RapCommands {
     },
 }
 
+#[derive(clap::Subcommand, Debug)]
+enum ProviderCommands {
+    /// Install a model provider crate and register it in ~/.infinity/providers.json
+    Install {
+        /// Provider id to register under (e.g. "bedrock")
+        id: String,
+
+        /// Crate name to install (its binary becomes the provider command)
+        #[arg(long = "crate")]
+        crate_name: String,
+
+        /// Git repository URL (passed to cargo install --git)
+        #[arg(long)]
+        git: Option<String>,
+
+        /// Local path (passed to cargo install --path)
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Re-install all model providers that have a recorded source
+    Update,
+}
+
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), BoxError> {
+async fn main() -> std::process::ExitCode {
     // Parse CLI arguments via clap.
     let cli = Cli::parse();
 
@@ -130,7 +158,17 @@ async fn main() -> Result<(), BoxError> {
     }
 
     let local = tokio::task::LocalSet::new();
-    local.run_until(async_main(cli)).await
+    match local.run_until(async_main(cli)).await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        // Print errors with Display formatting: the default `main` error
+        // handling uses Debug, which escapes newlines in string-based
+        // errors and mangles multi-line reports (e.g. captured daemon
+        // startup output).
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 
 async fn async_main(cli: Cli) -> Result<(), BoxError> {
@@ -153,7 +191,7 @@ async fn async_main(cli: Cli) -> Result<(), BoxError> {
                     println!("sent SIGTERM to daemon (pid {pid})");
                     Ok(())
                 }
-                None => infinity_daemon::run_daemon().await,
+                None => infinity_daemon::run_daemon(true).await,
             },
             Commands::Rap { action } => match action {
                 RapCommands::Install {
@@ -178,6 +216,23 @@ async fn async_main(cli: Cli) -> Result<(), BoxError> {
                     }
                     install::run_update().await
                 }
+            },
+            Commands::Provider { action } => match action {
+                ProviderCommands::Install {
+                    id,
+                    crate_name,
+                    git,
+                    path,
+                } => {
+                    install::run_provider_install(install::ProviderInstallArgs {
+                        id,
+                        crate_name,
+                        git,
+                        path,
+                    })
+                    .await
+                }
+                ProviderCommands::Update => install::run_provider_update().await,
             },
             Commands::Remote { action } => match action {
                 RemoteCommands::Add { name, args } => {

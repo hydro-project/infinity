@@ -19,6 +19,9 @@ use rig::streaming::{
 };
 use serde::{Deserialize, Serialize};
 
+#[cfg(unix)]
+pub mod remote;
+
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Type-erased final streaming response yielded by [`ModelProvider::invoke_model`].

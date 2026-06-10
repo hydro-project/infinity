@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 use crate::config;
 use crate::mcp_proxy;
 use crate::memory_store::{InMemoryConversationStore, InMemoryMessageSender, InMemoryStateStore};
-use crate::models::ModelCatalog;
+use crate::models::{self, ModelCatalog};
 use crate::rap_tools;
 use crate::session_store;
 use crate::set_title_tool;
@@ -77,6 +77,9 @@ pub struct SessionManager {
     state_store: InMemoryStateStore,
     /// Registered model providers and their available models.
     pub catalog: Arc<ModelCatalog>,
+    /// Spawned model provider processes. Held so the providers stay alive
+    /// for the daemon's lifetime (the processes are killed on drop).
+    _provider_processes: Vec<tokio::process::Child>,
     /// Connected clients that receive broadcast updates.
     broadcast_clients: Arc<std::sync::Mutex<Vec<mpsc::UnboundedSender<DaemonMessage>>>>,
     /// Remote daemon connections.
@@ -85,15 +88,14 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub async fn new(state_dir: PathBuf, callback_url: String) -> Result<Self, BoxError> {
-        // Register model providers. Each provider gets a stable unique id;
-        // the first model of the first provider is the global default.
-        let catalog = Arc::new(
-            ModelCatalog::new(vec![(
-                "bedrock".to_owned(),
-                Arc::new(infinity_provider_bedrock::BedrockProvider::from_env()) as _,
-            )])
-            .await?,
-        );
+        // Spawn the model providers configured in `~/.infinity/providers.json`
+        // (each runs as a separate process serving a Unix socket) and register
+        // them. Provider ids are the config keys; the first model of the
+        // first provider is the global default.
+        let providers_config = models::load_providers_config(&config::providers_config_path()?)?;
+        let (providers, provider_processes) =
+            models::spawn_configured_providers(&providers_config).await?;
+        let catalog = Arc::new(ModelCatalog::new(providers).await?);
 
         std::fs::create_dir_all(&state_dir).ok();
         let sessions_path = state_dir.join("sessions.json");
@@ -154,6 +156,7 @@ impl SessionManager {
             conversation_store,
             state_store,
             catalog,
+            _provider_processes: provider_processes,
             broadcast_clients,
             remote_daemons: None,
         })
