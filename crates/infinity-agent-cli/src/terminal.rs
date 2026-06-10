@@ -103,7 +103,7 @@ pub async fn run<R>(
     initial_sessions: std::collections::HashMap<String, infinity_protocol::SessionInfo>,
     load_session_tx: mpsc::UnboundedSender<(Option<String>, bool)>,
     model_switch_tx: mpsc::UnboundedSender<usize>,
-    available_models: Vec<crate::model_picker::ModelEntry>,
+    available_models: Vec<crate::model_picker::ModelInfo>,
     initial_message: Option<String>,
     mut session_rx: mpsc::UnboundedReceiver<SessionChanged>,
     mut sessions_updated_rx: mpsc::UnboundedReceiver<

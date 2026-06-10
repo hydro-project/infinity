@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use infinity_agent_core::tools::Tool;
-use rig::completion::CompletionModel;
 use tokio::sync::mpsc;
 
 use super::thread_worker::{SubscribeRequest, thread_worker};
 use super::{AgentMessage, SubscriberMap};
 use crate::memory_store::{InMemoryConversationStore, InMemoryMessageSender, InMemoryStateStore};
+use crate::models::ModelCatalog;
 use crate::rap_tools;
 use crate::session::ActiveThreads;
 
@@ -20,10 +20,10 @@ struct WorkerChannels {
     clippy::too_many_arguments,
     reason = "agent loop requires many dependencies"
 )]
-pub async fn agent_loop<Mdl>(
+pub async fn agent_loop(
     session_id: String,
     mut rx: mpsc::UnboundedReceiver<AgentMessage>,
-    model: Arc<Mdl>,
+    catalog: Arc<ModelCatalog>,
     conversation_store: InMemoryConversationStore,
     state_store: InMemoryStateStore,
     sender: InMemoryMessageSender,
@@ -31,16 +31,10 @@ pub async fn agent_loop<Mdl>(
     tool_impls: Arc<Vec<Box<dyn Tool<InMemoryMessageSender>>>>,
     extra_system_prompt: Arc<Option<String>>,
     rap_notifier: Option<rap_client::notifier::RapNotifier<rap_tools::SimpleHttpClient>>,
-    additional_request_params: Arc<std::sync::RwLock<Option<serde_json::Value>>>,
-    active_model_id: Arc<std::sync::RwLock<Option<String>>>,
     subscriber_map: SubscriberMap,
     active_threads: ActiveThreads,
     idle_tx: mpsc::UnboundedSender<()>,
-    context_window: usize,
-    max_output_tokens: Option<u64>,
-) where
-    Mdl: CompletionModel + Send + Sync + 'static,
-{
+) {
     let mut workers: HashMap<String, WorkerChannels> = HashMap::new();
 
     while let Some(msg) = rx.recv().await {
@@ -95,7 +89,7 @@ pub async fn agent_loop<Mdl>(
                 active_threads.clone(),
                 subscribers,
                 session_id.clone(),
-                model.clone(),
+                catalog.clone(),
                 conversation_store.clone(),
                 state_store.clone(),
                 sender.clone(),
@@ -103,11 +97,7 @@ pub async fn agent_loop<Mdl>(
                 tool_impls.clone(),
                 extra_system_prompt.as_ref().clone(),
                 rap_notifier.clone(),
-                additional_request_params.clone(),
-                active_model_id.clone(),
                 idle_tx.clone(),
-                context_window,
-                max_output_tokens,
             ),
         ));
 
@@ -136,9 +126,37 @@ mod tests {
 
     use super::*;
     use infinity_agent_core::message::{InputMessage, InputMessageContent};
+    use infinity_agent_core::model_provider::{ModelEntry, SingleModelProvider};
     use infinity_agent_core::traits::ConversationStore;
     use rig::message::UserContent;
     use rig_mock::mock_model;
+
+    fn test_model_ref() -> infinity_protocol::ModelRef {
+        infinity_protocol::ModelRef {
+            provider_id: "mock".to_owned(),
+            model_id: "mock".to_owned(),
+        }
+    }
+
+    async fn test_catalog(
+        model: rig_mock::MockCompletionModel,
+        context_window: usize,
+    ) -> Arc<ModelCatalog> {
+        let entry = ModelEntry {
+            model_id: "mock".to_owned(),
+            display_name: "mock".to_owned(),
+            context_window,
+            max_output_tokens: None,
+        };
+        Arc::new(
+            ModelCatalog::new(vec![(
+                "mock".to_owned(),
+                Arc::new(SingleModelProvider::new(entry, model)) as _,
+            )])
+            .await
+            .expect("build test catalog"),
+        )
+    }
 
     fn tmp_stores() -> (
         InMemoryConversationStore,
@@ -146,7 +164,8 @@ mod tests {
         tempfile::TempDir,
     ) {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let conv = InMemoryConversationStore::new_with_dir(dir.path().join("threads"));
+        let conv =
+            InMemoryConversationStore::new_with_dir(dir.path().join("threads"), test_model_ref());
         let state = InMemoryStateStore::new(dir.path().join("state"));
         (conv, state, dir)
     }
@@ -165,7 +184,7 @@ mod tests {
         )
     }
 
-    fn spawn_test_agent_loop(
+    async fn spawn_test_agent_loop(
         session_id: &str,
         conv: InMemoryConversationStore,
         state: InMemoryStateStore,
@@ -196,7 +215,7 @@ mod tests {
         tokio::task::spawn_local(agent_loop(
             session_id.into(),
             agent_rx,
-            Arc::new(model),
+            test_catalog(model, 0).await,
             conv,
             state,
             sender,
@@ -204,13 +223,9 @@ mod tests {
             Arc::new(vec![]),
             Arc::new(None),
             None,
-            Arc::new(std::sync::RwLock::new(None)),
-            Arc::new(std::sync::RwLock::new(None)),
             subscriber_map,
             active_threads.clone(),
             idle_tx,
-            0,
-            None,
         ));
 
         (agent_tx, idle_rx, active_threads)
@@ -231,7 +246,7 @@ mod tests {
                     .await
                     .expect("spawn child thread");
 
-                let (tx, mut idle_rx, _) = spawn_test_agent_loop("root", conv, state, model);
+                let (tx, mut idle_rx, _) = spawn_test_agent_loop("root", conv, state, model).await;
 
                 tx.send(user_text_input("root", "hello root"))
                     .expect("send root user input");
@@ -283,7 +298,7 @@ mod tests {
                     .await
                     .expect("ensure root thread");
 
-                let (tx, mut idle_rx, _) = spawn_test_agent_loop("t1", conv, state, model);
+                let (tx, mut idle_rx, _) = spawn_test_agent_loop("t1", conv, state, model).await;
 
                 tx.send(user_text_input("t1", "first"))
                     .expect("send first user input");
@@ -313,7 +328,7 @@ mod tests {
             .await;
     }
 
-    fn spawn_test_agent_loop_with_tools(
+    async fn spawn_test_agent_loop_with_tools(
         session_id: &str,
         conv: InMemoryConversationStore,
         state: InMemoryStateStore,
@@ -346,7 +361,7 @@ mod tests {
         tokio::task::spawn_local(agent_loop(
             session_id.into(),
             agent_rx,
-            Arc::new(model),
+            test_catalog(model, context_window).await,
             conv,
             state,
             sender,
@@ -354,13 +369,9 @@ mod tests {
             Arc::new(tools),
             Arc::new(None),
             None,
-            Arc::new(std::sync::RwLock::new(None)),
-            Arc::new(std::sync::RwLock::new(None)),
             subscriber_map,
             active_threads.clone(),
             idle_tx,
-            context_window,
-            None,
         ));
 
         (agent_tx, idle_rx, active_threads)
@@ -420,7 +431,8 @@ mod tests {
 
                 // context_window = 100, so 76 input tokens triggers compaction
                 let (tx, _idle_rx, _) =
-                    spawn_test_agent_loop_with_tools("t1", conv.clone(), state, model, tools, 100);
+                    spawn_test_agent_loop_with_tools("t1", conv.clone(), state, model, tools, 100)
+                        .await;
 
                 // 1. User sends input, model responds with async tool call
                 tx.send(user_text_input("t1", "do something"))
@@ -622,7 +634,8 @@ mod tests {
 
                 // context_window = 100
                 let (tx, _idle_rx, _) =
-                    spawn_test_agent_loop_with_tools("t1", conv.clone(), state, model, tools, 100);
+                    spawn_test_agent_loop_with_tools("t1", conv.clone(), state, model, tools, 100)
+                        .await;
 
                 let find_child_thread_id =
                     |req: &rig::completion::CompletionRequest| -> String {

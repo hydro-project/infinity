@@ -7,8 +7,9 @@ use ratatui::{
     widgets::Widget,
 };
 
-// Re-export data types from daemon
-pub use infinity_daemon::model_picker::{BedrockProvider, ModelEntry, ModelProvider};
+/// Models shown in the picker are described by the protocol's `ModelInfo`
+/// (provider id + model id + display metadata).
+pub use infinity_protocol::ModelInfo;
 
 /// Maximum visible rows in the model picker.
 pub const MAX_VISIBLE_ROWS: u16 = 5;
@@ -23,7 +24,7 @@ pub enum ModelPickerResult {
 
 /// A scrollable model picker overlay.
 pub struct ModelPicker {
-    models: Vec<ModelEntry>,
+    models: Vec<ModelInfo>,
     /// Index of the currently highlighted model.
     selected: usize,
     /// Scroll offset for the visible window.
@@ -33,7 +34,7 @@ pub struct ModelPicker {
 }
 
 impl ModelPicker {
-    pub fn new(models: Vec<ModelEntry>) -> Self {
+    pub fn new(models: Vec<ModelInfo>) -> Self {
         Self {
             models,
             selected: 0,

@@ -508,7 +508,7 @@ async fn run_session_connection(
             let msg = ClientMessage::CreateSession {
                 cwd,
                 location: None,
-                model_id: None,
+                model: None,
             };
             send(&mut framed, &msg).await?;
             // Wait for Connected to get daemon ID, then send input.

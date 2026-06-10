@@ -44,10 +44,10 @@ pub enum ClientMessage {
         /// Otherwise, the name of a remote.
         #[serde(default)]
         location: Option<String>,
-        /// Optional model id to use for the new session. `None` uses the
+        /// Optional model to use for the new session. `None` uses the
         /// daemon's default model.
         #[serde(default)]
-        model_id: Option<String>,
+        model: Option<ModelRef>,
     },
     /// Connect to an existing session (optionally a specific thread).
     Connect {
@@ -77,7 +77,7 @@ pub enum ClientMessage {
     },
     SwitchModel {
         session_id: String,
-        model_id: String,
+        model: ModelRef,
     },
     /// Notify the daemon that a user choice was answered so it can be
     /// removed from the pending replay list.
@@ -319,8 +319,19 @@ pub struct TokenUsage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
     pub display_name: String,
+    /// The provider this model belongs to.
+    #[serde(default)]
+    pub provider_id: String,
     pub model_id: String,
     pub context_window: usize,
+}
+
+/// Globally unique reference to a model: a provider id plus the model's
+/// provider-scoped id.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ModelRef {
+    pub provider_id: String,
+    pub model_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

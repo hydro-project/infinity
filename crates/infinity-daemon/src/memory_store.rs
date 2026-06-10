@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use infinity_agent_core::message::{InfinityMessage, InputMessage};
 use infinity_agent_core::traits::{ConversationStore, InputSender, StateStore};
+use infinity_protocol::ModelRef;
 use rig::message::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -44,6 +45,9 @@ pub struct InMemoryConversationStore {
     /// Per-thread active views, keyed by thread_id → (view_type → content).
     /// Persisted separately to `{thread_id}.views.json`.
     views: Arc<Mutex<HashMap<String, HashMap<String, serde_json::Value>>>>,
+    /// The global default model, used for new threads and backfilled into
+    /// metadata serialized before models were tracked per-thread.
+    default_model: ModelRef,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -64,6 +68,24 @@ pub(crate) struct ThreadInfo {
     total_tokens_used: usize,
     #[serde(default)]
     last_updated: String,
+    /// The model selected for this specific thread. There is no parent-thread
+    /// fallback: every thread gets the global default at creation time.
+    /// Metadata serialized before models were tracked per-thread lacks this
+    /// field; it is backfilled with the store's default model on load (see
+    /// [`InMemoryConversationStore::backfill_selected_model`]).
+    #[serde(default = "unset_model_ref")]
+    selected_model: ModelRef,
+}
+
+/// Serde default marking `selected_model` as absent in old serialized
+/// metadata; replaced with the store's default model on load. The empty
+/// provider id is a safe sentinel because the daemon's `ModelCatalog` asserts
+/// that registered provider ids are never empty.
+fn unset_model_ref() -> ModelRef {
+    ModelRef {
+        provider_id: String::new(),
+        model_id: String::new(),
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -175,7 +197,9 @@ pub(crate) struct SerializedThread {
 
 impl InMemoryConversationStore {
     /// Create a store that persists each thread to its own JSON file under `dir`.
-    pub fn new_with_dir(dir: impl AsRef<Path>) -> Self {
+    /// `default_model` is assigned to new threads and backfilled into metadata
+    /// that predates per-thread model tracking.
+    pub fn new_with_dir(dir: impl AsRef<Path>, default_model: ModelRef) -> Self {
         let dir = dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&dir).ok();
         Self {
@@ -188,6 +212,15 @@ impl InMemoryConversationStore {
             change_tx: None,
             pending_choices: Arc::new(Mutex::new(HashMap::new())),
             views: Arc::new(Mutex::new(HashMap::new())),
+            default_model,
+        }
+    }
+
+    /// Replace an unset `selected_model` (from metadata serialized before
+    /// models were tracked per-thread) with the store's default model.
+    fn backfill_selected_model(&self, info: &mut ThreadInfo) {
+        if info.selected_model.provider_id.is_empty() {
+            info.selected_model = self.default_model.clone();
         }
     }
 
@@ -301,8 +334,9 @@ impl InMemoryConversationStore {
         // Try the fast metadata file first.
         let meta_path = dir.join(format!("{}.meta.json", thread_id));
         if let Ok(json) = std::fs::read_to_string(&meta_path)
-            && let Ok(info) = serde_json::from_str::<ThreadInfo>(&json)
+            && let Ok(mut info) = serde_json::from_str::<ThreadInfo>(&json)
         {
+            self.backfill_selected_model(&mut info);
             self.threads
                 .lock()
                 .expect("bug: mutex poisoned")
@@ -314,8 +348,9 @@ impl InMemoryConversationStore {
             if let Ok(json) = std::fs::read_to_string(&full_path)
                 && let Ok(val) = serde_json::from_str::<serde_json::Value>(&json)
                 && let Some(info_val) = val.get("thread_info")
-                && let Ok(info) = serde_json::from_value::<ThreadInfo>(info_val.clone())
+                && let Ok(mut info) = serde_json::from_value::<ThreadInfo>(info_val.clone())
             {
+                self.backfill_selected_model(&mut info);
                 self.threads
                     .lock()
                     .expect("bug: mutex poisoned")
@@ -401,6 +436,29 @@ impl InMemoryConversationStore {
         }
         self.save_thread_metadata(thread_id);
         self.notify_session(thread_id);
+    }
+
+    /// Get the model selected for this specific thread. Does NOT fall back to
+    /// the parent thread — every thread is assigned a model at creation time.
+    pub fn get_thread_model(&self, thread_id: &str) -> ModelRef {
+        self.ensure_thread_metadata_loaded(thread_id);
+        let threads = self.threads.lock().expect("bug: mutex poisoned");
+        threads
+            .get(thread_id)
+            .map(|t| t.selected_model.clone())
+            .expect("bug: thread metadata missing in get_thread_model")
+    }
+
+    /// Set the model selected for a thread.
+    pub fn set_thread_model(&self, thread_id: &str, model: ModelRef) {
+        self.ensure_thread_metadata_loaded(thread_id);
+        {
+            let mut threads = self.threads.lock().expect("bug: mutex poisoned");
+            if let Some(t) = threads.get_mut(thread_id) {
+                t.selected_model = model;
+            }
+        }
+        self.save_thread_metadata(thread_id);
     }
 
     /// List open (non-closed) subthreads that are descendants of `parent_id`
@@ -657,10 +715,12 @@ impl InMemoryConversationStore {
         let threads: HashMap<String, SerializedThread> = serde_json::from_str(data)
             .map_err(|e| MemoryError(format!("failed to deserialize session: {e}")))?;
         for (tid, st) in threads {
+            let mut metadata = st.metadata;
+            self.backfill_selected_model(&mut metadata);
             self.threads
                 .lock()
                 .expect("bug: mutex poisoned")
-                .insert(tid.clone(), st.metadata);
+                .insert(tid.clone(), metadata);
             self.messages
                 .lock()
                 .expect("bug: mutex poisoned")
@@ -715,6 +775,7 @@ impl ConversationStore for InMemoryConversationStore {
                         children: Vec::new(),
                         total_tokens_used: 0,
                         last_updated: String::new(),
+                        selected_model: self.default_model.clone(),
                     },
                 );
                 true
@@ -807,6 +868,7 @@ impl ConversationStore for InMemoryConversationStore {
                         children: Vec::new(),
                         total_tokens_used: 0,
                         last_updated: String::new(),
+                        selected_model: self.default_model.clone(),
                     },
                 );
                 // Add to parent's children list.
@@ -1213,6 +1275,13 @@ mod tests {
     use rig::OneOrMany;
     use rig::message::{AssistantContent, Message, UserContent};
 
+    fn test_model() -> ModelRef {
+        ModelRef {
+            provider_id: "test".to_owned(),
+            model_id: "test-model".to_owned(),
+        }
+    }
+
     fn user_msg(text: &str) -> InfinityMessage {
         InfinityMessage::from_rig_message(Message::User {
             content: OneOrMany::one(UserContent::text(text)),
@@ -1230,7 +1299,7 @@ mod tests {
     #[tokio::test]
     async fn ancestors_basic_cutoff() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let store = InMemoryConversationStore::new_with_dir(dir.path());
+        let store = InMemoryConversationStore::new_with_dir(dir.path(), test_model());
         store
             .ensure_root_thread("root")
             .await
@@ -1284,7 +1353,7 @@ mod tests {
     #[tokio::test]
     async fn ancestors_three_levels() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let store = InMemoryConversationStore::new_with_dir(dir.path());
+        let store = InMemoryConversationStore::new_with_dir(dir.path(), test_model());
         store
             .ensure_root_thread("root")
             .await
@@ -1326,7 +1395,7 @@ mod tests {
     #[tokio::test]
     async fn ancestors_with_compaction_on_self() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let store = InMemoryConversationStore::new_with_dir(dir.path());
+        let store = InMemoryConversationStore::new_with_dir(dir.path(), test_model());
         store
             .ensure_root_thread("root")
             .await
@@ -1367,7 +1436,7 @@ mod tests {
     #[tokio::test]
     async fn ancestors_with_compaction_on_parent() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let store = InMemoryConversationStore::new_with_dir(dir.path());
+        let store = InMemoryConversationStore::new_with_dir(dir.path(), test_model());
         store
             .ensure_root_thread("root")
             .await
@@ -1415,7 +1484,7 @@ mod tests {
     #[tokio::test]
     async fn ancestors_multiple_compactions_picks_latest() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let store = InMemoryConversationStore::new_with_dir(dir.path());
+        let store = InMemoryConversationStore::new_with_dir(dir.path(), test_model());
         store
             .ensure_root_thread("root")
             .await
@@ -1470,7 +1539,7 @@ mod tests {
     #[tokio::test]
     async fn leaf_compaction_takes_priority_over_ancestor() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let store = InMemoryConversationStore::new_with_dir(dir.path());
+        let store = InMemoryConversationStore::new_with_dir(dir.path(), test_model());
         store
             .ensure_root_thread("root")
             .await

@@ -11,12 +11,13 @@ use std::future::Future;
 use std::pin::Pin;
 
 use futures_util::StreamExt;
-use rig::completion::{CompletionModel, GetTokenUsage, ToolDefinition};
+use rig::completion::{GetTokenUsage, ToolDefinition};
 use rig::message::{AssistantContent, Message, ToolResultContent, UserContent};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::event_processor::{self, CompletionAction, HistoryManager};
 use crate::message::{InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind};
+use crate::model_provider::{ModelProvider, ProviderStreamingResponse};
 use crate::tools::{Tool, ToolContext};
 use crate::traits::{ConversationStore, InputSender, StateStore};
 use rap_client::http::HttpClient;
@@ -191,26 +192,24 @@ where
 ///
 /// Returns `None` when no inputs were actionable (all handled/skipped).
 #[expect(clippy::too_many_arguments, reason = "shared entry point")]
-pub async fn process_batch<'a: 'b, 'b, Mdl, C, S, M, H>(
+pub async fn process_batch<'a: 'b, 'b, P, C, S, M, H>(
     inputs: impl Iterator<Item = (InputMessage, String)>,
     current_history: &'a HistoryManager<C, S>,
     conversation_store: &'a C,
-    display_tx: &'a mpsc::UnboundedSender<DisplayEvent<Mdl::StreamingResponse>>,
+    display_tx: &'a mpsc::UnboundedSender<DisplayEvent<ProviderStreamingResponse>>,
     active_group_id: &'a str,
-    model: &'a Mdl,
+    provider: &'a P,
+    model_id: &'a str,
     tool_names: &'a HashSet<String>,
     tool_defs: &'a [ToolDefinition],
     tool_registry: &'a HashMap<String, &'a dyn Tool<M>>,
     tool_context: ToolContext<M>,
     extra_system_prompt: &'a Option<String>,
-    additional_request_params: Option<serde_json::Value>,
-    model_id_override: Option<String>,
-    max_output_tokens: Option<u64>,
     rap_notifier: Option<&'a RapNotifier<H>>,
     input_tokens_out: Option<&'a Cell<u64>>,
 ) -> Option<(Pin<Box<dyn Future<Output = ()> + 'b>>, oneshot::Sender<()>)>
 where
-    Mdl: CompletionModel,
+    P: ModelProvider + ?Sized,
     C: ConversationStore,
     S: StateStore,
     M: InputSender + 'static,
@@ -272,7 +271,8 @@ where
     let fut = Box::pin(async move {
         let action = {
             let mut stream = std::pin::pin!(event_processor::run_completion(
-                model,
+                provider,
+                model_id,
                 current_history,
                 tool_names,
                 tool_defs,
@@ -281,9 +281,6 @@ where
                 &active_thread_id,
                 &completion_message_id,
                 extra_system_prompt.as_deref(),
-                additional_request_params.as_ref(),
-                model_id_override.as_deref(),
-                max_output_tokens,
                 cancel_rx,
             ));
 
@@ -389,6 +386,8 @@ mod tests {
     use super::DisplayEvent;
     use crate::event_processor::HistoryManager;
     use crate::message::{InputMessage, InputMessageContent, OAuthRequired, UserChoiceRequired};
+    use crate::model_provider::ProviderStreamingResponse;
+    use crate::test_helpers::mock_provider;
     use crate::tools::{Tool, ToolContext};
     use crate::traits::{ConversationStore, InputSender, StateStore};
     use async_trait::async_trait;
@@ -396,7 +395,6 @@ mod tests {
     use rig::OneOrMany;
     use rig::completion::ToolDefinition;
     use rig::message::{Message, ToolResult, ToolResultContent, UserContent};
-    use rig_mock::{MockStreamingResponse, mock_model};
     use tokio::sync::mpsc;
 
     #[derive(Debug)]
@@ -567,7 +565,9 @@ mod tests {
         )
     }
 
-    fn drain(rx: &mut mpsc::UnboundedReceiver<DisplayEvent<MockStreamingResponse>>) -> Vec<String> {
+    fn drain(
+        rx: &mut mpsc::UnboundedReceiver<DisplayEvent<ProviderStreamingResponse>>,
+    ) -> Vec<String> {
         let mut out = Vec::new();
         while let Ok(ev) = rx.try_recv() {
             out.push(match ev {
@@ -607,7 +607,7 @@ mod tests {
             .await
             .expect("create history manager");
 
-        let (m, _) = mock_model();
+        let (provider, _ctrl) = mock_provider();
         let (dtx, _) = mpsc::unbounded_channel();
         let tn = HashSet::new();
         let td: Vec<ToolDefinition> = vec![];
@@ -618,15 +618,13 @@ mod tests {
             &s,
             &dtx,
             "t1",
-            &m,
+            &provider,
+            "mock",
             &tn,
             &td,
             &tr,
             ctx(),
             &None,
-            None,
-            None,
-            None,
             NONE_NOTIFIER,
             None,
         )
@@ -641,7 +639,7 @@ mod tests {
             .await
             .expect("create history manager");
 
-        let (m, _) = mock_model();
+        let (provider, _ctrl) = mock_provider();
         let (dtx, mut drx) = mpsc::unbounded_channel();
         let tn = HashSet::new();
         let td: Vec<ToolDefinition> = vec![];
@@ -668,15 +666,13 @@ mod tests {
             &s,
             &dtx,
             "t1",
-            &m,
+            &provider,
+            "mock",
             &tn,
             &td,
             &tr,
             ctx(),
             &None,
-            None,
-            None,
-            None,
             NONE_NOTIFIER,
             None,
         )
@@ -692,7 +688,7 @@ mod tests {
             .await
             .expect("create history manager");
 
-        let (m, _) = mock_model();
+        let (provider, _ctrl) = mock_provider();
         let (dtx, mut drx) = mpsc::unbounded_channel();
         let tn = HashSet::new();
         let td: Vec<ToolDefinition> = vec![];
@@ -722,15 +718,13 @@ mod tests {
             &s,
             &dtx,
             "t1",
-            &m,
+            &provider,
+            "mock",
             &tn,
             &td,
             &tr,
             ctx(),
             &None,
-            None,
-            None,
-            None,
             NONE_NOTIFIER,
             None,
         )
@@ -746,7 +740,7 @@ mod tests {
             .await
             .expect("create history manager");
 
-        let (m, _) = mock_model();
+        let (provider, _ctrl) = mock_provider();
         let (dtx, mut drx) = mpsc::unbounded_channel();
         let tn = HashSet::new();
         let td: Vec<ToolDefinition> = vec![];
@@ -757,15 +751,13 @@ mod tests {
             &s,
             &dtx,
             "t1",
-            &m,
+            &provider,
+            "mock",
             &tn,
             &td,
             &tr,
             ctx(),
             &None,
-            None,
-            None,
-            None,
             NONE_NOTIFIER,
             None,
         )
@@ -802,7 +794,7 @@ mod tests {
                 )),
             }),
         ];
-        let (m, _) = mock_model();
+        let (provider, _ctrl) = mock_provider();
         let (dtx, mut drx) = mpsc::unbounded_channel();
         let tn = HashSet::new();
         let td: Vec<ToolDefinition> = vec![];
@@ -830,15 +822,13 @@ mod tests {
             &s,
             &dtx,
             "t1",
-            &m,
+            &provider,
+            "mock",
             &tn,
             &td,
             &tr,
             ctx(),
             &None,
-            None,
-            None,
-            None,
             NONE_NOTIFIER,
             None,
         )
@@ -858,7 +848,7 @@ mod tests {
             .await
             .expect("create history manager");
 
-        let (m, _) = mock_model();
+        let (provider, _ctrl) = mock_provider();
         let (dtx, _) = mpsc::unbounded_channel();
         let tn = HashSet::new();
         let td: Vec<ToolDefinition> = vec![];
@@ -882,15 +872,13 @@ mod tests {
             &s,
             &dtx,
             "t1",
-            &m,
+            &provider,
+            "mock",
             &tn,
             &td,
             &tr,
             ctx(),
             &None,
-            None,
-            None,
-            None,
             NONE_NOTIFIER,
             None,
         )
@@ -913,15 +901,13 @@ mod tests {
             &s,
             &dtx,
             "t1",
-            &m,
+            &provider,
+            "mock",
             &tn,
             &td,
             &tr,
             ctx(),
             &None,
-            None,
-            None,
-            None,
             NONE_NOTIFIER,
             None,
         )
@@ -936,7 +922,7 @@ mod tests {
             .await
             .expect("create history manager");
 
-        let (m, _) = mock_model();
+        let (provider, _ctrl) = mock_provider();
         let (dtx, mut drx) = mpsc::unbounded_channel();
         let tn = HashSet::new();
         let td: Vec<ToolDefinition> = vec![];
@@ -965,15 +951,13 @@ mod tests {
             &s,
             &dtx,
             "t1",
-            &m,
+            &provider,
+            "mock",
             &tn,
             &td,
             &tr,
             ctx(),
             &None,
-            None,
-            None,
-            None,
             NONE_NOTIFIER,
             None,
         )
