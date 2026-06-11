@@ -205,6 +205,7 @@ pub async fn process_batch<'a: 'b, 'b, Mdl, C, S, M, H>(
     extra_system_prompt: &'a Option<String>,
     additional_request_params: Option<serde_json::Value>,
     model_id_override: Option<String>,
+    max_output_tokens: Option<u64>,
     rap_notifier: Option<&'a RapNotifier<H>>,
     input_tokens_out: Option<&'a Cell<u64>>,
 ) -> Option<(Pin<Box<dyn Future<Output = ()> + 'b>>, oneshot::Sender<()>)>
@@ -282,6 +283,7 @@ where
                 extra_system_prompt.as_deref(),
                 additional_request_params.as_ref(),
                 model_id_override.as_deref(),
+                max_output_tokens,
                 cancel_rx,
             ));
 
@@ -624,6 +626,7 @@ mod tests {
             &None,
             None,
             None,
+            None,
             NONE_NOTIFIER,
             None,
         )
@@ -671,6 +674,7 @@ mod tests {
             &tr,
             ctx(),
             &None,
+            None,
             None,
             None,
             NONE_NOTIFIER,
@@ -726,6 +730,7 @@ mod tests {
             &None,
             None,
             None,
+            None,
             NONE_NOTIFIER,
             None,
         )
@@ -758,6 +763,7 @@ mod tests {
             &tr,
             ctx(),
             &None,
+            None,
             None,
             None,
             NONE_NOTIFIER,
@@ -832,6 +838,7 @@ mod tests {
             &None,
             None,
             None,
+            None,
             NONE_NOTIFIER,
             None,
         )
@@ -883,6 +890,7 @@ mod tests {
             &None,
             None,
             None,
+            None,
             NONE_NOTIFIER,
             None,
         )
@@ -911,6 +919,7 @@ mod tests {
             &tr,
             ctx(),
             &None,
+            None,
             None,
             None,
             NONE_NOTIFIER,
@@ -962,6 +971,7 @@ mod tests {
             &tr,
             ctx(),
             &None,
+            None,
             None,
             None,
             NONE_NOTIFIER,

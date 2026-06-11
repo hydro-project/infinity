@@ -68,6 +68,7 @@ pub async fn thread_worker<Mdl>(
     active_model_id: Arc<std::sync::RwLock<Option<String>>>,
     idle_tx: mpsc::UnboundedSender<()>,
     context_window: usize,
+    max_output_tokens: Option<u64>,
 ) where
     Mdl: CompletionModel + Send + Sync + 'static,
 {
@@ -423,6 +424,7 @@ pub async fn thread_worker<Mdl>(
             &extra_system_prompt,
             params,
             mid,
+            max_output_tokens,
             rap_notifier.as_ref(),
             Some(&input_tokens_cell),
         )
@@ -549,6 +551,7 @@ mod tests {
             Arc::new(std::sync::RwLock::new(None)),
             idle_tx,
             0,
+            None,
         ));
         (input_tx, client_rx, idle_rx, active_threads)
     }

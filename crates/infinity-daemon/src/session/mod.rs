@@ -695,6 +695,7 @@ impl SessionManager {
                 shutdown_rx,
                 spawned_servers,
                 context_window,
+                selected.max_output_tokens,
             )
         };
         Ok((model_name, context_window, idle_tx, handle, subscriber_map))
@@ -724,6 +725,7 @@ fn spawn_agent_loop<Mdl>(
     shutdown_rx: oneshot::Receiver<()>,
     spawned_servers: Vec<tokio::process::Child>,
     context_window: usize,
+    max_output_tokens: Option<u64>,
 ) -> (mpsc::UnboundedSender<()>, JoinHandle<()>, SubscriberMap)
 where
     Mdl: CompletionModel + 'static,
@@ -794,6 +796,7 @@ where
         active_threads.clone(),
         idle_tx.clone(),
         context_window,
+        max_output_tokens,
     );
 
     let handle = tokio::task::spawn_local(session_wrapper(

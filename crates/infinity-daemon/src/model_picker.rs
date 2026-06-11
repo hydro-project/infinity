@@ -5,6 +5,9 @@ pub struct ModelEntry {
     pub model_id: String,
     pub additional_request_params: Option<serde_json::Value>,
     pub context_window: usize,
+    /// Maximum number of output tokens the model can generate per request.
+    /// `None` falls back to the provider's default.
+    pub max_output_tokens: Option<u64>,
 }
 
 /// Trait for model providers to expose their available models.
@@ -20,18 +23,44 @@ impl ModelProvider for BedrockProvider {
     fn available_models(&self) -> Vec<ModelEntry> {
         vec![
             ModelEntry {
+                display_name: "claude-fable-5".to_owned(),
+                model_id: "global.anthropic.claude-fable-5".to_owned(),
+                additional_request_params: Some(serde_json::json!({
+                    "thinking": {
+                        "type": "adaptive",
+                        "display": "summarized"
+                    }
+                })),
+                context_window: 1_000_000,
+                max_output_tokens: Some(128_000),
+            },
+            ModelEntry {
+                display_name: "claude-opus-4.8".to_owned(),
+                model_id: "global.anthropic.claude-opus-4-8".to_owned(),
+                additional_request_params: Some(serde_json::json!({
+                    "thinking": {
+                        "type": "adaptive",
+                        "display": "summarized"
+                    }
+                })),
+                context_window: 1_000_000,
+                max_output_tokens: Some(128_000),
+            },
+            ModelEntry {
                 display_name: "claude-opus-4-6 1m".to_owned(),
                 model_id: "global.anthropic.claude-opus-4-6-v1".to_owned(),
                 additional_request_params: Some(serde_json::json!({
                     "anthropic_beta": ["context-1m-2025-08-07"]
                 })),
                 context_window: 1_000_000,
+                max_output_tokens: Some(128_000),
             },
             ModelEntry {
                 display_name: "claude-opus-4-6".to_owned(),
                 model_id: "global.anthropic.claude-opus-4-6-v1".to_owned(),
                 additional_request_params: None,
                 context_window: 200_000,
+                max_output_tokens: Some(128_000),
             },
         ]
     }
