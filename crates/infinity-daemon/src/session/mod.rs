@@ -10,16 +10,14 @@ use infinity_agent_core::tools::thread::{
     CloseThreadTool, ReportToParentTool, SendMessageToChildTool, SpawnThreadTool,
 };
 use infinity_agent_core::traits::ConversationStore;
-use infinity_protocol::{DaemonMessage, SessionInfo};
-use rig::client::{CompletionClient, ProviderClient};
-use rig::completion::CompletionModel;
+use infinity_protocol::{DaemonMessage, ModelRef, SessionInfo};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::config;
 use crate::mcp_proxy;
 use crate::memory_store::{InMemoryConversationStore, InMemoryMessageSender, InMemoryStateStore};
-use crate::model_picker::{self, ModelProvider};
+use crate::models::ModelCatalog;
 use crate::rap_tools;
 use crate::session_store;
 use crate::set_title_tool;
@@ -59,8 +57,6 @@ pub struct Session {
     pub active_threads: ActiveThreads,
     pub agent_tx: mpsc::UnboundedSender<AgentMessage>,
     pub agent_task: JoinHandle<()>,
-    pub model_name: String,
-    pub context_window: usize,
     /// Send to signal the agent loop to shut down.
     pub shutdown_tx: Option<oneshot::Sender<()>>,
     /// Send to ping the agent to attempt to idle.
@@ -79,9 +75,8 @@ pub struct SessionManager {
     pub session_store: SessionStoreHandle,
     conversation_store: InMemoryConversationStore,
     state_store: InMemoryStateStore,
-    pub default_model_name: String,
-    pub default_context_window: usize,
-    pub available_models: Vec<model_picker::ModelEntry>,
+    /// Registered model providers and their available models.
+    pub catalog: Arc<ModelCatalog>,
     /// Connected clients that receive broadcast updates.
     broadcast_clients: Arc<std::sync::Mutex<Vec<mpsc::UnboundedSender<DaemonMessage>>>>,
     /// Remote daemon connections.
@@ -89,7 +84,17 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    pub fn new(state_dir: PathBuf, callback_url: String) -> Result<Self, BoxError> {
+    pub async fn new(state_dir: PathBuf, callback_url: String) -> Result<Self, BoxError> {
+        // Register model providers. Each provider gets a stable unique id;
+        // the first model of the first provider is the global default.
+        let catalog = Arc::new(
+            ModelCatalog::new(vec![(
+                "bedrock".to_owned(),
+                Arc::new(infinity_provider_bedrock::BedrockProvider::from_env()) as _,
+            )])
+            .await?,
+        );
+
         std::fs::create_dir_all(&state_dir).ok();
         let sessions_path = state_dir.join("sessions.json");
         let (change_tx, mut change_rx) = mpsc::unbounded_channel::<String>();
@@ -103,7 +108,8 @@ impl SessionManager {
 
         let threads_dir = state_dir.join("threads");
         std::fs::create_dir_all(&threads_dir).ok();
-        let mut conversation_store = InMemoryConversationStore::new_with_dir(&threads_dir);
+        let mut conversation_store =
+            InMemoryConversationStore::new_with_dir(&threads_dir, catalog.default_ref().clone());
         conversation_store.set_change_tx(change_tx_for_conv);
         let state_store = InMemoryStateStore::new(state_dir.join("state"));
 
@@ -141,25 +147,13 @@ impl SessionManager {
             },
         ));
 
-        // Detect model provider
-        let provider = model_picker::BedrockProvider;
-        let models = provider.available_models();
-        let idx = provider.default_model_index();
-        let (default_model_name, default_context_window, available_models) = (
-            models[idx].display_name.clone(),
-            models[idx].context_window,
-            models,
-        );
-
         Ok(Self {
             sessions: HashMap::new(),
             callback_url,
             session_store,
             conversation_store,
             state_store,
-            default_model_name,
-            default_context_window,
-            available_models,
+            catalog,
             broadcast_clients,
             remote_daemons: None,
         })
@@ -211,20 +205,15 @@ impl SessionManager {
         }
     }
 
-    /// Create a brand new session with the given working directory.
+    /// Create a brand new session with the given working directory and model.
+    /// The model is not validated here; if it is no longer available when the
+    /// agent runs, the thread worker falls back to the default model.
     pub async fn create_session(
         &mut self,
         cwd: &Path,
-        model_id: Option<String>,
+        model: ModelRef,
         emit: &mut impl AsyncFnMut(DaemonMessage),
     ) -> Result<String, BoxError> {
-        // If a specific model was requested, it must be one of the available
-        // models — otherwise surface an error rather than silently falling back.
-        if let Some(ref id) = model_id
-            && !self.available_models.iter().any(|m| &m.model_id == id)
-        {
-            return Err(format!("unknown model id: {id}").into());
-        }
         let session_id = uuid::Uuid::new_v4().to_string();
         {
             let mut store = self.session_store.lock().await;
@@ -238,11 +227,12 @@ impl SessionManager {
             .ensure_root_thread(&session_id)
             .await
             .map_err(|e| format!("failed to ensure root thread: {e}"))?;
+        // Persist the selected model on the root thread so restarts keep it.
+        self.conversation_store.set_thread_model(&session_id, model);
         self.conversation_store
             .set_last_updated(&session_id, &chrono::Utc::now().to_rfc3339());
-        emit(self.build_connected_with_model(&session_id, &session_id, model_id.as_deref())).await;
-        self.start_session(session_id.clone(), cwd, model_id, emit)
-            .await?;
+        emit(self.build_connected(&session_id, &session_id)).await;
+        self.start_session(session_id.clone(), cwd, emit).await?;
         Ok(session_id)
     }
 
@@ -260,38 +250,18 @@ impl SessionManager {
     }
 
     fn build_connected(&self, session_id: &str, thread_id: &str) -> DaemonMessage {
-        self.build_connected_with_model(session_id, thread_id, None)
-    }
-
-    fn build_connected_with_model(
-        &self,
-        session_id: &str,
-        thread_id: &str,
-        model_id: Option<&str>,
-    ) -> DaemonMessage {
-        let model = self.select_model(model_id);
+        // Resolve the thread's own selected model (falling back to the global
+        // default if it is no longer available).
+        let selected = self.conversation_store.get_thread_model(thread_id);
+        let (_, entry, _) = self.catalog.resolve(&selected);
         DaemonMessage::Connected {
             session_id: session_id.to_owned(),
             thread_id: thread_id.to_owned(),
-            model_name: model.display_name.clone(),
-            context_window: model.context_window,
+            model_name: entry.display_name.clone(),
+            context_window: entry.context_window,
             title: self.conversation_store.get_thread_title(session_id),
             total_tokens_used: self.conversation_store.get_total_tokens_used(session_id),
         }
-    }
-
-    /// Select the model entry for an optional model id, falling back to the
-    /// default model (index 0) when `model_id` is `None`. A `Some` model id is
-    /// expected to have been validated by the caller (see `create_session`).
-    fn select_model(&self, model_id: Option<&str>) -> &model_picker::ModelEntry {
-        model_id
-            .map(|id| {
-                self.available_models
-                    .iter()
-                    .find(|m| m.model_id == id)
-                    .expect("bug: model id should be validated in create_session")
-            })
-            .unwrap_or(&self.available_models[0])
     }
 
     /// Internal: spin up the agent loop for a session.
@@ -299,7 +269,6 @@ impl SessionManager {
         &mut self,
         session_id: String,
         cwd: &Path,
-        model_id: Option<String>,
         emit: &mut impl AsyncFnMut(DaemonMessage),
     ) -> Result<(), BoxError> {
         if self.sessions.contains_key(&session_id) {
@@ -388,22 +357,20 @@ impl SessionManager {
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-        let (model_name, context_window, idle_tx, agent_handle, subscriber_map) = self
-            .start_agent_loop(
-                session_id.clone(),
-                agent_rx,
-                self.conversation_store.clone(),
-                state_store,
-                sender,
-                self.callback_url.clone(),
-                rap_tools,
-                urls,
-                extra_system_prompt,
-                active_threads.clone(),
-                shutdown_rx,
-                spawned_servers,
-                model_id,
-            )?;
+        let (idle_tx, agent_handle, subscriber_map) = self.start_agent_loop(
+            session_id.clone(),
+            agent_rx,
+            self.conversation_store.clone(),
+            state_store,
+            sender,
+            self.callback_url.clone(),
+            rap_tools,
+            urls,
+            extra_system_prompt,
+            active_threads.clone(),
+            shutdown_rx,
+            spawned_servers,
+        );
 
         let session = Session {
             session_id: session_id.clone(),
@@ -411,8 +378,6 @@ impl SessionManager {
             active_threads,
             agent_tx,
             agent_task: agent_handle,
-            model_name,
-            context_window,
             shutdown_tx: Some(shutdown_tx),
             idle_tx,
             subscriber_map,
@@ -511,10 +476,7 @@ impl SessionManager {
                 let _ = store.save();
             }
             let cwd = self.session_store.lock().await.get_cwd(session_id).clone();
-            if let Err(e) = self
-                .start_session(session_id.to_owned(), &cwd, None, emit)
-                .await
-            {
+            if let Err(e) = self.start_session(session_id.to_owned(), &cwd, emit).await {
                 tracing::error!("failed to restart session: {e}");
                 return false;
             }
@@ -634,14 +596,10 @@ impl SessionManager {
         }
     }
 
-    /// Start the agent loop for a session. Returns (model_name, context_window).
+    /// Start the agent loop for a session.
     #[expect(
         clippy::too_many_arguments,
         reason = "session setup requires many dependencies"
-    )]
-    #[expect(
-        clippy::type_complexity,
-        reason = "return type mirrors spawn_agent_loop"
     )]
     fn start_agent_loop(
         &self,
@@ -657,48 +615,23 @@ impl SessionManager {
         active_threads: ActiveThreads,
         shutdown_rx: oneshot::Receiver<()>,
         spawned_servers: Vec<tokio::process::Child>,
-        model_id: Option<String>,
-    ) -> Result<
-        (
-            String,
-            usize,
-            mpsc::UnboundedSender<()>,
-            JoinHandle<()>,
-            SubscriberMap,
-        ),
-        BoxError,
-    > {
-        // Select the requested model, falling back to the default (index 0).
-        // A `Some` model id is already validated in `create_session`.
-        let selected = self.select_model(model_id.as_deref());
-        let model_name = selected.display_name.clone();
-        let context_window = selected.context_window;
-
-        let (idle_tx, handle, subscriber_map) = {
-            let client = rig_bedrock::client::Client::from_env();
-            let model = client.completion_model(&selected.model_id);
-
-            spawn_agent_loop(
-                session_id,
-                self.session_store.clone(),
-                agent_rx,
-                model,
-                conversation_store,
-                state_store,
-                sender,
-                callback_url,
-                rap_tools,
-                tool_server_urls,
-                extra_system_prompt,
-                selected.additional_request_params.clone(),
-                active_threads,
-                shutdown_rx,
-                spawned_servers,
-                context_window,
-                selected.max_output_tokens,
-            )
-        };
-        Ok((model_name, context_window, idle_tx, handle, subscriber_map))
+    ) -> (mpsc::UnboundedSender<()>, JoinHandle<()>, SubscriberMap) {
+        spawn_agent_loop(
+            session_id,
+            self.session_store.clone(),
+            agent_rx,
+            self.catalog.clone(),
+            conversation_store,
+            state_store,
+            sender,
+            callback_url,
+            rap_tools,
+            tool_server_urls,
+            extra_system_prompt,
+            active_threads,
+            shutdown_rx,
+            spawned_servers,
+        )
     }
 }
 
@@ -708,11 +641,11 @@ impl SessionManager {
     clippy::too_many_arguments,
     reason = "agent loop requires many dependencies"
 )]
-fn spawn_agent_loop<Mdl>(
+fn spawn_agent_loop(
     session_id: String,
     session_store: SessionStoreHandle,
     agent_rx: mpsc::UnboundedReceiver<AgentMessage>,
-    model: Mdl,
+    catalog: Arc<ModelCatalog>,
     conversation_store: InMemoryConversationStore,
     state_store: InMemoryStateStore,
     sender: InMemoryMessageSender,
@@ -720,20 +653,10 @@ fn spawn_agent_loop<Mdl>(
     rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>>,
     tool_server_urls: Vec<String>,
     extra_system_prompt: Option<String>,
-    additional_params: Option<serde_json::Value>,
     active_threads: ActiveThreads,
     shutdown_rx: oneshot::Receiver<()>,
     spawned_servers: Vec<tokio::process::Child>,
-    context_window: usize,
-    max_output_tokens: Option<u64>,
-) -> (mpsc::UnboundedSender<()>, JoinHandle<()>, SubscriberMap)
-where
-    Mdl: CompletionModel + 'static,
-{
-    let additional_request_params = Arc::new(std::sync::RwLock::new(additional_params));
-    let active_model_id: Arc<std::sync::RwLock<Option<String>>> =
-        Arc::new(std::sync::RwLock::new(None));
-
+) -> (mpsc::UnboundedSender<()>, JoinHandle<()>, SubscriberMap) {
     let rap_notifier = if tool_server_urls.is_empty() {
         None
     } else {
@@ -773,7 +696,6 @@ where
     tool_impls.extend(rap_tools);
 
     let tool_impls: Arc<Vec<Box<dyn Tool<InMemoryMessageSender>>>> = Arc::new(tool_impls);
-    let model = Arc::new(model);
     let extra_system_prompt = Arc::new(extra_system_prompt);
     let (idle_tx, idle_rx) = mpsc::unbounded_channel();
 
@@ -782,7 +704,7 @@ where
     let agent_fut = agent_loop(
         session_id.clone(),
         agent_rx,
-        model,
+        catalog,
         conversation_store.clone(),
         state_store,
         sender,
@@ -790,13 +712,9 @@ where
         tool_impls,
         extra_system_prompt,
         rap_notifier,
-        additional_request_params,
-        active_model_id,
         subscriber_map.clone(),
         active_threads.clone(),
         idle_tx.clone(),
-        context_window,
-        max_output_tokens,
     );
 
     let handle = tokio::task::spawn_local(session_wrapper(

@@ -6,13 +6,12 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use infinity_agent_core::batch_processor::DisplayEvent;
-use infinity_protocol::{ClientMessage, DaemonMessage, SessionInfo, TokenUsage};
+use infinity_protocol::{ClientMessage, DaemonMessage, ModelRef, SessionInfo, TokenUsage};
 use rig::completion::GetTokenUsage;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-use infinity_agent_cli::model_picker::ModelEntry;
 use infinity_agent_cli::terminal::{DetachResult, SessionChanged};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -185,7 +184,7 @@ pub async fn run_headless(message: String) -> Result<(), BoxError> {
     let msg = ClientMessage::CreateSession {
         cwd,
         location: None,
-        model_id: None,
+        model: None,
     };
     framed.send(Bytes::from(serde_json::to_vec(&msg)?)).await?;
 
@@ -339,19 +338,6 @@ async fn run_client(
 
     let cwd = std::env::current_dir().unwrap_or_default();
 
-    let model_entries: Vec<ModelEntry> = available_models
-        .into_iter()
-        .map(|m| ModelEntry {
-            display_name: m.display_name,
-            model_id: m.model_id,
-            additional_request_params: None,
-            context_window: m.context_window,
-            // Not sent over the protocol; only the daemon uses this when
-            // invoking the model.
-            max_output_tokens: None,
-        })
-        .collect();
-
     let (display_tx, display_rx) =
         mpsc::unbounded_channel::<(Option<String>, DisplayEvent<DaemonTokenUsage>)>();
     let (input_tx, input_rx) = mpsc::unbounded_channel::<String>();
@@ -399,7 +385,7 @@ async fn run_client(
         })?;
     }
 
-    let models_for_switch = model_entries.clone();
+    let models_for_switch = available_models.clone();
 
     let mut terminal_handle = tokio::task::spawn_local(infinity_agent_cli::terminal::run(
         input_tx,
@@ -409,7 +395,7 @@ async fn run_client(
         sessions,
         load_session_tx,
         model_switch_tx,
-        model_entries,
+        available_models,
         initial_message,
         session_rx,
         sessions_updated_rx,
@@ -420,9 +406,9 @@ async fn run_client(
 
     let mut active_session: Option<String> = None;
     let mut pending_input: Vec<String> = Vec::new();
-    // The model id most recently selected via the model picker. Stored locally so
+    // The model most recently selected via the model picker. Stored locally so
     // it can be passed when creating new sessions, even if no session is active.
-    let mut selected_model_id: Option<String> = None;
+    let mut selected_model: Option<ModelRef> = None;
     let mut terminal_result: Option<Result<Result<bool, BoxError>, tokio::task::JoinError>> = None;
     let mut pending_soft_detach = false;
 
@@ -525,11 +511,15 @@ async fn run_client(
                 idx = model_switch_rx.recv() => {
                     let Some(idx) = idx else { break };
                     if let Some(entry) = models_for_switch.get(idx) {
+                        let model = ModelRef {
+                            provider_id: entry.provider_id.clone(),
+                            model_id: entry.model_id.clone(),
+                        };
                         // Remember the selection locally so new sessions use it.
-                        selected_model_id = Some(entry.model_id.clone());
+                        selected_model = Some(model.clone());
                         if let Some(sid) = &active_session {
                             let _ = to_daemon.send(ClientMessage::SwitchModel {
-                                session_id: sid.clone(), model_id: entry.model_id.clone(),
+                                session_id: sid.clone(), model,
                             });
                         }
                     }
@@ -558,7 +548,7 @@ async fn run_client(
                         }
                     } else {
                         pending_input.push(text);
-                        let _ = to_daemon.send(ClientMessage::CreateSession { cwd: cwd.clone(), location: None, model_id: selected_model_id.clone() });
+                        let _ = to_daemon.send(ClientMessage::CreateSession { cwd: cwd.clone(), location: None, model: selected_model.clone() });
                     }
                 }
             }

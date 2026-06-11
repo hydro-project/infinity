@@ -216,12 +216,9 @@ fn strip_client_message(msg: ClientMessage, remote_name: &str) -> ClientMessage 
         ClientMessage::ArchiveSession { session_id } => ClientMessage::ArchiveSession {
             session_id: strip_id(&session_id, remote_name),
         },
-        ClientMessage::SwitchModel {
-            session_id,
-            model_id,
-        } => ClientMessage::SwitchModel {
+        ClientMessage::SwitchModel { session_id, model } => ClientMessage::SwitchModel {
             session_id: strip_id(&session_id, remote_name),
-            model_id,
+            model,
         },
         ClientMessage::TriggerCompaction { session_id } => ClientMessage::TriggerCompaction {
             session_id: strip_id(&session_id, remote_name),
@@ -305,20 +302,23 @@ pub async fn handle_client_channels(
             .as_ref()
             .map(|rd| rd.remote_info_list())
             .unwrap_or_default();
+        let default_entry = mgr.catalog.default_entry();
         let _ = daemon_tx.send(DaemonMessage::Welcome {
             sessions: mgr.list_sessions(Some(daemon_tx.clone())).await,
             available_models: mgr
-                .available_models
+                .catalog
+                .models()
                 .iter()
                 .map(|m| infinity_protocol::ModelInfo {
-                    display_name: m.display_name.clone(),
-                    model_id: m.model_id.clone(),
-                    context_window: m.context_window,
+                    display_name: m.entry.display_name.clone(),
+                    provider_id: m.provider_id.clone(),
+                    model_id: m.entry.model_id.clone(),
+                    context_window: m.entry.context_window,
                 })
                 .collect(),
-            default_model_name: mgr.default_model_name.clone(),
-            default_context_window: mgr.default_context_window,
-            provider_name: "bedrock".to_owned(),
+            default_model_name: default_entry.display_name.clone(),
+            default_context_window: default_entry.context_window,
+            provider_name: mgr.catalog.default_ref().provider_id.clone(),
             remotes,
         });
     }
@@ -397,49 +397,50 @@ pub async fn handle_client_channels(
                     }
                 }
 
-                match msg {
-                    ClientMessage::CreateSession { cwd, location, model_id } => {
-                        if let Some(rname) = location {
-                            let rd = {
-                                let mgr = session_manager.lock().await;
-                                mgr.remote_daemons.clone()
-                            };
-                            if let Some(rd) = rd {
-                                match rd.open_raw_connection(&rname).await {
-                                    Ok((tx, rx)) => {
-                                        let _ = tx.send(ClientMessage::CreateSession { cwd, location: None, model_id });
-                                        remote_proxy_tx = Some(tx);
-                                        remote_proxy_rx = Some(rx);
-                                        active_remote_name = Some(rname);
-                                        attached_session_id = None;
+                    match msg {
+                        ClientMessage::CreateSession { cwd, location, model } => {
+                            if let Some(rname) = location {
+                                let rd = {
+                                    let mgr = session_manager.lock().await;
+                                    mgr.remote_daemons.clone()
+                                };
+                                if let Some(rd) = rd {
+                                    match rd.open_raw_connection(&rname).await {
+                                        Ok((tx, rx)) => {
+                                            let _ = tx.send(ClientMessage::CreateSession { cwd, location: None, model });
+                                            remote_proxy_tx = Some(tx);
+                                            remote_proxy_rx = Some(rx);
+                                            active_remote_name = Some(rname);
+                                            attached_session_id = None;
+                                        }
+                                        Err(e) => {
+                                            let _ = daemon_tx.send(DaemonMessage::Error {
+                                                thread_id: None,
+                                                text: format!("failed to connect to remote: {e}"),
+                                            });
+                                        }
                                     }
-                                    Err(e) => {
-                                        let _ = daemon_tx.send(DaemonMessage::Error {
-                                            thread_id: None,
-                                            text: format!("failed to connect to remote: {e}"),
-                                        });
-                                    }
+                                } else {
+                                    let _ = daemon_tx.send(DaemonMessage::Error {
+                                        thread_id: None,
+                                        text: "no remote daemons configured".into(),
+                                    });
                                 }
                             } else {
-                                let _ = daemon_tx.send(DaemonMessage::Error {
-                                    thread_id: None,
-                                    text: "no remote daemons configured".into(),
-                                });
-                            }
-                        } else {
-                            let mut mgr = session_manager.lock().await;
-                            let mut emit = async |msg: DaemonMessage| {
-                                let _ = daemon_tx.send(msg);
-                            };
-                            match mgr.create_session(&cwd, model_id, &mut emit).await {
-                                Ok(sid) => {
-                                    mgr.attach_client(&sid, client_tx.clone(), false).await;
-                                    attached_session_id = Some(sid);
+                                let mut mgr = session_manager.lock().await;
+                                let mut emit = async |msg: DaemonMessage| {
+                                    let _ = daemon_tx.send(msg);
+                                };
+                                let model = model.unwrap_or_else(|| mgr.catalog.default_ref().clone());
+                                match mgr.create_session(&cwd, model, &mut emit).await {
+                                    Ok(sid) => {
+                                        mgr.attach_client(&sid, client_tx.clone(), false).await;
+                                        attached_session_id = Some(sid);
+                                    }
+                                    Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error { thread_id: None, text: format!("failed to create session: {e}") }); }
                                 }
-                                Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error { thread_id: None, text: format!("failed to create session: {e}") }); }
                             }
                         }
-                    }
                     ClientMessage::Connect { session_id, thread_id } => {
                         if let Some((rname, real_session_id)) = is_remote_session(&session_id) {
                             let real_thread_id = thread_id.as_deref().map(|t| strip_id(t, rname));

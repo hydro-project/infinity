@@ -25,6 +25,7 @@ export interface SessionInfo {
 
 export interface ModelInfo {
   display_name: string;
+  provider_id: string;
   model_id: string;
   context_window: number;
 }

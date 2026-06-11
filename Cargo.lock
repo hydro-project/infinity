@@ -2152,7 +2152,6 @@ dependencies = [
  "rap-protocol",
  "ratatui",
  "reqwest",
- "rig-bedrock",
  "rig-core",
  "serde",
  "serde_json",
@@ -2206,10 +2205,10 @@ dependencies = [
  "chrono-tz",
  "futures-util",
  "infinity-agent-core",
+ "infinity-provider-bedrock",
  "lambda_runtime",
  "rap-client",
  "reqwest",
- "rig-bedrock",
  "rig-core",
  "serde",
  "serde_json",
@@ -2236,12 +2235,12 @@ dependencies = [
  "include_dir",
  "infinity-agent-core",
  "infinity-protocol",
+ "infinity-provider-bedrock",
  "insta",
  "nix",
  "rap-client",
  "rap-protocol",
  "reqwest",
- "rig-bedrock",
  "rig-core",
  "rig-mock",
  "serde",
@@ -2262,6 +2261,17 @@ dependencies = [
  "dirs",
  "rap-protocol",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "infinity-provider-bedrock"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "infinity-agent-core",
+ "rig-bedrock",
+ "rig-core",
  "serde_json",
 ]
 

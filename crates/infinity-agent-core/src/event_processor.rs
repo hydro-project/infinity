@@ -7,7 +7,7 @@ use std::{
 use futures_util::StreamExt;
 use rig::{
     OneOrMany,
-    completion::{CompletionModel, CompletionRequest, ToolDefinition},
+    completion::{CompletionRequest, ToolDefinition},
     message::{AssistantContent, Message, ToolResult, ToolResultContent, UserContent},
     streaming::{StreamedAssistantContent, ToolCallDeltaContent},
 };
@@ -17,6 +17,7 @@ use tracing;
 use crate::message::{
     InfinityMessage, InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind,
 };
+use crate::model_provider::{ModelProvider, ProviderStreamingResponse};
 use crate::tools::{Tool, ToolContext};
 use crate::traits::{ConversationStore, InputSender, StateStore};
 
@@ -963,8 +964,9 @@ where
     clippy::too_many_arguments,
     reason = "completion orchestration requires many parameters"
 )]
-pub fn run_completion<'a: 'b, 'b, Mdl, C, S, M>(
-    model: &'a Mdl,
+pub fn run_completion<'a: 'b, 'b, P, C, S, M>(
+    provider: &'a P,
+    model_id: &'a str,
     history: &'a HistoryManager<C, S>,
     tool_names: &'a HashSet<String>,
     tools: &'a [ToolDefinition],
@@ -973,13 +975,10 @@ pub fn run_completion<'a: 'b, 'b, Mdl, C, S, M>(
     group_id: &'a str,
     message_id: &'a str,
     extra_system_prompt: Option<&'a str>,
-    additional_request_params: Option<&'a serde_json::Value>,
-    model_id_override: Option<&'a str>,
-    max_output_tokens: Option<u64>,
     cancel_rx: tokio::sync::oneshot::Receiver<()>,
-) -> impl futures_util::Stream<Item = Result<CompletionEvent<Mdl::StreamingResponse>, BoxError>> + 'b
+) -> impl futures_util::Stream<Item = Result<CompletionEvent<ProviderStreamingResponse>, BoxError>> + 'b
 where
-    Mdl: CompletionModel,
+    P: ModelProvider + ?Sized,
     C: ConversationStore,
     S: StateStore,
     M: InputSender + 'static,
@@ -1000,30 +999,17 @@ where
         };
 
         'outer: loop {
-            let stream_result = model
-                .stream(CompletionRequest {
-                    model: model_id_override.map(|s| s.to_owned()),
+            let stream_result = provider
+                .invoke_model(model_id, CompletionRequest {
+                    model: None,
                     preamble: Some(preamble.clone()),
                     chat_history: history.get_history(),
                     documents: vec![],
                     tools: tools.to_vec(),
                     temperature: None,
-                    max_tokens: max_output_tokens,
+                    max_tokens: None,
                     tool_choice: None,
-                    additional_params: {
-                        let mut base = serde_json::json!({
-                            "thinking": {
-                                "type": "adaptive"
-                            }
-                        });
-                        if let Some(extra) = additional_request_params
-                            && let (Some(base_obj), Some(extra_obj)) = (base.as_object_mut(), extra.as_object()) {
-                                for (k, v) in extra_obj {
-                                    base_obj.insert(k.clone(), v.clone());
-                                }
-                            }
-                        Some(base)
-                    },
+                    additional_params: None,
                     output_schema: None,
                 });
 
@@ -2102,10 +2088,10 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{CompletionAction, CompletionEvent, HistoryManager};
+    use crate::test_helpers::mock_provider;
     use crate::tools::{Tool, ToolContext};
     use futures_util::StreamExt;
     use rig::completion::ToolDefinition;
-    use rig_mock::mock_model;
 
     fn tool_context() -> ToolContext<StubSender> {
         ToolContext {
@@ -2133,7 +2119,7 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (model, mut ctrl) = mock_model();
+                let (provider, mut ctrl) = mock_provider();
                 let convo_store = StubConversationStore::new();
                 let hm = make_history(
                     &convo_store,
@@ -2149,7 +2135,8 @@ mod tests {
                 // Spawn the stream consumer
                 let handle = tokio::task::spawn_local(async move {
                     let stream = run_completion(
-                        &model,
+                        &provider,
+                        "mock",
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -2157,9 +2144,6 @@ mod tests {
                         &ctx,
                         "thread-1",
                         "msg-1",
-                        None,
-                        None,
-                        None,
                         None,
                         cancel_rx,
                     );
@@ -2196,7 +2180,7 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (model, mut ctrl) = mock_model();
+                let (provider, mut ctrl) = mock_provider();
                 let convo_store = StubConversationStore::new();
                 let hm = make_history(
                     &convo_store,
@@ -2211,7 +2195,8 @@ mod tests {
 
                 let handle = tokio::task::spawn_local(async move {
                     let stream = run_completion(
-                        &model,
+                        &provider,
+                        "mock",
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -2219,9 +2204,6 @@ mod tests {
                         &ctx,
                         "thread-1",
                         "msg-1",
-                        None,
-                        None,
-                        None,
                         None,
                         cancel_rx,
                     );
@@ -2261,7 +2243,7 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (model, mut ctrl) = mock_model();
+                let (provider, mut ctrl) = mock_provider();
                 let convo_store = StubConversationStore::new();
                 let hm = make_history(
                     &convo_store,
@@ -2276,7 +2258,8 @@ mod tests {
 
                 let handle = tokio::task::spawn_local(async move {
                     let stream = run_completion(
-                        &model,
+                        &provider,
+                        "mock",
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -2284,9 +2267,6 @@ mod tests {
                         &ctx,
                         "thread-1",
                         "msg-1",
-                        None,
-                        None,
-                        None,
                         None,
                         cancel_rx,
                     );
@@ -2344,7 +2324,7 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (model, mut ctrl) = mock_model();
+                let (provider, mut ctrl) = mock_provider();
                 let convo_store = StubConversationStore::new();
                 let hm = make_history(
                     &convo_store,
@@ -2359,7 +2339,8 @@ mod tests {
 
                 let handle = tokio::task::spawn_local(async move {
                     let stream = run_completion(
-                        &model,
+                        &provider,
+                        "mock",
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -2367,9 +2348,6 @@ mod tests {
                         &ctx,
                         "thread-1",
                         "msg-1",
-                        None,
-                        None,
-                        None,
                         None,
                         cancel_rx,
                     );
@@ -2451,7 +2429,7 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (model, mut ctrl) = mock_model();
+                let (provider, mut ctrl) = mock_provider();
                 let convo_store = StubConversationStore::new();
                 let hm = make_history(
                     &convo_store,
@@ -2475,7 +2453,8 @@ mod tests {
 
                 let handle = tokio::task::spawn_local(async move {
                     let stream = run_completion(
-                        &model,
+                        &provider,
+                        "mock",
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -2483,9 +2462,6 @@ mod tests {
                         &ctx,
                         "thread-1",
                         "msg-1",
-                        None,
-                        None,
-                        None,
                         None,
                         cancel_rx,
                     );
@@ -2543,7 +2519,7 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (model, mut ctrl) = mock_model();
+                let (provider, mut ctrl) = mock_provider();
                 let convo_store = StubConversationStore::new();
                 let hm = make_history(
                     &convo_store,
@@ -2558,7 +2534,8 @@ mod tests {
 
                 let handle = tokio::task::spawn_local(async move {
                     let stream = run_completion(
-                        &model,
+                        &provider,
+                        "mock",
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -2566,9 +2543,6 @@ mod tests {
                         &ctx,
                         "thread-1",
                         "msg-1",
-                        None,
-                        None,
-                        None,
                         None,
                         cancel_rx,
                     );
@@ -2614,7 +2588,7 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (model, mut ctrl) = mock_model();
+                let (provider, mut ctrl) = mock_provider();
                 let convo_store = StubConversationStore::new();
                 let hm = make_history(
                     &convo_store,
@@ -2662,7 +2636,8 @@ mod tests {
 
                 let handle = tokio::task::spawn_local(async move {
                     let stream = run_completion(
-                        &model,
+                        &provider,
+                        "mock",
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -2670,9 +2645,6 @@ mod tests {
                         &ctx,
                         "thread-1",
                         "msg-1",
-                        None,
-                        None,
-                        None,
                         None,
                         cancel_rx,
                     );
@@ -2706,7 +2678,7 @@ mod tests {
         local
             .run_until(async {
                 // When the model stream ends unexpectedly (None from next()), the loop retries.
-                let (model, mut ctrl) = mock_model();
+                let (provider, mut ctrl) = mock_provider();
                 let convo_store = StubConversationStore::new();
                 let hm = make_history(
                     &convo_store,
@@ -2721,7 +2693,8 @@ mod tests {
 
                 let handle = tokio::task::spawn_local(async move {
                     let stream = run_completion(
-                        &model,
+                        &provider,
+                        "mock",
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -2729,9 +2702,6 @@ mod tests {
                         &ctx,
                         "thread-1",
                         "msg-1",
-                        None,
-                        None,
-                        None,
                         None,
                         cancel_rx,
                     );
@@ -2772,7 +2742,7 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (model, mut ctrl) = mock_model();
+                let (provider, mut ctrl) = mock_provider();
                 let convo_store = StubConversationStore::new();
                 let hm = make_history(
                     &convo_store,
@@ -2787,7 +2757,8 @@ mod tests {
 
                 let handle = tokio::task::spawn_local(async move {
                     let stream = run_completion(
-                        &model,
+                        &provider,
+                        "mock",
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -2795,9 +2766,6 @@ mod tests {
                         &ctx,
                         "thread-1",
                         "msg-1",
-                        None,
-                        None,
-                        None,
                         None,
                         cancel_rx,
                     );
@@ -2841,7 +2809,7 @@ mod tests {
         local
             .run_until(async {
                 // Model calls sync tool twice in sequence (two completion rounds), then responds.
-                let (model, mut ctrl) = mock_model();
+                let (provider, mut ctrl) = mock_provider();
                 let convo_store = StubConversationStore::new();
                 let hm = make_history(
                     &convo_store,
@@ -2865,7 +2833,8 @@ mod tests {
 
                 let handle = tokio::task::spawn_local(async move {
                     let stream = run_completion(
-                        &model,
+                        &provider,
+                        "mock",
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -2873,9 +2842,6 @@ mod tests {
                         &ctx,
                         "thread-1",
                         "msg-1",
-                        None,
-                        None,
-                        None,
                         None,
                         cancel_rx,
                     );

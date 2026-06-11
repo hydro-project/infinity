@@ -3,8 +3,8 @@ use aws_sdk_dsql::Client as DsqlClient;
 use aws_sdk_dynamodb::Client as DynamoDbClient;
 use aws_sdk_scheduler::Client as SchedulerClient;
 use aws_sdk_sqs::Client as SqsClient;
+use infinity_provider_bedrock::BedrockProvider;
 use lambda_runtime::{Error, LambdaEvent, tracing};
-use rig_bedrock::client::Client;
 
 use infinity_agent_core::batch_processor::{self, DisplayEvent};
 use infinity_agent_core::event_processor;
@@ -18,14 +18,15 @@ use infinity_agent_core::tools::thread::{
 use infinity_agent_core::tools::{Tool, ToolContext};
 use rap_client::toolset_loader::ToolsetLoader;
 
-use rig::client::{CompletionClient, ProviderClient};
-
 use crate::conversation_history::DsqlConversationStore;
 use crate::state_store::DynamoDbStateStore;
 use crate::tools::rap_http::RapHttpClient;
 use crate::tools::sleep::{SleepTool, SleepUntilTool};
 use crate::tools::sqs_sender::SqsMessageSender;
 use crate::tools::toolset_cache::DynamoDbToolsetCache;
+
+/// The model invoked for all Lambda completions (hardcoded for now).
+const MODEL_ID: &str = "global.anthropic.claude-sonnet-4-6";
 
 pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
     let payload = event.payload;
@@ -103,8 +104,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     let toolset_cache = DynamoDbToolsetCache::new(dynamodb_client.clone(), table_name.clone());
     let toolset_loader = ToolsetLoader::new(http_client.clone(), toolset_cache);
 
-    let client = Client::from_env();
-    let model = client.completion_model("global.anthropic.claude-sonnet-4-6");
+    let provider = BedrockProvider::from_env();
 
     let input_queue_url = std::env::var("INPUT_QUEUE_URL").unwrap_or_default();
     let input_queue_arn = std::env::var("INPUT_QUEUE_ARN").unwrap_or_default();
@@ -242,15 +242,13 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             &conversation_store,
             &display_tx,
             &group_id,
-            &model,
+            &provider,
+            MODEL_ID,
             &tool_names,
             &tool_defs,
             &tool_registry,
             tool_context,
             &extra_system_prompt,
-            None,
-            None,
-            None,
             rap_notifier.as_ref(),
             None,
         )

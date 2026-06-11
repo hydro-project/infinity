@@ -3,7 +3,7 @@ pub mod config;
 pub mod mcp_proxy;
 pub mod memory_store;
 pub mod migrate;
-pub mod model_picker;
+pub mod models;
 pub mod rap_callback;
 pub mod rap_tools;
 pub mod remote;

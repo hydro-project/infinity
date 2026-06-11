@@ -3,14 +3,15 @@ use std::sync::Arc;
 use infinity_agent_core::batch_processor::DisplayEvent;
 use infinity_agent_core::event_processor;
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
+use infinity_agent_core::model_provider::ProviderStreamingResponse;
 use infinity_agent_core::tools::{Tool, ToolContext};
 use infinity_protocol::DaemonMessage;
-use rig::completion::CompletionModel;
 use rig::message::UserContent;
 use tokio::sync::{mpsc, oneshot};
 
 use super::display::{display_event_to_daemon, history_message_to_daemon};
 use crate::memory_store::{InMemoryConversationStore, InMemoryMessageSender, InMemoryStateStore};
+use crate::models::ModelCatalog;
 use crate::rap_tools;
 use crate::session::ActiveThreads;
 use crate::session_store;
@@ -49,14 +50,14 @@ fn is_deferrable_synthetic_event(msg: &InputMessage) -> bool {
     clippy::too_many_arguments,
     reason = "thread worker requires many dependencies"
 )]
-pub async fn thread_worker<Mdl>(
+pub async fn thread_worker(
     active_group_id: String,
     mut rx: mpsc::UnboundedReceiver<(InputMessage, String)>,
     subscribe_rx: mpsc::UnboundedReceiver<SubscribeRequest>,
     active_threads: ActiveThreads,
     subscribers: ThreadSubscribers,
     root_session_id: String,
-    model: Arc<Mdl>,
+    catalog: Arc<ModelCatalog>,
     conversation_store: InMemoryConversationStore,
     state_store: InMemoryStateStore,
     sender: InMemoryMessageSender,
@@ -64,14 +65,8 @@ pub async fn thread_worker<Mdl>(
     tool_impls: Arc<Vec<Box<dyn Tool<InMemoryMessageSender>>>>,
     extra_system_prompt: Option<String>,
     rap_notifier: Option<rap_client::notifier::RapNotifier<rap_tools::SimpleHttpClient>>,
-    additional_request_params: Arc<std::sync::RwLock<Option<serde_json::Value>>>,
-    active_model_id: Arc<std::sync::RwLock<Option<String>>>,
     idle_tx: mpsc::UnboundedSender<()>,
-    context_window: usize,
-    max_output_tokens: Option<u64>,
-) where
-    Mdl: CompletionModel + Send + Sync + 'static,
-{
+) {
     let mut subscribe_rx = subscribe_rx;
     active_threads
         .lock()
@@ -85,7 +80,7 @@ pub async fn thread_worker<Mdl>(
 
     // Create a local display channel; a forwarding task converts events and broadcasts to subscribers.
     let (display_tx, mut display_fwd_rx) =
-        mpsc::unbounded_channel::<DisplayEvent<Mdl::StreamingResponse>>();
+        mpsc::unbounded_channel::<DisplayEvent<ProviderStreamingResponse>>();
     let fwd_group_id = active_group_id.clone();
     let fwd_subscribers = subscribers.clone();
     let fwd_conversation_store = conversation_store.clone();
@@ -157,6 +152,23 @@ pub async fn thread_worker<Mdl>(
             return;
         }
     };
+
+    // Resolve this thread's model. Every thread stores its own selection (no
+    // parent fallback); selections that are no longer available fall back to
+    // the global default.
+    let selected = conversation_store.get_thread_model(&active_group_id);
+    let (model_ref, model_entry, fell_back) = catalog.resolve(&selected);
+    if fell_back {
+        let _ = display_tx.send(DisplayEvent::Info(format!(
+            "Warning: model {}/{} is no longer available; using default {}/{}",
+            selected.provider_id, selected.model_id, model_ref.provider_id, model_ref.model_id
+        )));
+    }
+    let provider = catalog
+        .provider(&model_ref.provider_id)
+        .expect("bug: resolved model's provider missing from catalog")
+        .clone();
+    let context_window = model_entry.context_window;
 
     let tool_names: std::collections::HashSet<String> =
         tool_impls.iter().map(|t| t.name().to_owned()).collect();
@@ -401,30 +413,19 @@ pub async fn thread_worker<Mdl>(
             }
         }
 
-        let params = additional_request_params
-            .read()
-            .expect("bug: rwlock poisoned")
-            .clone();
-        let mid = active_model_id
-            .read()
-            .expect("bug: rwlock poisoned")
-            .clone();
-
         let result = infinity_agent_core::batch_processor::process_batch(
             all_inputs.into_iter(),
             &current_history,
             &conversation_store,
             &display_tx,
             &active_group_id,
-            model.as_ref(),
+            provider.as_ref(),
+            &model_ref.model_id,
             &tool_names,
             &tool_defs,
             &tool_registry,
             tool_context.clone(),
             &extra_system_prompt,
-            params,
-            mid,
-            max_output_tokens,
             rap_notifier.as_ref(),
             Some(&input_tokens_cell),
         )
@@ -454,15 +455,36 @@ impl Drop for WorkerGuard {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::collapsible_if,
-    clippy::type_complexity,
-    reason = "test readability"
-)]
+#[expect(clippy::collapsible_if, reason = "test readability")]
 mod tests {
     use super::*;
-    use infinity_agent_core::traits::InputSender;
+    use infinity_agent_core::model_provider::{ModelEntry, SingleModelProvider};
+    use infinity_agent_core::traits::{ConversationStore, InputSender};
     use rig_mock::mock_model;
+
+    fn test_model_ref() -> infinity_protocol::ModelRef {
+        infinity_protocol::ModelRef {
+            provider_id: "mock".to_owned(),
+            model_id: "mock".to_owned(),
+        }
+    }
+
+    async fn test_catalog(model: rig_mock::MockCompletionModel) -> Arc<ModelCatalog> {
+        let entry = ModelEntry {
+            model_id: "mock".to_owned(),
+            display_name: "mock".to_owned(),
+            context_window: 0,
+            max_output_tokens: None,
+        };
+        Arc::new(
+            ModelCatalog::new(vec![(
+                "mock".to_owned(),
+                Arc::new(SingleModelProvider::new(entry, model)) as _,
+            )])
+            .await
+            .expect("build test catalog"),
+        )
+    }
 
     fn tmp_stores() -> (
         InMemoryConversationStore,
@@ -470,7 +492,8 @@ mod tests {
         tempfile::TempDir,
     ) {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let conv = InMemoryConversationStore::new_with_dir(dir.path().join("threads"));
+        let conv =
+            InMemoryConversationStore::new_with_dir(dir.path().join("threads"), test_model_ref());
         let state = InMemoryStateStore::new(dir.path().join("state"));
         (conv, state, dir)
     }
@@ -511,7 +534,7 @@ mod tests {
         )
     }
 
-    fn spawn_worker(
+    async fn spawn_worker(
         group_id: &str,
         conv: InMemoryConversationStore,
         state: InMemoryStateStore,
@@ -532,6 +555,12 @@ mod tests {
         let sender = InMemoryMessageSender::new(input_tx.clone());
         let subscribers: ThreadSubscribers = Arc::new(std::sync::Mutex::new(vec![client_tx]));
 
+        // Thread metadata (including the selected model) must exist before a
+        // worker starts.
+        conv.ensure_root_thread(group_id)
+            .await
+            .expect("ensure root thread");
+
         tokio::task::spawn_local(thread_worker(
             group_id.into(),
             input_rx,
@@ -539,7 +568,7 @@ mod tests {
             active_threads.clone(),
             subscribers,
             group_id.into(),
-            Arc::new(model),
+            test_catalog(model).await,
             conv,
             state,
             sender,
@@ -547,11 +576,7 @@ mod tests {
             Arc::new(tools),
             None,
             None,
-            Arc::new(std::sync::RwLock::new(None)),
-            Arc::new(std::sync::RwLock::new(None)),
             idle_tx,
-            0,
-            None,
         ));
         (input_tx, client_rx, idle_rx, active_threads)
     }
@@ -578,7 +603,7 @@ mod tests {
                 let (conv, state, _dir) = tmp_stores();
                 let (model, mut ctrl) = mock_model();
                 let (tx, mut display_rx, mut idle_rx, workers) =
-                    spawn_worker("t1", conv, state, model, vec![]);
+                    spawn_worker("t1", conv, state, model, vec![]).await;
                 tx.send(user_text_input("t1", "hello"))
                     .expect("send user input");
                 let _req = ctrl.next_request().await;
@@ -629,7 +654,7 @@ mod tests {
                     }
                 }
                 let (tx, mut display_rx, mut idle_rx, workers) =
-                    spawn_worker("t1", conv, state, model, vec![Box::new(DummyTool)]);
+                    spawn_worker("t1", conv, state, model, vec![Box::new(DummyTool)]).await;
                 tx.send(user_text_input("t1", "use tool"))
                     .expect("send user input");
                 let _req = ctrl.next_request().await;
@@ -674,7 +699,8 @@ mod tests {
             .run_until(async {
                 let (conv, state, _dir) = tmp_stores();
                 let (model, mut ctrl) = mock_model();
-                let (tx, mut display_rx, _, _) = spawn_worker("t1", conv, state, model, vec![]);
+                let (tx, mut display_rx, _, _) =
+                    spawn_worker("t1", conv, state, model, vec![]).await;
                 tx.send(user_text_input("t1", "first"))
                     .expect("send first user input");
                 let _req = ctrl.next_request().await;
@@ -748,7 +774,7 @@ mod tests {
                     }
                 }
                 let (tx, mut display_rx, _, _) =
-                    spawn_worker("t1", conv, state, model, vec![Box::new(DummyTool)]);
+                    spawn_worker("t1", conv, state, model, vec![Box::new(DummyTool)]).await;
                 tx.send(user_text_input("t1", "do stuff"))
                     .expect("send user input");
                 let _req = ctrl.next_request().await;
@@ -842,7 +868,7 @@ mod tests {
                     }
                 }
                 let (tx, mut display_rx, _, _) =
-                    spawn_worker("t1", conv, state, model, vec![Box::new(SubTool)]);
+                    spawn_worker("t1", conv, state, model, vec![Box::new(SubTool)]).await;
                 tx.send(user_text_input("t1", "subscribe"))
                     .expect("send user input");
                 let _req = ctrl.next_request().await;
@@ -953,7 +979,7 @@ mod tests {
                     }
                 }
                 let (tx, mut display_rx, mut idle_rx, workers) =
-                    spawn_worker("t1", conv, state, model, vec![Box::new(CloseThreadStub)]);
+                    spawn_worker("t1", conv, state, model, vec![Box::new(CloseThreadStub)]).await;
                 tx.send(user_text_input("t1", "close"))
                     .expect("send user input");
                 let _req = ctrl.next_request().await;
@@ -1020,7 +1046,7 @@ mod tests {
                     }
                 }
                 let (tx, mut display_rx, _, _) =
-                    spawn_worker("t1", conv, state, model, vec![Box::new(AsyncTool)]);
+                    spawn_worker("t1", conv, state, model, vec![Box::new(AsyncTool)]).await;
 
                 // 1. User sends input, model calls async_tool.
                 tx.send(user_text_input("t1", "do async"))
@@ -1156,7 +1182,7 @@ mod tests {
                     }
                 }
                 let (tx, mut display_rx, _, _) =
-                    spawn_worker("t1", conv, state, model, vec![Box::new(AsyncTool)]);
+                    spawn_worker("t1", conv, state, model, vec![Box::new(AsyncTool)]).await;
 
                 // 1. User sends input, model calls async_tool.
                 tx.send(user_text_input("t1", "do async"))

@@ -1,0 +1,15 @@
+[package]
+name = "infinity-provider-bedrock"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+infinity-agent-core = { path = "../infinity-agent-core" }
+rig-core = { workspace = true }
+rig-bedrock = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+
+[lints]
+workspace = true
