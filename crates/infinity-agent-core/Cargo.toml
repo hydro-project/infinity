@@ -10,7 +10,9 @@ rap-protocol = { path = "../rap-protocol" }
 rig-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+schemars = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt", "time"] }
+tokio-util = { version = "0.7", features = ["codec"] }
 futures-util = { workspace = true }
 async-trait = { workspace = true }
 async-stream = "0.3"

@@ -18,7 +18,19 @@ use infinity_protocol::socket_path;
 use tokio::net::{TcpListener, UnixListener};
 use tracing_subscriber::EnvFilter;
 
-pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+/// Line printed to stdout when `run_daemon` is called with
+/// `announce_ready = true`, once initialization has succeeded and the daemon
+/// is serving. A supervising process (the CLI auto-launch) races this line
+/// against daemon exit to detect startup failures. It must remain the
+/// daemon's only stdout output.
+pub const DAEMON_READY_LINE: &str = "infinity-daemon ready";
+
+/// Run the daemon until it receives a shutdown signal. When `announce_ready`
+/// is true, prints [`DAEMON_READY_LINE`] to stdout after all initialization
+/// (including the session manager and its model providers) has succeeded.
+pub async fn run_daemon(
+    announce_ready: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let state_dir = infinity_protocol::state_dir();
     std::fs::create_dir_all(&state_dir)?;
 
@@ -90,6 +102,10 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error + Send + Sync>
         }
         tracing::info!("received shutdown signal");
     };
+
+    if announce_ready {
+        println!("{DAEMON_READY_LINE}");
+    }
 
     tokio::select! {
         _ = async {

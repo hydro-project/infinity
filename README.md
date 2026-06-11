@@ -50,6 +50,9 @@ Prerequisites: [Rust](https://rustup.rs), [Ripgrep](https://github.com/BurntSush
 # Install the CLI
 cargo install infinity-agent-cli --git https://github.com/hydro-project/infinity --features bundled-web
 
+# Install the AWS Bedrock model provider (uses your AWS credentials)
+infinity provider install bedrock --git https://github.com/hydro-project/infinity --crate infinity-provider-bedrock
+
 # Install the local sandbox RAP server
 infinity rap install --user --git https://github.com/hydro-project/infinity --crate sandbox-local
 

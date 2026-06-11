@@ -8,6 +8,7 @@ use futures_util::{SinkExt, StreamExt};
 use infinity_agent_core::batch_processor::DisplayEvent;
 use infinity_protocol::{ClientMessage, DaemonMessage, ModelRef, SessionInfo, TokenUsage};
 use rig::completion::GetTokenUsage;
+use tokio::io::AsyncBufReadExt;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
@@ -130,29 +131,122 @@ pub(crate) async fn ensure_daemon_running() -> Result<UnixStream, BoxError> {
     if let Ok(stream) = UnixStream::connect(&infinity_protocol::socket_path()).await {
         return Ok(stream);
     }
-    launch_daemon()?;
-    for _ in 0..50 {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        if let Ok(stream) = UnixStream::connect(&infinity_protocol::socket_path()).await {
-            return Ok(stream);
-        }
-    }
-    Err("daemon failed to start within 5 seconds".into())
+    launch_daemon().await?;
+    // The daemon binds its socket before announcing readiness, so a single
+    // connect attempt suffices.
+    UnixStream::connect(&infinity_protocol::socket_path())
+        .await
+        .map_err(|e| {
+            format!("daemon reported ready but connecting to its socket failed: {e}").into()
+        })
 }
 
-fn launch_daemon() -> Result<(), BoxError> {
+/// How long to wait for a launched daemon to either report readiness or
+/// exit. Generous because daemon startup spawns model provider processes.
+const DAEMON_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Launch the daemon as a background process and wait until it prints its
+/// ready line on stdout. If the daemon exits first (e.g. a configuration
+/// error), the error includes everything it printed to stdout/stderr, which
+/// would otherwise be invisible for a detached process.
+async fn launch_daemon() -> Result<(), BoxError> {
     let current_exe = std::env::current_exe()?;
-    std::process::Command::new(&current_exe)
+    let mut child = tokio::process::Command::new(&current_exe)
         .arg("daemon")
         .env(
             "RUST_LOG",
             std::env::var_os("RUST_LOG").unwrap_or("debug".into()),
         )
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()?;
-    Ok(())
+
+    let stdout = child
+        .stdout
+        .take()
+        .expect("bug: piped child stdout missing");
+    let stderr = child
+        .stderr
+        .take()
+        .expect("bug: piped child stderr missing");
+    let mut stdout_lines = tokio::io::BufReader::new(stdout).lines();
+
+    // Accumulate stderr in the background for the failure report.
+    let stderr_task = tokio::task::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut out = String::new();
+        let mut reader = tokio::io::BufReader::new(stderr);
+        let _ = reader.read_to_string(&mut out).await;
+        out
+    });
+
+    let timeout = tokio::time::sleep(DAEMON_STARTUP_TIMEOUT);
+    tokio::pin!(timeout);
+
+    // Race the ready line against the daemon exiting.
+    let mut stdout_so_far = String::new();
+    let exit_status = loop {
+        tokio::select! {
+            line = stdout_lines.next_line() => match line {
+                Ok(Some(line)) if line == infinity_daemon::DAEMON_READY_LINE => {
+                    // Leave the daemon running detached; dropping the child
+                    // handle and pipes does not kill it.
+                    stderr_task.abort();
+                    return Ok(());
+                }
+                Ok(Some(line)) => {
+                    stdout_so_far.push_str(&line);
+                    stdout_so_far.push('\n');
+                }
+                // stdout closed without the ready line: the daemon is
+                // exiting; reap it below (with a timeout in case it
+                // lingers with closed pipes).
+                Ok(None) | Err(_) => {
+                    match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+                        .await
+                    {
+                        Ok(status) => break status?,
+                        Err(_) => {
+                            let _ = child.start_kill();
+                            break child.wait().await?;
+                        }
+                    }
+                }
+            },
+            status = child.wait() => break status?,
+            _ = &mut timeout => {
+                // Still booting: leave it running (it may just be slow) but
+                // stop waiting.
+                return Err(format!(
+                    "daemon did not report ready within {}s; check ~/.infinity/daemon.log",
+                    DAEMON_STARTUP_TIMEOUT.as_secs()
+                ).into());
+            }
+        }
+    };
+
+    // Drain anything still buffered on stdout, then collect stderr.
+    while let Ok(Some(line)) = stdout_lines.next_line().await {
+        stdout_so_far.push_str(&line);
+        stdout_so_far.push('\n');
+    }
+    let stderr_so_far = stderr_task.await.unwrap_or_default();
+
+    let mut report = format!("daemon exited during startup ({exit_status})");
+    if !stdout_so_far.trim().is_empty() {
+        report.push_str(&format!(
+            "\n--- daemon stdout ---\n{}",
+            stdout_so_far.trim_end()
+        ));
+    }
+    if !stderr_so_far.trim().is_empty() {
+        report.push_str(&format!(
+            "\n--- daemon stderr ---\n{}",
+            stderr_so_far.trim_end()
+        ));
+    }
+    Err(report.into())
 }
 
 /// Send a task to the daemon and exit without opening the TUI.

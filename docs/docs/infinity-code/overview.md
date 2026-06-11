@@ -28,8 +28,13 @@ Then install:
 # Install the CLI (includes the desktop web UI; remove --features bundled-web if you don't have npm)
 cargo install infinity-agent-cli --git https://github.com/hydro-project/infinity --features bundled-web
 
+# Install a model provider — Bedrock invokes models with your AWS credentials
+infinity provider install bedrock --git https://github.com/hydro-project/infinity --crate infinity-provider-bedrock
+
 infinity rap install --user --git https://github.com/hydro-project/infinity --crate sandbox-local
 ```
+
+[Model providers](./model-providers.md) run as separate processes managed by the daemon and are registered in `~/.infinity/providers.json`; at least one must be installed. The Bedrock provider uses your ambient AWS configuration (e.g. `AWS_PROFILE` or environment credentials).
 
 To update later:
 
@@ -37,7 +42,7 @@ To update later:
 infinity update
 ```
 
-This updates both the CLI binary and any installed RAP servers.
+This updates the CLI binary, installed model providers, and any installed RAP servers.
 
 ### First run
 
@@ -75,6 +80,7 @@ Both modes connect to the same daemon as the CLI, so you can use all three inter
 ## Key Features
 
 - **Sandboxed editing** — changes happen in isolated workspaces. Supports [Jujutsu](./coding-with-jj.md) (recommended) and [Git](./coding-with-git.md).
+- **Pluggable models** — models come from [model provider](./model-providers.md) processes; install, mix, and switch between providers.
 - **Parallel threads** — the agent spawns child threads for independent sub-tasks. Each thread gets its own sandbox and reports back when done.
 - **Background sessions** — detach from a busy agent and reconnect later. Multiple sessions can run concurrently via the [daemon](./background-agents.md).
 - **Remote sessions** — connect to agents running on other machines over SSH. See [Configuring Remotes](./configuring-remotes.md).
@@ -100,5 +106,6 @@ The TUI runs anywhere you have a terminal. Start it with `infinity` in any repo.
 
 - [Coding with Jujutsu](./coding-with-jj.md) — the recommended workflow
 - [Coding with Git](./coding-with-git.md) — for plain git repos
+- [Model Providers](./model-providers.md) — install, configure, and update model backends
 - [Background Agents](./background-agents.md) — run multiple agents concurrently
 - [Configuring MCP](./configuring-mcp.md) — add MCP servers as tool sets

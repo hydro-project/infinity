@@ -2178,9 +2178,11 @@ dependencies = [
  "rhai",
  "rig-core",
  "rig-mock",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-util",
  "tracing",
  "url",
  "uuid",
@@ -2235,7 +2237,6 @@ dependencies = [
  "include_dir",
  "infinity-agent-core",
  "infinity-protocol",
- "infinity-provider-bedrock",
  "insta",
  "nix",
  "rap-client",
@@ -2273,6 +2274,8 @@ dependencies = [
  "rig-bedrock",
  "rig-core",
  "serde_json",
+ "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]
