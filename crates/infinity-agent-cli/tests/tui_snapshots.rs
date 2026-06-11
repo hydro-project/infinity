@@ -191,6 +191,8 @@ async fn session_loaded_updates_title_and_status() {
             session_id: "f00dcafe-1234-5678-9abc-def012345678".to_owned(),
             title: Some("My fancy session".to_owned()),
             total_tokens_used: 42_000,
+            model_name: "mock-model".to_owned(),
+            context_window: 100_000,
         })
         .expect("UI task dropped session channel");
     h.settle().await;

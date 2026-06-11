@@ -37,6 +37,8 @@ fn send_session(h: &TuiHarness, id: &str, title: &str, tokens: usize) {
             session_id: id.to_owned(),
             title: Some(title.to_owned()),
             total_tokens_used: tokens,
+            model_name: "mock-model".to_owned(),
+            context_window: 100_000,
         })
         .expect("bug: UI task dropped session channel");
 }

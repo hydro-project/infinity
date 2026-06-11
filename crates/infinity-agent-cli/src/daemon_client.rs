@@ -529,9 +529,9 @@ async fn run_client(
                         break;
                     };
                     match msg {
-                        DaemonMessage::Connected { session_id, title, total_tokens_used, .. } => {
+                        DaemonMessage::Connected { session_id, title, total_tokens_used, model_name, context_window, .. } => {
                             active_session = Some(session_id.clone());
-                            let _ = session_tx.send(SessionChanged { session_id, title, total_tokens_used });
+                            let _ = session_tx.send(SessionChanged { session_id, title, total_tokens_used, model_name, context_window });
                             for text in pending_input.drain(..) {
                                 let sid = active_session.as_ref().expect("bug: active_session should be set after Connected").clone();
                                 let _ = to_daemon.send(ClientMessage::UserInput { session_id: sid, text });
