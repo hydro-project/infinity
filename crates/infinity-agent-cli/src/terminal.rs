@@ -71,6 +71,10 @@ pub struct SessionChanged {
     pub session_id: String,
     pub title: Option<String>,
     pub total_tokens_used: usize,
+    /// Display name of the model associated with the session's root thread.
+    pub model_name: String,
+    /// Context window of that model, used for the token-usage gauge.
+    pub context_window: usize,
 }
 
 /// Result of a SoftDetach attempt, sent back from daemon_client to terminal.
@@ -212,6 +216,8 @@ where
 
                 thread_id = Some(change.session_id.clone());
                 total_tokens_used = change.total_tokens_used;
+                model_name = change.model_name;
+                context_window = change.context_window;
                 thread_buffers.clear(); // for now, we can't properly restore themn
                 set_terminal_title(change.title.as_deref().unwrap_or(""));
                 viewport.print_line_above(Line::from(""))?;
