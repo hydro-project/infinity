@@ -1,0 +1,41 @@
+---
+source: crates/infinity-agent-cli/tests/tui_reflow_snapshots.rs
+expression: h.screen_with_scrollback()
+---
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ Infinity Agent CLI
+~ Type your messages below. /help for commands. Ctrl+C to exit.
+┌────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                    │
+│> explain the project                                                                               │
+│word01 word02 word03 word04 word05 word06 word07 word08 word09 word10 word11 word12 word13 word14 wo│
+│rd15 word16 word17 word18 word19 word20 word21 word22 word23 word24 word25 word26 word27 word28 word│
+│29 word30                                                                                           │
+│                                                                                                    │
+│                                                                                                    │
+│────────────────────────────────────────────────────────────────────────────────                    │
+│                                                                                                    │
+│                                                                                                    │
+│────────────────────────────────────────────────────────────────────────────────────────────────────│
+│                                                                                                    │
+│                                                                                                    │
+│                                                                                                    │
+│mock-model (/help for commands)                                                      0% context used│
+│                                                                                                    │
+└────────────────────────────────────────────────────────────────────────────────────────────────────┘
+cursor: row=12 col=1

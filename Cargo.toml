@@ -55,6 +55,8 @@ thiserror = "2"
 tempfile = "3"
 axum = { version = "0.8", features = ["multipart"] }
 insta = { version = "1", features = ["json", "redactions"] }
+vt100 = "0.15"
+alacritty_terminal = "0.26"
 
 [workspace.lints.rust]
 impl_trait_overcaptures = "warn"

@@ -5,6 +5,7 @@ use crate::{
     model_picker::{ModelPicker, ModelPickerResult, ModelPickerWidget},
     quit_picker::{QuitPicker, QuitPickerResult, QuitPickerWidget},
     session_picker::{SessionPicker, SessionPickerResult, SessionPickerWidget},
+    term_io::{EventSource, TermOut},
     text_input::{TextInput, TextInputWidget},
 };
 use infinity_agent_core::batch_processor::DisplayEvent;
@@ -13,7 +14,6 @@ use ratatui::{
         cursor,
         event::{self, Event, KeyCode, KeyModifiers},
         queue,
-        terminal::{self as cterm},
     },
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
@@ -22,9 +22,8 @@ use ratatui::{
 };
 use rig::completion::GetTokenUsage;
 use std::collections::{BTreeMap, HashSet, VecDeque};
-use std::io::{self, Write};
-use std::time::Instant;
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 
 /// The current UI mode determines which component is active.
 #[derive(PartialEq, Eq)]
@@ -95,7 +94,9 @@ struct PendingChoice {
 }
 
 #[expect(clippy::too_many_arguments, reason = "complex rendering logic")]
-pub async fn run<R>(
+pub async fn run<R, T, E>(
+    mut term: T,
+    mut events: E,
     input_tx: mpsc::UnboundedSender<String>,
     mut display_rx: mpsc::UnboundedReceiver<(Option<String>, DisplayEvent<R>)>,
     mut model_name: String,
@@ -115,18 +116,18 @@ pub async fn run<R>(
 ) -> Result<bool, BoxError>
 where
     R: GetTokenUsage,
+    T: TermOut,
+    E: EventSource,
 {
-    cterm::enable_raw_mode()?;
+    term.enable_raw_mode()?;
 
     // Enable bracketed paste so multi-line pastes arrive as a single
     // Event::Paste rather than a stream of individual key events (which
     // would submit on the first newline).
-    {
-        let mut stdout_init = io::stdout();
-        ratatui::crossterm::execute!(stdout_init, event::EnableBracketedPaste)?;
-    }
+    queue!(term, event::EnableBracketedPaste)?;
+    term.flush()?;
 
-    let mut viewport = InlineViewport::new(VIEWPORT_HEIGHT)?;
+    let mut viewport = InlineViewport::new(term, VIEWPORT_HEIGHT)?;
     let has_sessions = !initial_sessions.is_empty();
     let mut thread_id = None;
 
@@ -206,14 +207,14 @@ where
                     ]))?;
 
                     tracing::error!("Session channel closed, exiting");
-                    cleanup()?;
+                    cleanup(viewport.term_mut())?;
                     return Ok(true);
                 };
 
                 thread_id = Some(change.session_id.clone());
                 total_tokens_used = change.total_tokens_used;
                 thread_buffers.clear(); // for now, we can't properly restore themn
-                set_terminal_title(change.title.as_deref().unwrap_or(""));
+                set_terminal_title(viewport.term_mut(), change.title.as_deref().unwrap_or(""));
                 viewport.print_line_above(Line::from(""))?;
                 viewport.print_line_above(Line::from(Span::styled(
                     format!("✦ Loading session — thread {}", change.session_id),
@@ -228,7 +229,7 @@ where
                     ]))?;
 
                     tracing::error!("Sessions-updated channel closed, exiting");
-                    cleanup()?;
+                    cleanup(viewport.term_mut())?;
                     return Ok(true);
                 };
 
@@ -236,7 +237,7 @@ where
                 if let Some(ref tid) = thread_id
                     && let Some(info) = updates.get(tid)
                         && let Some(ref title) = info.title {
-                            set_terminal_title(title);
+                            set_terminal_title(viewport.term_mut(), title);
                         }
 
                 sessions.extend(updates);
@@ -263,14 +264,14 @@ where
                     ]))?;
 
                     tracing::error!("Detach-result channel closed, exiting");
-                    cleanup()?;
+                    cleanup(viewport.term_mut())?;
                     return Ok(true);
                 };
 
                 let action = pending_soft_detach.take();
                 match (result, action) {
                     (DetachResult::Idle, Some(SoftDetachAction::Quit)) => {
-                        cleanup()?;
+                        cleanup(viewport.term_mut())?;
                         return Ok(true);
                     }
                     (DetachResult::Idle, Some(SoftDetachAction::SwitchSession(target))) => {
@@ -322,7 +323,7 @@ where
 
                         tracing::error!("Display channel closed, exiting");
                     }
-                    cleanup()?;
+                    cleanup(viewport.term_mut())?;
                     return Ok(true);
                 };
                 let is_root = evt_thread_id.is_none() || evt_thread_id.as_ref() == thread_id.as_ref();
@@ -576,12 +577,11 @@ where
                 draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
             }
 
-            _ = poll_crossterm_event() => {
+            _ = events.wait_for_event() => {
                 let mut got_resize = false;
                 let mut any_change = false;
-                while event::poll(std::time::Duration::ZERO)? {
+                while let Some(event) = events.try_read_event()? {
                     any_change = true;
-                    let event = event::read()?;
                     if got_resize {
                         if matches!(event, Event::Resize(_, _)) {
                             continue;
@@ -660,11 +660,11 @@ where
                                             quit_picker = None;
                                             match result {
                                                 QuitPickerResult::ShutDown => {
-                                                    cleanup()?;
+                                                    cleanup(viewport.term_mut())?;
                                                     return Ok(false);
                                                 }
                                                 QuitPickerResult::KeepRunning => {
-                                                    cleanup()?;
+                                                    cleanup(viewport.term_mut())?;
                                                     return Ok(true);
                                                 }
                                                 QuitPickerResult::Cancelled => {
@@ -760,7 +760,7 @@ where
                                                     pending_soft_detach = Some(SoftDetachAction::Quit);
                                                     let _ = soft_detach_tx.send(());
                                                 } else {
-                                                    cleanup()?;
+                                                    cleanup(viewport.term_mut())?;
                                                     return Ok(true);
                                                 }
                                             }
@@ -863,8 +863,8 @@ where
 // ── Scroll-region helpers ───────────────────────────────────────────────────
 
 /// Print continuation lines with consistent indentation and diff-aware coloring.
-fn print_continuation_lines(
-    viewport: &mut InlineViewport,
+fn print_continuation_lines<T: TermOut>(
+    viewport: &mut InlineViewport<T>,
     lines: &[&str],
     indent: usize,
     base_style: Style,
@@ -887,7 +887,10 @@ fn print_continuation_lines(
     Ok(())
 }
 
-fn end_stream(viewport: &mut InlineViewport, mid_stream: &mut bool) -> Result<(), BoxError> {
+fn end_stream<T: TermOut>(
+    viewport: &mut InlineViewport<T>,
+    mid_stream: &mut bool,
+) -> Result<(), BoxError> {
     if *mid_stream {
         viewport.print_above(|w| write!(w, "\r\n"))?;
         *mid_stream = false;
@@ -895,7 +898,7 @@ fn end_stream(viewport: &mut InlineViewport, mid_stream: &mut bool) -> Result<()
     Ok(())
 }
 
-fn show_help(viewport: &mut InlineViewport) -> Result<(), BoxError> {
+fn show_help<T: TermOut>(viewport: &mut InlineViewport<T>) -> Result<(), BoxError> {
     const W: usize = 55;
     let bar: String = "─".repeat(W);
     let rows = [
@@ -947,8 +950,8 @@ fn show_help(viewport: &mut InlineViewport) -> Result<(), BoxError> {
 // ── Viewport drawing ────────────────────────────────────────────────────────
 
 #[expect(clippy::too_many_arguments, reason = "complex rendering logic")]
-fn draw_viewport(
-    viewport: &mut InlineViewport,
+fn draw_viewport<T: TermOut>(
+    viewport: &mut InlineViewport<T>,
     input: &TextInput,
     session_picker: &Option<SessionPicker>,
     model_picker: &Option<ModelPicker>,
@@ -1426,31 +1429,21 @@ fn render_status_row(
     frame.render_widget(line, area);
 }
 
-pub(crate) fn cleanup() -> Result<(), BoxError> {
-    let mut stdout = io::stdout();
+pub(crate) fn cleanup(term: &mut impl TermOut) -> Result<(), BoxError> {
     // Reset terminal title
-    write!(stdout, "\x1b]0;\x07")?;
-    queue!(stdout, event::DisableBracketedPaste)?;
-    queue!(stdout, ResetScrollRegion)?;
-    cterm::disable_raw_mode()?;
-    let rows = cterm::size()?.1;
-    queue!(stdout, cursor::MoveTo(0, rows))?;
-    queue!(stdout, cursor::Show)?;
-    writeln!(stdout)?;
-    stdout.flush()?;
+    write!(term, "\x1b]0;\x07")?;
+    queue!(term, event::DisableBracketedPaste)?;
+    queue!(term, ResetScrollRegion)?;
+    term.disable_raw_mode()?;
+    let rows = term.size()?.1;
+    queue!(term, cursor::MoveTo(0, rows))?;
+    queue!(term, cursor::Show)?;
+    writeln!(term)?;
+    term.flush()?;
     Ok(())
 }
 
-fn set_terminal_title(title: &str) {
-    let mut stdout = io::stdout();
-    let _ = write!(stdout, "\x1b]0;{}\x07", title);
-    let _ = stdout.flush();
-}
-
-pub(crate) async fn poll_crossterm_event() {
-    tokio::task::spawn_blocking(|| {
-        let _ = event::poll(std::time::Duration::from_millis(16));
-    })
-    .await
-    .ok();
+fn set_terminal_title(term: &mut impl TermOut, title: &str) {
+    let _ = write!(term, "\x1b]0;{}\x07", title);
+    let _ = term.flush();
 }

@@ -1,0 +1,34 @@
+---
+source: crates/infinity-agent-cli/tests/tui_flow_snapshots.rs
+expression: h.screen_with_scrollback()
+---
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                │
+│Infinity Agent CLI                                                              │
+│Type your messages below. /help for commands. Ctrl+C to exit.                   │
+│                                                                                │
+│> spawn and close                                                               │
+│[child-ab] ⚡timer: tick from the child                                         │
+│                                                                                │
+│▄▄▄▄▄▄▄▄▄▄                                                                      │
+│child-abcdef12 child working                                                    │
+│────────────────────────────────────────────────────────────────────────────────│
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│mock-model (/help for commands)                                  0% context used│
+└────────────────────────────────────────────────────────────────────────────────┘
+cursor: row=11 col=1

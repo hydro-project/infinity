@@ -1,0 +1,33 @@
+---
+source: crates/infinity-agent-cli/tests/tui_reflow_snapshots.rs
+expression: h.screen_with_scrollback()
+---
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ Infinity Agent CLI
+~ Type your messages below. /help for comm
+┌────────────────────────────────────────┐
+│ands. Ctrl+C to exit.                   │
+│                                        │
+│> stream                                │
+│this is a long sentence that wraps acros│
+│s multiple rows at forty columns        │
+│                                        │
+│██████████                              │
+│────────────────────────────────────────│
+│                                        │
+│                                        │
+│                                        │
+│mock-model (/help for commands)0% contex│
+└────────────────────────────────────────┘
+cursor: row=9 col=1

@@ -1,0 +1,33 @@
+---
+source: crates/infinity-agent-cli/tests/tui_widechar_snapshots.rs
+expression: h.screen_with_scrollback()
+---
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                │
+│                                                                                │
+│Infinity Agent CLI                                                              │
+│Type your messages below. /help for commands. Ctrl+C to exit.                   │
+│                                                                                │
+│> translate things                                                              │
+│                                                                                │
+│▄▄▄▄▄▄▄▄▄▄                                                                      │
+│child-cjk 这是一个很长的中文句子用来测试宽字符在线程行中的显示效果应该会溢出这是│
+│────────────────────────────────────────────────────────────────────────────────│
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│mock-model (/help for commands)                                  0% context used│
+└────────────────────────────────────────────────────────────────────────────────┘
+cursor: row=11 col=1

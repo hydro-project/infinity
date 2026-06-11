@@ -1,0 +1,50 @@
+---
+source: crates/infinity-agent-cli/tests/tui_flow_snapshots.rs
+expression: h.screen_with_scrollback()
+---
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ Infinity Agent CLI
+~ Type your messages below. /help for commands. Ctrl+C to exit.
+~ 
+~ > old session question
+~ old session answer
+~ 
+┌────────────────────────────────────────────────────────────────────────────────┐
+│✦ Loading session — thread replayed-session-0001                                │
+│                                                                                │
+│> replayed question one                                                         │
+│replayed answer one                                                             │
+│                                                                                │
+│◆ read_file(a.txt) ✓ contents                                                   │
+│more of answer one                                                              │
+│                                                                                │
+│> replayed question two                                                         │
+│replayed answer two                                                             │
+│                                                                                │
+│                                                                                │
+│replay-child replayed child activity                                            │
+│────────────────────────────────────────────────────────────────────────────────│
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│mock-model (/help for commands)                      replayed | 42% context used│
+└────────────────────────────────────────────────────────────────────────────────┘
+cursor: row=15 col=1
+title: Replayed session

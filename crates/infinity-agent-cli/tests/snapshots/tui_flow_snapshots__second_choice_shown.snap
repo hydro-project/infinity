@@ -1,0 +1,23 @@
+---
+source: crates/infinity-agent-cli/tests/tui_flow_snapshots.rs
+expression: h.screen()
+---
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│Infinity Agent CLI                                                              │
+│Type your messages below. /help for commands. Ctrl+C to exit.                   │
+│                                                                                │
+│                                                                                │
+│────────────────────────────────────────────────────────────────────────────────│
+│ Second question?                                                               │
+│   Red                                                                          │
+│ ▸ Green (default)                                                              │
+│   Blue                                                                         │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│↑↓ navigate  enter select  esc default                           0% context used│
+└────────────────────────────────────────────────────────────────────────────────┘
+cursor: row=15 col=80 (hidden)

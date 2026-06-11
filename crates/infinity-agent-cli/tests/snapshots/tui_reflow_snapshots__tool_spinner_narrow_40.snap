@@ -1,0 +1,43 @@
+---
+source: crates/infinity-agent-cli/tests/tui_reflow_snapshots.rs
+expression: h.screen_with_scrollback()
+---
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ Infinity Agent CLI
+~ Type your messages below. /help for comm
+~ ands. Ctrl+C to exit.
+~ 
+┌────────────────────────────────────────┐
+│> run a long command                    │
+│◆ execute_command(cargo build --workspac│
+│e --all-targets --verbose --verbose --ve│
+│rbose --verbose --verbose)              │
+│                                        │
+│██████████ waiting for tool call result │
+│────────────────────────────────────────│
+│────────────────────────────────────────│
+│                                        │
+│                                        │
+│██████████ waiting for tool call result │
+│────────────────────────────────────────│
+│                                        │
+│                                        │
+│                                        │
+│mock-model (/help for commands)0% contex│
+└────────────────────────────────────────┘
+cursor: row=13 col=1

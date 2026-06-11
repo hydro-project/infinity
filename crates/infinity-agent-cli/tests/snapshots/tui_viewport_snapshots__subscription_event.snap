@@ -1,0 +1,39 @@
+---
+source: crates/infinity-agent-cli/tests/tui_viewport_snapshots.rs
+expression: h.screen_with_scrollback()
+---
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ Infinity Agent CLI
+~ Type your messages below. /help for commands. Ctrl+C to exit.
+~ 
+~ scroll line 01
+┌────────────────────────────────────────────────────────────────────────────────┐
+│scroll line 02                                                                  │
+│scroll line 03                                                                  │
+│scroll line 04                                                                  │
+│⚡github_pr_comment:                                                            │
+│  new comment on PR #42                                                         │
+│  author: octocat                                                               │
+│  body: please fix the tests                                                    │
+│                                                                                │
+│▄▄▄▄▄▄▄▄▄▄                                                                      │
+│────────────────────────────────────────────────────────────────────────────────│
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│mock-model (/help for commands)                                  0% context used│
+└────────────────────────────────────────────────────────────────────────────────┘
+cursor: row=11 col=1

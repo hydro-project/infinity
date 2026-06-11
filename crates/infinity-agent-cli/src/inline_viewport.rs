@@ -1,4 +1,5 @@
 use crate::modifier_diff::ModifierDiff;
+use crate::term_io::TermOut;
 use ratatui::{
     buffer::Buffer,
     crossterm::{
@@ -28,14 +29,18 @@ impl Command for MoveToColumn {
     }
 }
 
-/// Move cursor down `n` lines and to column 1 using CSI CNL.
+/// Move cursor down `n` lines and to column 1.
+///
+/// Emits CUD (`CSI B`) followed by CR rather than CNL (`CSI E`): the two are
+/// equivalent, but CUD+CR is more widely supported by terminal
+/// implementations (including the `vt100` crate used in tests).
 struct MoveToNextLine(u16);
 impl Command for MoveToNextLine {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
         if self.0 == 0 {
             return Ok(());
         }
-        write!(f, "\x1b[{}E", self.0)
+        write!(f, "\x1b[{}B\r", self.0)
     }
 }
 
@@ -45,7 +50,11 @@ impl Command for MoveToNextLine {
 /// resize correctly by tracking the saved cursor row internally and
 /// calculating viewport content reflow, avoiding any terminal round-trips
 /// during resize that could race with the terminal's own reflow.
-pub struct InlineViewport {
+///
+/// All terminal output and queries go through the owned [`TermOut`], so the
+/// viewport can be driven against a virtual terminal in tests.
+pub struct InlineViewport<T: TermOut> {
+    term: T,
     height: u16,
     terminal_size: (u16, u16),
     viewport_y: u16,
@@ -123,36 +132,35 @@ fn write_spans<'a>(
     )
 }
 
-impl InlineViewport {
-    pub fn new(height: u16) -> io::Result<Self> {
-        let (_, rows) = cterm::size()?;
-        let mut stdout = io::stdout();
+impl<T: TermOut> InlineViewport<T> {
+    pub fn new(mut term: T, height: u16) -> io::Result<Self> {
+        let (_, rows) = term.size()?;
 
         // Scroll the screen up to make room for the viewport at the bottom.
-        queue!(stdout, cursor::MoveTo(0, rows.saturating_sub(1)))?;
+        queue!(term, cursor::MoveTo(0, rows.saturating_sub(1)))?;
         for _ in 0..height {
-            queue!(stdout, Print("\n"))?;
+            queue!(term, Print("\n"))?;
         }
 
         let viewport_y = rows.saturating_sub(height);
 
         for row in viewport_y..(viewport_y + height) {
-            queue!(stdout, cursor::MoveTo(0, row))?;
-            queue!(stdout, cterm::Clear(cterm::ClearType::CurrentLine))?;
+            queue!(term, cursor::MoveTo(0, row))?;
+            queue!(term, cterm::Clear(cterm::ClearType::CurrentLine))?;
         }
 
         let vp_top = viewport_y;
-        let terminal_size = cterm::size()?;
-        let mut stdout = io::stdout();
-        queue!(stdout, cursor::MoveTo(0, vp_top.saturating_sub(1)))?;
-        queue!(stdout, cursor::SavePosition)?;
+        let terminal_size = term.size()?;
+        queue!(term, cursor::MoveTo(0, vp_top.saturating_sub(1)))?;
+        queue!(term, cursor::SavePosition)?;
 
-        stdout.flush()?;
+        term.flush()?;
 
         // Buffer uses zero-based coordinates; draw() maps them via
         // relative cursor movement from the saved cursor position.
         let area = Rect::new(0, 0, terminal_size.0, height);
         Ok(Self {
+            term,
             height,
             viewport_y,
             last_effective_viewport_y: viewport_y,
@@ -161,6 +169,12 @@ impl InlineViewport {
             current: 0,
             request_clear: false,
         })
+    }
+
+    /// Direct access to the underlying terminal, e.g. for cleanup sequences
+    /// or setting the terminal title.
+    pub fn term_mut(&mut self) -> &mut T {
+        &mut self.term
     }
 
     pub fn area(&self) -> Rect {
@@ -173,7 +187,7 @@ impl InlineViewport {
     /// reflow from the buffer to determine the correct cursor position.
     /// All commands are queued and flushed once at the end.
     pub fn handle_resize(&mut self) -> io::Result<()> {
-        let new_terminal_size = cterm::size()?;
+        let new_terminal_size = self.term.size()?;
         if self.terminal_size == new_terminal_size {
             return Ok(());
         } else {
@@ -191,18 +205,18 @@ impl InlineViewport {
 
     pub fn print_above(
         &mut self,
-        writer: impl FnOnce(&mut io::Stdout) -> io::Result<()>,
+        writer: impl FnOnce(&mut T) -> io::Result<()>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut stdout = io::stdout();
+        let term = &mut self.term;
 
-        queue!(stdout, cursor::Hide)?;
-        queue!(stdout, SetScrollRegion(1..self.last_effective_viewport_y))?;
-        queue!(stdout, cursor::RestorePosition)?;
+        queue!(term, cursor::Hide)?;
+        queue!(term, SetScrollRegion(1..self.last_effective_viewport_y))?;
+        queue!(term, cursor::RestorePosition)?;
 
-        writer(&mut stdout)?;
+        writer(term)?;
 
-        queue!(stdout, cursor::SavePosition)?;
-        queue!(stdout, ResetScrollRegion)?;
+        queue!(term, cursor::SavePosition)?;
+        queue!(term, ResetScrollRegion)?;
 
         Ok(())
     }
@@ -254,7 +268,7 @@ impl InlineViewport {
         let previous = &self.buffers[1 - self.current];
         let current = &self.buffers[self.current];
 
-        let mut stdout = io::stdout();
+        let term = &mut self.term;
         let is_clearing_due_to_resize = self.request_clear;
         let (should_clear, updates) = if self.request_clear
             || ideal_viewport_y != self.last_effective_viewport_y
@@ -269,34 +283,33 @@ impl InlineViewport {
         // Restore the saved cursor (sits at end of scrollback, one row
         // above the viewport). All subsequent positioning is relative.
         if should_clear {
-            queue!(stdout, cursor::RestorePosition)?;
+            queue!(term, cursor::RestorePosition)?;
 
-            stdout.flush()?;
-            let cursor_position_here = cursor::position().expect("failed to get cursor position");
+            let cursor_position_here = term.cursor_position()?;
             self.viewport_y = cursor_position_here.1 + 1;
 
-            queue!(stdout, cterm::Clear(cterm::ClearType::FromCursorDown))?;
+            queue!(term, cterm::Clear(cterm::ClearType::FromCursorDown))?;
         }
 
-        queue!(stdout, cursor::RestorePosition)?;
-        queue!(stdout, cursor::Hide)?;
-        queue!(stdout, DisableWrap)?;
+        queue!(term, cursor::RestorePosition)?;
+        queue!(term, cursor::Hide)?;
+        queue!(term, DisableWrap)?;
 
         self.last_effective_viewport_y = self.viewport_y;
         if !is_clearing_due_to_resize {
             if ideal_viewport_y < self.viewport_y {
                 let shift_up = self.viewport_y - ideal_viewport_y;
-                queue!(stdout, MoveToNextLine(old_height))?;
+                queue!(term, MoveToNextLine(old_height))?;
                 for _ in 0..shift_up {
-                    queue!(stdout, Print("\r\n"))?;
+                    queue!(term, Print("\r\n"))?;
                     self.viewport_y -= 1;
                 }
-                queue!(stdout, cursor::RestorePosition)?;
-                queue!(stdout, cursor::MoveUp(shift_up))?;
-                queue!(stdout, cursor::SavePosition)?;
+                queue!(term, cursor::RestorePosition)?;
+                queue!(term, cursor::MoveUp(shift_up))?;
+                queue!(term, cursor::SavePosition)?;
                 self.last_effective_viewport_y = self.viewport_y;
             } else if ideal_viewport_y > self.viewport_y {
-                queue!(stdout, cursor::MoveTo(0, ideal_viewport_y - 1))?;
+                queue!(term, cursor::MoveTo(0, ideal_viewport_y - 1))?;
                 self.last_effective_viewport_y = ideal_viewport_y;
             }
         }
@@ -304,7 +317,7 @@ impl InlineViewport {
         // Track where the cursor currently is in buffer-local coords.
         let mut cur_row: u16 = 0;
         let mut cur_col: u16 = 0;
-        queue!(stdout, MoveToNextLine(1))?; // saved cursor is one row above the viewport
+        queue!(term, MoveToNextLine(1))?; // saved cursor is one row above the viewport
 
         for (x, y, cell) in &updates {
             let target_row = *y;
@@ -313,51 +326,51 @@ impl InlineViewport {
             // Move to the correct row relative to current position.
             let row_delta = target_row - cur_row;
             for _ in 0..row_delta {
-                queue!(stdout, MoveToNextLine(1))?;
+                queue!(term, MoveToNextLine(1))?;
                 cur_col = 0; // CNL moves to column 0
             }
             cur_row = target_row;
 
             // Move to the correct column.
             if target_col != cur_col {
-                queue!(stdout, MoveToColumn(target_col))?;
+                queue!(term, MoveToColumn(target_col))?;
                 cur_col = target_col;
             }
 
             queue!(
-                stdout,
+                term,
                 SetAttribute(ratatui::crossterm::style::Attribute::Reset)
             )?;
             let fg: Color = cell.fg;
-            queue!(stdout, SetForegroundColor(fg.into()))?;
+            queue!(term, SetForegroundColor(fg.into()))?;
             let bg: Color = cell.bg;
-            queue!(stdout, SetBackgroundColor(bg.into()))?;
+            queue!(term, SetBackgroundColor(bg.into()))?;
             let mods = cell.modifier;
             if mods.contains(Modifier::BOLD) {
                 queue!(
-                    stdout,
+                    term,
                     SetAttribute(ratatui::crossterm::style::Attribute::Bold)
                 )?;
             }
             if mods.contains(Modifier::DIM) {
                 queue!(
-                    stdout,
+                    term,
                     SetAttribute(ratatui::crossterm::style::Attribute::Dim)
                 )?;
             }
             if mods.contains(Modifier::ITALIC) {
                 queue!(
-                    stdout,
+                    term,
                     SetAttribute(ratatui::crossterm::style::Attribute::Italic)
                 )?;
             }
             if mods.contains(Modifier::UNDERLINED) {
                 queue!(
-                    stdout,
+                    term,
                     SetAttribute(ratatui::crossterm::style::Attribute::Underlined)
                 )?;
             }
-            queue!(stdout, Print(cell.symbol()))?;
+            queue!(term, Print(cell.symbol()))?;
 
             // Advance column tracking by the symbol's display width.
             cur_col += unicode_width::UnicodeWidthStr::width(cell.symbol()) as u16;
@@ -366,28 +379,28 @@ impl InlineViewport {
         if let Some(pos) = cursor_position {
             if cur_row == pos.y {
             } else if pos.y > cur_row {
-                queue!(stdout, MoveToNextLine(pos.y - cur_row))?;
+                queue!(term, MoveToNextLine(pos.y - cur_row))?;
                 cur_col = 0;
             } else {
-                queue!(stdout, cursor::MoveUp(cur_row - pos.y))?;
+                queue!(term, cursor::MoveUp(cur_row - pos.y))?;
             }
 
             if pos.x != cur_col {
-                queue!(stdout, MoveToColumn(pos.x))?;
+                queue!(term, MoveToColumn(pos.x))?;
             }
 
-            queue!(stdout, cursor::Show)?;
+            queue!(term, cursor::Show)?;
         } else {
-            queue!(stdout, cursor::Hide)?;
+            queue!(term, cursor::Hide)?;
         }
 
-        queue!(stdout, EnableWrap)?;
+        queue!(term, EnableWrap)?;
         queue!(
-            stdout,
+            term,
             SetAttribute(ratatui::crossterm::style::Attribute::Reset)
         )?;
 
-        stdout.flush()?;
+        term.flush()?;
         self.current = 1 - self.current;
         Ok(())
     }

@@ -1,0 +1,34 @@
+---
+source: crates/infinity-agent-cli/tests/tui_widechar_snapshots.rs
+expression: h.screen_with_scrollback()
+---
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ Infinity Agent CLI
+~ Type your messages below. /help for comm
+~ ands. Ctrl+C to exit.
+┌────────────────────────────────────────┐
+│                                        │
+│> 写一首诗                              │
+│春眠不觉晓，处处闻啼鸟。夜来风雨声，花落│
+│知多少。春眠不觉晓，处处闻啼鸟。夜来风雨│
+│声，花落知多少。                        │
+│                                        │
+│                                        │
+│────────────────────────────────────────│
+│                                        │
+│                                        │
+│                                        │
+│mock-model (/help for commands)0% contex│
+└────────────────────────────────────────┘
+cursor: row=9 col=1
