@@ -1,21 +1,19 @@
 //! `infinity-agent-cli rap install/update` — install RAP crates and register in rap.json.
 
 use crate::inline_viewport::InlineViewport;
+use crate::term_io::{CrosstermEvents, CrosstermTerm, EventSource, TermOut as _};
 use crate::terminal;
 use infinity_agent_core::tools::config::ToolsConfig;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::{
-    crossterm::{
-        event::{self, Event, KeyCode, KeyModifiers},
-        terminal as cterm,
-    },
+    crossterm::event::{Event, KeyCode, KeyModifiers},
     style::{Color, Style},
     text::{Line, Span},
 };
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
-use std::time::Instant;
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -38,7 +36,7 @@ pub use infinity_daemon::config::{load_config, providers_config_path, user_confi
 use infinity_daemon::models::{ProviderConfig, ProvidersConfig, load_providers_config};
 
 fn draw_spinner(
-    viewport: &mut InlineViewport,
+    viewport: &mut InlineViewport<CrosstermTerm>,
     start: &Instant,
     status: &str,
 ) -> Result<(), BoxError> {
@@ -58,7 +56,7 @@ fn draw_spinner(
 
 /// Stream `cargo install` output through the TUI viewport, with Ctrl+C support.
 async fn run_cargo_install(
-    viewport: &mut InlineViewport,
+    viewport: &mut InlineViewport<CrosstermTerm>,
     crate_name: &str,
     git: Option<&str>,
     path: Option<&str>,
@@ -97,6 +95,8 @@ async fn run_cargo_install(
     let status = format!("installing {crate_name}...");
     draw_spinner(viewport, &spinner_start, &status)?;
 
+    let mut events = CrosstermEvents;
+
     loop {
         tokio::select! {
             biased;
@@ -111,9 +111,9 @@ async fn run_cargo_install(
                     None => break,
                 }
             }
-            _ = terminal::poll_crossterm_event() => {
-                while event::poll(std::time::Duration::ZERO)? {
-                    if let Event::Key(key) = event::read()?
+            _ = events.wait_for_event() => {
+                while let Some(event) = events.try_read_event()? {
+                    if let Event::Key(key) = event
                         && matches!(key.code, KeyCode::Char('c'))
                             && key.modifiers.contains(KeyModifiers::CONTROL)
                         {
@@ -135,8 +135,9 @@ async fn run_cargo_install(
 }
 
 pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
-    cterm::enable_raw_mode()?;
-    let mut viewport = InlineViewport::new(2)?;
+    let mut term = CrosstermTerm::new();
+    term.enable_raw_mode()?;
+    let mut viewport = InlineViewport::new(term, 2)?;
 
     viewport.print_line_above(Line::from(Span::styled(
         format!("Installing {}...", args.crate_name),
@@ -157,7 +158,7 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
             Style::default().fg(Color::Red),
         )))?;
         viewport.draw(2, |_| {})?;
-        terminal::cleanup()?;
+        terminal::cleanup(viewport.term_mut())?;
         return Err(e);
     }
 
@@ -209,7 +210,7 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
         Style::default().fg(Color::Green),
     )))?;
     viewport.draw(2, |_| {})?;
-    terminal::cleanup()?;
+    terminal::cleanup(viewport.term_mut())?;
     Ok(())
 }
 
@@ -217,8 +218,9 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
 /// `~/.infinity/providers.json`. The crate's binary (assumed to share the
 /// crate's name) becomes the provider's command.
 pub async fn run_provider_install(args: ProviderInstallArgs) -> Result<(), BoxError> {
-    cterm::enable_raw_mode()?;
-    let mut viewport = InlineViewport::new(2)?;
+    let mut term = CrosstermTerm::new();
+    term.enable_raw_mode()?;
+    let mut viewport = InlineViewport::new(term, 2)?;
 
     viewport.print_line_above(Line::from(Span::styled(
         format!(
@@ -242,7 +244,7 @@ pub async fn run_provider_install(args: ProviderInstallArgs) -> Result<(), BoxEr
             Style::default().fg(Color::Red),
         )))?;
         viewport.draw(2, |_| {})?;
-        terminal::cleanup()?;
+        terminal::cleanup(viewport.term_mut())?;
         return Err(e);
     }
 
@@ -292,12 +294,14 @@ pub async fn run_provider_install(args: ProviderInstallArgs) -> Result<(), BoxEr
         Style::default().fg(Color::Green),
     )))?;
     viewport.draw(2, |_| {})?;
-    terminal::cleanup()?;
+    terminal::cleanup(viewport.term_mut())?;
     Ok(())
 }
 
 /// Update RAP tools, printing progress into an existing viewport. Returns names of failures.
-async fn update_rap_tools(viewport: &mut InlineViewport) -> Result<Vec<String>, BoxError> {
+async fn update_rap_tools(
+    viewport: &mut InlineViewport<CrosstermTerm>,
+) -> Result<Vec<String>, BoxError> {
     let config_path = user_config_path()?;
     let config = if config_path.exists() {
         load_config(&config_path)?
@@ -356,7 +360,9 @@ async fn update_rap_tools(viewport: &mut InlineViewport) -> Result<Vec<String>, 
 
 /// Update model providers that have a recorded source, printing progress
 /// into an existing viewport. Returns ids of failures.
-async fn update_providers(viewport: &mut InlineViewport) -> Result<Vec<String>, BoxError> {
+async fn update_providers(
+    viewport: &mut InlineViewport<CrosstermTerm>,
+) -> Result<Vec<String>, BoxError> {
     let config_path = providers_config_path()?;
     if !config_path.exists() {
         viewport.print_line_above(Line::from(Span::styled(
@@ -427,8 +433,9 @@ async fn update_providers(viewport: &mut InlineViewport) -> Result<Vec<String>, 
 
 /// `infinity provider update` — re-install all providers with recorded sources.
 pub async fn run_provider_update() -> Result<(), BoxError> {
-    cterm::enable_raw_mode()?;
-    let mut viewport = InlineViewport::new(2)?;
+    let mut term = CrosstermTerm::new();
+    term.enable_raw_mode()?;
+    let mut viewport = InlineViewport::new(term, 2)?;
 
     let failed = update_providers(&mut viewport).await?;
 
@@ -442,7 +449,7 @@ pub async fn run_provider_update() -> Result<(), BoxError> {
     };
     viewport.print_line_above(Line::from(summary))?;
     viewport.draw(2, |_| {})?;
-    terminal::cleanup()?;
+    terminal::cleanup(viewport.term_mut())?;
 
     if failed.is_empty() {
         Ok(())
@@ -461,7 +468,10 @@ fn installed_features() -> Vec<&'static str> {
 }
 
 /// Update the CLI binary itself, printing progress into an existing viewport.
-async fn update_cli(viewport: &mut InlineViewport, features: &[&str]) -> Result<(), BoxError> {
+async fn update_cli(
+    viewport: &mut InlineViewport<CrosstermTerm>,
+    features: &[&str],
+) -> Result<(), BoxError> {
     let (git, path) = detect_install_source()?;
 
     viewport.print_line_above(Line::from(Span::styled(
@@ -493,8 +503,9 @@ async fn update_cli(viewport: &mut InlineViewport, features: &[&str]) -> Result<
 }
 
 pub async fn run_update() -> Result<(), BoxError> {
-    cterm::enable_raw_mode()?;
-    let mut viewport = InlineViewport::new(2)?;
+    let mut term = CrosstermTerm::new();
+    term.enable_raw_mode()?;
+    let mut viewport = InlineViewport::new(term, 2)?;
 
     let failed = update_rap_tools(&mut viewport).await?;
 
@@ -508,7 +519,7 @@ pub async fn run_update() -> Result<(), BoxError> {
     };
     viewport.print_line_above(Line::from(summary))?;
     viewport.draw(2, |_| {})?;
-    terminal::cleanup()?;
+    terminal::cleanup(viewport.term_mut())?;
 
     if failed.is_empty() {
         Ok(())
@@ -557,8 +568,9 @@ fn detect_install_source() -> Result<(Option<String>, Option<String>), BoxError>
 }
 
 pub async fn run_self_update(features_override: Option<&str>) -> Result<(), BoxError> {
-    cterm::enable_raw_mode()?;
-    let mut viewport = InlineViewport::new(2)?;
+    let mut term = CrosstermTerm::new();
+    term.enable_raw_mode()?;
+    let mut viewport = InlineViewport::new(term, 2)?;
 
     let features: Vec<&str> = match features_override {
         Some("") => vec![],
@@ -572,7 +584,7 @@ pub async fn run_self_update(features_override: Option<&str>) -> Result<(), BoxE
 
     if let Err(e) = update_cli(&mut viewport, &features).await {
         viewport.draw(2, |_| {})?;
-        terminal::cleanup()?;
+        terminal::cleanup(viewport.term_mut())?;
         return Err(e);
     }
 
@@ -590,7 +602,7 @@ pub async fn run_self_update(features_override: Option<&str>) -> Result<(), BoxE
     };
     viewport.print_line_above(Line::from(summary))?;
     viewport.draw(2, |_| {})?;
-    terminal::cleanup()?;
+    terminal::cleanup(viewport.term_mut())?;
 
     if failed_count == 0 {
         Ok(())

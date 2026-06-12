@@ -1,0 +1,31 @@
+---
+source: crates/infinity-agent-cli/tests/tui_reflow_snapshots.rs
+expression: h.screen_with_scrollback()
+---
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+┌────────────────────────────────────────────────────────────────────────────────┐
+│Infinity Agent CLI                                                              │
+│Type your messages below. /help for commands. Ctrl+C to exit.                   │
+│                                                                                │
+│> stream                                                                        │
+│this is a long sentence that wra AND THE CONTINUATION AFTER WIDENING            │
+│                                                                                │
+│                                                                                │
+│────────────────────────────────────────────────────────────────────────────────│
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│mock-model (/help for commands)                                  0% context used│
+└────────────────────────────────────────────────────────────────────────────────┘
+cursor: row=9 col=1

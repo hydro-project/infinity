@@ -44,6 +44,13 @@ agent-client-protocol = { version = "0.11.1", features = ["unstable_session_mode
 [features]
 bundled-web = ["infinity-daemon/bundled-web"]
 
+[dev-dependencies]
+insta = { workspace = true }
+vt100 = { workspace = true }
+alacritty_terminal = { workspace = true }
+rig-mock = { path = "../rig-mock" }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time", "test-util"] }
+
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["signal"] }
 

@@ -482,6 +482,8 @@ async fn run_client(
     let models_for_switch = available_models.clone();
 
     let mut terminal_handle = tokio::task::spawn_local(infinity_agent_cli::terminal::run(
+        infinity_agent_cli::term_io::CrosstermTerm::new(),
+        infinity_agent_cli::term_io::CrosstermEvents,
         input_tx,
         display_rx,
         model_name,

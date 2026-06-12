@@ -1,0 +1,99 @@
+---
+source: crates/infinity-agent-cli/tests/tui_viewport_snapshots.rs
+expression: h.screen_with_scrollback()
+---
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ Infinity Agent CLI
+~ Type your messages below. /help for comm
+~ ands. Ctrl+C to exit.
+~ 
+~ ╭───────────────────────────────────────
+~ ────────────────╮
+~ │
+~                 │
+~ │  Slash Commands
+~                 │
+~ │    /help, /h          Show this help
+~                 │
+~ │    /quit, /q          Exit
+~                 │
+~ │    /new, /n           New session
+~                 │
+~ │    /load, /l          Load session
+~                 │
+~ │    /model, /m         Switch model
+~                 │
+~ │    /compact           Trigger compacti
+~ on              │
+~ │    /stop, /s          Stop agent
+~                 │
+~ │    /archive, /a       Archive session
+~                 │
+~ │
+~                 │
+~ │  Keyboard Shortcuts
+~                 │
+~ │    Ctrl+C / Ctrl+D    Exit
+~                 │
+~ │    Ctrl+N             New session
+~                 │
+~ │    Ctrl+L             Load session
+~                 │
+~ │    Ctrl+M             Switch model
+~                 │
+~ │    Ctrl+S             Stop agent
+~                 │
+~ │    Ctrl+H             Show this help
+~                 │
+~ │    Enter              Send message
+~                 │
+~ │
+~                 │
+~ │  Editing
+~                 │
+~ │    Alt+Enter/Ctrl+J   Insert newline
+~                 │
+~ │    Up / Down          Move cursor up/d
+~ own a line      │
+┌────────────────────────────────────────┐
+││    Ctrl+A / Ctrl+E    Move to line sta│
+│rt/end          │                       │
+││    Alt+Left / Alt+B   Move word left  │
+│                │                       │
+││    Alt+Right / Alt+F  Move word right │
+│                │                       │
+││    Alt+Backspace      Delete word left│
+│                │                       │
+││    Ctrl+C             Clear input (non│
+│-empty)         │                       │
+││                                       │
+│                │                       │
+│╰───────────────────────────────────────│
+│────────────────╯                       │
+│                                        │
+│────────────────────────────────────────│
+│                                        │
+│                                        │
+│                                        │
+│mock-model (/help for commands)0% contex│
+└────────────────────────────────────────┘
+cursor: row=17 col=1

@@ -1,0 +1,23 @@
+---
+source: crates/infinity-agent-cli/tests/tui_snapshots.rs
+expression: h.screen()
+---
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│Infinity Agent CLI                                                              │
+│Type your messages below. /help for commands. Ctrl+C to exit.                   │
+│                                                                                │
+│> hello there                                                                   │
+│Hi! How can I help you today?                                                   │
+│                                                                                │
+│                                                                                │
+│────────────────────────────────────────────────────────────────────────────────│
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│mock-model (/help for commands)                                  0% context used│
+└────────────────────────────────────────────────────────────────────────────────┘
+cursor: row=13 col=1

@@ -1,0 +1,40 @@
+---
+source: crates/infinity-agent-cli/tests/tui_reflow_snapshots.rs
+expression: h.screen_with_scrollback()
+---
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ Infinity Agent CLI
+~ Type your messages below. /help for commands. Ctrl
+~ +C to exit.
+~ 
+~ scroll line 01
+┌──────────────────────────────────────────────────┐
+│scroll line 02                                    │
+│scroll line 03                                    │
+│scroll line 04                                    │
+│scroll line 05                                    │
+│                                                  │
+│──────────────────────────────────────────────────│
+│──────────────                                    │
+│printed after picker resize                       │
+│                                                  │
+│──────────────────────────────────────────────────│
+│                                                  │
+│                                                  │
+│                                                  │
+│mock-model (/help for commands)    0% context used│
+└──────────────────────────────────────────────────┘
+cursor: row=11 col=1

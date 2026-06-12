@@ -1,0 +1,54 @@
+---
+source: crates/infinity-agent-cli/tests/tui_reflow_snapshots.rs
+expression: h.screen_with_scrollback()
+---
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ Infinity Agent CLI
+~ Type your messages below. /help for commands. Ctrl
+~ +C to exit.
+~ 
+~ line 01 lorem ipsum dolor sit amet lorem ipsum dol
+~ or sit amet lorem ipsum dolor sit amet
+~ line 02 lorem ipsum dolor sit amet lorem ipsum dol
+~ or sit amet lorem ipsum dolor sit amet
+~ line 03 lorem ipsum dolor sit amet lorem ipsum dol
+~ or sit amet lorem ipsum dolor sit amet
+~ line 04 lorem ipsum dolor sit amet lorem ipsum dol
+~ or sit amet lorem ipsum dolor sit amet
+~ line 05 lorem ipsum dolor sit amet lorem ipsum dol
+~ or sit amet lorem ipsum dolor sit amet
+~ line 06 lorem ipsum dolor sit amet lorem ipsum dol
+~ or sit amet lorem ipsum dolor sit amet
+~ line 07 lorem ipsum dolor sit amet lorem ipsum dol
+~ or sit amet lorem ipsum dolor sit amet
+~ line 08 lorem ipsum dolor sit amet lorem ipsum dol
+~ or sit amet lorem ipsum dolor sit amet
+~ line 09 lorem ipsum dolor sit amet lorem ipsum dol
+~ or sit amet lorem ipsum dolor sit amet
+~ line 10 lorem ipsum dolor sit amet lorem ipsum dol
+┌──────────────────────────────────────────────────┐
+│or sit amet lorem ipsum dolor sit amet            │
+│                                                  │
+│──────────────────────────────────────────────────│
+│──────────────────────────────                    │
+│                                                  │
+│                                                  │
+│                                                  │
+│──────────────────────────────────────────────────│
+│                                                  │
+│                                                  │
+│                                                  │
+│mock-model (/help for commands)    0% context used│
+└──────────────────────────────────────────────────┘
+cursor: row=9 col=1

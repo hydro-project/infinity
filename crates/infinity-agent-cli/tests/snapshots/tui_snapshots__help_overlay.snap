@@ -1,0 +1,47 @@
+---
+source: crates/infinity-agent-cli/tests/tui_snapshots.rs
+expression: h.screen()
+---
+┌────────────────────────────────────────────────────────────────────────────────┐
+│Infinity Agent CLI                                                              │
+│Type your messages below. /help for commands. Ctrl+C to exit.                   │
+│                                                                                │
+│╭───────────────────────────────────────────────────────╮                       │
+││                                                       │                       │
+││  Slash Commands                                       │                       │
+││    /help, /h          Show this help                  │                       │
+││    /quit, /q          Exit                            │                       │
+││    /new, /n           New session                     │                       │
+││    /load, /l          Load session                    │                       │
+││    /model, /m         Switch model                    │                       │
+││    /compact           Trigger compaction              │                       │
+││    /stop, /s          Stop agent                      │                       │
+││    /archive, /a       Archive session                 │                       │
+││                                                       │                       │
+││  Keyboard Shortcuts                                   │                       │
+││    Ctrl+C / Ctrl+D    Exit                            │                       │
+││    Ctrl+N             New session                     │                       │
+││    Ctrl+L             Load session                    │                       │
+││    Ctrl+M             Switch model                    │                       │
+││    Ctrl+S             Stop agent                      │                       │
+││    Ctrl+H             Show this help                  │                       │
+││    Enter              Send message                    │                       │
+││                                                       │                       │
+││  Editing                                              │                       │
+││    Alt+Enter/Ctrl+J   Insert newline                  │                       │
+││    Up / Down          Move cursor up/down a line      │                       │
+││    Ctrl+A / Ctrl+E    Move to line start/end          │                       │
+││    Alt+Left / Alt+B   Move word left                  │                       │
+││    Alt+Right / Alt+F  Move word right                 │                       │
+││    Alt+Backspace      Delete word left                │                       │
+││    Ctrl+C             Clear input (non-empty)         │                       │
+││                                                       │                       │
+│╰───────────────────────────────────────────────────────╯                       │
+│                                                                                │
+│────────────────────────────────────────────────────────────────────────────────│
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│mock-model (/help for commands)                                  0% context used│
+└────────────────────────────────────────────────────────────────────────────────┘
+cursor: row=37 col=1

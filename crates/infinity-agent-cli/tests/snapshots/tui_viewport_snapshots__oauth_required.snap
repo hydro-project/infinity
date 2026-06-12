@@ -1,0 +1,31 @@
+---
+source: crates/infinity-agent-cli/tests/tui_viewport_snapshots.rs
+expression: h.screen_with_scrollback()
+---
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+┌────────────────────────────────────────────────────────────────────────────────┐
+│Infinity Agent CLI                                                              │
+│Type your messages below. /help for commands. Ctrl+C to exit.                   │
+│                                                                                │
+│OAuth required — open this URL:                                                 │
+│                                 https://example.com/oauth/authorize?client_id=a│
+│bc123                                                                           │
+│                                                                                │
+│────────────────────────────────────────────────────────────────────────────────│
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│mock-model (/help for commands)                                  0% context used│
+└────────────────────────────────────────────────────────────────────────────────┘
+cursor: row=9 col=1

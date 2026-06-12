@@ -1,0 +1,22 @@
+---
+source: crates/infinity-agent-cli/tests/tui_flow_snapshots.rs
+expression: h.screen()
+---
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│Infinity Agent CLI                                                              │
+│Type your messages below. /help for commands. Ctrl+C to exit.                   │
+│                                                                                │
+│                                                                                │
+│✦ Loading session — thread busy-session-0001                                    │
+│                                                                                │
+│────────────────────────────────────────────────────────────────────────────────│
+│ Continue running agent in background                                           │
+│ Shut down agent                                                                │
+│                                                                                │
+│↑↓ navigate  enter select  esc cancel                 busy-ses | 5% context used│
+└────────────────────────────────────────────────────────────────────────────────┘
+cursor: row=13 col=37 (hidden)
+title: Busy session
