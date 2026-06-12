@@ -94,8 +94,13 @@ pub async fn thread_worker(
                     && let Some(r) = r
                 {
                     use rig::completion::GetTokenUsage;
-                    let tokens = r.token_usage().map_or(0, |u| u.total_tokens as usize);
-                    fwd_conversation_store.set_total_tokens_used(&fwd_group_id, tokens);
+                    // Only persist usage the provider actually reported; a
+                    // response without usage metadata must not reset the
+                    // stored total to zero.
+                    if let Some(usage) = r.token_usage() {
+                        fwd_conversation_store
+                            .set_total_tokens_used(&fwd_group_id, usage.total_tokens as usize);
+                    }
                     fwd_conversation_store
                         .set_last_updated(&fwd_group_id, &chrono::Utc::now().to_rfc3339());
                 }

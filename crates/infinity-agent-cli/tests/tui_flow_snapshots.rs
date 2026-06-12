@@ -108,6 +108,30 @@ async fn session_replay_burst() {
     insta::assert_snapshot!("replay_then_live", h.screen_with_scrollback());
 }
 
+/// Loading a session populates the context indicator from the session info
+/// in the Connected message; the replayed history carries no usage data and
+/// ends with a usage-less ResponseDone marker. Neither that marker nor a
+/// live response without usage metadata may reset the indicator to zero.
+#[tokio::test(start_paused = true)]
+async fn replay_keeps_context_usage() {
+    let h = TuiHarness::spawn(80, 14).await;
+
+    send_session(&h, "replayed-session-0001", "Replayed session", 42_000);
+    h.display(Evt::UserInput("replayed question".to_owned()));
+    h.display(Evt::StartOutput);
+    h.display(Evt::TextChunk {
+        chunk: "replayed answer".to_owned(),
+    });
+    // The end-of-replay marker daemon_client appends after the history.
+    h.display(Evt::ResponseDone(None));
+    // A response whose provider reported no usage must not reset it either.
+    h.display(Evt::ResponseDone(Some(MockStreamingResponse {
+        usage: None,
+    })));
+    h.settle().await;
+    insta::assert_snapshot!("replay_keeps_context_usage", h.screen());
+}
+
 /// Tool results rendered as a unified diff (Diff segment branch) and with
 /// no segments at all (bare " ✓" branch).
 #[tokio::test(start_paused = true)]
