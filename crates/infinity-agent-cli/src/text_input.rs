@@ -7,6 +7,7 @@ use ratatui::{
     widgets::Widget,
 };
 use std::cell::Cell;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const PAD_X: u16 = 1;
 const PAD_Y: u16 = 1;
@@ -146,7 +147,7 @@ impl TextInput {
         }
     }
 
-    /// Returns `(visual_row, char_column)` for the current cursor position
+    /// Returns `(visual_row, display_column)` for the current cursor position
     /// given a wrapping width.
     fn cursor_visual_pos(&self, wrap_w: usize) -> (usize, usize) {
         let lines = wrap_lines(&self.buf, wrap_w);
@@ -158,12 +159,12 @@ impl TextInput {
 
             if self.cursor >= line_byte_start && self.cursor <= line_byte_end {
                 let offset = self.cursor.saturating_sub(line_byte_start);
-                let col = line[..offset.min(line.len())].chars().count();
+                let col = line[..offset.min(line.len())].width();
 
                 // If the cursor is at the end of a line that fills the full
                 // width, it logically sits at col 0 of the next row (matching
                 // the same logic used in `render`).
-                let line_full = line.chars().count() >= wrap_w;
+                let line_full = line.width() >= wrap_w;
                 if offset == line.len() && line_full {
                     continue;
                 }
@@ -174,11 +175,11 @@ impl TextInput {
 
         // Fallback: cursor is past all content.
         if let Some(last) = lines.last() {
-            let last_full = last.chars().count() >= wrap_w;
+            let last_full = last.width() >= wrap_w;
             if last_full && self.cursor == self.buf.len() {
                 return (lines.len(), 0);
             }
-            return (lines.len().saturating_sub(1), last.chars().count());
+            return (lines.len().saturating_sub(1), last.width());
         }
 
         (0, 0)
@@ -191,13 +192,13 @@ impl TextInput {
         let lines = wrap_lines(&self.buf, wrap_w);
         let extra = lines
             .last()
-            .map(|l| l.chars().count() >= wrap_w && self.cursor == self.buf.len())
+            .map(|l| l.width() >= wrap_w && self.cursor == self.buf.len())
             .unwrap_or(false);
         lines.len() + extra as usize
     }
 
     /// Move the cursor to the given visual `(row, col)`, clamping the column
-    /// to the actual length of the target line.
+    /// to the actual width of the target line.
     fn set_cursor_to_visual_pos(&mut self, target_row: usize, target_col: usize, wrap_w: usize) {
         let new_cursor = {
             let lines = wrap_lines(&self.buf, wrap_w);
@@ -208,14 +209,18 @@ impl TextInput {
             } else {
                 let line = lines[target_row];
                 let line_byte_start = line.as_ptr() as usize - buf_start;
-                let char_count = line.chars().count();
-                let clamped_col = target_col.min(char_count);
 
-                let byte_offset = line
-                    .char_indices()
-                    .nth(clamped_col)
-                    .map(|(i, _)| i)
-                    .unwrap_or(line.len());
+                // Walk the line accumulating display widths to find the byte
+                // offset corresponding to the target column.
+                let mut byte_offset = line.len();
+                let mut acc = 0;
+                for (i, ch) in line.char_indices() {
+                    if acc >= target_col {
+                        byte_offset = i;
+                        break;
+                    }
+                    acc += ch.width().unwrap_or(0);
+                }
 
                 line_byte_start + byte_offset
             }
@@ -435,7 +440,7 @@ impl TextInput {
         // If the cursor sits past a full last line, it will render on an
         // extra row — make sure we reserve space for it.
         if let Some(last) = lines.last()
-            && last.chars().count() >= inner_w as usize
+            && last.width() >= inner_w as usize
             && self.cursor == self.buf.len()
         {
             text_rows += 1;
@@ -472,7 +477,8 @@ impl TextInput {
 
         let lines = wrap_lines(&self.buf, inner.width as usize);
 
-        // Find which visual line/col the cursor falls on
+        // Find which visual line/col the cursor falls on (col in display
+        // columns, so wide characters count as 2).
         let mut cursor_row: u16 = 0;
         let mut cursor_col: u16 = 0;
         let mut found_cursor = false;
@@ -483,12 +489,12 @@ impl TextInput {
             let line_byte_end = line_byte_start + line.len();
             if !found_cursor && self.cursor >= line_byte_start && self.cursor <= line_byte_end {
                 let offset = self.cursor.saturating_sub(line_byte_start);
-                let col = line[..offset.min(line.len())].chars().count();
+                let col = line[..offset.min(line.len())].width();
 
                 // If the cursor is at the end of a line that is exactly
-                // max_width chars wide, it should appear at column 0 of
+                // max_width columns wide, it should appear at column 0 of
                 // the next visual row (like a real text editor).
-                let line_full = line.chars().count() >= inner.width as usize;
+                let line_full = line.width() >= inner.width as usize;
                 if offset == line.len() && line_full {
                     // Let the next iteration (or the fallback below)
                     // place the cursor on the following row.
@@ -505,28 +511,34 @@ impl TextInput {
         // next row (happens when the last line is exactly full) or at the
         // end of the last line.
         if !found_cursor && let Some(last) = lines.last() {
-            let last_full = last.chars().count() >= inner.width as usize;
+            let last_full = last.width() >= inner.width as usize;
             if last_full && self.cursor == self.buf.len() {
                 cursor_row = lines.len() as u16;
                 cursor_col = 0;
             } else {
                 cursor_row = lines.len().saturating_sub(1) as u16;
-                cursor_col = last.chars().count() as u16;
+                cursor_col = last.width() as u16;
             }
         }
 
-        // Draw text
+        // Draw text, advancing by display width so wide characters occupy
+        // two columns (the cell after a wide char is skipped).
         for (row_idx, line) in lines.iter().enumerate() {
             let y = inner.y + row_idx as u16;
             if y >= inner.bottom() {
                 break;
             }
-            for (col_idx, ch) in line.chars().enumerate() {
-                let x = inner.x + col_idx as u16;
-                if x >= inner.right() {
+            let mut x = inner.x;
+            for ch in line.chars() {
+                let w = ch.width().unwrap_or(0) as u16;
+                if w == 0 {
+                    continue;
+                }
+                if x + w > inner.right() {
                     break;
                 }
                 buf[(x, y)].set_char(ch).set_fg(FG).set_bg(BG);
+                x += w;
             }
         }
 
@@ -567,20 +579,33 @@ fn wrap_lines<'a>(text: &'a str, max_width: usize) -> Vec<&'a str> {
 
         let mut remaining = segment;
         while !remaining.is_empty() {
-            let char_count = remaining.chars().count();
-            if char_count <= max_width {
+            if remaining.width() <= max_width {
                 lines.push(remaining);
                 break;
             }
 
-            // Find the byte index of the max_width-th character
-            let break_byte = remaining
-                .char_indices()
-                .nth(max_width)
-                .map(|(i, _)| i)
-                .unwrap_or(remaining.len());
+            // Find the byte index where the accumulated display width
+            // would exceed max_width.
+            let mut break_byte = remaining.len();
+            let mut acc = 0;
+            for (i, ch) in remaining.char_indices() {
+                let w = ch.width().unwrap_or(0);
+                if acc + w > max_width {
+                    break_byte = i;
+                    break;
+                }
+                acc += w;
+            }
+            // Guard against a single char wider than the wrap width.
+            if break_byte == 0 {
+                break_byte = remaining
+                    .chars()
+                    .next()
+                    .expect("bug: remaining is non-empty")
+                    .len_utf8();
+            }
 
-            // Try to break at the last space within the first max_width chars
+            // Try to break at the last space within the first max_width columns
             let seg = &remaining[..break_byte];
             if let Some(space_pos) = seg.rfind(' ') {
                 lines.push(&remaining[..space_pos]);

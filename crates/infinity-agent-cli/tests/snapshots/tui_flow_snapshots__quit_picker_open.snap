@@ -18,5 +18,5 @@ expression: h.screen()
 │                                                                                │
 │↑↓ navigate  enter select  esc cancel                 busy-ses | 5% context used│
 └────────────────────────────────────────────────────────────────────────────────┘
-cursor: row=13 col=37 (hidden)
+cursor: row=7 col=44 (hidden)
 title: Busy session

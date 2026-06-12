@@ -1,10 +1,6 @@
-//! Snapshot tests hunting for bugs around wide characters (CJK/emoji):
-//! display-width vs char-count confusion in `wrap_tail`, the text input,
-//! and the status row.
-//!
-//! These document current (possibly buggy) behavior — inspect the
-//! snapshots before trusting them as "correct". Rendered through the
-//! reflowing (`alacritty_terminal`) backend.
+//! Snapshot tests for wide characters (CJK/emoji): display-width vs
+//! char-count handling in `wrap_tail`, the text input, and the status row.
+//! Rendered through the reflowing (`alacritty_terminal`) backend.
 
 mod common;
 
@@ -17,8 +13,8 @@ type Evt = DisplayEvent<MockStreamingResponse>;
 // ── Wide characters (CJK / emoji) ───────────────────────────────────────────
 
 /// Child-thread activity rows trim their buffers with `wrap_tail`, which
-/// counts *characters* rather than display width — CJK text (2 columns per
-/// char) can overflow the row.
+/// measures display width — CJK text (2 columns per char) must not overflow
+/// the row, and the freshest (trailing) text stays visible.
 #[tokio::test(start_paused = true)]
 async fn thread_rows_with_cjk_overflow() {
     let h = TuiHarness::spawn_reflowing(80, 14).await;
@@ -33,13 +29,10 @@ async fn thread_rows_with_cjk_overflow() {
         },
     );
     h.settle().await;
-    // BUG: wrap_tail counts characters, not display columns — the 2-column
-    // CJK tail overflows the row and the freshest text (what the user most
-    // wants to see) is clipped off the right edge.
     insta::assert_snapshot!("thread_row_cjk", h.screen_with_scrollback());
 }
 
-/// Thinking text next to the spinner goes through the same char-counted
+/// Thinking text next to the spinner goes through the same width-aware
 /// `wrap_tail`; emoji are 2 columns wide.
 #[tokio::test(start_paused = true)]
 async fn thinking_text_with_emoji() {
@@ -52,8 +45,6 @@ async fn thinking_text_with_emoji() {
         chunk: "🚀🚀🚀 thinking with emoji 🎉🎉🎉 ".repeat(3),
     });
     h.settle().await;
-    // BUG: same char-vs-width confusion as the thread rows — the emoji tail
-    // is clipped at the right edge, hiding the most recent thinking text.
     insta::assert_snapshot!("thinking_emoji", h.screen_with_scrollback());
 }
 
@@ -81,14 +72,11 @@ async fn emoji_in_input_box() {
 
     h.type_str("deploy 🚀 the 🎉 rockets");
     h.settle().await;
-    // BUG: the space typed after each emoji is swallowed
-    // ("deploy 🚀the 🎉rockets") — input cursor/insert math treats the
-    // 2-column emoji as 1 column.
     insta::assert_snapshot!("emoji_input", h.screen_with_scrollback());
 }
 
-/// Emoji in the model name unbalances the status row, whose padding is
-/// computed from char counts rather than display width.
+/// Emoji in the model name must not unbalance the status row, whose padding
+/// is computed from display widths.
 #[tokio::test(start_paused = true)]
 async fn emoji_model_name_status_row() {
     let h = TuiHarness::spawn_with(HarnessOptions {
@@ -99,7 +87,5 @@ async fn emoji_model_name_status_row() {
         ..HarnessOptions::default()
     })
     .await;
-    // BUG: status-row padding is computed from char counts, so the 2-column
-    // emoji push the right side off the edge ("0% context us").
     insta::assert_snapshot!("emoji_status_row", h.screen_with_scrollback());
 }

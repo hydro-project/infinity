@@ -1,23 +1,46 @@
 ---
-source: crates/infinity-agent-cli/tests/tui_snapshots.rs
-expression: h.screen()
+source: crates/infinity-agent-cli/tests/tui_reflow_snapshots.rs
+expression: h.screen_with_scrollback()
 ---
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ Infinity Agent CLI
+~ Type your messages below. /help for comm
+~ ands. Ctrl+C to exit.
+~ 
+~ scroll line 01
+~ scroll line 02
+~ scroll line 03
+~ word01 word02 word03 word04 word05 word0
+~ 6 word07 word08 word09 word10 word11 wor
+~ d12 word13 word14 word15 word16 word17 w
+~ ord18
+~ 
+~ 
+~ 
+~ 
 ┌────────────────────────────────────────┐
 │                                        │
 │                                        │
 │                                        │
 │                                        │
-│Infinity Agent CLI                      │
-│Type your messages below. /help for comm│
 │                                        │
-│> tell me something long                │
-│This is a fairly long line of streaming │
 │                                        │
-│██████████                              │
+│                                        │
 │────────────────────────────────────────│
 │                                        │
 │                                        │
 │                                        │
 │mock-model (/help for …  0% context used│
 └────────────────────────────────────────┘
-cursor: row=13 col=1
+cursor: row=9 col=1

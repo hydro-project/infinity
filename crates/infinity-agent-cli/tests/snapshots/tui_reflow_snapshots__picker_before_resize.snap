@@ -32,4 +32,4 @@ expression: h.screen_with_scrollback()
 │                                                                                │
 │↑↓ navigate  enter select  esc cancel                            0% context used│
 └────────────────────────────────────────────────────────────────────────────────┘
-cursor: row=13 col=37 (hidden)
+cursor: row=7 col=14 (hidden)
