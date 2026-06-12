@@ -23,6 +23,6 @@ expression: h.screen_with_scrollback()
 │                                                                                │
 │                                                                                │
 │                                                                                │
-│🚀 rocket-model 🚀 (/help for commands)                            0% context us│
+│🚀 rocket-model 🚀 (/help for commands)                          0% context used│
 └────────────────────────────────────────────────────────────────────────────────┘
 cursor: row=9 col=1

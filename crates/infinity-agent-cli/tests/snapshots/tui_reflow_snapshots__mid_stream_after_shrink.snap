@@ -25,12 +25,9 @@ expression: h.screen_with_scrollback()
 ~ scroll line 04
 ~ scroll line 05
 ~ scroll line 06
-~ > stream please
-~ this sentence is interrupted by a resize
-~ 
 ┌────────────────────────────────────────────────────────────────────────────────┐
-│██████████                                                                      │
-│──────────────────────────────────────── and then keeps going afterwards        │
+│> stream please                                                                 │
+│this sentence is interrupted by a resize and then keeps going afterwards        │
 │                                                                                │
 │                                                                                │
 │────────────────────────────────────────────────────────────────────────────────│

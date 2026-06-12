@@ -12,10 +12,10 @@ expression: h.screen()
 │                                                                                │
 │Existing sessions found, /load or Ctrl+L to load.                               │
 │                                                                                │
-│                                                                                │
 │────────────────────────────────────────────────────────────────────────────────│
-│ Old title                                 idle     100tok  2025-01-01T00:00:00Z│
+│ Brand new session                      running     300tok  2025-01-03T00:00:00Z│
+│ Renamed title                             idle     200tok  2025-01-02T00:00:00Z│
 │                                                                                │
 │↑↓ navigate  enter select  esc cancel                            0% context used│
 └────────────────────────────────────────────────────────────────────────────────┘
-cursor: row=13 col=80 (hidden)
+cursor: row=7 col=49 (hidden)

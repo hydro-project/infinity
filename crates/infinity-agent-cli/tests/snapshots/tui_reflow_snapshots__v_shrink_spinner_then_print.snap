@@ -27,12 +27,9 @@ expression: h.screen_with_scrollback()
 ~ scroll line 06
 ~ scroll line 07
 ~ scroll line 08
-~ scroll line 09
-~ > go
-~ 
 ┌────────────────────────────────────────────────────────────────────────────────┐
-│▄▄▄▄▄▄▄▄▄▄                                                                      │
-│────                                                                            │
+│scroll line 09                                                                  │
+│> go                                                                            │
 │printed after spinner gone                                                      │
 │                                                                                │
 │────────────────────────────────────────────────────────────────────────────────│

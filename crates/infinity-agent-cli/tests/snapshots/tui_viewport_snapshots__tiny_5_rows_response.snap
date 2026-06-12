@@ -10,14 +10,11 @@ expression: h.screen_with_scrollback()
 ~ Infinity Agent CLI
 ~ Type your messages below. /help for commands. Ctrl+C to exit.
 ~ 
-~ 
 ~ > hello
-~ 
-~ a response that streams
 ┌────────────────────────────────────────────────────────────────────────────────┐
+│a response that streams                                                         │
 │                                                                                │
 │                                                                                │
-│────────────────────────────────────────────────────────────────────────────────│
 │                                                                                │
 │mock-model (/help for commands)                                  0% context used│
 └────────────────────────────────────────────────────────────────────────────────┘

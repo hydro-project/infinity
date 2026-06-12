@@ -1,9 +1,7 @@
 ---
 source: crates/infinity-agent-cli/tests/tui_reflow_snapshots.rs
-expression: h.screen_with_scrollback()
+expression: after
 ---
-~ 
-~ 
 ~ 
 ~ 
 ~ 
@@ -22,17 +20,19 @@ expression: h.screen_with_scrollback()
 ~ scroll line 01
 ~ scroll line 02
 ~ scroll line 03
-~ scroll line 04
-~ scroll line 05
-~ scroll line 06
-~ scroll line 07
-~ scroll line 08
-~ scroll line 09
+~ word01 word02 word03 word04 word05 word06 word07 word08 word09 word10 word11 wor
+~ d12 word13 word14 word15 word16 word17 word18
+~ 
+~ 
+~ 
+~ 
 ┌────────────────────────────────────────────────────────────────────────────────┐
-│> word01 word02 word03 word04 word05 word06 word07 word08 word09 word10 word11 w│
-│ord12 word13 word14 word15 word16 word17 word18 word19 word20 word21 word22 word│
-│23 word24 word25                                                                │
-│printed after spinner gone                                                      │
+│                                                                                │
+│printed after width dance 1                                                     │
+│printed after width dance 2                                                     │
+│printed after width dance 3                                                     │
+│                                                                                │
+│                                                                                │
 │                                                                                │
 │────────────────────────────────────────────────────────────────────────────────│
 │                                                                                │
@@ -40,4 +40,4 @@ expression: h.screen_with_scrollback()
 │                                                                                │
 │mock-model (/help for commands)                                  0% context used│
 └────────────────────────────────────────────────────────────────────────────────┘
-cursor: row=7 col=1
+cursor: row=9 col=1

@@ -18,7 +18,7 @@ expression: h.screen()
 │                                                                                │
 │                                                                                │
 │                                                                                │
-│mock-model (/help for commands)                                  0% context used│
+│mock-model (/help for commands)                      f00dcafe | 42% context used│
 └────────────────────────────────────────────────────────────────────────────────┘
-cursor: row=0 col=0 (hidden)
+cursor: row=13 col=1
 title: My fancy session

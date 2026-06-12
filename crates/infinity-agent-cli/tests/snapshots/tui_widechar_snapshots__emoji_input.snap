@@ -21,8 +21,8 @@ expression: h.screen_with_scrollback()
 │                                                                                │
 │────────────────────────────────────────────────────────────────────────────────│
 │                                                                                │
-│ deploy 🚀the 🎉rockets                                                         │
+│ deploy 🚀 the 🎉 rockets                                                       │
 │                                                                                │
 │mock-model (/help for commands)                                  0% context used│
 └────────────────────────────────────────────────────────────────────────────────┘
-cursor: row=9 col=23
+cursor: row=9 col=25
