@@ -704,6 +704,11 @@ fn spawn_agent_loop(
 
     let subscriber_map = Arc::new(std::sync::Mutex::new(HashMap::new()));
 
+    // Internal channel used by session_wrapper to tell the agent loop to wind
+    // down its thread workers (interrupting in-flight completions so they
+    // flush pending history) before the session is torn down.
+    let (worker_shutdown_tx, worker_shutdown_rx) = oneshot::channel();
+
     let agent_fut = agent_loop(
         session_id.clone(),
         agent_rx,
@@ -718,6 +723,7 @@ fn spawn_agent_loop(
         subscriber_map.clone(),
         active_threads.clone(),
         idle_tx.clone(),
+        worker_shutdown_rx,
     );
 
     let handle = tokio::task::spawn_local(session_wrapper(
@@ -729,6 +735,7 @@ fn spawn_agent_loop(
         active_threads,
         idle_rx,
         shutdown_rx,
+        worker_shutdown_tx,
         spawned_servers,
     ));
     (idle_tx, handle, subscriber_map)
@@ -751,16 +758,23 @@ async fn session_wrapper(
     active_threads: ActiveThreads,
     mut idle_rx: mpsc::UnboundedReceiver<()>,
     mut shutdown_rx: oneshot::Receiver<()>,
+    worker_shutdown_tx: oneshot::Sender<()>,
     mut spawned_servers: Vec<tokio::process::Child>,
 ) {
     // Determine why we exited: idle (no client) vs explicit shutdown.
     let idle_exited;
     tokio::pin!(agent_fut);
+    // Consumed by whichever arm initiates the wind-down.
+    let mut worker_shutdown_tx = Some(worker_shutdown_tx);
     loop {
         tokio::select! {
+            // Biased so that a completed agent_fut is always consumed by its
+            // own arm; the other arms may then safely `.await` it knowing it
+            // has not already returned Ready.
+            biased;
             _ = &mut agent_fut => {
-                // agent_loop returned (rx closed). Wait for workers to drain.
-                while idle_rx.try_recv().is_ok() {}
+                // agent_loop returned (rx closed). It joins all thread
+                // workers before returning, so nothing is left running.
                 idle_exited = {
                     let smap = subscriber_map.lock().expect("bug: mutex poisoned");
                     smap.values().all(|subs| subs.lock().expect("bug: mutex poisoned").iter().all(|tx| tx.is_closed()))
@@ -770,6 +784,14 @@ async fn session_wrapper(
             _ = &mut shutdown_rx => {
                 tracing::info!("Received `shutdown_rx`.");
                 conversation_store.clear_pending_choices(&session_id);
+                // Interrupt live thread workers and wait for them to flush
+                // pending history items (e.g. in-flight tool results) to the
+                // store before tearing the session down.
+                let _ = worker_shutdown_tx
+                    .take()
+                    .expect("bug: worker_shutdown_tx already taken")
+                    .send(());
+                (&mut agent_fut).await;
                 idle_exited = false;
                 break;
             }
@@ -793,6 +815,14 @@ async fn session_wrapper(
                 };
                 if !has_clients {
                     tracing::info!("Exiting agent {} due to idle", session_id);
+                    // Wind down the agent loop too. All workers are already
+                    // idle, so this returns promptly after joining their
+                    // finished tasks.
+                    let _ = worker_shutdown_tx
+                        .take()
+                        .expect("bug: worker_shutdown_tx already taken")
+                        .send(());
+                    (&mut agent_fut).await;
                     idle_exited = true;
                     break;
                 } else {
