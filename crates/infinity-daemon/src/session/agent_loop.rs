@@ -14,6 +14,7 @@ use crate::session::ActiveThreads;
 struct WorkerChannels {
     input_tx: mpsc::UnboundedSender<(infinity_agent_core::message::InputMessage, String)>,
     subscribe_tx: mpsc::UnboundedSender<SubscribeRequest>,
+    handle: tokio::task::JoinHandle<()>,
 }
 
 #[expect(
@@ -34,10 +35,20 @@ pub async fn agent_loop(
     subscriber_map: SubscriberMap,
     active_threads: ActiveThreads,
     idle_tx: mpsc::UnboundedSender<()>,
+    shutdown: tokio_util::sync::CancellationToken,
 ) {
     let mut workers: HashMap<String, WorkerChannels> = HashMap::new();
 
-    while let Some(msg) = rx.recv().await {
+    loop {
+        let msg = tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                tracing::info!("Agent loop for session {} received shutdown signal", session_id);
+                None
+            }
+            msg = rx.recv() => msg,
+        };
+        let Some(msg) = msg else { break };
         let thread_id = match &msg {
             AgentMessage::Input(input, _) => input.group_id.clone(),
             AgentMessage::Subscribe { thread_id, .. } => thread_id.clone(),
@@ -80,7 +91,7 @@ pub async fn agent_loop(
             .or_insert_with(|| Arc::new(std::sync::Mutex::new(parent_subs)))
             .clone();
 
-        tokio::task::spawn_local(rap_protocol::log_panic(
+        let handle = tokio::task::spawn_local(rap_protocol::log_panic(
             "thread_worker",
             thread_worker(
                 thread_id.clone(),
@@ -114,8 +125,27 @@ pub async fn agent_loop(
             WorkerChannels {
                 input_tx,
                 subscribe_tx,
+                handle,
             },
         );
+    }
+
+    // Wind down: dropping each worker's channels signals it to interrupt any
+    // in-flight completion (which flushes pending history items — e.g. tool
+    // results — to the store) and exit. Wait for every worker to finish so
+    // the session is not torn down underneath them.
+    let handles: Vec<(String, tokio::task::JoinHandle<()>)> = workers
+        .drain()
+        .map(|(thread_id, w)| (thread_id, w.handle))
+        .collect();
+    for (thread_id, handle) in handles {
+        if let Err(e) = handle.await {
+            if e.is_panic() {
+                tracing::error!("thread worker {thread_id} panicked during shutdown: {e}");
+            } else {
+                tracing::warn!("thread worker {thread_id} cancelled during shutdown: {e}");
+            }
+        }
     }
 }
 
@@ -193,6 +223,7 @@ mod tests {
         mpsc::UnboundedSender<AgentMessage>,
         mpsc::UnboundedReceiver<()>,
         ActiveThreads,
+        tokio_util::sync::CancellationToken,
     ) {
         let (agent_tx, agent_rx) = mpsc::unbounded_channel();
         let (idle_tx, idle_rx) = mpsc::unbounded_channel();
@@ -211,6 +242,7 @@ mod tests {
         let sender = InMemoryMessageSender::new(input_tx);
         let subscriber_map: SubscriberMap = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let active_threads = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let shutdown = tokio_util::sync::CancellationToken::new();
 
         tokio::task::spawn_local(agent_loop(
             session_id.into(),
@@ -226,9 +258,10 @@ mod tests {
             subscriber_map,
             active_threads.clone(),
             idle_tx,
+            shutdown.clone(),
         ));
 
-        (agent_tx, idle_rx, active_threads)
+        (agent_tx, idle_rx, active_threads, shutdown)
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -246,7 +279,8 @@ mod tests {
                     .await
                     .expect("spawn child thread");
 
-                let (tx, mut idle_rx, _) = spawn_test_agent_loop("root", conv, state, model).await;
+                let (tx, mut idle_rx, _, _shutdown) =
+                    spawn_test_agent_loop("root", conv, state, model).await;
 
                 tx.send(user_text_input("root", "hello root"))
                     .expect("send root user input");
@@ -298,7 +332,8 @@ mod tests {
                     .await
                     .expect("ensure root thread");
 
-                let (tx, mut idle_rx, _) = spawn_test_agent_loop("t1", conv, state, model).await;
+                let (tx, mut idle_rx, _, _shutdown) =
+                    spawn_test_agent_loop("t1", conv, state, model).await;
 
                 tx.send(user_text_input("t1", "first"))
                     .expect("send first user input");
@@ -328,6 +363,131 @@ mod tests {
             .await;
     }
 
+    /// Regression test: a tool result that arrived and is being processed by
+    /// the model (completion in flight) must be persisted to the conversation
+    /// store when the session is shut down. Shutdown interrupts the in-flight
+    /// completion (stripping trailing reasoning) and waits for every thread
+    /// worker to flush pending history items before the agent loop returns.
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_persists_in_flight_tool_result() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (conv, state, _dir) = tmp_stores();
+                let (model, mut ctrl) = mock_model();
+                conv.ensure_root_thread("t1")
+                    .await
+                    .expect("ensure root thread");
+
+                use async_trait::async_trait;
+                struct AsyncTool;
+                #[async_trait]
+                impl Tool<InMemoryMessageSender> for AsyncTool {
+                    fn name(&self) -> &str {
+                        "async_tool"
+                    }
+                    fn description(&self) -> &str {
+                        "a"
+                    }
+                    fn parameters(&self) -> serde_json::Value {
+                        serde_json::json!({"type":"object","properties":{}})
+                    }
+                    async fn execute(
+                        &self,
+                        _: serde_json::Value,
+                        _: String,
+                        _: Option<String>,
+                        _: &infinity_agent_core::tools::ToolContext<InMemoryMessageSender>,
+                    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                        Ok(())
+                    }
+                }
+
+                let (tx, mut idle_rx, active_threads, shutdown) = spawn_test_agent_loop_with_tools(
+                    "t1",
+                    conv.clone(),
+                    state,
+                    model,
+                    vec![Box::new(AsyncTool)],
+                    0,
+                )
+                .await;
+
+                // 1. User input → model issues an async tool call.
+                tx.send(user_text_input("t1", "do something"))
+                    .expect("send user input");
+                let _req = ctrl.next_request().await;
+                ctrl.send_tool_call("tc-1", "async_tool", serde_json::json!({}));
+                ctrl.finish();
+
+                // 2. The tool result arrives → the worker starts a new
+                //    completion. Waiting for the model request guarantees the
+                //    completion is in flight and the tool result is sitting in
+                //    the history manager's pending (unsynced) items.
+                tx.send(AgentMessage::Input(
+                    Box::new(InputMessage {
+                        content: InputMessageContent::User(UserContent::ToolResult(
+                            rig::message::ToolResult {
+                                id: "tc-1".into(),
+                                call_id: None,
+                                content: rig::OneOrMany::one(
+                                    rig::message::ToolResultContent::Text(rig::agent::Text {
+                                        text: "tool execution result".into(),
+                                    }),
+                                ),
+                            },
+                        )),
+                        group_id: "t1".into(),
+                        metadata: None,
+                        synthetic: None,
+                        display_as: None,
+                        subscription: false,
+                    }),
+                    uuid::Uuid::new_v4().to_string(),
+                ))
+                .expect("send tool result");
+                let _req2 = ctrl.next_request().await;
+
+                // 3. Shut down the session while the model is mid-response.
+                shutdown.cancel();
+
+                // 4. The worker interrupts the completion and exits; the
+                //    WorkerGuard pings idle when the last worker is done.
+                tokio::time::timeout(std::time::Duration::from_secs(5), idle_rx.recv())
+                    .await
+                    .expect("workers should wind down after shutdown");
+                assert!(
+                    active_threads
+                        .lock()
+                        .expect("bug: active_threads mutex poisoned")
+                        .is_empty(),
+                    "no thread workers should remain after shutdown"
+                );
+
+                // 5. The tool result must have been synced to the store.
+                let history = conv
+                    .load_history_up_to("t1", None, None)
+                    .await
+                    .expect("load history");
+                let has_tool_result = history.iter().any(|m| {
+                    if let infinity_agent_core::message::InfinityMessage::ToolResult {
+                        result, ..
+                    } = m
+                        && let rig::message::ToolResultContent::Text(t) = result.content.first()
+                    {
+                        result.id == "tc-1" && t.text.contains("tool execution result")
+                    } else {
+                        false
+                    }
+                });
+                assert!(
+                    has_tool_result,
+                    "in-flight tool result should be persisted on shutdown; history: {history:#?}"
+                );
+            })
+            .await;
+    }
+
     async fn spawn_test_agent_loop_with_tools(
         session_id: &str,
         conv: InMemoryConversationStore,
@@ -339,6 +499,7 @@ mod tests {
         mpsc::UnboundedSender<AgentMessage>,
         mpsc::UnboundedReceiver<()>,
         ActiveThreads,
+        tokio_util::sync::CancellationToken,
     ) {
         let (agent_tx, agent_rx) = mpsc::unbounded_channel();
         let (idle_tx, idle_rx) = mpsc::unbounded_channel();
@@ -357,6 +518,7 @@ mod tests {
         let sender = InMemoryMessageSender::new(input_tx);
         let subscriber_map: SubscriberMap = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let active_threads = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let shutdown = tokio_util::sync::CancellationToken::new();
 
         tokio::task::spawn_local(agent_loop(
             session_id.into(),
@@ -372,9 +534,10 @@ mod tests {
             subscriber_map,
             active_threads.clone(),
             idle_tx,
+            shutdown.clone(),
         ));
 
-        (agent_tx, idle_rx, active_threads)
+        (agent_tx, idle_rx, active_threads, shutdown)
     }
 
     /// Reproduces corruption when compaction triggers mid-tool-call:
@@ -430,7 +593,7 @@ mod tests {
                     ];
 
                 // context_window = 100, so 76 input tokens triggers compaction
-                let (tx, _idle_rx, _) =
+                let (tx, _idle_rx, _, _shutdown) =
                     spawn_test_agent_loop_with_tools("t1", conv.clone(), state, model, tools, 100)
                         .await;
 
@@ -633,7 +796,7 @@ mod tests {
                 ];
 
                 // context_window = 100
-                let (tx, _idle_rx, _) =
+                let (tx, _idle_rx, _, _shutdown) =
                     spawn_test_agent_loop_with_tools("t1", conv.clone(), state, model, tools, 100)
                         .await;
 
