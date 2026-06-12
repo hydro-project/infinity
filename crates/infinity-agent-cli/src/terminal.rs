@@ -418,8 +418,13 @@ where
                     }
                     DisplayEvent::ResponseDone(r) => {
                         if is_root {
-                            if let Some(r) = r {
-                                total_tokens_used = r.token_usage().map_or(0, |u| u.total_tokens as usize);
+                            // Only update the counter when the response actually
+                            // reports usage: a usage-less ResponseDone (e.g. the
+                            // marker appended after a session replay, or a provider
+                            // that omitted usage metadata) must not reset the
+                            // context indicator to zero.
+                            if let Some(u) = r.and_then(|r| r.token_usage()) {
+                                total_tokens_used = u.total_tokens as usize;
                             }
                             if spinner_state != Some(SpinnerState::WaitingToolCall) {
                                 spinner_state = None;
@@ -487,7 +492,8 @@ where
                                     viewport.print_line_above(Line::from(vec![]))?;
                                 }
                                 Some(rap_protocol::DisplaySegment::Text(t)) => {
-                                    let lines: Vec<&str> = t.lines().collect();
+                                    let sanitized = sanitize_external_text(t);
+                                    let lines: Vec<&str> = sanitized.lines().collect();
                                     if lines.len() <= 1 {
                                         let first = lines.first().copied().unwrap_or("");
                                         viewport.print_spans_above(Line::from(vec![
@@ -552,7 +558,8 @@ where
                     DisplayEvent::SubscriptionEvent { name, text } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
                         let pfx = if !is_root { format!("[{}] ", &child_tid[..child_tid.len().min(8)]) } else { String::new() };
-                        let lines: Vec<&str> = text.lines().collect();
+                        let sanitized = sanitize_external_text(&text);
+                        let lines: Vec<&str> = sanitized.lines().collect();
                         if lines.len() <= 1 {
                             // Single line: print inline
                             let first = lines.first().copied().unwrap_or("");
@@ -928,6 +935,53 @@ fn print_continuation_lines<T: TermOut>(
         ]))?;
     }
     Ok(())
+}
+
+/// Strip ANSI escape sequences and control characters (except tab and
+/// newline) from text that originates outside the TUI — raw tool results
+/// and subscription payloads can contain captured terminal output, which
+/// would otherwise corrupt the viewport (and trip `print_above`'s strict
+/// output tracking).
+fn sanitize_external_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' => match chars.next() {
+                // CSI: skip parameters until the final byte.
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('\x40'..='\x7e').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: skip until BEL or ST (ESC \).
+                Some(']') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\x07' {
+                            break;
+                        }
+                        if c == '\x1b' {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                // Two-byte escapes with an intermediate (e.g. charset
+                // designation `ESC ( B`): skip the final byte too.
+                Some('\x20'..='\x2f') => {
+                    chars.next();
+                }
+                // Single-byte escape (or end of text): already consumed.
+                _ => {}
+            },
+            '\t' | '\n' => out.push(c),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn end_stream<T: TermOut>(
