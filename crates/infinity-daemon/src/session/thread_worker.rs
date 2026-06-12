@@ -255,7 +255,17 @@ pub async fn thread_worker(
                     continue;
                 },
                 first = rx.recv() => {
-                    let Some(first) = first else { return };
+                    let Some(first) = first else {
+                        // Input channel closed — the session is shutting down.
+                        // Interrupt the in-flight completion and wait for it to
+                        // wind down so pending history items (e.g. a tool result
+                        // that was being processed) are synced to the store. The
+                        // cancellation path strips trailing reasoning before the
+                        // sync, so no partial thinking is persisted.
+                        let _ = completion_cancel_tx.take().expect("bug: cancel_tx missing during shutdown").send(());
+                        completion_fut.take().expect("bug: completion_fut missing during shutdown").await;
+                        return;
+                    };
                     let mut batch = vec![first];
                     while let Ok(item) = rx.try_recv() {
                         batch.push(item);
