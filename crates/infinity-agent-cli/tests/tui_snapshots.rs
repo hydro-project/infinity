@@ -93,9 +93,6 @@ async fn tool_call_and_result_replace_thinking() {
         )],
     });
     h.settle().await;
-    // BUG: the spinner row still reads "waiting for tool call result" even
-    // though the ✓ result is already rendered above — ToolResult clears
-    // neither the spinner state nor the thinking-text buffer.
     insta::assert_snapshot!("tool_call_and_result_same_batch", h.screen());
 
     h.display(Evt::StartOutput);
@@ -121,9 +118,6 @@ async fn resize_narrower_mid_stream() {
 
     h.resize(40, 16);
     h.settle().await;
-    // BUG: at narrow widths the status row's left and right halves collide with
-    // no separator and the right side is truncated mid-word
-    // ("…commands)0% contex").
     insta::assert_snapshot!("after_resize_narrow", h.screen());
 
     h.resize(80, 16);
@@ -194,9 +188,6 @@ async fn session_loaded_updates_title_and_status() {
         })
         .expect("UI task dropped session channel");
     h.settle().await;
-    // BUG: the session-change arm never redraws the viewport — the cursor is
-    // left hidden at (0,0) and the status row still shows "0% context used"
-    // despite total_tokens_used being 42_000.
     insta::assert_snapshot!(h.screen());
 }
 

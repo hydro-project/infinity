@@ -27,13 +27,13 @@ expression: h.screen_with_scrollback()
 │scroll line 04                                    │
 │scroll line 05                                    │
 │                                                  │
-│──────────────────────────────────────────────────│
-│──────────────                                    │
+│                                                  │
+│                                                  │
 │                                                  │
 │──────────────────────────────────────────────────│
 │ Mock Model                 100k ctx              │
 │ Mock Mini                   32k ctx              │
 │                                                  │
-│↑↓ navigate  enter select  esc cancel0% context us│
+│↑↓ navigate  enter select  esc c…  0% context used│
 └──────────────────────────────────────────────────┘
-cursor: row=13 col=49 (hidden)
+cursor: row=4 col=14 (hidden)

@@ -12,13 +12,15 @@ expression: h.screen_with_scrollback()
 ~ 
 ~ 
 ~ 
+~ 
+~ 
 ┌────────────────────────────────────────────────────────────────────────────────┐
-│                                                                                │
-│                                                                                │
 │Infinity Agent CLI                                                              │
 │Type your messages below. /help for commands. Ctrl+C to exit.                   │
 │                                                                                │
-│first info linesecond info linethird info line                                  │
+│first info line                                                                 │
+│second info line                                                                │
+│third info line                                                                 │
 │                                                                                │
 │────────────────────────────────────────────────────────────────────────────────│
 │                                                                                │

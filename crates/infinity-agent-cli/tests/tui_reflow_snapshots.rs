@@ -1,8 +1,9 @@
 //! Snapshot tests for resize/reflow behavior, rendered through
 //! `alacritty_terminal` — a virtual terminal that, like alacritty/kitty/VTE
-//! terminals, rewraps wrapped scrollback lines and translates the saved
-//! cursor on resize. This is the behavior class where the inline viewport's
-//! resize handling has historically been buggy.
+//! terminals, rewraps wrapped scrollback lines and translates the live
+//! cursor on resize (but merely clamps the DECSC saved cursor!). This is
+//! the behavior class where the inline viewport's resize handling has
+//! historically been buggy.
 //!
 //! See `common/mod.rs` for the harness; `tui_snapshots.rs` covers the
 //! non-reflowing (vt100) backend.
@@ -46,15 +47,10 @@ async fn wrapped_scrollback_reflows_on_resize() {
 
     h.resize(40, 16);
     h.settle().await;
-    // BUG: stale wrapped text rows remain inside the viewport area and the
-    // border is drawn three times; the status row floats mid-screen and the
-    // input row is gone. The viewport lost track of its position after reflow.
     insta::assert_snapshot!("reflow_wrapped_narrow_40", h.screen_with_scrollback());
 
     h.resize(100, 16);
     h.settle().await;
-    // BUG: a stale 80-column border fragment is left floating mid-screen, and
-    // the viewport is drawn one row too high (blank row below the status bar).
     insta::assert_snapshot!("reflow_wrapped_wide_100", h.screen_with_scrollback());
 }
 
@@ -76,14 +72,10 @@ async fn deep_wrapped_scrollback_narrow_resize() {
 
     h.resize(50, 12);
     h.settle().await;
-    // BUG: three stale border fragments are left inside the viewport area
-    // after the narrow resize reflows the deep scrollback.
     insta::assert_snapshot!("deep_scrollback_narrow_50", h.screen_with_scrollback());
 
     h.resize(80, 12);
     h.settle().await;
-    // BUG: a stale border fragment from the previous geometry remains
-    // mid-screen after widening back (two borders visible).
     insta::assert_snapshot!("deep_scrollback_back_80", h.screen_with_scrollback());
 }
 
@@ -132,8 +124,6 @@ async fn resize_during_tool_call_spinner() {
 
     h.resize(40, 16);
     h.settle().await;
-    // BUG: a ghost copy of the spinner row + border is left above the
-    // redrawn viewport ("waiting for tool call result" appears twice).
     insta::assert_snapshot!("tool_spinner_narrow_40", h.screen_with_scrollback());
 }
 
@@ -154,17 +144,12 @@ async fn vertical_shrink_next_to_spinner_change() {
 
     h.resize(80, 9);
     h.settle().await;
-    // BUG: the vertical shrink leaves a ghost spinner and a truncated border
-    // fragment ("────") on screen; the viewport anchor was not re-saved.
     insta::assert_snapshot!("v_shrink_spinner_after_resize", h.screen_with_scrollback());
 
     h.display(Evt::ResponseDone(None));
     h.settle().await;
     h.display(Evt::Info("printed after spinner gone".to_owned()));
     h.settle().await;
-    // BUG: the ghost spinner/border rows from the shrink are scrolled into
-    // permanent scrollback by the next print, corrupting history; the print
-    // itself lands below them instead of right after "> go".
     insta::assert_snapshot!("v_shrink_spinner_then_print", h.screen_with_scrollback());
 }
 
@@ -190,8 +175,6 @@ async fn vertical_shrink_overwrites_wrapped_content() {
 
     h.resize(80, 10);
     h.settle().await;
-    // BUG: two spinner rows are visible (ghost + live) and the viewport's
-    // top border is missing after the shrink.
     insta::assert_snapshot!(
         "v_shrink_overwrite_after_resize",
         h.screen_with_scrollback()
@@ -201,8 +184,6 @@ async fn vertical_shrink_overwrites_wrapped_content() {
     h.settle().await;
     h.display(Evt::Info("printed after spinner gone".to_owned()));
     h.settle().await;
-    // BUG: the print overwrites the viewport border row while the ghost
-    // spinner remains stranded above — misplaced redraw lands on content.
     insta::assert_snapshot!("v_shrink_overwrite_then_print", h.screen_with_scrollback());
 }
 
@@ -252,10 +233,69 @@ async fn vertical_shrink_mid_stream_partial_line() {
     });
     h.display(Evt::ResponseDone(None));
     h.settle().await;
-    // BUG: the stream continuation is printed on top of a stale border
-    // fragment ("──…── and then keeps going afterwards" merged on one row),
-    // with a ghost spinner row above the viewport.
     insta::assert_snapshot!("mid_stream_after_shrink", h.screen_with_scrollback());
+}
+
+/// Repeated resizes must not corrupt scrollback — including two width
+/// shrinks in a row that rewrap a long scrollback line (each shrink
+/// re-derives the anchor while the screen still holds viewport rows drawn
+/// for the previous geometry).
+///
+/// Width shrinks may push a few *blank* rows into scrollback: the terminal
+/// rewraps the old viewport rows into extra rows (pushing rows out the top)
+/// before the Resize event is even delivered. Stale viewport rows must never
+/// leak into scrollback, all content must survive verbatim, and the blank
+/// gap left on screen must be consumed by subsequent prints (the anchor
+/// advances into it) rather than persisting while new content scrolls.
+#[tokio::test(start_paused = true)]
+async fn repeated_resizes_do_not_accumulate() {
+    let h = TuiHarness::spawn_reflowing(80, 12).await;
+    for i in 1..=3 {
+        h.display(Evt::Info(format!("scroll line {i:02}")));
+    }
+    // 125 columns: wraps to 2 rows at 80, 3 at 60, 4 at 40.
+    let long: String = (1..=18)
+        .map(|i| format!("word{i:02}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    h.display(Evt::Info(long));
+    h.settle().await;
+    insta::assert_snapshot!("repeated_resizes_before", h.screen_with_scrollback());
+
+    // Two width shrinks in a row, each redrawn separately, then back.
+    h.resize(60, 12);
+    h.settle().await;
+    h.resize(40, 12);
+    h.settle().await;
+    insta::assert_snapshot!("repeated_resizes_double_shrink", h.screen_with_scrollback());
+    h.resize(80, 12);
+    h.settle().await;
+    insta::assert_snapshot!("repeated_resizes_back_wide", h.screen_with_scrollback());
+
+    // New prints consume the on-screen gap left by the resizes instead of
+    // scrolling past it: history must not grow.
+    let history_rows = h.screen_with_scrollback().matches("\n~ ").count();
+    for i in 1..=3 {
+        h.display(Evt::Info(format!("printed after width dance {i}")));
+    }
+    h.settle().await;
+    let after = h.screen_with_scrollback();
+    assert_eq!(
+        history_rows,
+        after.matches("\n~ ").count(),
+        "prints after a resize must fill the gap, not push more scrollback"
+    );
+    insta::assert_snapshot!("repeated_resizes_prints_fill_gap", after);
+
+    // Vertical shrink/grow cycles must not drift: blanks pushed by a shrink
+    // are pulled back out of history by the grow.
+    for _ in 0..3 {
+        h.resize(80, 8);
+        h.settle().await;
+        h.resize(80, 12);
+        h.settle().await;
+    }
+    insta::assert_snapshot!("repeated_resizes_after_cycles", h.screen_with_scrollback());
 }
 
 /// Several resize events coalescing in one poll batch with a keystroke in
@@ -274,8 +314,6 @@ async fn coalesced_resizes_with_key_between() {
     h.type_str("abc");
     h.resize(40, 10);
     h.settle().await;
-    // BUG: duplicated border rows after coalesced resizes, and the typed
-    // "abc" is not visible in the input row.
     insta::assert_snapshot!("coalesced_resizes", h.screen_with_scrollback());
 }
 
@@ -297,8 +335,6 @@ async fn resize_while_model_picker_open() {
 
     h.resize(50, 14);
     h.settle().await;
-    // BUG: a stale truncated border fragment sits between the scrollback and
-    // the picker after narrowing while the picker is open.
     insta::assert_snapshot!("picker_resized_narrow", h.screen_with_scrollback());
 
     // Close it after the resize and print — does the viewport recover?
@@ -306,8 +342,6 @@ async fn resize_while_model_picker_open() {
     h.settle().await;
     h.display(Evt::Info("printed after picker resize".to_owned()));
     h.settle().await;
-    // BUG: the stale border fragment persists above the printed line even
-    // after the picker is closed and the viewport redraws.
     insta::assert_snapshot!("picker_closed_after_resize", h.screen_with_scrollback());
 }
 
@@ -345,9 +379,6 @@ async fn vertical_shrink_under_session_picker() {
 
     h.resize(80, 6);
     h.settle().await;
-    // BUG: picker rows leak into scrollback and the status row is merged
-    // with a stale picker row
-    // ("↑↓ navigate  enter select  esc cancel      idle    4000tok  2025-0% context used").
     insta::assert_snapshot!("session_picker_shrunk_6", h.screen_with_scrollback());
 }
 
@@ -373,9 +404,6 @@ async fn widen_mid_stream_wrapped_line() {
     });
     h.display(Evt::ResponseDone(None));
     h.settle().await;
-    // BUG: data loss — the continuation chunk overwrites the middle of the
-    // reflowed sentence ("…that wra AND THE CONTINUATION…"); the words
-    // "ps across multiple rows at forty columns" are destroyed.
     insta::assert_snapshot!("widen_mid_stream_after", h.screen_with_scrollback());
 }
 
@@ -396,13 +424,9 @@ async fn print_races_resize_notification() {
     h.resize(80, 8);
     h.display(Evt::Info("printed during resize race".to_owned()));
     h.settle().await;
-    // BUG: "printed during resize race" is eaten entirely — the print used a
-    // scroll region computed from stale pre-resize coordinates.
     insta::assert_snapshot!("resize_race_vertical", h.screen_with_scrollback());
 
     h.display(Evt::Info("printed after race settled".to_owned()));
     h.settle().await;
-    // BUG: a duplicate status row is baked into screen content above the
-    // viewport, and a stray border row leaks into scrollback.
     insta::assert_snapshot!("resize_race_vertical_after", h.screen_with_scrollback());
 }

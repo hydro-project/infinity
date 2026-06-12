@@ -18,4 +18,4 @@ expression: h.screen()
 │                                                                                │
 │↑↓ navigate  enter select  esc cancel                            0% context used│
 └────────────────────────────────────────────────────────────────────────────────┘
-cursor: row=13 col=80 (hidden)
+cursor: row=7 col=49 (hidden)

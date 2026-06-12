@@ -2,14 +2,11 @@
 //! switch, detach/quit flows, choice queueing, paste, child-thread
 //! lifecycle, and tool-result display variants.
 //!
-//! The replay test reproduces the "viewport and scrollback get mixed up
+//! The replay test covers the "viewport and scrollback get mixed up
 //! during replay" class of corruption seen in terminals like zellij: a
 //! session load delivers the whole history as one burst of display events,
 //! toggling the spinner row (and thus the viewport height) many times
 //! between prints, all drained in a single biased-select pass.
-//!
-//! These tests document current (possibly buggy) behavior — inspect the
-//! snapshots before trusting them as "correct".
 
 mod common;
 
@@ -133,9 +130,6 @@ async fn diff_and_empty_tool_results() {
         )],
     });
     h.settle().await;
-    // BUG: the spinner row still reads "waiting for tool call result" even
-    // though the result has already been rendered — ToolResult clears neither
-    // the spinner state nor the thinking-text buffer.
     insta::assert_snapshot!("diff_tool_result", h.screen_with_scrollback());
 
     h.display(Evt::ToolCall {
@@ -146,8 +140,6 @@ async fn diff_and_empty_tool_results() {
     h.display(Evt::ToolResult { segments: vec![] });
     h.display(Evt::ResponseDone(None));
     h.settle().await;
-    // BUG: same as diff_tool_result — "waiting for tool call result" is
-    // still displayed after the (empty) result arrived.
     insta::assert_snapshot!("empty_tool_result", h.screen_with_scrollback());
 }
 
@@ -261,9 +253,6 @@ async fn lazy_new_session_after_detach() {
         .try_recv()
         .expect("idle detach should request session load");
     assert_eq!((target, stop), (None, false));
-    // BUG: the terminal title still shows "Current" (the old session's
-    // title) — switching to a lazily-created new session never resets the
-    // title set by the previous session.
     insta::assert_snapshot!("lazy_new_session", h.screen());
 }
 
@@ -307,7 +296,7 @@ async fn queued_choices_and_external_complete() {
 }
 
 /// Sessions-updated notifications arriving while the session picker is open
-/// must refresh the visible list (this arm has no redraw call).
+/// must refresh the visible list.
 #[tokio::test(start_paused = true)]
 async fn sessions_updated_while_picker_open() {
     let mut sessions = std::collections::HashMap::new();
@@ -362,10 +351,6 @@ async fn sessions_updated_while_picker_open() {
         .send(updates)
         .expect("bug: UI task dropped sessions-updated channel");
     h.settle().await;
-    // BUG: the visible list is unchanged — still one row with "Old title".
-    // The sessions_updated arm replaces the picker's session data but never
-    // redraws, so the rename and the brand-new session don't appear until
-    // some other event forces a redraw.
     insta::assert_snapshot!("picker_after_update", h.screen());
 }
 

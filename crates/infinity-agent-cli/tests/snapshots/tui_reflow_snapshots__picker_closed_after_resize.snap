@@ -20,16 +20,15 @@ expression: h.screen_with_scrollback()
 ~ Type your messages below. /help for commands. Ctrl
 ~ +C to exit.
 ~ 
-~ scroll line 01
 ┌──────────────────────────────────────────────────┐
+│scroll line 01                                    │
 │scroll line 02                                    │
 │scroll line 03                                    │
 │scroll line 04                                    │
 │scroll line 05                                    │
-│                                                  │
-│──────────────────────────────────────────────────│
-│──────────────                                    │
 │printed after picker resize                       │
+│                                                  │
+│                                                  │
 │                                                  │
 │──────────────────────────────────────────────────│
 │                                                  │
