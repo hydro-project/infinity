@@ -543,7 +543,10 @@ async fn run_client(
                                     let _ = display_tx.send(evt);
                                 }
                             }
-                            let _ = display_tx.send((None, DisplayEvent::ResponseDone(Some(DaemonTokenUsage(None)))));
+                            // End-of-replay marker: closes any open stream/spinner
+                            // state. Deliberately carries no usage info so it does
+                            // not clobber the total from the Connected message.
+                            let _ = display_tx.send((None, DisplayEvent::ResponseDone(None)));
                             for m in pending_choices {
                                 if let Some(evt) = daemon_msg_to_display(m) {
                                     let _ = display_tx.send(evt);
