@@ -13,14 +13,13 @@ expression: h.screen_with_scrollback()
 ~ 
 ~ 
 ~ 
-~ 
 ┌────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                │
 │Infinity Agent CLI                                                              │
 │Type your messages below. /help for commands. Ctrl+C to exit.                   │
 │                                                                                │
 │OAuth required — open this URL:                                                 │
-│                                 https://example.com/oauth/authorize?client_id=a│
-│bc123                                                                           │
+│  https://example.com/oauth/authorize?client_id=abc123                          │
 │                                                                                │
 │────────────────────────────────────────────────────────────────────────────────│
 │                                                                                │

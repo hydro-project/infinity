@@ -34,12 +34,14 @@ expression: h.screen_with_scrollback()
 ~ line 08 lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor
 ~ sit amet
 ~ line 09 lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor
+~ sit amet
+~ line 10 lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor
 ┌────────────────────────────────────────────────────────────────────────────────┐
 │sit amet                                                                        │
-│line 10 lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor │
-│sit amet                                                                        │
 │                                                                                │
-│────────────────────────────────────────────────────────────────────────────────│
+│                                                                                │
+│                                                                                │
+│                                                                                │
 │                                                                                │
 │                                                                                │
 │────────────────────────────────────────────────────────────────────────────────│

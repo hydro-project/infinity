@@ -14,12 +14,13 @@ expression: h.screen_with_scrollback()
 ~ 
 ~ 
 ~ 
+~ Infinity Agent CLI
 ┌────────────────────────────────────────────────────────────────────────────────┐
-│Infinity Agent CLI                                                              │
 │Type your messages below. /help for commands. Ctrl+C to exit.                   │
 │                                                                                │
 │> stream                                                                        │
-│this is a long sentence that wra AND THE CONTINUATION AFTER WIDENING            │
+│this is a long sentence that wraps across multiple rows at forty columns AND THE│
+│ CONTINUATION AFTER WIDENING                                                    │
 │                                                                                │
 │                                                                                │
 │────────────────────────────────────────────────────────────────────────────────│

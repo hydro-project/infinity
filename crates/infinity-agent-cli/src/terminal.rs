@@ -22,6 +22,7 @@ use ratatui::{
 };
 use rig::completion::GetTokenUsage;
 use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::io::Write;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
@@ -165,6 +166,9 @@ where
     let mut thread_buffers: BTreeMap<String, String> = BTreeMap::new();
     let mut thread_tool_call_active: HashSet<String> = HashSet::new();
     let mut thinking_text_buffer = String::new();
+    // Number of root-thread tool calls still awaiting their result; the
+    // "waiting for tool call result" spinner text is cleared when it hits 0.
+    let mut root_tool_calls_pending: usize = 0;
     // Tab-completion state: (prefix that was typed, current selection index)
     let mut tab_complete: Option<(String, usize)> = None;
     let mut pending_soft_detach: Option<SoftDetachAction> = None;
@@ -220,6 +224,7 @@ where
                     format!("✦ Loading session — thread {}", change.session_id),
                     Style::default().fg(Color::Cyan),
                 )))?;
+                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
             }
 
             updates = sessions_updated_rx.recv() => {
@@ -255,6 +260,8 @@ where
                         session_picker.selected = found;
                     }
                 }
+
+                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
             }
 
             result = detach_result_rx.recv() => {
@@ -283,11 +290,15 @@ where
                                     Style::default().fg(Color::Yellow),
                                 ),
                             ]))?;
+                            // The lazily-created session has no title yet;
+                            // drop the previous session's terminal title.
+                            set_terminal_title(viewport.term_mut(), "");
                         }
                         total_tokens_used = 0;
                         thread_buffers.clear();
                         thread_id = None;
                         spinner_state = None;
+                        root_tool_calls_pending = 0;
                     }
                     (DetachResult::NotIdle, Some(SoftDetachAction::Quit)) => {
                         quit_picker = Some(QuitPicker::new());
@@ -302,11 +313,13 @@ where
                                     Style::default().fg(Color::Yellow),
                                 ),
                             ]))?;
+                            set_terminal_title(viewport.term_mut(), "");
                         }
                         total_tokens_used = 0;
                         thread_buffers.clear();
                         thread_id = None;
                         spinner_state = None;
+                        root_tool_calls_pending = 0;
                         ui_mode = UiMode::Normal { choice_focused: false };
                     }
                     _ => {}
@@ -357,7 +370,11 @@ where
                             stream_start = true;
 
                             thinking_text_buffer.clear();
-                            if spinner_state == Some(SpinnerState::WaitingToolCall) {
+                            root_tool_calls_pending = 0;
+                            if matches!(
+                                spinner_state,
+                                Some(SpinnerState::WaitingToolCall | SpinnerState::Thinking)
+                            ) {
                                 spinner_state = Some(SpinnerState::Thinking);
                             } else {
                                 spinner_state = Some(SpinnerState::LoadingContext);
@@ -421,6 +438,7 @@ where
                         if is_root {
                             spinner_state = Some(SpinnerState::WaitingToolCall);
                             thinking_text_buffer.push_str("waiting for tool call result");
+                            root_tool_calls_pending += 1;
                             thinking_start = Instant::now();
                             viewport.print_line_above(Line::from(vec![
                                 Span::styled(format!("◆ {}", display_text), Style::default().fg(Color::Blue)),
@@ -438,6 +456,18 @@ where
                     }
                     DisplayEvent::ToolResult { segments } => {
                         if is_root {
+                            // The result arrived: once no more tool calls are
+                            // pending, stop showing "waiting for tool call
+                            // result" and switch the spinner back to thinking
+                            // (the model immediately continues its turn).
+                            root_tool_calls_pending = root_tool_calls_pending.saturating_sub(1);
+                            if root_tool_calls_pending == 0
+                                && spinner_state == Some(SpinnerState::WaitingToolCall)
+                            {
+                                spinner_state = Some(SpinnerState::Thinking);
+                                thinking_text_buffer.clear();
+                                thinking_start = Instant::now();
+                            }
                             // Find the first supported segment type.
                             // Terminal supports both "text" and "diff".
                             let first = segments.first();
@@ -493,7 +523,12 @@ where
                     }
                     DisplayEvent::Info(text) => {
                         end_stream(&mut viewport, &mut mid_stream)?;
-                        viewport.print_line_above(Line::from(text))?;
+                        // Print each line separately: ratatui `Line` drops
+                        // embedded newlines, and raw LF would not return the
+                        // cursor to column 0 in raw mode anyway.
+                        for line in text.lines() {
+                            viewport.print_line_above(Line::from(line.to_owned()))?;
+                        }
                     }
                     DisplayEvent::CompactionApplied => {
                         if is_root {
@@ -544,12 +579,16 @@ where
                     }
                     DisplayEvent::OAuthRequired { auth_url } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
-                        viewport.print_line_above(Line::from(vec![
-                            Span::styled(
-                                format!("OAuth required — open this URL:\n  {}", auth_url),
-                                Style::default().fg(Color::Yellow),
-                            ),
-                        ]))?;
+                        // Two separate prints: a raw LF inside a span would
+                        // not return to column 0 in raw mode (staircase).
+                        viewport.print_line_above(Line::from(vec![Span::styled(
+                            "OAuth required — open this URL:",
+                            Style::default().fg(Color::Yellow),
+                        )]))?;
+                        viewport.print_line_above(Line::from(vec![Span::styled(
+                            format!("  {}", auth_url),
+                            Style::default().fg(Color::Yellow),
+                        )]))?;
                     }
                     DisplayEvent::UserChoiceRequired { id, prompt, choices, default, .. } => {
                         choice_queue.push_back(PendingChoice { id, prompt, choices, default });
@@ -780,6 +819,7 @@ where
                                                     thread_buffers.clear();
                                                     thread_id = None;
                                                     spinner_state = None;
+                                                    root_tool_calls_pending = 0;
                                                 }
                                             }
                                             Some("/load") => {
@@ -809,6 +849,7 @@ where
                                                     ]))?;
                                                     thread_buffers.clear();
                                                     spinner_state = None;
+                                                    root_tool_calls_pending = 0;
                                                 } else {
                                                     viewport.print_line_above(Line::from(vec![
                                                         Span::styled("No active session to stop", Style::default().fg(Color::DarkGray)),
@@ -825,6 +866,8 @@ where
                                                     thread_buffers.clear();
                                                     thread_id = None;
                                                     spinner_state = None;
+                                                    root_tool_calls_pending = 0;
+                                                    set_terminal_title(viewport.term_mut(), "");
                                                 } else {
                                                     viewport.print_line_above(Line::from(vec![
                                                         Span::styled("No active session to archive", Style::default().fg(Color::DarkGray)),
@@ -900,7 +943,11 @@ fn end_stream<T: TermOut>(
 
 fn show_help<T: TermOut>(viewport: &mut InlineViewport<T>) -> Result<(), BoxError> {
     const W: usize = 55;
-    let bar: String = "─".repeat(W);
+    // Clamp the box to the terminal width so the rows don't wrap (wrapped
+    // box rows corrupt the scroll region on narrow terminals).
+    let width = viewport.area().width as usize;
+    let w = W.min(width.saturating_sub(2)).max(1);
+    let bar: String = "─".repeat(w);
     let rows = [
         "",
         "  Slash Commands",
@@ -935,7 +982,9 @@ fn show_help<T: TermOut>(viewport: &mut InlineViewport<T>) -> Result<(), BoxErro
     let mut help: Vec<String> = Vec::new();
     help.push(format!("╭{bar}╮"));
     for row in rows {
-        help.push(format!("│{:<W$}│", row));
+        // Truncate rows that don't fit the clamped width.
+        let truncated: String = row.chars().take(w).collect();
+        help.push(format!("│{:<w$}│", truncated));
     }
     help.push(format!("╰{bar}╯"));
     for line in &help {
@@ -1008,7 +1057,7 @@ fn draw_viewport<T: TermOut>(
     let thread_lines: Vec<Line<'_>> = thread_buffers
         .iter()
         .map(|(id, buf)| {
-            let prefix_len = id.chars().count() + 1;
+            let prefix_len = unicode_width::UnicodeWidthStr::width(id.as_str()) + 1;
             let avail = (current_width as usize).saturating_sub(prefix_len);
             let tail = wrap_tail(buf, avail);
             Line::from(vec![
@@ -1090,16 +1139,46 @@ fn draw_viewport<T: TermOut>(
     viewport.draw(desired_lines, |frame| {
         let area = frame.area();
 
+        // The viewport may be clamped shorter than desired on tiny terminals;
+        // shed the decorative rows (gap, then spinner, then border) before
+        // letting the layout squeeze the input or status rows.
+        let needed = 1
+            + u16::from(spinner_state.is_some())
+            + thread_rows
+            + 1
+            + autocomplete_rows
+            + content_height
+            + 1;
+        let mut deficit = needed.saturating_sub(area.height);
+        let mut show_gap = true;
+        let mut show_spinner = spinner_state.is_some();
+        let mut show_border = true;
+        if deficit > 0 {
+            show_gap = false;
+            deficit -= 1;
+        }
+        if deficit > 0 && show_spinner {
+            show_spinner = false;
+            deficit -= 1;
+        }
+        if deficit > 0 {
+            show_border = false;
+        }
+
         // Build constraints dynamically
         let mut constraints: Vec<Constraint> = Vec::new();
-        constraints.push(Constraint::Length(1));
-        if spinner_state.is_some() {
+        if show_gap {
+            constraints.push(Constraint::Length(1));
+        }
+        if show_spinner {
             constraints.push(Constraint::Length(1));
         }
         if thread_rows > 0 {
             constraints.push(Constraint::Length(thread_rows));
         }
-        constraints.push(Constraint::Length(1)); // border
+        if show_border {
+            constraints.push(Constraint::Length(1)); // border
+        }
         if autocomplete_rows > 0 {
             constraints.push(Constraint::Length(autocomplete_rows));
         }
@@ -1107,11 +1186,17 @@ fn draw_viewport<T: TermOut>(
         constraints.push(Constraint::Length(1)); // status
 
         let areas = Layout::vertical(constraints).split(area);
-        let mut idx = 1; // skip gap
+        let mut idx = usize::from(show_gap); // skip gap
 
         // Thinking bar
-        if let Some(state) = spinner_state {
-            render_thinking_bar(frame, areas[idx], thinking_start, thinking_text, state);
+        if show_spinner {
+            render_thinking_bar(
+                frame,
+                areas[idx],
+                thinking_start,
+                thinking_text,
+                spinner_state.expect("bug: show_spinner implies spinner_state"),
+            );
             idx += 1;
         }
 
@@ -1133,8 +1218,10 @@ fn draw_viewport<T: TermOut>(
         }
 
         // Border
-        frame.render_widget(Block::default().borders(Borders::TOP), areas[idx]);
-        idx += 1;
+        if show_border {
+            frame.render_widget(Block::default().borders(Borders::TOP), areas[idx]);
+            idx += 1;
+        }
 
         // Autocomplete hints (table layout)
         if autocomplete_rows > 0 {
@@ -1359,19 +1446,29 @@ pub(crate) fn render_thinking_bar(
 }
 
 /// Given a text buffer and an available column width, flatten newlines and
-/// return the trailing tail that fits. Snaps to the nearest word boundary so
-/// the display never starts mid-word. Shared by thread buffer lines and the
-/// thinking text display.
+/// return the trailing tail that fits. Measures display width (CJK/emoji are
+/// 2 columns), and snaps to the nearest word boundary so the display never
+/// starts mid-word. Shared by thread buffer lines and the thinking text
+/// display.
 fn wrap_tail(text: &str, avail: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+
     let avail = avail.max(1);
     let flat = text.replace('\n', " ");
     let chars: Vec<char> = flat.chars().collect();
-    if chars.len() <= avail {
+    let widths: Vec<usize> = chars.iter().map(|c| c.width().unwrap_or(0)).collect();
+    let total_width: usize = widths.iter().sum();
+    if total_width <= avail {
         return flat;
     }
 
-    // Start of the last `avail` characters.
-    let cut = chars.len() - avail;
+    // Find the start of the longest suffix that fits in `avail` columns.
+    let mut cut = chars.len();
+    let mut used = 0;
+    while cut > 0 && used + widths[cut - 1] <= avail {
+        used += widths[cut - 1];
+        cut -= 1;
+    }
 
     // Scan forward from the cut to the next space so we don't start mid-word.
     let mut start = cut;
@@ -1390,40 +1487,59 @@ fn wrap_tail(text: &str, avail: usize) -> String {
     chars[start..].iter().collect()
 }
 
+/// Truncate `s` to at most `max_width` display columns, returning the
+/// truncated string and its actual display width.
+fn truncate_to_width(s: &str, max_width: usize) -> (String, usize) {
+    use unicode_width::UnicodeWidthChar;
+
+    let mut out = String::new();
+    let mut width = 0;
+    for ch in s.chars() {
+        let w = ch.width().unwrap_or(0);
+        if width + w > max_width {
+            break;
+        }
+        out.push(ch);
+        width += w;
+    }
+    (out, width)
+}
+
 fn render_status_row(
     frame: &mut crate::inline_viewport::ViewportFrame,
     area: ratatui::layout::Rect,
     left: &str,
     right: &str,
 ) {
+    use unicode_width::UnicodeWidthStr;
+
     let w = area.width as usize;
     if w == 0 {
         return;
     }
 
-    // Pad the middle so left and right are flush to their edges
-    let left_len = left.chars().count().min(w);
-    let right_len = right.chars().count().min(w.saturating_sub(left_len));
-    let pad = w.saturating_sub(left_len + right_len);
+    // The right side (thread id / context usage) is kept whole when possible;
+    // the left side is truncated (with an ellipsis) to leave at least a
+    // two-space gap. All measurements are display widths, so wide characters
+    // (CJK/emoji) don't unbalance the padding.
+    let (right_text, right_w) = truncate_to_width(right, w);
+    let left_max = w.saturating_sub(right_w + 2);
+    let (left_text, left_w) = if left.width() <= left_max {
+        (left.to_owned(), left.width())
+    } else {
+        let (mut truncated, mut tw) = truncate_to_width(left, left_max.saturating_sub(1));
+        if left_max > 0 {
+            truncated.push('…');
+            tw += 1;
+        }
+        (truncated, tw)
+    };
+    let pad = w.saturating_sub(left_w + right_w);
 
     let line = Line::from(vec![
-        Span::styled(
-            &left[..left
-                .char_indices()
-                .nth(left_len)
-                .map(|(i, _)| i)
-                .unwrap_or(left.len())],
-            Style::default().fg(Color::Rgb(140, 140, 140)),
-        ),
+        Span::styled(left_text, Style::default().fg(Color::Rgb(140, 140, 140))),
         Span::raw(" ".repeat(pad)),
-        Span::styled(
-            &right[..right
-                .char_indices()
-                .nth(right_len)
-                .map(|(i, _)| i)
-                .unwrap_or(right.len())],
-            Style::default().fg(Color::Rgb(140, 140, 140)),
-        ),
+        Span::styled(right_text, Style::default().fg(Color::Rgb(140, 140, 140))),
     ]);
 
     frame.render_widget(line, area);
