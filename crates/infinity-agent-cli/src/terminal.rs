@@ -424,8 +424,13 @@ where
                     }
                     DisplayEvent::ResponseDone(r) => {
                         if is_root {
-                            if let Some(r) = r {
-                                total_tokens_used = r.token_usage().map_or(0, |u| u.total_tokens as usize);
+                            // Only update the counter when the response actually
+                            // reports usage: a usage-less ResponseDone (e.g. the
+                            // marker appended after a session replay, or a provider
+                            // that omitted usage metadata) must not reset the
+                            // context indicator to zero.
+                            if let Some(u) = r.and_then(|r| r.token_usage()) {
+                                total_tokens_used = u.total_tokens as usize;
                             }
                             if spinner_state != Some(SpinnerState::WaitingToolCall) {
                                 spinner_state = None;
