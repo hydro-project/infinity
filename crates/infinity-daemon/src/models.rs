@@ -299,7 +299,11 @@ impl ModelCatalog {
             if provider_map.contains_key(&provider_id) {
                 return Err(format!("duplicate model provider id: {provider_id}").into());
             }
-            for entry in provider.list_models().await? {
+            for entry in provider
+                .list_models()
+                .await
+                .map_err(|e| format!("failed to list models from provider {provider_id}: {e}"))?
+            {
                 models.push(CatalogModel {
                     provider_id: provider_id.clone(),
                     entry,
