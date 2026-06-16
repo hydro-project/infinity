@@ -755,25 +755,36 @@ export function App() {
   // Edge hover zones for unpinned panels, with velocity-based flick detection
   const EDGE_SIZE = 16;
   const DEHOVER_BUFFER = 40;
-  const VELOCITY_THRESHOLD = 3200; // px/s
+  const VELOCITY_THRESHOLD = 4800; // px/s
+  const Y_VELOCITY_MAX = 400; // px/s
   const SMOOTHING = 0.3; // exponential moving average factor
-  const lastMouseRef = useRef({ x: 0, t: 0, vx: 0 });
+  const lastMouseRef = useRef({ x: 0, y: 0, t: 0, vx: 0, vy: 0 });
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
       const now = performance.now();
       const dt = (now - lastMouseRef.current.t) / 1000;
       const dx = e.clientX - lastMouseRef.current.x;
+      const dy = e.clientY - lastMouseRef.current.y;
       const instantVx = dt > 0 ? dx / dt : 0;
+      const instantVy = dt > 0 ? dy / dt : 0;
       const vx =
         lastMouseRef.current.t === 0
           ? instantVx
           : SMOOTHING * instantVx + (1 - SMOOTHING) * lastMouseRef.current.vx;
-      lastMouseRef.current = { x: e.clientX, t: now, vx };
+      const vy =
+        lastMouseRef.current.t === 0
+          ? instantVy
+          : SMOOTHING * instantVy + (1 - SMOOTHING) * lastMouseRef.current.vy;
+      lastMouseRef.current = { x: e.clientX, y: e.clientY, t: now, vx, vy };
+
+      const horizontalFlick = Math.abs(vy) < Y_VELOCITY_MAX;
 
       if (!sidebarPinned) {
         if (
           e.clientX <= EDGE_SIZE ||
-          (vx < -VELOCITY_THRESHOLD && e.clientX <= sidebarWidth + 12)
+          (horizontalFlick &&
+            vx < -VELOCITY_THRESHOLD &&
+            e.clientX <= sidebarWidth + 12)
         ) {
           setSidebarHover(true);
         } else if (
@@ -787,7 +798,9 @@ export function App() {
         const fromRight = window.innerWidth - e.clientX;
         if (
           fromRight <= EDGE_SIZE ||
-          (vx > VELOCITY_THRESHOLD && fromRight <= chatPanelWidth + 12)
+          (horizontalFlick &&
+            vx > VELOCITY_THRESHOLD &&
+            fromRight <= chatPanelWidth + 12)
         ) {
           setChatHover(true);
         } else if (
