@@ -33,7 +33,7 @@ chrono-tz = { workspace = true }
 hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "http1"] }
 http-body-util = "0.1"
-tokio-util = { version = "0.7", features = ["codec"] }
+tokio-util = { version = "0.7", features = ["codec", "rt"] }
 bytes = "1"
 dirs = "6"
 tokio-tungstenite = "0.26"
