@@ -256,7 +256,7 @@ impl SessionManager {
         // Resolve the thread's own selected model (falling back to the global
         // default if it is no longer available).
         let selected = self.conversation_store.get_thread_model(thread_id);
-        let (_, entry, _) = self.catalog.resolve(&selected);
+        let (model_ref, entry, _) = self.catalog.resolve(&selected);
         DaemonMessage::Connected {
             session_id: session_id.to_owned(),
             thread_id: thread_id.to_owned(),
@@ -264,6 +264,7 @@ impl SessionManager {
             context_window: entry.context_window,
             title: self.conversation_store.get_thread_title(session_id),
             total_tokens_used: self.conversation_store.get_total_tokens_used(session_id),
+            provider_id: model_ref.provider_id,
         }
     }
 

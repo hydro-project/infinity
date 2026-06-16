@@ -73,6 +73,7 @@ fn prefix_daemon_message(msg: DaemonMessage, remote_name: &str) -> DaemonMessage
             context_window,
             title,
             total_tokens_used,
+            provider_id,
         } => DaemonMessage::Connected {
             session_id: format!("{remote_name}/{session_id}"),
             thread_id: format!("{remote_name}/{thread_id}"),
@@ -80,6 +81,7 @@ fn prefix_daemon_message(msg: DaemonMessage, remote_name: &str) -> DaemonMessage
             context_window,
             title,
             total_tokens_used,
+            provider_id,
         },
         DaemonMessage::StartOutput { thread_id } => DaemonMessage::StartOutput {
             thread_id: prefix_thread_id(thread_id, remote_name),

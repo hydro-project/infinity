@@ -333,6 +333,7 @@ pub struct HarnessOptions {
     pub cols: u16,
     pub rows: u16,
     pub model_name: String,
+    pub provider_id: String,
     pub context_window: usize,
     pub initial_sessions: HashMap<String, SessionInfo>,
     pub available_models: Vec<ModelInfo>,
@@ -346,6 +347,7 @@ impl Default for HarnessOptions {
             cols: 80,
             rows: 20,
             model_name: "mock-model".to_owned(),
+            provider_id: "mock".to_owned(),
             context_window: 100_000,
             initial_sessions: HashMap::new(),
             available_models: vec![
@@ -438,6 +440,7 @@ impl TuiHarness {
             input_tx,
             display_rx,
             opts.model_name,
+            opts.provider_id,
             opts.context_window,
             opts.initial_sessions,
             load_session_tx,

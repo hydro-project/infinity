@@ -1,5 +1,6 @@
 ---
 source: crates/infinity-agent-cli/tests/tui_flow_snapshots.rs
+assertion_line: 250
 expression: h.screen()
 ---
 ┌────────────────────────────────────────────────────────────────────────────────┐
@@ -16,7 +17,7 @@ expression: h.screen()
 │ Continue running agent in background                                           │
 │ Shut down agent                                                                │
 │                                                                                │
-│↑↓ navigate  enter select  esc cancel                 busy-ses | 5% context used│
+│↑↓ navigate  enter select  esc cancel              mock: mock-model · 5% context│
 └────────────────────────────────────────────────────────────────────────────────┘
 cursor: row=7 col=44 (hidden)
 title: Busy session

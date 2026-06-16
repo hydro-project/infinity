@@ -1,5 +1,6 @@
 ---
 source: crates/infinity-agent-cli/tests/tui_flow_snapshots.rs
+assertion_line: 352
 expression: h.screen()
 ---
 ┌────────────────────────────────────────────────────────────────────────────────┐
@@ -16,6 +17,6 @@ expression: h.screen()
 │────────────────────────────────────────────────────────────────────────────────│
 │ Old title                                 idle     100tok  2025-01-01T00:00:00Z│
 │                                                                                │
-│↑↓ navigate  enter select  esc cancel                            0% context used│
+│↑↓ navigate  enter select  esc cancel              mock: mock-model · 0% context│
 └────────────────────────────────────────────────────────────────────────────────┘
 cursor: row=7 col=49 (hidden)

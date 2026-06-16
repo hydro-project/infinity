@@ -447,10 +447,6 @@ async fn run_client(
     if let Some(info) = startup_info {
         let _ = display_tx.send((None, DisplayEvent::Info(info)));
     }
-    let _ = display_tx.send((
-        None,
-        DisplayEvent::Info(format!("Using provider {} ({})", provider_name, model_name)),
-    ));
 
     // If --session was provided, connect to it immediately (supports prefix matching).
     if let Some(ref session_id) = session {
@@ -487,6 +483,7 @@ async fn run_client(
         input_tx,
         display_rx,
         model_name,
+        provider_name,
         context_window,
         sessions,
         load_session_tx,
@@ -529,9 +526,9 @@ async fn run_client(
                         break;
                     };
                     match msg {
-                        DaemonMessage::Connected { session_id, title, total_tokens_used, model_name, context_window, .. } => {
+                        DaemonMessage::Connected { session_id, title, total_tokens_used, model_name, context_window, provider_id, .. } => {
                             active_session = Some(session_id.clone());
-                            let _ = session_tx.send(SessionChanged { session_id, title, total_tokens_used, model_name, context_window });
+                            let _ = session_tx.send(SessionChanged { session_id, title, total_tokens_used, model_name, context_window, provider_id });
                             for text in pending_input.drain(..) {
                                 let sid = active_session.as_ref().expect("bug: active_session should be set after Connected").clone();
                                 let _ = to_daemon.send(ClientMessage::UserInput { session_id: sid, text });

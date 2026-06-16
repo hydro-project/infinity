@@ -138,6 +138,8 @@ pub enum DaemonMessage {
         context_window: usize,
         title: Option<String>,
         total_tokens_used: usize,
+        #[serde(default)]
+        provider_id: String,
     },
     StartOutput {
         thread_id: Option<String>,

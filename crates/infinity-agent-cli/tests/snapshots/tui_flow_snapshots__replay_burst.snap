@@ -1,5 +1,6 @@
 ---
 source: crates/infinity-agent-cli/tests/tui_flow_snapshots.rs
+assertion_line: 101
 expression: h.screen_with_scrollback()
 ---
 ~ 
@@ -44,7 +45,7 @@ expression: h.screen_with_scrollback()
 │                                                                                │
 │                                                                                │
 │                                                                                │
-│mock-model (/help for commands)                      replayed | 42% context used│
+│replayed | /help for commands                     mock: mock-model · 42% context│
 └────────────────────────────────────────────────────────────────────────────────┘
 cursor: row=15 col=1
 title: Replayed session

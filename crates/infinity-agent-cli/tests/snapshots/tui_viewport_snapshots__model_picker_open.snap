@@ -31,6 +31,6 @@ expression: h.screen_with_scrollback()
 │ Mock Model                 100k ctx                                            │
 │ Mock Mini                   32k ctx                                            │
 │                                                                                │
-│↑↓ navigate  enter select  esc cancel                            0% context used│
+│↑↓ navigate  enter select  esc cancel              mock: mock-model · 0% context│
 └────────────────────────────────────────────────────────────────────────────────┘
 cursor: row=5 col=14 (hidden)
