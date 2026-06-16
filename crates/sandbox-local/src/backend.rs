@@ -144,7 +144,15 @@ impl LocalBackend {
 /// Check if a jj bookmark's commit is empty (no changes) using a synchronous command.
 fn jj_bookmark_is_empty(dir: &Path, bookmark: &str) -> bool {
     Command::new("jj")
-        .args(["log", "--no-graph", "-r", bookmark, "-T", "empty"])
+        .args([
+            "--ignore-working-copy",
+            "log",
+            "--no-graph",
+            "-r",
+            bookmark,
+            "-T",
+            "empty",
+        ])
         .current_dir(dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -176,12 +184,12 @@ impl Drop for LocalBackend {
                 SandboxMode::Jj { .. } => {
                     if jj_bookmark_is_empty(dir, &branch) {
                         let _ = Command::new("jj")
-                            .args(["abandon", &branch])
+                            .args(["--ignore-working-copy", "abandon", &branch])
                             .current_dir(dir)
                             .status();
                     }
                     let _ = Command::new("jj")
-                        .args(["workspace", "forget"])
+                        .args(["--ignore-working-copy", "workspace", "forget"])
                         .current_dir(dir)
                         .status();
                     let _ = std::fs::remove_dir_all(dir);
@@ -497,7 +505,7 @@ impl SandboxBackend for LocalBackend {
                         .remote_uri,
                 );
                 if orig.join(".git").exists()
-                    && let Err(e) = run_jj(&orig, &["git", "export"]).await
+                    && let Err(e) = run_jj(&orig, &["--ignore-working-copy", "git", "export"]).await
                 {
                     tracing::warn!(error = %e, "jj git export failed");
                 }
@@ -536,9 +544,9 @@ impl SandboxBackend for LocalBackend {
         match &entry.state.mode {
             SandboxMode::Jj { .. } => {
                 if jj::jj_bookmark_is_empty(dir, &branch).await {
-                    let _ = run_jj(dir, &["abandon", &branch]).await;
+                    let _ = run_jj(dir, &["--ignore-working-copy", "abandon", &branch]).await;
                 }
-                let _ = run_jj(dir, &["workspace", "forget"]).await;
+                let _ = run_jj(dir, &["--ignore-working-copy", "workspace", "forget"]).await;
                 if dir.exists() {
                     std::fs::remove_dir_all(dir).map_err(SandboxError::Io)?;
                 }

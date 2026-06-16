@@ -156,10 +156,21 @@ pub async fn jj_detect_external_bookmark_move(dir: &Path, bookmark_name: &str) -
 
 /// Check if a bookmark's commit is empty (no file changes).
 pub async fn jj_bookmark_is_empty(dir: &Path, bookmark: &str) -> bool {
-    run_jj(dir, &["log", "--no-graph", "-r", bookmark, "-T", "empty"])
-        .await
-        .map(|s| s == "true")
-        .unwrap_or(false)
+    run_jj(
+        dir,
+        &[
+            "--ignore-working-copy",
+            "log",
+            "--no-graph",
+            "-r",
+            bookmark,
+            "-T",
+            "empty",
+        ],
+    )
+    .await
+    .map(|s| s == "true")
+    .unwrap_or(false)
 }
 
 /// Read the configured jj user from a repo directory.
