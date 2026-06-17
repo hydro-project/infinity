@@ -206,6 +206,7 @@ async fn session_loaded_updates_model_name() {
             total_tokens_used: 10_000,
             model_name: "Mock Mini".to_owned(),
             context_window: 32_000,
+            provider_id: "mock".to_owned(),
         })
         .expect("UI task dropped session channel");
     h.settle().await;

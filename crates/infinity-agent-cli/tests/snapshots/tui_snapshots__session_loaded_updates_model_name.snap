@@ -1,6 +1,6 @@
 ---
 source: crates/infinity-agent-cli/tests/tui_snapshots.rs
-assertion_line: 211
+assertion_line: 213
 expression: h.screen()
 ---
 ┌────────────────────────────────────────────────────────────────────────────────┐
@@ -19,7 +19,7 @@ expression: h.screen()
 │                                                                                │
 │                                                                                │
 │                                                                                │
-│Mock Mini (/help for commands)                        aaa-bbb | 31% context used│
+│aaa-bbb | /help for commands                       mock: Mock Mini · 31% context│
 └────────────────────────────────────────────────────────────────────────────────┘
 cursor: row=13 col=1
 title: Other model session
