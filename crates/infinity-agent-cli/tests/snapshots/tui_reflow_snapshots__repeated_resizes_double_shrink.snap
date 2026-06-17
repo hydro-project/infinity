@@ -41,6 +41,6 @@ expression: h.screen_with_scrollback()
 │                                        │
 │                                        │
 │                                        │
-│mock-model (/help for …  0% context used│
+│/help fo…  mock: mock-model · 0% context│
 └────────────────────────────────────────┘
 cursor: row=9 col=1

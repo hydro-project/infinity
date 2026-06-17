@@ -16,6 +16,6 @@ expression: h.screen()
 │ Brand new session                      running     300tok  2025-01-03T00:00:00Z│
 │ Renamed title                             idle     200tok  2025-01-02T00:00:00Z│
 │                                                                                │
-│↑↓ navigate  enter select  esc cancel                            0% context used│
+│↑↓ navigate  enter select  esc cancel              mock: mock-model · 0% context│
 └────────────────────────────────────────────────────────────────────────────────┘
 cursor: row=7 col=49 (hidden)

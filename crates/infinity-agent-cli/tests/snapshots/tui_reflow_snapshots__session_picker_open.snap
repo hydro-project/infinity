@@ -29,6 +29,6 @@ expression: h.screen_with_scrollback()
 │ Session number 5                          idle    5000tok  2025-01-05T00:00:00Z│
 │ Session number 4                          idle    4000tok  2025-01-04T00:00:00Z│
 │                                                                                │
-│↑↓ navigate  enter select  esc cancel                            0% context used│
+│↑↓ navigate  enter select  esc cancel              mock: mock-model · 0% context│
 └────────────────────────────────────────────────────────────────────────────────┘
 cursor: row=4 col=49 (hidden)

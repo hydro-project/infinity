@@ -64,6 +64,7 @@ export function App() {
   const [sessions, setSessions] = useState<Record<string, SessionInfo>>({});
   const [_models, setModels] = useState<ModelInfo[]>([]);
   const [modelName, setModelName] = useState("");
+  const [providerName, setProviderName] = useState("");
   const [contextWindow, setContextWindow] = useState(0);
   const [totalTokens, setTotalTokens] = useState(0);
   const [spinner, setSpinner] = useState<SpinnerState | null>(null);
@@ -209,12 +210,9 @@ export function App() {
             setSessions(p.sessions);
             setModels(p.available_models);
             setModelName(p.default_model_name);
+            setProviderName(p.provider_name);
             setContextWindow(p.default_context_window);
             setRemotes(p.remotes ?? []);
-            appendMessage({
-              type: "info",
-              text: `Using provider ${p.provider_name} (${p.default_model_name})`,
-            });
             // Re-connect to the session we were viewing before the WS dropped
             if (sessionRef.current) {
               sendConnect(sessionRef.current, viewThreadId);
@@ -850,7 +848,7 @@ export function App() {
           </button>
         )}
         <span className={css.infoPill}>
-          {modelName}
+          {providerName && `${providerName}: `}{modelName}
           {modelName && " \u00b7 "}
           {Math.round(contextPct)}% context
         </span>

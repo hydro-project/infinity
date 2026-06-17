@@ -75,6 +75,8 @@ pub struct SessionChanged {
     pub model_name: String,
     /// Context window of that model, used for the token-usage gauge.
     pub context_window: usize,
+    /// Provider id for the active model.
+    pub provider_id: String,
 }
 
 /// Result of a SoftDetach attempt, sent back from daemon_client to terminal.
@@ -105,6 +107,7 @@ pub async fn run<R, T, E>(
     input_tx: mpsc::UnboundedSender<String>,
     mut display_rx: mpsc::UnboundedReceiver<(Option<String>, DisplayEvent<R>)>,
     mut model_name: String,
+    mut provider_id: String,
     mut context_window: usize,
     initial_sessions: std::collections::HashMap<String, infinity_protocol::SessionInfo>,
     load_session_tx: mpsc::UnboundedSender<(Option<String>, bool)>,
@@ -188,6 +191,7 @@ where
         spinner_state,
         &thinking_start,
         &model_name,
+        &provider_id,
         total_tokens_used,
         context_window,
         &thread_buffers,
@@ -222,6 +226,7 @@ where
                 thread_id = Some(change.session_id.clone());
                 total_tokens_used = change.total_tokens_used;
                 model_name = change.model_name;
+                provider_id = change.provider_id;
                 context_window = change.context_window;
                 thread_buffers.clear(); // for now, we can't properly restore themn
                 set_terminal_title(viewport.term_mut(), change.title.as_deref().unwrap_or(""));
@@ -230,7 +235,7 @@ where
                     format!("✦ Loading session — thread {}", change.session_id),
                     Style::default().fg(Color::Cyan),
                 )))?;
-                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
+                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, &provider_id, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
             }
 
             updates = sessions_updated_rx.recv() => {
@@ -267,7 +272,7 @@ where
                     }
                 }
 
-                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
+                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, &provider_id, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
             }
 
             result = detach_result_rx.recv() => {
@@ -330,7 +335,7 @@ where
                     }
                     _ => {}
                 }
-                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
+                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, &provider_id, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
             }
 
             evt = display_rx.recv() => {
@@ -624,7 +629,7 @@ where
                         }
                     }
                 }
-                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
+                draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, &provider_id, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
             }
 
             _ = events.wait_for_event() => {
@@ -686,6 +691,7 @@ where
                                                 ModelPickerResult::Selected(idx) => {
                                                     if let Some(entry) = available_models.get(idx) {
                                                         model_name = entry.display_name.to_string();
+                                                        provider_id = entry.provider_id.clone();
                                                         context_window = entry.context_window;
                                                         let _ = model_switch_tx.send(idx);
                                                         viewport.print_line_above(Line::from(vec![
@@ -907,7 +913,7 @@ where
                 }
 
                 if got_resize || any_change || spinner_state.is_some() || ui_mode == UiMode::SessionPicker {
-                    draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
+                    draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, &provider_id, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
                 }
             }
         }
@@ -1021,6 +1027,7 @@ fn draw_viewport<T: TermOut>(
     spinner_state: Option<SpinnerState>,
     thinking_start: &Instant,
     model_name: &str,
+    provider_id: &str,
     total_tokens_used: usize,
     context_window: usize,
     thread_buffers: &BTreeMap<String, String>,
@@ -1044,16 +1051,10 @@ fn draw_viewport<T: TermOut>(
     } else {
         0.0
     };
-    let status_right = if let Some(tid) = thread_id {
-        let short_id = if tid.len() > 8 {
-            &tid[..8]
-        } else {
-            tid.as_str()
-        };
-        format!("{} | {:.0}% context used", short_id, pct)
-    } else {
-        format!("{:.0}% context used", pct)
-    };
+    let status_right = format!(
+        "{}: {} \u{00b7} {:.0}% context",
+        provider_id, model_name, pct
+    );
     let status_left = match ui_mode {
         UiMode::SessionPicker | UiMode::ModelPicker | UiMode::QuitPicker => {
             "↑↓ navigate  enter select  esc cancel".to_owned()
@@ -1061,7 +1062,18 @@ fn draw_viewport<T: TermOut>(
         UiMode::Normal { .. } if choice_picker.is_some() => {
             "↑↓ navigate  enter select  esc default".to_owned()
         }
-        UiMode::Normal { .. } => format!("{} (/help for commands)", model_name),
+        UiMode::Normal { .. } => {
+            if let Some(tid) = thread_id {
+                let short_id = if tid.len() > 8 {
+                    &tid[..8]
+                } else {
+                    tid.as_str()
+                };
+                format!("{} | /help for commands", short_id)
+            } else {
+                "/help for commands".to_owned()
+            }
+        }
     };
 
     // Snapshot thread lines for the closure.

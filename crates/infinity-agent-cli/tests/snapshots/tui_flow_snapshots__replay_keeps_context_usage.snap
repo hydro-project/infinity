@@ -1,5 +1,6 @@
 ---
 source: crates/infinity-agent-cli/tests/tui_flow_snapshots.rs
+assertion_line: 135
 expression: h.screen()
 ---
 ┌────────────────────────────────────────────────────────────────────────────────┐
@@ -16,7 +17,7 @@ expression: h.screen()
 │                                                                                │
 │                                                                                │
 │                                                                                │
-│mock-model (/help for commands)                      replayed | 42% context used│
+│replayed | /help for commands                     mock: mock-model · 42% context│
 └────────────────────────────────────────────────────────────────────────────────┘
 cursor: row=11 col=1
 title: Replayed session

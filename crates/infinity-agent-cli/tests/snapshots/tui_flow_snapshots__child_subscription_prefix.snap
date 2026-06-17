@@ -1,5 +1,6 @@
 ---
 source: crates/infinity-agent-cli/tests/tui_flow_snapshots.rs
+assertion_line: 197
 expression: h.screen_with_scrollback()
 ---
 ~ 
@@ -29,6 +30,6 @@ expression: h.screen_with_scrollback()
 │                                                                                │
 │                                                                                │
 │                                                                                │
-│mock-model (/help for commands)                                  0% context used│
+│/help for commands                                 mock: mock-model · 0% context│
 └────────────────────────────────────────────────────────────────────────────────┘
 cursor: row=11 col=1

@@ -47,7 +47,7 @@ expression: h.screen_with_scrollback()
 │                                                                                │
 │                                                                                │
 │                                                                                │
-│mock-model (/help for commands)                      replayed | 43% context used│
+│replayed | /help for commands                     mock: mock-model · 43% context│
 └────────────────────────────────────────────────────────────────────────────────┘
 cursor: row=15 col=1
 title: Replayed session
