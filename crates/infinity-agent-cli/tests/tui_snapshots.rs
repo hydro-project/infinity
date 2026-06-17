@@ -194,6 +194,24 @@ async fn session_loaded_updates_title_and_status() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn session_loaded_updates_model_name() {
+    let h = TuiHarness::spawn(80, 16).await;
+
+    // Load a session whose thread uses a different model than the default.
+    h.session_tx
+        .send(infinity_agent_cli::terminal::SessionChanged {
+            session_id: "aaa-bbb".to_owned(),
+            title: Some("Other model session".to_owned()),
+            total_tokens_used: 10_000,
+            model_name: "Mock Mini".to_owned(),
+            context_window: 32_000,
+        })
+        .expect("UI task dropped session channel");
+    h.settle().await;
+    insta::assert_snapshot!(h.screen());
+}
+
+#[tokio::test(start_paused = true)]
 async fn spinner_states_animate_over_time() {
     let h = TuiHarness::spawn(80, 16).await;
 
