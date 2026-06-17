@@ -117,7 +117,10 @@ impl ModelPicker {
                 format!("{}k ctx", model.context_window / 1_000)
             };
 
-            let line = format!(" {:<24} {:>10}", model.display_name, ctx_str);
+            let line = format!(
+                " {:<10} {:<24} {:>10}",
+                model.provider_id, model.display_name, ctx_str
+            );
 
             // Fill the row background
             for x in area.x..area.right() {
