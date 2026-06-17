@@ -832,16 +832,20 @@ impl ConversationStore for InMemoryConversationStore {
         let new_id = uuid::Uuid::new_v4().to_string();
         let spawn_message_order;
         let root;
+        let parent_model;
         {
             let threads = self.threads.lock().expect("bug: mutex poisoned");
             let msgs = self.messages.lock().expect("bug: mutex poisoned");
             spawn_message_order = spawn_order_override
                 .unwrap_or_else(|| msgs.get(parent_thread_id).map(|v| v.len()).unwrap_or(0))
                 as i64;
-            root = threads
-                .get(parent_thread_id)
+            let parent_info = threads.get(parent_thread_id);
+            root = parent_info
                 .map(|t| t.root_thread_id.clone())
                 .unwrap_or_else(|| parent_thread_id.to_owned());
+            parent_model = parent_info
+                .map(|t| t.selected_model.clone())
+                .unwrap_or_else(|| self.default_model.clone());
         }
         {
             let mut loaded = self.loaded.lock().expect("bug: mutex poisoned");
@@ -868,7 +872,7 @@ impl ConversationStore for InMemoryConversationStore {
                         children: Vec::new(),
                         total_tokens_used: 0,
                         last_updated: String::new(),
-                        selected_model: self.default_model.clone(),
+                        selected_model: parent_model,
                     },
                 );
                 // Add to parent's children list.

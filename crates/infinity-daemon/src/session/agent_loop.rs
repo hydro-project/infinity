@@ -188,6 +188,42 @@ mod tests {
         )
     }
 
+    async fn two_model_catalog(
+        model1: rig_mock::MockCompletionModel,
+        model2: rig_mock::MockCompletionModel,
+    ) -> Arc<ModelCatalog> {
+        Arc::new(
+            ModelCatalog::new(vec![
+                (
+                    "provider1".to_owned(),
+                    Arc::new(SingleModelProvider::new(
+                        ModelEntry {
+                            model_id: "model1".to_owned(),
+                            display_name: "model1".to_owned(),
+                            context_window: 0,
+                            max_output_tokens: None,
+                        },
+                        model1,
+                    )) as _,
+                ),
+                (
+                    "provider2".to_owned(),
+                    Arc::new(SingleModelProvider::new(
+                        ModelEntry {
+                            model_id: "model2".to_owned(),
+                            display_name: "model2".to_owned(),
+                            context_window: 0,
+                            max_output_tokens: None,
+                        },
+                        model2,
+                    )) as _,
+                ),
+            ])
+            .await
+            .expect("build two-model catalog"),
+        )
+    }
+
     fn tmp_stores() -> (
         InMemoryConversationStore,
         InMemoryStateStore,
@@ -501,6 +537,27 @@ mod tests {
         ActiveThreads,
         tokio_util::sync::CancellationToken,
     ) {
+        spawn_test_agent_loop_with_catalog(
+            session_id,
+            conv,
+            state,
+            test_catalog(model, context_window).await,
+            tools,
+        )
+    }
+
+    fn spawn_test_agent_loop_with_catalog(
+        session_id: &str,
+        conv: InMemoryConversationStore,
+        state: InMemoryStateStore,
+        catalog: Arc<ModelCatalog>,
+        tools: Vec<Box<dyn Tool<InMemoryMessageSender>>>,
+    ) -> (
+        mpsc::UnboundedSender<AgentMessage>,
+        mpsc::UnboundedReceiver<()>,
+        ActiveThreads,
+        tokio_util::sync::CancellationToken,
+    ) {
         let (agent_tx, agent_rx) = mpsc::unbounded_channel();
         let (idle_tx, idle_rx) = mpsc::unbounded_channel();
         let (input_tx, mut input_adapter_rx) = mpsc::unbounded_channel::<(InputMessage, String)>();
@@ -523,7 +580,7 @@ mod tests {
         tokio::task::spawn_local(agent_loop(
             session_id.into(),
             agent_rx,
-            test_catalog(model, context_window).await,
+            catalog,
             conv,
             state,
             sender,
@@ -538,6 +595,118 @@ mod tests {
         ));
 
         (agent_tx, idle_rx, active_threads, shutdown)
+    }
+
+    /// Regression test for issue #32: spawned threads should inherit the parent's
+    /// model, not the global default.
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawned_thread_inherits_parent_model() {
+        use infinity_agent_core::tools::thread::SpawnThreadTool;
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let dir = tempfile::tempdir().expect("create temp dir");
+                let default_model = infinity_protocol::ModelRef {
+                    provider_id: "provider1".to_owned(),
+                    model_id: "model1".to_owned(),
+                };
+                let non_default_model = infinity_protocol::ModelRef {
+                    provider_id: "provider2".to_owned(),
+                    model_id: "model2".to_owned(),
+                };
+                let conv = InMemoryConversationStore::new_with_dir(
+                    dir.path().join("threads"),
+                    default_model, // default is provider1/model1 (via catalog)
+                );
+                let state = InMemoryStateStore::new(dir.path().join("state"));
+
+                let (model1, mut ctrl1) = mock_model();
+                let (model2, mut ctrl2) = mock_model();
+                let catalog = two_model_catalog(model1, model2).await;
+
+                conv.ensure_root_thread("root")
+                    .await
+                    .expect("ensure root thread");
+                // Set root thread to use the non-default model (provider2/model2).
+                conv.set_thread_model("root", non_default_model.clone());
+
+                let tools: Vec<Box<dyn Tool<InMemoryMessageSender>>> =
+                    vec![Box::new(SpawnThreadTool {
+                        conversation_store: conv.clone(),
+                    })];
+
+                let (tx, _idle_rx, _, _shutdown) =
+                    spawn_test_agent_loop_with_catalog("root", conv.clone(), state, catalog, tools);
+
+                // Send user input to root thread (which uses model2).
+                tx.send(user_text_input("root", "spawn a child"))
+                    .expect("send user input");
+
+                // Root thread uses model2, so ctrl2 gets the request.
+                let _req = ctrl2.next_request().await;
+                ctrl2.send_tool_call(
+                    "tc-spawn",
+                    "spawn_thread",
+                    serde_json::json!({
+                        "instructions": "do something",
+                        "child_of": ["root"]
+                    }),
+                );
+                ctrl2.finish();
+
+                // After spawn_thread, the parent gets the tool result which
+                // triggers another model call on ctrl2. Handle it.
+                let parent_followup = ctrl2.next_request().await;
+                let is_parent = parent_followup.chat_history.iter().any(|m| {
+                    if let rig::message::Message::User { content } = m {
+                        if let UserContent::ToolResult(r) = content.first() {
+                            if let rig::message::ToolResultContent::Text(t) = r.content.first() {
+                                return t.text.contains("successfully spawned");
+                            }
+                        }
+                    }
+                    false
+                });
+                assert!(is_parent, "expected parent follow-up request on ctrl2");
+                ctrl2.send_text("ok");
+                ctrl2.finish();
+
+                // The child thread worker should also use model2 (inherited from parent).
+                // Due to the bug (issue #32), the child uses the default model (provider1),
+                // so ctrl1 would get the request instead of ctrl2.
+                let child_req =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), ctrl2.next_request())
+                        .await
+                        .expect(
+                            "child thread should use model2 (parent's model), not model1 (default)",
+                        );
+
+                // Verify the child received the spawn instructions.
+                let has_instructions = child_req.chat_history.iter().any(|m| {
+                    if let rig::message::Message::User { content } = m {
+                        if let UserContent::ToolResult(r) = content.first() {
+                            if let rig::message::ToolResultContent::Text(t) = r.content.first() {
+                                return t.text.contains("do something");
+                            }
+                        }
+                    }
+                    false
+                });
+                assert!(
+                    has_instructions,
+                    "child thread should have received spawn instructions"
+                );
+
+                // Verify ctrl1 (default model) did NOT get any requests.
+                assert!(
+                    ctrl1.try_next_request().is_none(),
+                    "default model (provider1/model1) should not have received any requests"
+                );
+
+                ctrl2.send_text("child done");
+                ctrl2.finish();
+            })
+            .await;
     }
 
     /// Reproduces corruption when compaction triggers mid-tool-call:
