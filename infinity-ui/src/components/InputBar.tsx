@@ -16,6 +16,10 @@ interface Props {
   spinner: SpinnerState | null;
   /** When set, overrides the textarea value (for demo/embedded use). */
   embeddedInput?: string;
+  /** Initial value to restore on mount (e.g. from a ref). */
+  initialValue?: string;
+  /** Called on every change so parent can persist without rerendering. */
+  onValueChange?: (value: string) => void;
 }
 
 export interface InputBarHandle {
@@ -23,10 +27,10 @@ export interface InputBarHandle {
 }
 
 export const InputBar = forwardRef<InputBarHandle, Props>(function InputBar(
-  { onSend, disabled, spinner, embeddedInput },
+  { onSend, disabled, spinner, embeddedInput, initialValue, onValueChange },
   fwdRef,
 ) {
-  const [value, setValue] = useState("");
+  const [value, setValue] = useState(() => initialValue ?? "");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const displayValue = embeddedInput ?? value;
@@ -42,9 +46,10 @@ export const InputBar = forwardRef<InputBarHandle, Props>(function InputBar(
     if (!trimmed) return;
     onSend(trimmed);
     setValue("");
+    onValueChange?.("");
     // Reset height
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-  }, [value, onSend]);
+  }, [value, onSend, onValueChange]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -74,6 +79,7 @@ export const InputBar = forwardRef<InputBarHandle, Props>(function InputBar(
           onChange={(e) => {
             if (embeddedInput === undefined) {
               setValue(e.target.value);
+              onValueChange?.(e.target.value);
               handleInput();
             }
           }}

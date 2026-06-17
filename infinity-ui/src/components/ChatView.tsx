@@ -27,6 +27,8 @@ interface Props {
   onChoiceSelect: (index: number) => void;
   theme?: "light" | "dark";
   embeddedInput?: string;
+  initialInputValue?: string;
+  onInputValueChange?: (value: string) => void;
 }
 
 export interface ChatViewHandle {
@@ -44,6 +46,8 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView(
     onChoiceSelect,
     theme,
     embeddedInput,
+    initialInputValue,
+    onInputValueChange,
   },
   fwdRef,
 ) {
@@ -94,6 +98,8 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView(
           disabled={inputDisabled}
           spinner={spinner}
           embeddedInput={embeddedInput}
+          initialValue={initialInputValue}
+          onValueChange={onInputValueChange}
         />
       </div>
     </div>

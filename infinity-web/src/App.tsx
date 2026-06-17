@@ -60,6 +60,7 @@ export function App() {
   );
   const resetMessages = useCallback(() => {
     setMsgState((prev) => ({ messages: [], gen: prev.gen + 1 }));
+    inputDraftRef.current = "";
   }, []);
   const [sessions, setSessions] = useState<Record<string, SessionInfo>>({});
   const [_models, setModels] = useState<ModelInfo[]>([]);
@@ -86,6 +87,7 @@ export function App() {
   const [chatPinned, setChatPinned] = useState(false);
   const [chatHover, setChatHover] = useState(false);
   const [chatPanelWidth, setChatPanelWidth] = useState(420);
+  const [chatAsTab, setChatAsTab] = useState(false);
   const [dirEntries, setDirEntries] = useState<string[]>([]);
   // Thread navigation: viewThreadId is the currently viewed thread (null = root).
   // threadStack tracks the path from root so we can pop back when threads close.
@@ -100,6 +102,7 @@ export function App() {
   // Track whether we're currently accumulating assistant text
   const streamingRef = useRef(false);
   const chatSpinnerPortalRef = useRef<HTMLDivElement>(null);
+  const inputDraftRef = useRef("");
   const sidebarDragging = useRef(false);
   // Track whether we've received Connected for the current session
   const [sessionConnected, setSessionConnected] = useState(false);
@@ -434,6 +437,7 @@ export function App() {
                   setPendingChoices([]);
                   setViews({});
                   setActiveTab(null);
+                  setChatAsTab(false);
                   streamingRef.current = false;
                   sendConnect(sid, newView);
                 }
@@ -526,6 +530,7 @@ export function App() {
               setPendingChoices([]);
               setViews({});
               setActiveTab(null);
+              setChatAsTab(false);
               streamingRef.current = false;
               sendConnect(p.new_session_id, null);
             }
@@ -603,6 +608,7 @@ export function App() {
       setPendingChoices([]);
       setViews({});
       setActiveTab(null);
+      setChatAsTab(false);
       streamingRef.current = false;
 
       if (switchingSession) {
@@ -626,6 +632,7 @@ export function App() {
     setPendingChoices([]);
     setViews({});
     setActiveTab(null);
+    setChatAsTab(false);
     streamingRef.current = false;
     clearConnectRetry();
     setSessionConnected(false);
@@ -644,6 +651,7 @@ export function App() {
     setPendingChoices([]);
     setViews({});
     setActiveTab(null);
+    setChatAsTab(false);
     streamingRef.current = false;
     clearConnectRetry();
     setSessionConnected(false);
@@ -707,6 +715,10 @@ export function App() {
     sidebarDragging.current = d;
   }, []);
 
+  const handleInputValueChange = useCallback((v: string) => {
+    inputDraftRef.current = v;
+  }, []);
+
   const handleToggleChatPin = useCallback(() => {
     setChatPinned((p) => {
       if (p) setChatHover(true);
@@ -740,8 +752,8 @@ export function App() {
 
   const viewKeys = Object.keys(views);
   const hasViews = viewKeys.length > 0;
-  const chatVisible = chatPinned || chatHover || pendingChoices.length > 0;
-  const chatPanelOffset = hasViews && chatPinned ? chatPanelWidth + 16 : 24;
+  const chatVisible = (chatPinned || chatHover || pendingChoices.length > 0) && !chatAsTab;
+  const chatPanelOffset = hasViews && chatPinned && !chatAsTab ? chatPanelWidth + 16 : 24;
 
   // Auto-select first view tab when views first appear
   useEffect(() => {
@@ -792,7 +804,7 @@ export function App() {
           setSidebarHover(false);
         }
       }
-      if (hasViews && !chatPinned) {
+      if (hasViews && !chatPinned && !chatAsTab) {
         const fromRight = window.innerWidth - e.clientX;
         if (
           fromRight <= EDGE_SIZE ||
@@ -811,7 +823,7 @@ export function App() {
     };
     window.addEventListener("mousemove", onMove);
     return () => window.removeEventListener("mousemove", onMove);
-  }, [sidebarPinned, chatPinned, hasViews, sidebarWidth, chatPanelWidth]);
+  }, [sidebarPinned, chatPinned, chatAsTab, hasViews, sidebarWidth, chatPanelWidth]);
 
   return (
     <div
@@ -838,6 +850,22 @@ export function App() {
         onDragStateChange={handleSidebarDragState}
       />
       <div className={css.topRight}>
+        {chatAsTab && (
+          <button
+            className={css.archivePill}
+            onClick={() => {
+              setChatAsTab(false);
+              setActiveTab(viewKeys[0] ?? null);
+            }}
+            aria-label="Move chat back to side panel"
+            title="Move chat back to side panel"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="9 18 15 12 9 6" />
+              <rect x="3" y="3" width="18" height="18" rx="2" fill="none" />
+            </svg>
+          </button>
+        )}
         {sessionRef.current && (
           <button
             className={css.hostPill}
@@ -890,6 +918,14 @@ export function App() {
       <div className={css.mainContent}>
         {hasViews && (
           <nav className={css.viewNav}>
+            {chatAsTab && (
+              <button
+                className={activeTab === "__chat" ? css.viewTabActive : css.viewTab}
+                onClick={() => setActiveTab("__chat")}
+              >
+                Chat
+              </button>
+            )}
             {viewKeys.map((key) => (
               <button
                 key={key}
@@ -902,7 +938,7 @@ export function App() {
           </nav>
         )}
         <div className={css.mainBody}>
-          {!hasViews && (
+          {(!hasViews || (chatAsTab && activeTab === "__chat")) && (
             <div style={{ height: "100%" }}>
               <ChatView
                 messages={messages}
@@ -913,6 +949,8 @@ export function App() {
                 pendingChoice={pendingChoices[0] ?? null}
                 onChoiceSelect={handleChoiceSelect}
                 theme={resolved}
+                initialInputValue={inputDraftRef.current}
+                onInputValueChange={handleInputValueChange}
               />
             </div>
           )}
@@ -930,27 +968,45 @@ export function App() {
               />
             </div>
           )}
-          {hasViews && activeTab !== "diff" && (
+          {hasViews && activeTab !== "diff" && activeTab !== "__chat" && (
             <div style={{ padding: 24, color: "var(--text-muted)" }}>
               Unsupported view: {activeTab}
             </div>
           )}
         </div>
       </div>
-      {hasViews && (
+      {hasViews && !chatAsTab && (
         <div
           className={`${chatCss.chatPanel} ${!chatVisible ? chatCss.chatPanelHidden : ""}`}
         >
           <div className={chatCss.chatPanelHeader}>
             <span className={chatCss.chatPanelTitle}>Chat</span>
-            <button
-              className={chatCss.chatPanelClose}
-              onClick={handleToggleChatPin}
-              aria-label={chatPinned ? "Unpin chat" : "Pin chat"}
-              data-pinned={chatPinned}
-            >
-              {"\uD83D\uDCCC"}
-            </button>
+            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              <button
+                className={chatCss.chatPanelClose}
+                onClick={() => {
+                  setChatAsTab(true);
+                  setActiveTab("__chat");
+                }}
+                aria-label="Pop chat into tab"
+                title="Pop chat into tab"
+                data-pinned="true"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="15 3 21 3 21 9" />
+                  <line x1="10" y1="14" x2="21" y2="3" />
+                  <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
+                </svg>
+              </button>
+              <button
+                className={chatCss.chatPanelClose}
+                onClick={handleToggleChatPin}
+                aria-label={chatPinned ? "Unpin chat" : "Pin chat"}
+                data-pinned={chatPinned}
+              >
+                {"\uD83D\uDCCC"}
+              </button>
+            </div>
           </div>
           <div className={chatCss.chatPanelBody}>
             <ChatView
@@ -962,6 +1018,8 @@ export function App() {
               pendingChoice={pendingChoices[0] ?? null}
               onChoiceSelect={handleChoiceSelect}
               theme={resolved}
+              initialInputValue={inputDraftRef.current}
+              onInputValueChange={handleInputValueChange}
             />
           </div>
           <div
@@ -972,6 +1030,7 @@ export function App() {
         </div>
       )}
       {hasViews &&
+        !chatAsTab &&
         !chatPinned &&
         chatSpinnerPortalRef.current &&
         createPortal(
