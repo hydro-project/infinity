@@ -12,11 +12,13 @@ use std::pin::Pin;
 
 use futures_util::StreamExt;
 use rig::completion::{GetTokenUsage, ToolDefinition};
-use rig::message::{AssistantContent, Message, ToolResultContent, UserContent};
+use rig::message::{ToolResultContent, UserContent};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::event_processor::{self, CompletionAction, HistoryManager};
-use crate::message::{InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind};
+use crate::message::{
+    InfinityMessage, InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind,
+};
 use crate::model_provider::{ModelProvider, ProviderStreamingResponse};
 use crate::tools::{Tool, ToolContext};
 use crate::traits::{ConversationStore, InputSender, StateStore};
@@ -131,20 +133,17 @@ where
                 if let InputMessageContent::User(UserContent::ToolResult(res)) = &input_msg.content
                     && let ToolResultContent::Text(text) = res.content.first()
                 {
-                    let orig_call = current_history.get_history().into_iter().find(|h| {
-                        if let Message::Assistant { content, .. } = h
-                            && let AssistantContent::ToolCall(c) = content.first()
+                    let orig_call = current_history.history.borrow().iter().rev().find_map(|m| {
+                        if let InfinityMessage::ToolCall { call, display_as } = m
+                            && call.id == synth.tool_call_id()
                         {
-                            c.id == synth.tool_call_id()
+                            Some((call.clone(), display_as.clone()))
                         } else {
-                            false
+                            None
                         }
                     });
 
-                    if let Some(h) = orig_call
-                        && let Message::Assistant { content, .. } = h
-                        && let AssistantContent::ToolCall(c) = content.first()
-                    {
+                    if let Some((c, display_as)) = orig_call {
                         let name =
                             if let SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
                                 ref child_thread_id,
@@ -153,7 +152,9 @@ where
                             {
                                 format!("Report from child thread {}", child_thread_id)
                             } else {
-                                format!("{}({})", c.function.name, c.function.arguments)
+                                display_as.unwrap_or_else(|| {
+                                    format!("{}({})", c.function.name, c.function.arguments)
+                                })
                             };
                         let _ = display_tx.send(DisplayEvent::SubscriptionEvent {
                             name,
@@ -968,5 +969,101 @@ mod tests {
         // Both events should be emitted
         assert!(ev.iter().any(|e| e.starts_with("OAuth:")));
         assert!(ev.iter().any(|e| e == "UserInput:hello"));
+    }
+
+    #[tokio::test]
+    async fn subscription_event_uses_display_as() {
+        use crate::message::{SyntheticKind, TaggedSyntheticKind};
+
+        let s = StubConvo::new();
+        let hm = HistoryManager::new_with_history(s.clone(), StubState, "t1".into())
+            .await
+            .expect("create history manager");
+
+        // Seed history with a tool call + its initial result (subscription started).
+        *hm.history.borrow_mut() = vec![
+            crate::message::InfinityMessage::from_rig_message(Message::User {
+                content: OneOrMany::one(UserContent::text("go")),
+            }),
+            crate::message::InfinityMessage::ToolCall {
+                call: rig::message::ToolCall {
+                    id: "tc-sub".into(),
+                    call_id: None,
+                    function: rig::message::ToolFunction {
+                        name: "sleep".into(),
+                        arguments: serde_json::json!({"seconds": 30, "reason": "waiting"}),
+                    },
+                    additional_params: None,
+                    signature: None,
+                },
+                display_as: Some("Sleeping 30s: waiting".into()),
+            },
+            crate::message::InfinityMessage::ToolResult {
+                result: ToolResult {
+                    id: "tc-sub".into(),
+                    call_id: None,
+                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                        text: "Subscription started".into(),
+                    })),
+                },
+                display_segments: None,
+            },
+        ];
+
+        let (provider, _ctrl) = mock_provider();
+        let (dtx, mut drx) = mpsc::unbounded_channel();
+        let tn = HashSet::new();
+        let td: Vec<ToolDefinition> = vec![];
+        let tr: HashMap<String, &dyn Tool<StubSender>> = HashMap::new();
+
+        // Simulate a subscription event arriving as a synthetic tool result.
+        let input = (
+            InputMessage {
+                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                    id: "tc-sub".into(),
+                    call_id: None,
+                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                        text: "woke up".into(),
+                    })),
+                })),
+                group_id: "t1".into(),
+                metadata: None,
+                synthetic: Some(SyntheticKind::Tagged(
+                    TaggedSyntheticKind::SubscriptionEvent {
+                        tool_call_id: "tc-sub".into(),
+                        associative: true,
+                        r#final: false,
+                    },
+                )),
+                display_as: None,
+                subscription: false,
+            },
+            "m-sub".into(),
+        );
+
+        let _r = super::process_batch(
+            vec![input].into_iter(),
+            &hm,
+            &s,
+            &dtx,
+            "t1",
+            &provider,
+            "mock",
+            &tn,
+            &td,
+            &tr,
+            ctx(),
+            &None,
+            NONE_NOTIFIER,
+            None,
+        )
+        .await;
+
+        let events = drain(&mut drx);
+        assert!(
+            events.contains(&"SubEvent:Sleeping 30s: waiting".to_owned()),
+            "Expected pretty display_as in subscription event, got: {:?}",
+            events
+        );
     }
 }

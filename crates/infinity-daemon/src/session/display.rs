@@ -105,14 +105,14 @@ pub(crate) fn history_message_to_daemon(
             } else {
                 history
                     .iter()
+                    .rev()
                     .find_map(|m| {
-                        if let InfinityMessage::ToolCall { call, .. } = m
+                        if let InfinityMessage::ToolCall { call, display_as } = m
                             && call.id == *tool_call_id
                         {
-                            Some(format!(
-                                "{}({})",
-                                call.function.name, call.function.arguments
-                            ))
+                            Some(display_as.clone().unwrap_or_else(|| {
+                                format!("{}({})", call.function.name, call.function.arguments)
+                            }))
                         } else {
                             None
                         }
