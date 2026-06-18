@@ -1130,4 +1130,276 @@ mod tests {
             })
             .await;
     }
+
+    /// Regression test for issue #31: compaction spawned inside a child thread
+    /// uses safe_spawn_point() which includes ancestor messages in the index,
+    /// causing a panic ("range end index X out of range for slice of length Y")
+    /// when the grandchild tries to load history.
+    #[tokio::test(flavor = "current_thread")]
+    async fn compaction_inside_child_thread_does_not_panic() {
+        use infinity_agent_core::tools::thread::{CloseThreadTool, SpawnThreadTool};
+        use rig::completion::Usage;
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (conv, state, _dir) = tmp_stores();
+                let (model, mut ctrl) = mock_model();
+                conv.ensure_root_thread("root")
+                    .await
+                    .expect("ensure root thread");
+
+                use async_trait::async_trait;
+                struct AsyncTool;
+                #[async_trait]
+                impl Tool<InMemoryMessageSender> for AsyncTool {
+                    fn name(&self) -> &str {
+                        "async_tool"
+                    }
+                    fn description(&self) -> &str {
+                        "a"
+                    }
+                    fn parameters(&self) -> serde_json::Value {
+                        serde_json::json!({"type":"object","properties":{}})
+                    }
+                    async fn execute(
+                        &self,
+                        _: serde_json::Value,
+                        _: String,
+                        _: Option<String>,
+                        _: &infinity_agent_core::tools::ToolContext<InMemoryMessageSender>,
+                    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                        Ok(())
+                    }
+                }
+
+                let tools: Vec<Box<dyn Tool<InMemoryMessageSender>>> = vec![
+                    Box::new(AsyncTool),
+                    Box::new(SpawnThreadTool {
+                        conversation_store: conv.clone(),
+                    }),
+                    Box::new(CloseThreadTool::<_, rap_client::http::SimpleHttpClient> {
+                        conversation_store: conv.clone(),
+                        rap_notifier: None,
+                    }),
+                ];
+
+                // context_window = 100, so 76 input tokens triggers compaction
+                let (tx, _idle_rx, _, _shutdown) = spawn_test_agent_loop_with_tools(
+                    "root",
+                    conv.clone(),
+                    state,
+                    model,
+                    tools,
+                    100,
+                )
+                .await;
+
+                // ── Build root history ──
+                tx.send(user_text_input("root", "root message one"))
+                    .expect("send");
+                let _req = ctrl.next_request().await;
+                ctrl.send_text("root response one");
+                ctrl.finish();
+
+                tx.send(user_text_input("root", "root message two"))
+                    .expect("send");
+                let _req = ctrl.next_request().await;
+                ctrl.send_text("root response two");
+                ctrl.finish();
+
+                // ── Spawn a child thread from root ──
+                tx.send(user_text_input("root", "spawn a child"))
+                    .expect("send");
+                let _req = ctrl.next_request().await;
+                ctrl.send_tool_call(
+                    "tc-spawn",
+                    "spawn_thread",
+                    serde_json::json!({
+                        "instructions": "do child work",
+                        "child_of": ["root"]
+                    }),
+                );
+                ctrl.finish();
+
+                // Parent gets tool result after spawn — extract child thread ID
+                let parent_followup = ctrl.next_request().await;
+                let child_thread_id = parent_followup
+                    .chat_history
+                    .iter()
+                    .find_map(|m| {
+                        if let rig::message::Message::User { content } = m
+                            && let UserContent::ToolResult(r) = content.first()
+                            && let rig::message::ToolResultContent::Text(t) = r.content.first()
+                            && t.text.contains("successfully spawned")
+                        {
+                            let after = t.text.strip_prefix(
+                                "Child thread is successfully spawned and has ID: ",
+                            )?;
+                            Some(after.split('.').next()?.to_owned())
+                        } else {
+                            None
+                        }
+                    })
+                    .expect("should find child thread ID in spawn result");
+                ctrl.send_text("ok, child spawned");
+                ctrl.finish();
+
+                // ── Child thread gets its first model call ──
+                let _child_req = ctrl.next_request().await;
+                ctrl.send_text("child first response");
+                ctrl.finish();
+
+                // ── Send another round to child ──
+                tx.send(user_text_input(&child_thread_id, "child follow-up"))
+                    .expect("send");
+                let _req = ctrl.next_request().await;
+                // Child responds with a TOOL CALL + high usage → triggers compaction.
+                // The tool call is after safe_spawn_point, so it survives compaction.
+                let high_usage = Some(Usage {
+                    input_tokens: 76,
+                    output_tokens: 10,
+                    total_tokens: 86,
+                    cached_input_tokens: 0,
+                });
+                ctrl.send_tool_call("tc-child", "async_tool", serde_json::json!({}));
+                ctrl.finish_with_usage(high_usage);
+
+                // Send tool result before compaction completes
+                tx.send(AgentMessage::Input(
+                    Box::new(InputMessage {
+                        content: InputMessageContent::User(UserContent::ToolResult(
+                            rig::message::ToolResult {
+                                id: "tc-child".into(),
+                                call_id: None,
+                                content: rig::OneOrMany::one(
+                                    rig::message::ToolResultContent::Text(rig::agent::Text {
+                                        text: "async tool result".into(),
+                                    }),
+                                ),
+                            },
+                        )),
+                        group_id: child_thread_id.clone(),
+                        metadata: None,
+                        synthetic: None,
+                        display_as: None,
+                        subscription: false,
+                    }),
+                    uuid::Uuid::new_v4().to_string(),
+                ))
+                .expect("send tool result");
+
+                // Two model requests arrive: compaction grandchild + child processing
+                // the tool result. Handle in whichever order they come.
+                let req_a = ctrl.next_request().await;
+                let is_compaction_req = |req: &rig::completion::CompletionRequest| -> bool {
+                    req.chat_history.iter().any(|m| {
+                        if let rig::message::Message::User { content } = m
+                            && let UserContent::ToolResult(r) = content.first()
+                            && let rig::message::ToolResultContent::Text(t) = r.content.first()
+                        {
+                            t.text.contains("compaction thread")
+                        } else {
+                            false
+                        }
+                    })
+                };
+
+                let find_grandchild_id =
+                    |req: &rig::completion::CompletionRequest| -> String {
+                        req.chat_history
+                            .iter()
+                            .find_map(|m| {
+                                if let rig::message::Message::User { content } = m
+                                    && let UserContent::ToolResult(r) = content.first()
+                                    && let rig::message::ToolResultContent::Text(t) =
+                                        r.content.first()
+                                    && t.text.contains("close_thread with your thread ID")
+                                {
+                                    let start = t.text.find('(')? + 1;
+                                    let end = t.text.find(')')?;
+                                    Some(t.text[start..end].to_owned())
+                                } else {
+                                    None
+                                }
+                            })
+                            .expect("should find grandchild thread ID")
+                    };
+
+                let handle_compaction =
+                    |ctrl: &mut rig_mock::MockModelController,
+                     req: &rig::completion::CompletionRequest| {
+                        let id = find_grandchild_id(req);
+                        ctrl.send_tool_call(
+                            "tc-close",
+                            "close_thread",
+                            serde_json::json!({
+                                "thread_id": id,
+                                "report_to_parent": "Summary of child work"
+                            }),
+                        );
+                        ctrl.finish();
+                    };
+
+                let compaction_req;
+                if is_compaction_req(&req_a) {
+                    compaction_req = req_a;
+                    handle_compaction(&mut ctrl, &compaction_req);
+                    // Now handle the child's tool result processing
+                    let _req_b = ctrl.next_request().await;
+                    ctrl.send_text("processed tool result");
+                    ctrl.finish();
+                } else {
+                    // Child's tool result came first
+                    ctrl.send_text("processed tool result");
+                    ctrl.finish();
+                    compaction_req = ctrl.next_request().await;
+                    handle_compaction(&mut ctrl, &compaction_req);
+                }
+
+                // Snapshot the history sent to the compaction thread's model call.
+                insta::assert_json_snapshot!(
+                    "issue31_compaction_child_history",
+                    compaction_req.chat_history,
+                    {
+                        "[].content[].id" => "[id]",
+                        "[].content[].content[].text" => insta::dynamic_redaction(|value, _| {
+                            let s = value.as_str().unwrap_or("");
+                            if s.contains("compaction thread") {
+                                insta::internals::Content::String("[compaction_instructions]".into())
+                            } else if s.contains("INSIDE the thread") {
+                                insta::internals::Content::String("[spawn_instructions]".into())
+                            } else {
+                                value
+                            }
+                        })
+                    }
+                );
+
+                // ── After compaction applies, send a message to inspect the history ──
+                tx.send(user_text_input(
+                    &child_thread_id,
+                    "message after compaction",
+                ))
+                .expect("send post-compaction message");
+
+                let post_compaction_req = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    ctrl.next_request(),
+                )
+                .await
+                .expect("child should respond after compaction");
+
+                // Post-compaction history should have: [summary, tool_call (survived
+                // because it was after safe_spawn_point), tool_result, model response,
+                // new user message]
+                insta::assert_json_snapshot!(
+                    "issue31_post_compaction_history",
+                    post_compaction_req.chat_history,
+                    {
+                        "[].content[].id" => "[id]",
+                    }
+                );
+            })
+            .await;
+    }
 }
