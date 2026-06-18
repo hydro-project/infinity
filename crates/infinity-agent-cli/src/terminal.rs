@@ -574,7 +574,8 @@ where
                             let first = lines.first().copied().unwrap_or("");
                             viewport.print_line_above(Line::from(vec![
                                 Span::raw(pfx),
-                                Span::styled(format!("⚡{}: {}", name, first), Style::default().fg(Color::Indexed(208))),
+                                Span::styled(format!("⚡{}: ", name), Style::default().fg(Color::Indexed(208))),
+                                Span::styled(first.to_owned(), Style::default().fg(Color::DarkGray)),
                             ]))?;
                         } else {
                             // Multi line: print header, then all lines from next line
@@ -586,7 +587,7 @@ where
                                 &mut viewport,
                                 &lines,
                                 2,
-                                Style::default().fg(Color::Indexed(208)),
+                                Style::default().fg(Color::DarkGray),
                             )?;
                         }
 
