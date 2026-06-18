@@ -77,6 +77,7 @@ export const DiffView = memo(function DiffView({
   }, [filePaths]);
   const [expandedItems, setExpandedItems] = useState<string[]>();
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
+  const treeOptions = useMemo(() => ({ flattenEmptyDirectories: true }), []);
 
   const diffCacheRef = useRef<
     Map<
@@ -164,7 +165,7 @@ export const DiffView = memo(function DiffView({
         <FileTree
           files={filePaths}
           gitStatus={gitStatus}
-          options={{ flattenEmptyDirectories: true }}
+          options={treeOptions}
           selectedItems={selectedItems}
           expandedItems={expandedItems ?? allDirs}
           onExpandedItemsChange={setExpandedItems}
