@@ -28,8 +28,8 @@ expression: h.screen_with_scrollback()
 │info arriving while picker open 2                                               │
 │                                                                                │
 │────────────────────────────────────────────────────────────────────────────────│
-│ Mock Model                 100k ctx                                            │
-│ Mock Mini                   32k ctx                                            │
+│ mock       Mock Model                 100k ctx                                 │
+│ mock       Mock Mini                   32k ctx                                 │
 │                                                                                │
 │↑↓ navigate  enter select  esc cancel              mock: mock-model · 0% context│
 └────────────────────────────────────────────────────────────────────────────────┘

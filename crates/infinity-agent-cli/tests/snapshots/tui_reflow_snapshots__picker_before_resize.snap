@@ -27,8 +27,8 @@ expression: h.screen_with_scrollback()
 │scroll line 05                                                                  │
 │                                                                                │
 │────────────────────────────────────────────────────────────────────────────────│
-│ Mock Model                 100k ctx                                            │
-│ Mock Mini                   32k ctx                                            │
+│ mock       Mock Model                 100k ctx                                 │
+│ mock       Mock Mini                   32k ctx                                 │
 │                                                                                │
 │↑↓ navigate  enter select  esc cancel              mock: mock-model · 0% context│
 └────────────────────────────────────────────────────────────────────────────────┘
