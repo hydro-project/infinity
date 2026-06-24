@@ -1334,7 +1334,7 @@ mod tests {
             .await
             .expect("append child messages");
 
-        let (history, _) = store
+        let (history, _, _) = store
             .load_history_with_ancestors(&child)
             .await
             .expect("load history with ancestors");
@@ -1388,7 +1388,7 @@ mod tests {
             .await
             .expect("append grandchild messages");
 
-        let (history, _) = store
+        let (history, _, _) = store
             .load_history_with_ancestors(&grandchild)
             .await
             .expect("load history with ancestors");
@@ -1422,7 +1422,7 @@ mod tests {
             .await
             .expect("save compaction summary");
 
-        let (history, compacted_up_to) = store
+        let (history, compacted_up_to, _) = store
             .load_history_with_ancestors("root")
             .await
             .expect("load history with ancestors");
@@ -1471,7 +1471,7 @@ mod tests {
             .await
             .expect("append child messages");
 
-        let (history, _) = store
+        let (history, _, _) = store
             .load_history_with_ancestors(&child)
             .await
             .expect("load history with ancestors");
@@ -1525,7 +1525,7 @@ mod tests {
             .await
             .expect("append child messages");
 
-        let (history, _) = store
+        let (history, _, _) = store
             .load_history_with_ancestors(&child)
             .await
             .expect("load history with ancestors");
@@ -1581,7 +1581,7 @@ mod tests {
             .await
             .expect("save child compaction summary");
 
-        let (history, compacted_up_to) = store
+        let (history, compacted_up_to, _) = store
             .load_history_with_ancestors(&child)
             .await
             .expect("load history with ancestors");

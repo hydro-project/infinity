@@ -1,0 +1,64 @@
+---
+source: crates/infinity-daemon/src/session/agent_loop.rs
+expression: post_compaction_req.chat_history
+---
+[
+  {
+    "role": "assistant",
+    "id": null,
+    "content": [
+      {
+        "text": "[Compacted conversation summary]\nSummary of child work"
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "id": null,
+    "content": [
+      {
+        "id": "[id]",
+        "call_id": null,
+        "function": {
+          "name": "async_tool",
+          "arguments": {}
+        },
+        "signature": null,
+        "additional_params": null
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "toolresult",
+        "id": "[id]",
+        "content": [
+          {
+            "type": "text",
+            "text": "async tool result"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "id": null,
+    "content": [
+      {
+        "text": "processed tool result"
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "message after compaction"
+      }
+    ]
+  }
+]

@@ -22,12 +22,14 @@ pub trait ConversationStore: Send + Sync + Clone {
     /// Load full history for a thread including ancestor context and compaction.
     /// Walks backwards through ancestors to find the most recent compaction
     /// summary, skipping all earlier ancestors (their content is in the summary).
-    /// Returns `(history, leaf_compacted_up_to)` where the second element is
-    /// the absolute store index the leaf thread's compaction covers, if any.
+    /// Returns `(history, leaf_compacted_up_to, ancestor_prefix_len)` where the
+    /// second element is the absolute store index the leaf thread's compaction
+    /// covers (if any), and the third is how many messages at the front of the
+    /// history come from ancestors (not this thread's own store).
     async fn load_history_with_ancestors(
         &self,
         thread_id: &str,
-    ) -> Result<(Vec<InfinityMessage>, Option<i64>), Self::Error> {
+    ) -> Result<(Vec<InfinityMessage>, Option<i64>, usize), Self::Error> {
         // Check the thread itself first
         if let Ok(Some((summary, compacted_up_to))) = self
             .load_latest_compaction_summary_up_to(thread_id, None)
@@ -43,7 +45,7 @@ pub trait ConversationStore: Send + Sync + Clone {
                 self.load_history_up_to(thread_id, Some(compacted_up_to), None)
                     .await?,
             );
-            return Ok((combined, Some(compacted_up_to)));
+            return Ok((combined, Some(compacted_up_to), 0));
         }
 
         let ancestors = self.get_ancestor_chain(thread_id).await?;
@@ -91,8 +93,9 @@ pub trait ConversationStore: Send + Sync + Clone {
             }
         }
 
+        let ancestor_prefix_len = combined.len();
         combined.extend(self.load_history_up_to(thread_id, None, None).await?);
-        Ok((combined, None))
+        Ok((combined, None, ancestor_prefix_len))
     }
 
     async fn append_messages(

@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     time::Duration,
 };
@@ -127,6 +127,11 @@ pub struct HistoryManager<C: ConversationStore, S: StateStore> {
     /// summary covers up to. Used to compute the correct relative split
     /// position when a second compaction is applied on top of an existing one.
     compacted_up_to: RefCell<Option<i64>>,
+    /// Number of ancestor messages prepended to the in-memory history.
+    /// These messages are NOT in this thread's own store, so they must be
+    /// subtracted when computing absolute store indices. Reset to 0 after
+    /// compaction replaces ancestors with a summary.
+    ancestor_prefix_len: Cell<usize>,
 }
 
 impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
@@ -147,7 +152,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             .cloned()
             .unwrap_or_else(|| thread_id.clone());
 
-        let (history, compacted_up_to) = conversation_store
+        let (history, compacted_up_to, ancestor_prefix_len) = conversation_store
             .load_history_with_ancestors(&thread_id)
             .await
             .map_err(|e| Box::new(e) as BoxError)?;
@@ -176,6 +181,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             pending_complete_tool_calls: RefCell::new(HashSet::new()),
             interrupted_tool_calls: RefCell::new(Vec::new()),
             compacted_up_to: RefCell::new(compacted_up_to),
+            ancestor_prefix_len: Cell::new(ancestor_prefix_len),
         })
     }
 
@@ -447,7 +453,11 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 .compacted_up_to
                 .borrow()
                 .map_or(0, |prev| prev as usize - 1);
-            let up_to = (up_to_order as usize).saturating_sub(offset);
+            // Add ancestor_prefix_len because those messages occupy the beginning
+            // of the in-memory history but are not counted by up_to_order (which
+            // is relative to this thread's own store).
+            let up_to =
+                (up_to_order as usize).saturating_sub(offset) + self.ancestor_prefix_len.get();
             let mut history = self.history.borrow_mut();
             if up_to <= history.len() {
                 let remaining = history.split_off(up_to);
@@ -459,6 +469,8 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 }];
                 history.extend(remaining);
                 *self.compacted_up_to.borrow_mut() = Some(up_to_order);
+                // After compaction, ancestors are consumed into the summary.
+                self.ancestor_prefix_len.set(0);
                 return Ok(true);
             }
         }
@@ -473,8 +485,8 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     }
 
     /// Compute a safe spawn point that excludes trailing unanswered tool calls.
-    /// Returns an absolute store order (accounting for prior compaction offset)
-    /// suitable for use as `spawn_order_override`.
+    /// Returns an absolute store order (accounting for prior compaction offset
+    /// and ancestor prefix) suitable for use as `spawn_order_override`.
     pub fn safe_spawn_point(&self) -> usize {
         // TODO: when we support parallel tool calls, we may need to walk back across
         // tool results if there is an unresolved tool call remaining in the group.
@@ -499,7 +511,9 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             .compacted_up_to
             .borrow()
             .map_or(0, |prev| prev as usize - 1);
-        safe + offset
+        // Subtract ancestor_prefix_len because those messages are not in this
+        // thread's own store (they come from parent/ancestor threads).
+        safe.saturating_sub(self.ancestor_prefix_len.get()) + offset
     }
 
     /// Record a subscription in the current thread's metadata. The
