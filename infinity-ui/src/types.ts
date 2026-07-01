@@ -66,6 +66,7 @@ export type DaemonMessage =
         context_window: number;
         title: string | null;
         total_tokens_used: number;
+        provider_id: string;
       };
     }
   | { StartOutput: { thread_id: string | null } }

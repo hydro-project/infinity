@@ -230,10 +230,12 @@ export function App() {
               context_window: number;
               title: string | null;
               total_tokens_used: number;
+              provider_id: string;
             }>(m);
             sessionRef.current = p.session_id;
             threadRef.current = p.thread_id;
             setModelName(p.model_name);
+            setProviderName(p.provider_id);
             setContextWindow(p.context_window);
             setTotalTokens(p.total_tokens_used);
             clearConnectRetry();
@@ -752,8 +754,10 @@ export function App() {
 
   const viewKeys = Object.keys(views);
   const hasViews = viewKeys.length > 0;
-  const chatVisible = (chatPinned || chatHover || pendingChoices.length > 0) && !chatAsTab;
-  const chatPanelOffset = hasViews && chatPinned && !chatAsTab ? chatPanelWidth + 16 : 24;
+  const chatVisible =
+    (chatPinned || chatHover || pendingChoices.length > 0) && !chatAsTab;
+  const chatPanelOffset =
+    hasViews && chatPinned && !chatAsTab ? chatPanelWidth + 16 : 24;
 
   // Auto-select first view tab when views first appear
   useEffect(() => {
@@ -823,7 +827,14 @@ export function App() {
     };
     window.addEventListener("mousemove", onMove);
     return () => window.removeEventListener("mousemove", onMove);
-  }, [sidebarPinned, chatPinned, chatAsTab, hasViews, sidebarWidth, chatPanelWidth]);
+  }, [
+    sidebarPinned,
+    chatPinned,
+    chatAsTab,
+    hasViews,
+    sidebarWidth,
+    chatPanelWidth,
+  ]);
 
   return (
     <div
@@ -860,7 +871,16 @@ export function App() {
             aria-label="Move chat back to side panel"
             title="Move chat back to side panel"
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
               <polyline points="9 18 15 12 9 6" />
               <rect x="3" y="3" width="18" height="18" rx="2" fill="none" />
             </svg>
@@ -876,7 +896,8 @@ export function App() {
           </button>
         )}
         <span className={css.infoPill}>
-          {providerName && `${providerName}: `}{modelName}
+          {providerName && `${providerName}: `}
+          {modelName}
           {modelName && " \u00b7 "}
           {Math.round(contextPct)}% context
         </span>
@@ -920,7 +941,9 @@ export function App() {
           <nav className={css.viewNav}>
             {chatAsTab && (
               <button
-                className={activeTab === "__chat" ? css.viewTabActive : css.viewTab}
+                className={
+                  activeTab === "__chat" ? css.viewTabActive : css.viewTab
+                }
                 onClick={() => setActiveTab("__chat")}
               >
                 Chat
@@ -992,7 +1015,16 @@ export function App() {
                 title="Pop chat into tab"
                 data-pinned="true"
               >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
                   <polyline points="15 3 21 3 21 9" />
                   <line x1="10" y1="14" x2="21" y2="3" />
                   <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
