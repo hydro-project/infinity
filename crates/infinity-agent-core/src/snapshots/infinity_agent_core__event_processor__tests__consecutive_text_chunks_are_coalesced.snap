@@ -1,0 +1,15 @@
+---
+source: crates/infinity-agent-core/src/event_processor.rs
+expression: hm.pending_items.borrow().clone()
+---
+[
+  {
+    "message": {
+      "kind": "assistant",
+      "content": {
+        "text": "Hello, world"
+      }
+    },
+    "message_id": "c-1"
+  }
+]
