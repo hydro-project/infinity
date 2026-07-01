@@ -297,7 +297,15 @@ where
                     let mut all_sessions: Vec<(String, infinity_protocol::SessionInfo)> = sessions.iter()
                         .map(|(id, info)| (id.clone(), info.clone()))
                         .collect();
-                    all_sessions.sort_by(|a, b| b.1.last_updated.cmp(&a.1.last_updated));
+                    all_sessions.sort_by(|a, b| {
+                        let a_waiting = a.1.status == infinity_protocol::SessionStatus::WaitingForChoice;
+                        let b_waiting = b.1.status == infinity_protocol::SessionStatus::WaitingForChoice;
+                        match (a_waiting, b_waiting) {
+                            (true, false) => std::cmp::Ordering::Less,
+                            (false, true) => std::cmp::Ordering::Greater,
+                            _ => b.1.last_updated.cmp(&a.1.last_updated),
+                        }
+                    });
 
                     session_picker.sessions = all_sessions;
                     if let Some(found) = session_picker.sessions.iter().position(|s| s.0 == last_picked_id) {
@@ -909,7 +917,15 @@ where
                                                     .filter(|(_, info)| info.status != infinity_protocol::SessionStatus::Archived)
                                                     .map(|(id, info)| (id.clone(), info.clone()))
                                                     .collect();
-                                                all_sessions.sort_by(|a, b| b.1.last_updated.cmp(&a.1.last_updated));
+                                                all_sessions.sort_by(|a, b| {
+                                                    let a_waiting = a.1.status == infinity_protocol::SessionStatus::WaitingForChoice;
+                                                    let b_waiting = b.1.status == infinity_protocol::SessionStatus::WaitingForChoice;
+                                                    match (a_waiting, b_waiting) {
+                                                        (true, false) => std::cmp::Ordering::Less,
+                                                        (false, true) => std::cmp::Ordering::Greater,
+                                                        _ => b.1.last_updated.cmp(&a.1.last_updated),
+                                                    }
+                                                });
                                                 session_picker = Some(SessionPicker::new(all_sessions, thread_id.clone()));
                                                 ui_mode = UiMode::SessionPicker;
                                             }
