@@ -1,0 +1,26 @@
+---
+source: crates/infinity-agent-cli/tests/tui_flow_snapshots.rs
+assertion_line: 450
+expression: h.screen()
+---
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│Infinity Agent CLI                                                              │
+│Type your messages below. /help for commands. Ctrl+C to exit.                   │
+│                                                                                │
+│Existing sessions found, /load or Ctrl+L to load.                               │
+│                                                                                │
+│────────────────────────────────────────────────────────────────────────────────│
+│ Needs attention             waiting for choice     200tok  2025-06-10T08:00:00Z│
+│ Recent session                         running     500tok  2025-06-15T12:00:00Z│
+│ Idle session                              idle     100tok  2025-06-14T10:00:00Z│
+│                                                                                │
+│↑↓ navigate  enter select  esc cancel              mock: mock-model · 0% context│
+└────────────────────────────────────────────────────────────────────────────────┘
+cursor: row=10 col=49 (hidden)

@@ -801,3 +801,97 @@ async fn image_tool_result_renders_inline() -> Result<(), BoxError> {
         })
         .await
 }
+
+// ── WaitingForChoice test ────────────────────────────────────────────────────
+
+use rap_test_servers::start_choice_server;
+
+/// A session with a pending user choice shows the WaitingForChoice status dot
+/// (pulsing orange) and sorts above idle sessions in the sidebar. The focused
+/// session is a *different* one so the waiting session's highlight is visible
+/// as an inactive sidebar item.
+#[tokio::test]
+async fn waiting_for_choice_status_in_sidebar() -> Result<(), BoxError> {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (model, mut ctrl) = mock_model();
+            let daemon = start_daemon(model).await?;
+
+            // Start a RAP server whose tool sends a user_choice callback.
+            let rap_port = start_choice_server()
+                .await
+                .expect("start stub choice server");
+            write_rap_config(daemon.cwd.path(), rap_port).expect("write rap.json");
+
+            let harness = BrowserHarness::launch().await?;
+            let page = harness.open(daemon.port).await?;
+
+            // ── First session: will end up WaitingForChoice ──
+            create_session_via_picker(&page, &daemon.cwd.path().to_string_lossy()).await?;
+            send_chat_message(&page, "Do something that needs permission").await?;
+            let _req = next_request(&mut ctrl).await?;
+            ctrl.send_tool_call(
+                "call-title",
+                "set_title",
+                serde_json::json!({"title": "Waiting session"}),
+            );
+            ctrl.finish();
+            let _req = next_request(&mut ctrl).await?;
+            // Call the tool that sends user_choice → WaitingForChoice.
+            ctrl.send_tool_call(
+                "call-perm",
+                "ask_permission",
+                serde_json::json!({"action": "deploy"}),
+            );
+            ctrl.finish();
+
+            // Wait for the choice prompt to appear.
+            expect(page.get_by_text("Allow \"deploy\"?", false).await)
+                .to_be_visible()
+                .await?;
+
+            // ── Second session: create and switch to it ──
+            page.get_by_text("+ New", true).await.click(None).await?;
+            expect(page.get_by_text("New session on", true).await)
+                .to_be_visible()
+                .await?;
+            page.get_by_text("local", true).await.click(None).await?;
+            let cwd_input = page
+                .get_by_placeholder("Working directory on local (Tab to complete)", true)
+                .await;
+            cwd_input
+                .fill(&daemon.cwd.path().to_string_lossy(), None)
+                .await?;
+            cwd_input.press("Enter", None).await?;
+
+            send_chat_message(&page, "Second session").await?;
+            let _req = next_request(&mut ctrl).await?;
+            ctrl.send_tool_call(
+                "call-title2",
+                "set_title",
+                serde_json::json!({"title": "Active session"}),
+            );
+            ctrl.finish();
+            let _req = next_request(&mut ctrl).await?;
+            ctrl.send_text("Done.");
+            ctrl.finish();
+            expect(page.get_by_text("Active session", true).await)
+                .to_be_visible()
+                .await?;
+
+            // The sidebar should show both sessions; the WaitingForChoice one
+            // should sort to the top with a highlighted background/border
+            // even though we are focused on the second session.
+            let highlighted_item = page
+                .locator("[class*='item'][data-status='WaitingForChoice']")
+                .await;
+            expect(highlighted_item).to_be_visible().await?;
+
+            assert_screenshot(&page, "waiting-for-choice-sidebar", &[]).await?;
+
+            harness.close().await?;
+            Ok(())
+        })
+        .await
+}

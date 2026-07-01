@@ -126,3 +126,81 @@ pub async fn start_stub_image_server() -> std::io::Result<u16> {
     });
     Ok(port)
 }
+
+/// Start a minimal RAP tool server exposing a single `ask_permission` tool.
+///
+/// Instead of returning a tool result, invocations respond with a
+/// `user_choice` callback — which puts the session into the
+/// `WaitingForChoice` state until the user answers. This is useful for
+/// testing that pending-choice sessions are highlighted / sorted correctly.
+///
+/// Must be called from within a tokio runtime; the server task runs until
+/// the runtime shuts down.
+pub async fn start_choice_server() -> std::io::Result<u16> {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let port = listener.local_addr()?.port();
+
+    let manifest = serde_json::json!({
+        "name": "stub-choice",
+        "endpoint": format!("http://127.0.0.1:{port}/invoke"),
+        "tools": [{
+            "name": "ask_permission",
+            "description": "Ask the user for permission before proceeding.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "action": { "type": "string" } },
+                "required": ["action"]
+            }
+        }]
+    });
+
+    let app = Router::new()
+        .route(
+            "/.well-known/rap-toolset",
+            get(move || {
+                let manifest = manifest.clone();
+                async move { Json(manifest) }
+            }),
+        )
+        .route(
+            "/invoke",
+            post(move |Json(inv): Json<RapInvocation>| async move {
+                tokio::spawn(async move {
+                    let action = inv
+                        .arguments
+                        .get("action")
+                        .and_then(|a| a.as_str())
+                        .unwrap_or("unknown")
+                        .to_owned();
+                    let choice = RapCallback::UserChoice(rap_protocol::RapUserChoice {
+                        group_id: inv.group_id,
+                        id: inv.id,
+                        call_id: inv.call_id,
+                        prompt: format!("Allow \"{action}\"?"),
+                        choices: vec!["Allow".to_owned(), "Deny".to_owned()],
+                        default: 0,
+                        response_url: format!("http://127.0.0.1:{port}/user_choice_response"),
+                    });
+                    let body =
+                        serde_json::to_string(&choice).expect("serialize user_choice callback");
+                    if let Err(e) = reqwest::Client::new()
+                        .post(&inv.callback_url)
+                        .header("content-type", "application/json")
+                        .body(body)
+                        .send()
+                        .await
+                    {
+                        panic!("stub failed to deliver user_choice: {e}");
+                    }
+                });
+                axum::http::StatusCode::OK
+            }),
+        );
+
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve stub choice server");
+    });
+    Ok(port)
+}
