@@ -26,10 +26,19 @@ pub async fn start_callback_server(
     state_dir: std::path::PathBuf,
 ) -> Result<Arc<Mutex<SessionManager>>, BoxError> {
     let (listener, callback_url) = rap_client::callback_server::bind_callback_listener().await?;
+    let session_manager = SessionManager::new(state_dir, callback_url).await?;
+    Ok(serve_callbacks(listener, session_manager))
+}
 
-    let session_manager = Arc::new(Mutex::new(
-        SessionManager::new(state_dir, callback_url).await?,
-    ));
+/// Start the callback accept loop for an already-built [`SessionManager`]
+/// on a pre-bound listener (whose base URL must match the manager's
+/// `callback_url`). This is the generic entry point; tests use it to wire a
+/// manager built via [`SessionManager::with_providers`].
+pub fn serve_callbacks(
+    listener: tokio::net::TcpListener,
+    session_manager: SessionManager,
+) -> Arc<Mutex<SessionManager>> {
+    let session_manager = Arc::new(Mutex::new(session_manager));
 
     // Use a channel to bridge from the Send-required callback server
     // to the LocalSet where SessionManager lives.
@@ -67,7 +76,7 @@ pub async fn start_callback_server(
         }
     });
 
-    Ok(session_manager)
+    session_manager
 }
 
 fn convert_callback(cb: RapCallback) -> InputMessage {

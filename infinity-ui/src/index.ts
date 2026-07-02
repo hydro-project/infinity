@@ -12,6 +12,16 @@ export { ChoicePicker } from "./components/ChoicePicker";
 export type { ChoicePickerHandle } from "./components/ChoicePicker";
 export { DiffView } from "./components/DiffView";
 export { MigratePicker } from "./components/MigratePicker";
+export {
+  PinIcon,
+  SunIcon,
+  MoonIcon,
+  MonitorIcon,
+  CopyIcon,
+  CheckIcon,
+  ChevronRightIcon,
+  ChevronDownIcon,
+} from "./components/icons";
 
 // Types
 export type {

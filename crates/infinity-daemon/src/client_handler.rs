@@ -637,7 +637,8 @@ pub async fn handle_client_channels(
                         }
                     }
                     ClientMessage::BootRapServers { cwd } => {
-                        match crate::session::boot_rap_servers(&cwd, &mut |_text| async {}).await {
+                        let user_rap = crate::config::user_config_path().ok();
+                        match crate::session::boot_rap_servers(&cwd, user_rap.as_deref(), &mut |_text| async {}).await {
                             Ok(booted) => {
                                 match crate::migrate::filter_migration_server_ports(&booted).await {
                                     Ok(server_ports) => {

@@ -18,6 +18,27 @@ use crate::client_handler::handle_client_channels;
 use crate::session::SessionManager;
 use crate::web_assets;
 
+/// Accept loop serving HTTP/WebSocket clients on a pre-bound listener.
+/// Connections are handled via `spawn_local`, so this must run inside a
+/// `LocalSet`. Used by both the daemon and in-process integration tests
+/// (which bind an OS-assigned port).
+pub async fn serve(listener: tokio::net::TcpListener, session_manager: Arc<Mutex<SessionManager>>) {
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                let mgr = session_manager.clone();
+                tokio::task::spawn_local(rap_protocol::log_panic(
+                    "http_client_handler",
+                    handle_http_client(stream, mgr),
+                ));
+            }
+            Err(e) => {
+                tracing::warn!("ws accept error: {e}");
+            }
+        }
+    }
+}
+
 /// Handle a TCP connection that may be an HTTP request or a WebSocket upgrade.
 pub async fn handle_http_client(stream: TcpStream, session_manager: Arc<Mutex<SessionManager>>) {
     let io = TokioIo::new(stream);

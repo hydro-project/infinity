@@ -53,6 +53,33 @@ step "Tests"
 cargo test --all-targets || fail "tests failed"
 pass "All tests passed"
 
+step "Web UI e2e (Playwright)"
+# Requires npm (the bundled-web build script runs vite) and the Playwright
+# chromium build matching playwright-rs's bundled driver (1.60 → r1223):
+#   npx playwright@1.60.0 install chromium
+#
+# On hosts where the bundled driver is unusable — its download CDN has
+# been known to 404, and its bundled node binary needs a newer glibc than
+# some hosts have ("Server process exited immediately") — point
+# playwright-rs at an npm-installed driver instead by exporting, before
+# running this script:
+#   export PLAYWRIGHT_SKIP_DRIVER_DOWNLOAD=1   # don't bake in the bundled driver
+#   export PLAYWRIGHT_NODE_EXE="$(command -v node)"
+#   export PLAYWRIGHT_CLI_JS=/path/to/node_modules/playwright/cli.js  # from `npm i playwright@1.60.0`
+# (cargo forwards these to both the build script and the test binary.)
+if command -v npm > /dev/null 2>&1 && ls "${HOME}/.cache/ms-playwright"/chromium*-1223 > /dev/null 2>&1; then
+    # npm needs a writable cache; fall back to a temp dir when ~/.npm isn't
+    # writable (e.g. sandboxed environments).
+    if ! [ -w "${HOME}/.npm" ]; then
+        export npm_config_cache="${npm_config_cache:-${TMPDIR:-/tmp}/npm-cache}"
+    fi
+    cargo clippy -p infinity-daemon --features e2e-web --all-targets -- -D warnings || fail "web e2e clippy warnings found"
+    cargo test -p infinity-daemon --features e2e-web --test web_e2e || fail "web e2e tests failed"
+    pass "Web UI e2e tests passed"
+else
+    echo "  (skipped: npm or Playwright 1.60 chromium not installed — run 'npx playwright@1.60.0 install chromium')"
+fi
+
 step "THIRD-PARTY file"
 if command -v cargo-about > /dev/null 2>&1; then
     EXPECTED="$(mktemp)"

@@ -220,6 +220,7 @@
   border: none;
   color: var(--text-muted);
   font-size: 12px;
+  font-family: inherit;
   font-style: italic;
   cursor: pointer;
   padding: 2px 0;

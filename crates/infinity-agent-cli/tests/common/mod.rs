@@ -257,6 +257,12 @@ pub struct VirtualTerm {
     emu: SharedEmulator,
 }
 
+impl VirtualTerm {
+    pub fn new(emu: SharedEmulator) -> Self {
+        Self { emu }
+    }
+}
+
 impl Write for VirtualTerm {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         lock_emu(&self.emu).process(buf);
@@ -293,6 +299,12 @@ pub struct ScriptedEvents {
     rx: mpsc::UnboundedReceiver<Event>,
     /// Event received by `wait_for_event` but not yet consumed.
     pending: Option<Event>,
+}
+
+impl ScriptedEvents {
+    pub fn new(rx: mpsc::UnboundedReceiver<Event>) -> Self {
+        Self { rx, pending: None }
+    }
 }
 
 impl EventSource for ScriptedEvents {
@@ -550,7 +562,7 @@ impl TuiHarness {
     }
 }
 
-fn render_screen(emu: &dyn Emulator, with_scrollback: bool) -> String {
+pub fn render_screen(emu: &dyn Emulator, with_scrollback: bool) -> String {
     let (cols, rows) = emu.size();
     let mut out = String::new();
 

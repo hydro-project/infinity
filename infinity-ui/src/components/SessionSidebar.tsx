@@ -6,6 +6,13 @@ import type {
   ConnectionStatus,
 } from "../types";
 import css from "./SessionSidebar.module.css";
+import {
+  PinIcon,
+  CopyIcon,
+  CheckIcon,
+  ChevronRightIcon,
+  ChevronDownIcon,
+} from "./icons";
 
 function CopyThreadId({ id }: { id: string }) {
   const bare = id.includes("/") ? id.split("/").pop()! : id;
@@ -25,7 +32,7 @@ function CopyThreadId({ id }: { id: string }) {
         onClick={copy}
         aria-label="Copy thread ID"
       >
-        {copied ? "✓" : "⧉"}
+        {copied ? <CheckIcon size={11} /> : <CopyIcon size={11} />}
       </button>
     </span>
   );
@@ -266,7 +273,12 @@ export const SessionSidebar = memo(function SessionSidebar({
               className={css.archivedToggle}
               onClick={() => setShowArchived((p) => !p)}
             >
-              {showArchived ? "▾" : "▸"} Archived ({archived.length})
+              {showArchived ? (
+                <ChevronDownIcon size={12} />
+              ) : (
+                <ChevronRightIcon size={12} />
+              )}
+              Archived ({archived.length})
             </button>
             {showArchived &&
               archived.map(([id, info]) => (
@@ -312,7 +324,7 @@ export const SessionSidebar = memo(function SessionSidebar({
             aria-label={pinned ? "Unpin sidebar" : "Pin sidebar"}
             data-pinned={pinned}
           >
-            {"\u{1F4CC}"}
+            <PinIcon size={14} />
           </button>
         </div>
       </div>

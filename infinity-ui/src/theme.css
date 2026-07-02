@@ -67,3 +67,26 @@
   --primary: oklch(0.205 0 0);
   --primary-foreground: oklch(0.985 0 0);
 }
+
+/* Form controls do not inherit the document font by default (they use the
+   UA's button/input font, which varies per platform), so every class below
+   that styles a <button>/<input> with visible text sets `font-family`. */
+
+/* ── Reduced motion ──
+   Freeze CSS animations and transitions (including those from third-party
+   libraries) when the user prefers reduced motion. Also relied upon by
+   screenshot-based e2e tests, which emulate this preference to get
+   deterministic renders. Canvas animations (e.g. the Spinner) check the
+   same media query in JS. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}

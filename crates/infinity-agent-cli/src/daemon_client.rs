@@ -10,12 +10,14 @@ use infinity_protocol::{
     ClientMessage, DaemonMessage, ModelRef, SessionInfo, TokenUsage, length_delimited_codec,
 };
 use rig::completion::GetTokenUsage;
+use std::path::PathBuf;
 use tokio::io::AsyncBufReadExt;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-use infinity_agent_cli::terminal::{DetachResult, SessionChanged};
+use crate::term_io::{EventSource, TermOut};
+use crate::terminal::{DetachResult, SessionChanged};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -133,7 +135,7 @@ fn daemon_msg_to_display(
     })
 }
 
-pub(crate) async fn ensure_daemon_running() -> Result<UnixStream, BoxError> {
+pub async fn ensure_daemon_running() -> Result<UnixStream, BoxError> {
     if let Ok(stream) = UnixStream::connect(&infinity_protocol::socket_path()).await {
         return Ok(stream);
     }
@@ -337,7 +339,16 @@ pub async fn run_with_daemon(
     let (from_daemon_tx, from_daemon_rx) = mpsc::unbounded_channel::<DaemonMessage>();
 
     tokio::pin! {
-        let client_fut = run_client(from_daemon_rx, to_daemon_tx, initial_message, session, None);
+        let client_fut = run_client(
+            crate::term_io::CrosstermTerm::new(),
+            crate::term_io::CrosstermEvents,
+            std::env::current_dir().unwrap_or_default(),
+            from_daemon_rx,
+            to_daemon_tx,
+            initial_message,
+            session,
+            None,
+        );
     }
 
     loop {
@@ -398,6 +409,9 @@ pub async fn run_in_memory(
     startup_info: Option<String>,
 ) -> Result<(), BoxError> {
     run_client(
+        crate::term_io::CrosstermTerm::new(),
+        crate::term_io::CrosstermEvents,
+        std::env::current_dir().unwrap_or_default(),
         from_daemon_rx,
         to_daemon_tx,
         initial_message,
@@ -407,14 +421,25 @@ pub async fn run_in_memory(
     .await
 }
 
-/// Core client logic — works with channels regardless of transport.
-async fn run_client(
+/// Core client logic — works with channels regardless of transport, and any
+/// terminal implementation. Production wrappers pass the crossterm-backed
+/// terminal and the process cwd; tests substitute a virtual terminal,
+/// scripted events, and a temp cwd.
+#[expect(clippy::too_many_arguments, reason = "explicit client wiring")]
+pub async fn run_client<T, E>(
+    term: T,
+    events: E,
+    cwd: PathBuf,
     mut from_daemon: mpsc::UnboundedReceiver<DaemonMessage>,
     to_daemon: mpsc::UnboundedSender<ClientMessage>,
     initial_message: Option<String>,
     session: Option<String>,
     startup_info: Option<String>,
-) -> Result<(), BoxError> {
+) -> Result<(), BoxError>
+where
+    T: TermOut + 'static,
+    E: EventSource + 'static,
+{
     // Read Welcome
     let welcome = from_daemon.recv().await.ok_or("daemon disconnected")?;
     let (model_name, context_window, sessions, available_models, provider_name) = match welcome {
@@ -435,8 +460,6 @@ async fn run_client(
         DaemonMessage::Error { text, .. } => return Err(text.into()),
         _ => return Err("expected Welcome from daemon".into()),
     };
-
-    let cwd = std::env::current_dir().unwrap_or_default();
 
     let (display_tx, display_rx) =
         mpsc::unbounded_channel::<(Option<String>, DisplayEvent<DaemonTokenUsage>)>();
@@ -483,9 +506,9 @@ async fn run_client(
 
     let models_for_switch = available_models.clone();
 
-    let mut terminal_handle = tokio::task::spawn_local(infinity_agent_cli::terminal::run(
-        infinity_agent_cli::term_io::CrosstermTerm::new(),
-        infinity_agent_cli::term_io::CrosstermEvents,
+    let mut terminal_handle = tokio::task::spawn_local(crate::terminal::run(
+        term,
+        events,
         input_tx,
         display_rx,
         model_name,

@@ -48,6 +48,8 @@ pub struct InMemoryConversationStore {
     /// The global default model, used for new threads and backfilled into
     /// metadata serialized before models were tracked per-thread.
     default_model: ModelRef,
+    /// Source of new thread ids (deterministic in tests).
+    id_source: Arc<dyn crate::ids::IdSource>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -198,8 +200,13 @@ pub(crate) struct SerializedThread {
 impl InMemoryConversationStore {
     /// Create a store that persists each thread to its own JSON file under `dir`.
     /// `default_model` is assigned to new threads and backfilled into metadata
-    /// that predates per-thread model tracking.
-    pub fn new_with_dir(dir: impl AsRef<Path>, default_model: ModelRef) -> Self {
+    /// that predates per-thread model tracking. `id_source` generates ids for
+    /// newly spawned threads (deterministic in tests).
+    pub fn new_with_dir(
+        dir: impl AsRef<Path>,
+        default_model: ModelRef,
+        id_source: Arc<dyn crate::ids::IdSource>,
+    ) -> Self {
         let dir = dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&dir).ok();
         Self {
@@ -213,6 +220,7 @@ impl InMemoryConversationStore {
             pending_choices: Arc::new(Mutex::new(HashMap::new())),
             views: Arc::new(Mutex::new(HashMap::new())),
             default_model,
+            id_source,
         }
     }
 
@@ -829,7 +837,7 @@ impl ConversationStore for InMemoryConversationStore {
         spawn_order_override: Option<usize>,
     ) -> Result<String, MemoryError> {
         self.ensure_thread_loaded(parent_thread_id);
-        let new_id = uuid::Uuid::new_v4().to_string();
+        let new_id = self.id_source.generate();
         let spawn_message_order;
         let root;
         let parent_model;
@@ -1303,7 +1311,11 @@ mod tests {
     #[tokio::test]
     async fn ancestors_basic_cutoff() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let store = InMemoryConversationStore::new_with_dir(dir.path(), test_model());
+        let store = InMemoryConversationStore::new_with_dir(
+            dir.path(),
+            test_model(),
+            Arc::new(crate::ids::UuidIdSource),
+        );
         store
             .ensure_root_thread("root")
             .await
@@ -1357,7 +1369,11 @@ mod tests {
     #[tokio::test]
     async fn ancestors_three_levels() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let store = InMemoryConversationStore::new_with_dir(dir.path(), test_model());
+        let store = InMemoryConversationStore::new_with_dir(
+            dir.path(),
+            test_model(),
+            Arc::new(crate::ids::UuidIdSource),
+        );
         store
             .ensure_root_thread("root")
             .await
@@ -1399,7 +1415,11 @@ mod tests {
     #[tokio::test]
     async fn ancestors_with_compaction_on_self() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let store = InMemoryConversationStore::new_with_dir(dir.path(), test_model());
+        let store = InMemoryConversationStore::new_with_dir(
+            dir.path(),
+            test_model(),
+            Arc::new(crate::ids::UuidIdSource),
+        );
         store
             .ensure_root_thread("root")
             .await
@@ -1440,7 +1460,11 @@ mod tests {
     #[tokio::test]
     async fn ancestors_with_compaction_on_parent() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let store = InMemoryConversationStore::new_with_dir(dir.path(), test_model());
+        let store = InMemoryConversationStore::new_with_dir(
+            dir.path(),
+            test_model(),
+            Arc::new(crate::ids::UuidIdSource),
+        );
         store
             .ensure_root_thread("root")
             .await
@@ -1488,7 +1512,11 @@ mod tests {
     #[tokio::test]
     async fn ancestors_multiple_compactions_picks_latest() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let store = InMemoryConversationStore::new_with_dir(dir.path(), test_model());
+        let store = InMemoryConversationStore::new_with_dir(
+            dir.path(),
+            test_model(),
+            Arc::new(crate::ids::UuidIdSource),
+        );
         store
             .ensure_root_thread("root")
             .await
@@ -1543,7 +1571,11 @@ mod tests {
     #[tokio::test]
     async fn leaf_compaction_takes_priority_over_ancestor() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let store = InMemoryConversationStore::new_with_dir(dir.path(), test_model());
+        let store = InMemoryConversationStore::new_with_dir(
+            dir.path(),
+            test_model(),
+            Arc::new(crate::ids::UuidIdSource),
+        );
         store
             .ensure_root_thread("root")
             .await

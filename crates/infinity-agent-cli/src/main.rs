@@ -3,8 +3,7 @@ use tracing_subscriber::EnvFilter;
 
 use clap::Parser;
 
-mod daemon_client;
-
+use infinity_agent_cli::daemon_client;
 use infinity_agent_cli::install;
 
 mod acp_server;

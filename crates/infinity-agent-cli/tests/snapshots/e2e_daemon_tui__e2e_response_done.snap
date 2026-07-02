@@ -1,0 +1,27 @@
+---
+source: crates/infinity-agent-cli/tests/e2e_daemon_tui.rs
+expression: h.screen()
+---
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│Infinity Agent CLI                                                              │
+│Type your messages below. /help for commands. Ctrl+C to exit.                   │
+│                                                                                │
+│                                                                                │
+│✦ Loading session — thread 00000000-0000-4000-8000-000000000001                 │
+│Neither local nor user RAP configs exist, using empty config                    │
+│> hello daemon                                                                  │
+│Hello! I am a mock model.                                                       │
+│                                                                                │
+│                                                                                │
+│────────────────────────────────────────────────────────────────────────────────│
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│00000000 | /help for commands                      mock: Mock Model · 0% context│
+└────────────────────────────────────────────────────────────────────────────────┘
+cursor: row=17 col=1

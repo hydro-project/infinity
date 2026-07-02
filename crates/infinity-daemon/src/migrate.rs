@@ -197,7 +197,9 @@ async fn boot_source_rap_servers(
     cwd: &Path,
     dest_rap_urls: &HashMap<String, String>,
 ) -> Result<(Vec<(String, String)>, Vec<tokio::process::Child>), BoxError> {
-    let booted = crate::session::boot_rap_servers(cwd, &mut |_text| async {}).await?;
+    let user_rap = crate::config::user_config_path().ok();
+    let booted =
+        crate::session::boot_rap_servers(cwd, user_rap.as_deref(), &mut |_text| async {}).await?;
     let migration_servers: Vec<(String, String)> = dest_rap_urls
         .keys()
         .filter_map(|id| {
@@ -305,7 +307,10 @@ async fn boot_dest_and_tunnel(
     let dest_is_local = to.is_none();
     // Boot RAP servers on destination — server_ports is config_id → port (migration-only)
     let (dest_server_ports, dest_spawned) = if dest_is_local {
-        let booted = crate::session::boot_rap_servers(dest_cwd, &mut |_text| async {}).await?;
+        let user_rap = crate::config::user_config_path().ok();
+        let booted =
+            crate::session::boot_rap_servers(dest_cwd, user_rap.as_deref(), &mut |_text| async {})
+                .await?;
         let ports = filter_migration_server_ports(&booted).await?;
         (ports, LocalOrRemoteSpawned::Local(booted.spawned_servers))
     } else {

@@ -1,5 +1,6 @@
 pub mod client_handler;
 pub mod config;
+pub mod ids;
 pub mod mcp_proxy;
 pub mod memory_store;
 pub mod migrate;
@@ -73,23 +74,7 @@ pub async fn run_daemon(
     let ws_listener = TcpListener::bind((&*ws_bind_addr, ws_port)).await?;
     tracing::info!("websocket server listening on {ws_bind_addr}:{ws_port}");
 
-    let ws_session_manager = session_manager.clone();
-    let ws_accept = async move {
-        loop {
-            match ws_listener.accept().await {
-                Ok((stream, _)) => {
-                    let mgr = ws_session_manager.clone();
-                    tokio::task::spawn_local(rap_protocol::log_panic(
-                        "http_client_handler",
-                        ws_handler::handle_http_client(stream, mgr),
-                    ));
-                }
-                Err(e) => {
-                    tracing::warn!("ws accept error: {e}");
-                }
-            }
-        }
-    };
+    let ws_accept = ws_handler::serve(ws_listener, session_manager.clone());
 
     let shutdown = async {
         let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())

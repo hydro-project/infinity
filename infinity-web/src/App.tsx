@@ -10,6 +10,10 @@ import {
   MigratePicker,
   DiffView,
   Spinner,
+  PinIcon,
+  SunIcon,
+  MoonIcon,
+  MonitorIcon,
 } from "infinity-ui";
 import type {
   ClientMessage,
@@ -929,11 +933,13 @@ export function App() {
           onClick={toggleTheme}
           aria-label="Toggle theme"
         >
-          {theme === "dark"
-            ? "\u263E"
-            : theme === "light"
-              ? "\u2600"
-              : "\uD83D\uDCBB"}
+          {theme === "dark" ? (
+            <MoonIcon size={14} />
+          ) : theme === "light" ? (
+            <SunIcon size={14} />
+          ) : (
+            <MonitorIcon size={14} />
+          )}
         </button>
         <div ref={chatSpinnerPortalRef} className={css.chatSpinnerPortal} />
       </div>
@@ -1037,7 +1043,7 @@ export function App() {
                 aria-label={chatPinned ? "Unpin chat" : "Pin chat"}
                 data-pinned={chatPinned}
               >
-                {"\uD83D\uDCCC"}
+                <PinIcon size={14} />
               </button>
             </div>
           </div>

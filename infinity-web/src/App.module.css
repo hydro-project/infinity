@@ -87,6 +87,7 @@
   border-radius: 20px;
   padding: 6px 14px;
   font-size: 12px;
+  font-family: inherit;
   color: var(--text-dim);
   cursor: pointer;
   display: flex;
