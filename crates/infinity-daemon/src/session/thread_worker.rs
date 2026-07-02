@@ -200,7 +200,7 @@ pub async fn thread_worker(
             .map(|t| (t.name().to_owned(), t.as_ref()))
             .collect();
 
-    let input_tokens_cell = std::cell::Cell::new(0u64);
+    let total_tokens_cell = std::cell::Cell::new(0u64);
     let mut compaction_triggered = false;
     let mut pending_non_interrupt_items = vec![];
     let mut completion_fut = None;
@@ -234,13 +234,13 @@ pub async fn thread_worker(
                     #[expect(clippy::let_underscore_future, reason = "dropping completed future")]
                     let _ = completion_fut.take().expect("bug: completion_fut missing after poll");
 
-                    // Background compaction: trigger if input tokens > 75% of context window
-                    let input_tokens = input_tokens_cell.get() as usize;
-                    if !compaction_triggered && context_window > 0 && input_tokens > context_window * 3 / 4 {
+                    // Background compaction: trigger if total tokens > 75% of context window
+                    let total_tokens = total_tokens_cell.get() as usize;
+                    if !compaction_triggered && context_window > 0 && total_tokens > context_window * 3 / 4 {
                         compaction_triggered = true;
                         tracing::info!(
-                            "Auto-compaction for thread {}: {} input tokens > 75% of {} context window",
-                            &active_group_id, input_tokens, context_window
+                            "Auto-compaction for thread {}: {} total tokens > 75% of {} context window",
+                            &active_group_id, total_tokens, context_window
                         );
                         let _ = display_tx.send(DisplayEvent::Info(
                             "✦ Auto-compaction triggered (context > 75%)".to_owned(),
@@ -442,7 +442,7 @@ pub async fn thread_worker(
             tool_context.clone(),
             &extra_system_prompt,
             rap_notifier.as_ref(),
-            Some(&input_tokens_cell),
+            Some(&total_tokens_cell),
         )
         .await;
 
