@@ -1,6 +1,24 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use tokio_util::codec::LengthDelimitedCodec;
+
+/// Maximum frame size for daemon ↔ client communication (256 MiB).
+///
+/// The default `LengthDelimitedCodec` limit is 8 MiB, which is too small for
+/// messages that carry large tool outputs, file contents, or replayed
+/// conversation history. We use a generous 256 MiB limit to avoid "frame size
+/// too big" errors in practice.
+const MAX_FRAME_LENGTH: usize = 256 * 1024 * 1024;
+
+/// Create a [`LengthDelimitedCodec`] configured with the project-wide maximum
+/// frame size. Use this instead of `LengthDelimitedCodec::new()` to ensure
+/// both client and daemon agree on the limit.
+pub fn length_delimited_codec() -> LengthDelimitedCodec {
+    LengthDelimitedCodec::builder()
+        .max_frame_length(MAX_FRAME_LENGTH)
+        .new_codec()
+}
 
 /// Returns the path to the daemon unix socket: `~/.infinity/daemon.sock`.
 pub fn socket_path() -> PathBuf {

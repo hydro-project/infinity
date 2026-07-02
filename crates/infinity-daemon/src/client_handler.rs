@@ -5,11 +5,11 @@ use futures_util::{SinkExt, StreamExt};
 use infinity_agent_core::message::{
     InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind,
 };
-use infinity_protocol::{ClientMessage, DaemonMessage};
+use infinity_protocol::{ClientMessage, DaemonMessage, length_delimited_codec};
 use rig::message::UserContent;
 use tokio::net::UnixStream;
 use tokio::sync::{Mutex, mpsc};
-use tokio_util::codec::{Framed, LengthDelimitedCodec};
+use tokio_util::codec::Framed;
 
 use crate::session::SessionManager;
 
@@ -231,7 +231,7 @@ fn strip_client_message(msg: ClientMessage, remote_name: &str) -> ClientMessage 
 
 /// Handle a client over a unix socket (serialized framing).
 pub async fn handle_client(stream: UnixStream, session_manager: Arc<Mutex<SessionManager>>) {
-    let mut framed = Framed::new(stream, LengthDelimitedCodec::new());
+    let mut framed = Framed::new(stream, length_delimited_codec());
     let (client_msg_tx, client_msg_rx) = mpsc::unbounded_channel();
     let (daemon_msg_tx, mut daemon_msg_rx) = mpsc::unbounded_channel();
 

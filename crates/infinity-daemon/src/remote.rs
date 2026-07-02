@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use infinity_protocol::{ClientMessage, DaemonMessage, SessionInfo};
+use infinity_protocol::{ClientMessage, DaemonMessage, SessionInfo, length_delimited_codec};
 use serde::Deserialize;
 use tokio::net::UnixStream;
 use tokio::process::Child;
@@ -146,7 +146,7 @@ impl RemoteDaemons {
         let stream = UnixStream::connect(&local_sock)
             .await
             .map_err(|e| format!("connect to tunnel failed: {e}"))?;
-        let mut framed = Framed::new(stream, LengthDelimitedCodec::new());
+        let mut framed = Framed::new(stream, length_delimited_codec());
 
         // Read and discard Welcome
         let first = framed
@@ -430,7 +430,7 @@ async fn open_remote_connection(
         local_sock,
     };
 
-    Ok((Framed::new(stream, LengthDelimitedCodec::new()), tunnel))
+    Ok((Framed::new(stream, length_delimited_codec()), tunnel))
 }
 
 /// Long-running control worker for a single remote daemon.
