@@ -206,7 +206,7 @@ pub async fn process_batch<'a: 'b, 'b, P, C, S, M, H>(
     tool_context: ToolContext<M>,
     extra_system_prompt: &'a Option<String>,
     rap_notifier: Option<&'a RapNotifier<H>>,
-    input_tokens_out: Option<&'a Cell<u64>>,
+    total_tokens_out: Option<&'a Cell<u64>>,
 ) -> Option<(Pin<Box<dyn Future<Output = ()> + 'b>>, oneshot::Sender<()>)>
 where
     P: ModelProvider + ?Sized,
@@ -317,10 +317,12 @@ where
                     }
                     Ok(event_processor::CompletionEvent::Action(CompletionAction::Done(r))) => {
                         // there may be multiple `Done` if the agent synchronously loops back
-                        if let Some(input_tokens_out) = input_tokens_out
+                        if let Some(total_tokens_out) = total_tokens_out
                             && let Some(usage) = r.token_usage()
                         {
-                            input_tokens_out.set(usage.input_tokens);
+                            // Use total_tokens which includes cached input. When prompt
+                            // caching is active, `input_tokens` alone undercounts usage.
+                            total_tokens_out.set(usage.total_tokens);
                         }
                         resp = Some(r);
                     }

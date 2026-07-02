@@ -37,6 +37,7 @@ pub(crate) fn display_event_to_daemon<R: GetTokenUsage>(
             let token_usage = r.and_then(|r| r.token_usage()).map(|u| TokenUsage {
                 input_tokens: Some(u.input_tokens),
                 output_tokens: Some(u.output_tokens),
+                total_tokens: Some(u.total_tokens),
             });
             DaemonMessage::ResponseDone {
                 thread_id: tid,

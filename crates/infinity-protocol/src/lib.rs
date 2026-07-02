@@ -316,6 +316,12 @@ pub struct SubthreadInfo {
 pub struct TokenUsage {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    /// Total tokens including cached input. When prompt caching is active,
+    /// `input_tokens` only reflects uncached input, so consumers should prefer
+    /// `total_tokens` (falling back to `input + output` if absent for
+    /// backwards compatibility).
+    #[serde(default)]
+    pub total_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

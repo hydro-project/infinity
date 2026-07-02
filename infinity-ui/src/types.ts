@@ -38,6 +38,8 @@ export interface RemoteInfo {
 export interface TokenUsage {
   input_tokens: number | null;
   output_tokens: number | null;
+  /** Total tokens including cached input. Prefer this over input+output. */
+  total_tokens?: number | null;
 }
 
 /* ── Display segments for structured tool result rendering ── */

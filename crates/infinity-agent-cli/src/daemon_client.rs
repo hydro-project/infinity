@@ -22,11 +22,15 @@ pub struct DaemonTokenUsage(pub Option<TokenUsage>);
 
 impl GetTokenUsage for DaemonTokenUsage {
     fn token_usage(&self) -> Option<rig::completion::Usage> {
-        self.0.as_ref().map(|u| rig::completion::Usage {
-            input_tokens: u.input_tokens.unwrap_or(0),
-            output_tokens: u.output_tokens.unwrap_or(0),
-            total_tokens: u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0),
-            cached_input_tokens: 0,
+        self.0.as_ref().map(|u| {
+            let input = u.input_tokens.unwrap_or(0);
+            let output = u.output_tokens.unwrap_or(0);
+            rig::completion::Usage {
+                input_tokens: input,
+                output_tokens: output,
+                total_tokens: u.total_tokens.unwrap_or(input + output),
+                cached_input_tokens: 0,
+            }
         })
     }
 }
