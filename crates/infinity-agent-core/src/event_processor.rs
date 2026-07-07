@@ -102,6 +102,7 @@ pub enum CompletionEvent<R> {
 
 // ── HistoryManager (unchanged from before) ──
 
+#[derive(Serialize, Clone)]
 pub struct PendingItem {
     message: InfinityMessage,
     message_id: String,
@@ -299,6 +300,14 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         if self.processed_message_ids.borrow().contains(&completion_id) {
             return;
         }
+        // Coalesce consecutive streamed text chunks into a single pending item
+        // so that a multi-chunk assistant response is persisted as one message
+        // rather than one row per chunk (which blows up disk usage).
+        if let StreamedAssistantContent::Text(text) = completion
+            && self.try_merge_pending_text(&text.text)
+        {
+            return;
+        }
         let infinity_message = match completion {
             StreamedAssistantContent::Text(text) => InfinityMessage::Assistant {
                 content: AssistantContent::Text(text.clone()),
@@ -332,6 +341,40 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             message,
             message_id,
         });
+    }
+
+    /// If the last not-yet-synced pending item is an assistant text message,
+    /// append `text` to it (and keep the in-memory history entry in sync) and
+    /// return `true`. Otherwise return `false` so the caller appends a new
+    /// pending item.
+    ///
+    /// Because `sync` drains `pending_items`, merging only happens across
+    /// chunks that have not been persisted yet, so an already-persisted text
+    /// message is never mutated.
+    fn try_merge_pending_text(&self, text: &str) -> bool {
+        let mut pending_items = self.pending_items.borrow_mut();
+        let Some(last) = pending_items.last_mut() else {
+            return false;
+        };
+        let InfinityMessage::Assistant {
+            content: AssistantContent::Text(existing),
+        } = &mut last.message
+        else {
+            return false;
+        };
+        existing.text.push_str(text);
+        // The last pending item always corresponds to the last history entry
+        // (both are pushed/popped together while an item is pending), so keep
+        // the in-memory history in sync with the merged text.
+        let mut history = self.history.borrow_mut();
+        let Some(InfinityMessage::Assistant {
+            content: AssistantContent::Text(hist_text),
+        }) = history.last_mut()
+        else {
+            panic!("bug: pending_items and history out of sync");
+        };
+        hist_text.text.push_str(text);
+        true
     }
 
     fn mark_tool_call_complete(&self, call_id: String) {
@@ -1651,6 +1694,52 @@ mod tests {
 
         assert_eq!(result, PrepareResult::Ready);
         insta::assert_json_snapshot!(hm.history.into_inner());
+    }
+
+    #[tokio::test]
+    async fn consecutive_text_chunks_are_coalesced() {
+        let store = StubConversationStore::new();
+        let hm = make_history(&store, vec![]).await;
+
+        let text_chunk = |s: &str| {
+            StreamedAssistantContent::<()>::Text(rig::message::Text { text: s.to_owned() })
+        };
+
+        hm.handle_completion(&text_chunk("Hello"), "c-1".to_owned(), None);
+        hm.handle_completion(&text_chunk(", "), "c-2".to_owned(), None);
+        hm.handle_completion(&text_chunk("world"), "c-3".to_owned(), None);
+
+        // The three chunks should collapse into a single pending item /
+        // history entry with the text concatenated together.
+        insta::assert_json_snapshot!(hm.pending_items.borrow().clone());
+        insta::assert_json_snapshot!(hm.history.borrow().clone());
+    }
+
+    #[tokio::test]
+    async fn text_chunks_not_coalesced_across_non_text_item() {
+        let store = StubConversationStore::new();
+        let hm = make_history(&store, vec![]).await;
+
+        let text_chunk = |s: &str| {
+            StreamedAssistantContent::<()>::Text(rig::message::Text { text: s.to_owned() })
+        };
+
+        hm.handle_completion(&text_chunk("before"), "c-1".to_owned(), None);
+        // A non-text item in between breaks the run of text chunks.
+        hm.append_pending(
+            InfinityMessage::from_rig_message(tool_call_msg(
+                "tc-1",
+                "some_tool",
+                serde_json::json!({}),
+            )),
+            "c-2".to_owned(),
+        );
+        hm.handle_completion(&text_chunk("after"), "c-3".to_owned(), None);
+
+        // The tool call between the two text chunks should prevent them from
+        // being coalesced, leaving three distinct items.
+        insta::assert_json_snapshot!(hm.pending_items.borrow().clone());
+        insta::assert_json_snapshot!(hm.history.borrow().clone());
     }
 
     #[tokio::test]

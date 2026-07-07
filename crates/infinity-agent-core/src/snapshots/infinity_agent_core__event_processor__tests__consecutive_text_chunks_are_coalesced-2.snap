@@ -1,0 +1,12 @@
+---
+source: crates/infinity-agent-core/src/event_processor.rs
+expression: hm.history.borrow().clone()
+---
+[
+  {
+    "kind": "assistant",
+    "content": {
+      "text": "Hello, world"
+    }
+  }
+]
