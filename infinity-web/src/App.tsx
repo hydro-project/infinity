@@ -230,10 +230,12 @@ export function App() {
               context_window: number;
               title: string | null;
               total_tokens_used: number;
+              provider_id: string;
             }>(m);
             sessionRef.current = p.session_id;
             threadRef.current = p.thread_id;
             setModelName(p.model_name);
+            setProviderName(p.provider_id);
             setContextWindow(p.context_window);
             setTotalTokens(p.total_tokens_used);
             clearConnectRetry();
