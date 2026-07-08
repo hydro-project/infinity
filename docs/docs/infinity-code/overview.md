@@ -109,3 +109,4 @@ The TUI runs anywhere you have a terminal. Start it with `infinity` in any repo.
 - [Model Providers](./model-providers.md) — install, configure, and update model backends
 - [Background Agents](./background-agents.md) — run multiple agents concurrently
 - [Configuring MCP](./configuring-mcp.md) — add MCP servers as tool sets
+- [Slack Bot](./slack-bot.md) — interact with Infinity from Slack
