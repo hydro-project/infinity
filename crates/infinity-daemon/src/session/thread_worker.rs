@@ -98,6 +98,28 @@ fn apply_model_switch(
     *model_slot = Some((selected, provider));
 }
 
+/// If the last history entry is an unanswered non-sleep tool call, return its
+/// id. While such a call is in flight, deferrable synthetic events must not be
+/// processed: `handle_content` would inject a synthetic "interrupted" result
+/// for the pending call, cancelling an operation that is still running.
+fn pending_non_sleep_tool_call<C, S>(
+    history: &event_processor::HistoryManager<C, S>,
+) -> Option<String>
+where
+    C: infinity_agent_core::traits::ConversationStore,
+    S: StateStore,
+{
+    history.history.borrow().last().and_then(|msg| {
+        if let infinity_agent_core::message::InfinityMessage::ToolCall { call, .. } = msg
+            && !SLEEP_TOOL_NAMES.contains(&call.function.name.as_str())
+        {
+            Some(call.id.clone())
+        } else {
+            None
+        }
+    })
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "thread worker requires many dependencies"
@@ -491,18 +513,8 @@ pub async fn thread_worker(
             let mut batch = vec![];
 
             // Check if we're waiting for a non-sleep async tool result.
-            let waiting_for_non_sleep_tool = {
-                current_history.history.borrow().last().is_some_and(|msg| {
-                    if let infinity_agent_core::message::InfinityMessage::ToolCall {
-                        call, ..
-                    } = msg
-                    {
-                        !SLEEP_TOOL_NAMES.contains(&call.function.name.as_str())
-                    } else {
-                        false
-                    }
-                })
-            };
+            let waiting_for_non_sleep_tool =
+                pending_non_sleep_tool_call(&current_history).is_some();
 
             // Treat pending items as empty if they're all deferred synthetic events.
             let has_actionable_pending = !pending_non_interrupt_items.is_empty()
@@ -606,10 +618,46 @@ pub async fn thread_worker(
             batch
         };
 
-        let all_inputs: Vec<_> = inputs_before_pending
-            .into_iter()
-            .chain(pending_non_interrupt_items.drain(..))
-            .collect();
+        // Deferred synthetic events (subscription events / thread reports /
+        // parent messages) must not be flushed while a non-sleep tool call is
+        // still awaiting its result: processing them would make
+        // `handle_content` inject a synthetic "interrupted" result for the
+        // in-flight call, cancelling an operation that is actually still
+        // running (its real result would later be dropped as stale).
+        //
+        // Flushing is safe when the batch itself settles the pending call
+        // first: either it contains the call's actual tool result, or a user
+        // text input (which deliberately interrupts the pending call). Batch
+        // items are processed before drained pending items, so ordering is
+        // preserved.
+        let safe_to_flush_deferred = match pending_non_sleep_tool_call(&current_history) {
+            None => true,
+            Some(pending_call_id) => inputs_before_pending.iter().any(|(msg, _)| {
+                is_user_text_input(msg)
+                    || (msg.synthetic.is_none()
+                        && matches!(
+                            &msg.content,
+                            InputMessageContent::User(UserContent::ToolResult(r))
+                                if r.id == pending_call_id
+                        ))
+            }),
+        };
+
+        let all_inputs: Vec<_> = if safe_to_flush_deferred {
+            inputs_before_pending
+                .into_iter()
+                .chain(pending_non_interrupt_items.drain(..))
+                .collect()
+        } else {
+            // Keep deferrable events queued; only process the rest. The held
+            // events are flushed on a later iteration once the pending tool
+            // call has been answered.
+            let (deferred, ready): (Vec<_>, Vec<_>) = pending_non_interrupt_items
+                .drain(..)
+                .partition(|(msg, _)| is_deferrable_synthetic_event(msg));
+            pending_non_interrupt_items = deferred;
+            inputs_before_pending.into_iter().chain(ready).collect()
+        };
 
         for (m, _) in &all_inputs {
             if m.synthetic.as_ref().is_some_and(|s| {
@@ -1942,6 +1990,153 @@ mod tests {
                 assert!(
                     ctrl1.try_next_request().is_none(),
                     "model1 should not receive requests after the switch"
+                );
+            })
+            .await;
+    }
+
+    /// Regression test: a non-deferrable message (e.g. a stale/duplicate tool
+    /// result) arriving alongside a deferred subscription event must NOT
+    /// flush the deferred event while an async tool call is still in flight.
+    /// Previously the unconditional pending-items drain flushed the event,
+    /// which injected a synthetic "interrupted" result for the pending call
+    /// and cancelled the still-running tool.
+    #[tokio::test(flavor = "current_thread")]
+    async fn stale_result_does_not_flush_deferred_events_during_async_tool_wait() {
+        use infinity_agent_core::message::{SyntheticKind, TaggedSyntheticKind};
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (conv, state, _dir) = tmp_stores();
+                let (model, mut ctrl) = mock_model();
+                use async_trait::async_trait;
+                struct AsyncTool;
+                #[async_trait]
+                impl Tool<InMemoryMessageSender> for AsyncTool {
+                    fn name(&self) -> &str {
+                        "async_tool"
+                    }
+                    fn description(&self) -> &str {
+                        "a"
+                    }
+                    fn parameters(&self) -> serde_json::Value {
+                        serde_json::json!({"type":"object","properties":{}})
+                    }
+                    async fn execute(
+                        &self,
+                        _: serde_json::Value,
+                        _: String,
+                        _: Option<String>,
+                        _: &ToolContext<InMemoryMessageSender>,
+                    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                        // Async tool — result delivered later via input queue.
+                        Ok(())
+                    }
+                }
+                let (tx, _subscribe_tx, mut display_rx, _, _) =
+                    spawn_worker("t1", conv, state, model, vec![Box::new(AsyncTool)]).await;
+
+                // 1. User sends input, model calls async_tool.
+                tx.send(user_text_input("t1", "do async"))
+                    .expect("send user input");
+                let _req = ctrl.next_request().await;
+                ctrl.send_tool_call("tc-async", "async_tool", serde_json::json!({}));
+                ctrl.finish();
+                loop {
+                    match tokio::time::timeout(std::time::Duration::from_secs(2), display_rx.recv())
+                        .await
+                    {
+                        Ok(Some(DaemonMessage::ResponseDone { .. })) => break,
+                        Ok(Some(_)) => {}
+                        _ => panic!("timed out waiting for first ResponseDone"),
+                    }
+                }
+
+                // 2. While waiting for the tool result, a subscription event
+                //    arrives together with a stale tool result for a
+                //    different (unknown) call.
+                tx.send((
+                    InputMessage {
+                        content: InputMessageContent::User(UserContent::ToolResult(
+                            rig::message::ToolResult {
+                                id: "tc-async".into(),
+                                call_id: None,
+                                content: rig::OneOrMany::one(
+                                    rig::message::ToolResultContent::Text(rig::agent::Text {
+                                        text: "sub event data".into(),
+                                    }),
+                                ),
+                            },
+                        )),
+                        group_id: "t1".into(),
+                        metadata: None,
+                        synthetic: Some(SyntheticKind::Tagged(
+                            TaggedSyntheticKind::SubscriptionEvent {
+                                tool_call_id: "tc-async".into(),
+                                associative: true,
+                                r#final: false,
+                            },
+                        )),
+                        display_as: None,
+                        subscription: false,
+                    },
+                    uuid::Uuid::new_v4().to_string(),
+                ))
+                .expect("send subscription event");
+                tx.send(tool_result_input("t1", "tc-stale", "stale result"))
+                    .expect("send stale tool result");
+
+                // Yield so the worker can process the batch.
+                for _ in 0..4 {
+                    tokio::task::yield_now().await;
+                }
+
+                // 3. Neither the stale result nor the (still deferred)
+                //    subscription event should have triggered a completion,
+                //    and the pending tool call must not have been interrupted.
+                assert!(
+                    ctrl.try_next_request().is_none(),
+                    "deferred subscription event must not be flushed by a stale tool result"
+                );
+
+                // 4. Now deliver the actual tool result.
+                tx.send(tool_result_input("t1", "tc-async", "tool done"))
+                    .expect("send tool result");
+
+                // 5. The tool result triggers a completion that includes the
+                //    real result and the deferred subscription event — and no
+                //    synthetic "interrupted" result for the pending call.
+                let req2 = ctrl.next_request().await;
+                ctrl.send_text("all processed");
+                ctrl.finish();
+                collect_until_done(&mut display_rx).await;
+
+                let result_texts: Vec<String> = req2
+                    .chat_history
+                    .iter()
+                    .filter_map(|m| {
+                        if let rig::message::Message::User { content } = m {
+                            if let UserContent::ToolResult(r) = content.first() {
+                                if let rig::message::ToolResultContent::Text(t) = r.content.first()
+                                {
+                                    return Some(t.text);
+                                }
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+                assert!(
+                    result_texts.iter().any(|t| t.contains("tool done")),
+                    "real tool result should be in completion"
+                );
+                assert!(
+                    result_texts.iter().any(|t| t.contains("sub event data")),
+                    "deferred subscription event should be in completion after the result"
+                );
+                assert!(
+                    !result_texts.iter().any(|t| t.contains("interrupted")),
+                    "in-flight tool call must not have been interrupted: {result_texts:?}"
                 );
             })
             .await;
