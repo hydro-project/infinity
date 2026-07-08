@@ -93,3 +93,17 @@ jobs:
 
       - name: Run tests
         run: cargo test --all-targets
+
+  test-all:
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    name: Test Suite Result (Full Matrix)
+    needs: [test]
+    steps:
+      - run: |
+          result="${{ needs.test.result }}"
+          if [[ $result == "success" || $result == "skipped" ]]; then
+            exit 0
+          else
+            exit 1
+          fi
