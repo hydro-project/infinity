@@ -31,6 +31,11 @@ pub enum DisplaySegment {
     /// A unified diff.
     #[serde(rename = "diff")]
     Diff(DiffContent),
+    /// An inline image (e.g. an image file read by a tool). Clients that
+    /// cannot render images should skip this segment and fall back to the
+    /// next supported one.
+    #[serde(rename = "image")]
+    Image(ImageContent),
 }
 
 /// Content for a diff display segment.
@@ -40,6 +45,16 @@ pub struct DiffContent {
     pub path: String,
     /// Unified diff string.
     pub patch: String,
+}
+
+/// Content for an image display segment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageContent {
+    /// Base64-encoded image bytes.
+    pub data: String,
+    /// MIME type of the image, e.g. `image/png`.
+    #[serde(rename = "mediaType")]
+    pub media_type: String,
 }
 
 /// Build the prioritized display segments list: tool-provided `display_as`
@@ -53,13 +68,45 @@ pub fn build_display_segments(
     segments
 }
 
+/// A single item of structured tool-result content.
+///
+/// A [`RapToolResult`] carries either a plain `text` result or a structured
+/// `content` list (which may include images) for runtimes and models that
+/// support multimodal inputs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum RapToolResultContent {
+    /// Plain text content.
+    #[serde(rename = "text")]
+    Text { text: String },
+    /// An image, base64-encoded.
+    #[serde(rename = "image")]
+    Image {
+        /// Base64-encoded image bytes.
+        data: String,
+        /// MIME type of the image, e.g. `image/png`.
+        #[serde(rename = "mediaType")]
+        media_type: String,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RapToolResult {
     pub group_id: String,
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
-    pub text: String,
+    /// Plain-text result — the shorthand for a text-only result. A tool MUST
+    /// provide either `text` or `content`. When `content` is also present it
+    /// supersedes `text` for the model-facing result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Structured content (text and images) for multimodal results. A tool
+    /// MUST provide either `text` or `content`. When present, the runtime
+    /// builds the model-facing tool result from these items (replacing each
+    /// `image` item with a text placeholder for models without image support).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<Vec<RapToolResultContent>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_as: Option<Vec<DisplaySegment>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -215,7 +262,8 @@ pub async fn send_tool_result<C: CallbackClient>(
         group_id: invocation.group_id.clone(),
         id: invocation.id.clone(),
         call_id: invocation.call_id.clone(),
-        text: text.to_owned(),
+        text: Some(text.to_owned()),
+        content: None,
         display_as,
         subscription: if subscription { Some(true) } else { None },
     });

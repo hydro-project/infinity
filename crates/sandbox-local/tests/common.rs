@@ -68,6 +68,7 @@ pub async fn invoke(
     )
     .await
     .text
+    .unwrap_or_default()
 }
 
 /// Like [`invoke`] but returns the full [`RapToolResult`] including `display_as`.
@@ -117,6 +118,11 @@ pub async fn invoke_raw(
 
 /// Create a colocated jj+git repo with an initial commit containing one file.
 pub fn jj_init_with_file(filename: &str, content: &str) -> tempfile::TempDir {
+    jj_init_with_binary_file(filename, content.as_bytes())
+}
+
+/// Like [`jj_init_with_file`] but for arbitrary (e.g. binary) file content.
+pub fn jj_init_with_binary_file(filename: &str, content: &[u8]) -> tempfile::TempDir {
     let tmp = tempfile::tempdir().expect("create temp dir");
     let path = tmp.path();
     assert!(
@@ -192,10 +198,10 @@ pub async fn invoke_collecting_views(
         match cb {
             RapCallback::ToolResult(r) => {
                 if r.subscription == Some(true) {
-                    result_text = Some(r.text);
+                    result_text = Some(r.text.unwrap_or_default());
                     continue;
                 }
-                result_text = Some(r.text);
+                result_text = Some(r.text.unwrap_or_default());
                 if views.len() >= expected_views {
                     return (result_text.expect("bug: just set"), views);
                 }

@@ -503,12 +503,21 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     pub fn get_metadata(&self) -> Option<serde_json::Value> {
         self.metadata.borrow().clone()
     }
-    pub fn get_history(&self) -> OneOrMany<Message> {
+    /// Build the model-facing chat history. When `supports_image_input` is
+    /// `false`, image tool-result content is replaced with a text placeholder
+    /// so the history can be sent to models without image support.
+    pub fn get_history(&self, supports_image_input: bool) -> OneOrMany<Message> {
         OneOrMany::many(
             self.history
                 .borrow()
                 .iter()
                 .flat_map(|m| m.clone().into_messages())
+                .map(|mut msg| {
+                    if !supports_image_input {
+                        strip_image_tool_results(&mut msg);
+                    }
+                    msg
+                })
                 .collect::<Vec<_>>(),
         )
         .expect("bug: history should never be empty")
@@ -1067,6 +1076,30 @@ where
 //     terminal Action). Handles stream errors and unknown tools internally.
 // ═══════════════════════════════════════════════════════════════════════
 
+/// Placeholder text substituted for image tool-result content when the
+/// active model does not support image inputs.
+pub const IMAGE_OMITTED_PLACEHOLDER: &str =
+    "[image omitted: the current model does not support image inputs]";
+
+/// Replace image tool-result content with a text placeholder, in place. Used
+/// to sanitize the chat history before invoking a model that does not declare
+/// image input support (see `ModelEntry::supports_image_input`).
+fn strip_image_tool_results(msg: &mut Message) {
+    if let Message::User { content } = msg {
+        for c in content.iter_mut() {
+            if let UserContent::ToolResult(result) = c {
+                for item in result.content.iter_mut() {
+                    if matches!(item, ToolResultContent::Image(_)) {
+                        *item = ToolResultContent::Text(rig::agent::Text {
+                            text: IMAGE_OMITTED_PLACEHOLDER.to_owned(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "completion orchestration requires many parameters"
@@ -1074,6 +1107,10 @@ where
 pub fn run_completion<'a: 'b, 'b, P, C, S, M>(
     provider: &'a P,
     model_id: &'a str,
+    // Whether the active model accepts image inputs (from its `ModelEntry`).
+    // When `false`, image tool results are replaced with a text placeholder
+    // before the model is invoked.
+    supports_image_input: bool,
     history: &'a HistoryManager<C, S>,
     tool_names: &'a HashSet<String>,
     tools: &'a [ToolDefinition],
@@ -1116,7 +1153,7 @@ where
                 .invoke_model(model_id, CompletionRequest {
                     model: None,
                     preamble: Some(preamble.clone()),
-                    chat_history: history.get_history(),
+                    chat_history: history.get_history(supports_image_input),
                     documents: vec![],
                     tools: tools.to_vec(),
                     temperature: None,
@@ -2457,7 +2494,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{CompletionAction, CompletionEvent, HistoryManager};
-    use crate::test_helpers::mock_provider;
+    use crate::test_helpers::{mock_provider, mock_provider_with_image_support};
     use crate::tools::{Tool, ToolContext};
     use futures_util::StreamExt;
     use rig::completion::ToolDefinition;
@@ -2506,6 +2543,7 @@ mod tests {
                     let stream = run_completion(
                         &provider,
                         "mock",
+                        false,
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -2566,6 +2604,7 @@ mod tests {
                     let stream = run_completion(
                         &provider,
                         "mock",
+                        false,
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -2629,6 +2668,7 @@ mod tests {
                     let stream = run_completion(
                         &provider,
                         "mock",
+                        false,
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -2710,6 +2750,7 @@ mod tests {
                     let stream = run_completion(
                         &provider,
                         "mock",
+                        false,
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -2824,6 +2865,7 @@ mod tests {
                     let stream = run_completion(
                         &provider,
                         "mock",
+                        false,
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -2883,6 +2925,158 @@ mod tests {
             .await;
     }
 
+    // ── Image tool result handling ──
+
+    /// History ending in a tool result that carries both text and an image.
+    fn image_tool_result_history() -> Vec<Message> {
+        vec![
+            Message::User {
+                content: OneOrMany::one(UserContent::text("show me the logo")),
+            },
+            tool_call_msg(
+                "tc-img",
+                "read_file",
+                serde_json::json!({"path": "logo.png"}),
+            ),
+            Message::User {
+                content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+                    id: "tc-img".to_owned(),
+                    call_id: None,
+                    content: OneOrMany::many(vec![
+                        ToolResultContent::Text(rig::agent::Text {
+                            text: "Read image file \"logo.png\"".to_owned(),
+                        }),
+                        ToolResultContent::Image(rig::message::Image {
+                            data: rig::message::DocumentSourceKind::Base64("aGVsbG8=".to_owned()),
+                            media_type: Some(rig::message::ImageMediaType::PNG),
+                            detail: None,
+                            additional_params: None,
+                        }),
+                    ])
+                    .expect("bug: nonempty content"),
+                })),
+            },
+        ]
+    }
+
+    /// Collect the tool-result content items of the `tc-img` tool result in a
+    /// request's chat history.
+    fn image_result_content(req: &CompletionRequest) -> Vec<ToolResultContent> {
+        req.chat_history
+            .iter()
+            .find_map(|m| {
+                if let Message::User { content } = m
+                    && let UserContent::ToolResult(res) = content.first_ref()
+                    && res.id == "tc-img"
+                {
+                    Some(res.content.iter().cloned().collect::<Vec<_>>())
+                } else {
+                    None
+                }
+            })
+            .expect("tool result tc-img should be in chat history")
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn image_tool_result_sent_to_image_capable_model() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (provider, mut ctrl) = mock_provider_with_image_support(true);
+                let convo_store = StubConversationStore::new();
+                let hm = make_history(&convo_store, image_tool_result_history()).await;
+                let (tool_names, tool_defs, tool_registry) = no_tools();
+                let ctx = tool_context();
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let handle = tokio::task::spawn_local(async move {
+                    let stream = run_completion(
+                        &provider,
+                        "mock",
+                        true,
+                        &hm,
+                        &tool_names,
+                        &tool_defs,
+                        &tool_registry,
+                        &ctx,
+                        "thread-1",
+                        "msg-1",
+                        None,
+                        cancel_rx,
+                    );
+                    tokio::pin!(stream);
+                    while stream.next().await.is_some() {}
+                });
+
+                let req = ctrl.next_request().await;
+                let content = image_result_content(&req);
+                assert_eq!(content.len(), 2);
+                assert!(
+                    matches!(&content[1], ToolResultContent::Image(img)
+                        if img.data == rig::message::DocumentSourceKind::Base64("aGVsbG8=".to_owned())),
+                    "image content should be passed through unchanged, got {content:?}"
+                );
+
+                ctrl.send_text("nice logo");
+                ctrl.finish();
+                handle.await.expect("await task handle");
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn image_tool_result_stripped_for_non_image_model() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                // The default mock provider does not declare image support.
+                let (provider, mut ctrl) = mock_provider();
+                let convo_store = StubConversationStore::new();
+                let hm = make_history(&convo_store, image_tool_result_history()).await;
+                let (tool_names, tool_defs, tool_registry) = no_tools();
+                let ctx = tool_context();
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let handle = tokio::task::spawn_local(async move {
+                    let stream = run_completion(
+                        &provider,
+                        "mock",
+                        false,
+                        &hm,
+                        &tool_names,
+                        &tool_defs,
+                        &tool_registry,
+                        &ctx,
+                        "thread-1",
+                        "msg-1",
+                        None,
+                        cancel_rx,
+                    );
+                    tokio::pin!(stream);
+                    while stream.next().await.is_some() {}
+                });
+
+                let req = ctrl.next_request().await;
+                let content = image_result_content(&req);
+                assert_eq!(content.len(), 2);
+                match &content[0] {
+                    ToolResultContent::Text(t) => {
+                        assert_eq!(t.text, "Read image file \"logo.png\"")
+                    }
+                    other => panic!("expected text content, got {other:?}"),
+                }
+                match &content[1] {
+                    ToolResultContent::Text(t) => assert_eq!(t.text, IMAGE_OMITTED_PLACEHOLDER),
+                    other => panic!("image should be replaced with placeholder, got {other:?}"),
+                }
+
+                ctrl.send_text("cannot see images");
+                ctrl.finish();
+                handle.await.expect("await task handle");
+            })
+            .await;
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn thinking_chunks_emitted() {
         let local = tokio::task::LocalSet::new();
@@ -2905,6 +3099,7 @@ mod tests {
                     let stream = run_completion(
                         &provider,
                         "mock",
+                        false,
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -3007,6 +3202,7 @@ mod tests {
                     let stream = run_completion(
                         &provider,
                         "mock",
+                        false,
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -3064,6 +3260,7 @@ mod tests {
                     let stream = run_completion(
                         &provider,
                         "mock",
+                        false,
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -3128,6 +3325,7 @@ mod tests {
                     let stream = run_completion(
                         &provider,
                         "mock",
+                        false,
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -3201,6 +3399,7 @@ mod tests {
                     let stream = run_completion(
                         &provider,
                         "mock",
+                        false,
                         &hm_task,
                         &tool_names,
                         &tool_defs,
@@ -3286,6 +3485,7 @@ mod tests {
                     let stream = run_completion(
                         &provider,
                         "mock",
+                        false,
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -3359,6 +3559,7 @@ mod tests {
                     let stream = run_completion(
                         &provider,
                         "mock",
+                        false,
                         &hm,
                         &tool_names,
                         &tool_defs,
@@ -3473,6 +3674,7 @@ mod tests {
                     let stream = run_completion(
                         &provider,
                         "mock",
+                        false,
                         &hm_task,
                         &tool_names,
                         &tool_defs,
@@ -3557,7 +3759,7 @@ mod tests {
 
                 let handle = tokio::task::spawn_local(async move {
                     let stream = run_completion(
-                        &provider, "mock", &hm, &tool_names, &tool_defs, &tool_registry,
+                        &provider, "mock", false, &hm, &tool_names, &tool_defs, &tool_registry,
                         &ctx, "thread-1", "msg-1", None, cancel_rx,
                     );
                     tokio::pin!(stream);

@@ -518,8 +518,15 @@ where
                                 thinking_start = Instant::now();
                             }
                             // Find the first supported segment type.
-                            // Terminal supports both "text" and "diff".
-                            let first = segments.first();
+                            // Terminal supports both "text" and "diff";
+                            // unsupported types (e.g. "image") are skipped.
+                            let first = segments.iter().find(|s| {
+                                matches!(
+                                    s,
+                                    rap_protocol::DisplaySegment::Text(_)
+                                        | rap_protocol::DisplaySegment::Diff(_)
+                                )
+                            });
                             match first {
                                 Some(rap_protocol::DisplaySegment::Diff(diff)) => {
                                     mid_stream = false;
@@ -561,10 +568,25 @@ where
                                         viewport.print_line_above(Line::from(vec![]))?;
                                     }
                                 }
-                                None => {
-                                    viewport.print_spans_above(Line::from(vec![
-                                        Span::styled(" ✓", Style::default().fg(Color::Green)),
-                                    ]))?;
+                                // No text/diff segment. If an image segment is
+                                // present, say so (the terminal can't render
+                                // images); otherwise just a bare checkmark.
+                                _ => {
+                                    let has_image = segments.iter().any(|s| {
+                                        matches!(s, rap_protocol::DisplaySegment::Image(_))
+                                    });
+                                    let line = if has_image {
+                                        Line::from(vec![Span::styled(
+                                            " ✓ [image — not displayable in terminal]",
+                                            Style::default().fg(Color::Green),
+                                        )])
+                                    } else {
+                                        Line::from(vec![Span::styled(
+                                            " ✓",
+                                            Style::default().fg(Color::Green),
+                                        )])
+                                    };
+                                    viewport.print_spans_above(line)?;
                                     mid_stream = false;
                                 }
                             }

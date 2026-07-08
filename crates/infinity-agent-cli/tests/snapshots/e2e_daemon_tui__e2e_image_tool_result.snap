@@ -1,0 +1,27 @@
+---
+source: crates/infinity-agent-cli/tests/e2e_daemon_tui.rs
+expression: screen
+---
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│Infinity Agent CLI                                                              │
+│Type your messages below. /help for commands. Ctrl+C to exit.                   │
+│                                                                                │
+│                                                                                │
+│✦ Loading session — thread 00000000-0000-4000-8000-000000000001                 │
+│Using local config                                                              │
+│Loaded 1 RAP tool(s)                                                            │
+│> read the logo image                                                           │
+│◆ read_image({"path":"logo.png"}) ✓ Read image logo.png (image/png)             │
+│A lovely indigo rectangle.                                                      │
+│                                                                                │
+│                                                                                │
+│────────────────────────────────────────────────────────────────────────────────│
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│00000000 | /help for commands                      mock: Mock Model · 0% context│
+└────────────────────────────────────────────────────────────────────────────────┘
+cursor: row=17 col=1

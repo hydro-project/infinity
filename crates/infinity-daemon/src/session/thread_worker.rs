@@ -650,6 +650,11 @@ pub async fn thread_worker(
         let (round_model, round_provider) = model_slot
             .take()
             .expect("bug: model slot empty outside a completion round");
+        // Resolve the round's image-input capability from the catalog entry
+        // (the model may have been switched since the worker started).
+        let round_supports_image_input = catalog
+            .find(&round_model)
+            .is_some_and(|e| e.supports_image_input);
         let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
         completion_cancel_tx = Some(cancel_tx);
 
@@ -680,6 +685,7 @@ pub async fn thread_worker(
                         active_group_id,
                         round_provider.as_ref(),
                         &round_model.model_id,
+                        round_supports_image_input,
                         tool_names,
                         tool_defs,
                         tool_registry,
@@ -746,6 +752,7 @@ mod tests {
             display_name: "mock".to_owned(),
             context_window: 0,
             max_output_tokens: None,
+            supports_image_input: false,
         };
         Arc::new(
             ModelCatalog::new(vec![(
@@ -766,6 +773,7 @@ mod tests {
             display_name: id.to_owned(),
             context_window: 0,
             max_output_tokens: None,
+            supports_image_input: false,
         };
         Arc::new(
             ModelCatalog::new(vec![

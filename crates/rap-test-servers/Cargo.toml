@@ -1,0 +1,17 @@
+[package]
+name = "rap-test-servers"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "In-process stub RAP tool servers for integration tests (not published)"
+
+[dependencies]
+rap-protocol = { path = "../rap-protocol" }
+axum = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt", "macros"] }
+reqwest = { workspace = true }
+
+[lints]
+workspace = true

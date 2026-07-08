@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 infinity-agent-core = { path = "../infinity-agent-core" }
 infinity-provider-bedrock = { path = "../infinity-provider-bedrock" }
+infinity-provider-protocol = { path = "../infinity-provider-protocol" }
 rap-client = { path = "../rap-client" }
 
 rig-core = { workspace = true }

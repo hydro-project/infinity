@@ -498,6 +498,7 @@ mod tests {
             display_name: "mock".to_owned(),
             context_window: 100,
             max_output_tokens: None,
+            supports_image_input: true,
         }
     }
 
@@ -532,6 +533,7 @@ mod tests {
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].model_id, "mock");
         assert_eq!(models[0].context_window, 100);
+        assert!(models[0].supports_image_input);
 
         // invoke_model forwards the request and streams the response back.
         let mut response = remote

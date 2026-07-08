@@ -8,6 +8,7 @@ use axum::extract::{DefaultBodyLimit, Multipart, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base64::Engine as _;
 use serde::Deserialize;
 use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex;
@@ -16,10 +17,39 @@ use tracing;
 
 use rap_protocol::{
     CallbackClient, DiffContent, DisplaySegment, RapCallback, RapInvocation, RapToolResult,
-    ToolDef, ToolsetManifest, send_subscription_event, send_tool_result, send_user_choice,
+    RapToolResultContent, ToolDef, ToolsetManifest, send_subscription_event, send_tool_result,
+    send_user_choice,
 };
 
 type DisplayResult = Result<(String, Option<Vec<DisplaySegment>>), SandboxError>;
+
+/// The outcome of a tool operation dispatched by [`invoke_handler`].
+///
+/// A tool provides either plain `text` or structured `content` (e.g. images);
+/// `display_as` is an optional set of UI-facing display segments.
+#[derive(Default)]
+struct ToolOutput {
+    /// Model-facing plain text. Used as the tool result when `content` is
+    /// `None`; ignored (superseded) when `content` is present.
+    text: String,
+    /// Optional display segments for human-facing UIs.
+    display_as: Option<Vec<DisplaySegment>>,
+    /// Optional structured content (text and images) for multimodal results.
+    content: Option<Vec<RapToolResultContent>>,
+}
+
+impl ToolOutput {
+    /// A plain-text result with no display or structured content.
+    fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            display_as: None,
+            content: None,
+        }
+    }
+}
+
+type ContentResult = Result<ToolOutput, SandboxError>;
 
 use crate::error::SandboxError;
 use crate::git;
@@ -224,37 +254,45 @@ async fn invoke_handler<
 
     let state_clone = state.clone();
     let handle = tokio::spawn(async move {
-        let result_text = match invocation.operation.as_str() {
+        let result = match invocation.operation.as_str() {
             "clone_repo" => handle_clone_repo(&state_clone, &invocation)
                 .await
-                .map(|t| (t, None)),
+                .map(ToolOutput::text),
             "open_sandbox_direct" => handle_open_sandbox_direct(&state_clone, &invocation)
                 .await
-                .map(|t| (t, None)),
+                .map(ToolOutput::text),
             "read_file" => handle_read_file(&state_clone, &invocation).await,
-            "edit_file" => handle_edit_file(&state_clone, &invocation).await,
-            "create_file" => handle_create_file(&state_clone, &invocation).await,
-            "grep" => handle_grep(&state_clone, &invocation).await,
+            "edit_file" => with_content(handle_edit_file(&state_clone, &invocation).await),
+            "create_file" => with_content(handle_create_file(&state_clone, &invocation).await),
+            "grep" => with_content(handle_grep(&state_clone, &invocation).await),
             "describe_overall_changes" => {
-                handle_describe_overall_changes(&state_clone, &invocation).await
+                with_content(handle_describe_overall_changes(&state_clone, &invocation).await)
             }
-            "squash_sandbox" => handle_squash_sandbox(&state_clone, &invocation).await,
+            "squash_sandbox" => {
+                with_content(handle_squash_sandbox(&state_clone, &invocation).await)
+            }
             _ => Err(SandboxError::Other(format!(
                 "unknown operation: {}",
                 invocation.operation
             ))),
         };
 
-        let (text, display_as) = match result_text {
-            Ok((t, d)) => (t, d),
-            Err(e) => (format!("Error: {e}"), None),
-        };
+        let ToolOutput {
+            text,
+            display_as,
+            content,
+        } = result.unwrap_or_else(|e| ToolOutput::text(format!("Error: {e}")));
+
+        // A tool result carries either `text` or `content`; when structured
+        // content is present it supersedes the plain text.
+        let text = content.is_none().then_some(text);
 
         let tool_result = RapCallback::ToolResult(RapToolResult {
             group_id: invocation.group_id.clone(),
             id: invocation.id.clone(),
             call_id: invocation.call_id.clone(),
             text,
+            content,
             display_as,
             subscription: None,
         });
@@ -273,6 +311,15 @@ async fn invoke_handler<
     state.pending_tasks.lock().await.push(handle);
 
     StatusCode::OK
+}
+
+/// Lift a [`DisplayResult`] into a [`ContentResult`] with no structured content.
+fn with_content(result: DisplayResult) -> ContentResult {
+    result.map(|(text, display_as)| ToolOutput {
+        text,
+        display_as,
+        content: None,
+    })
 }
 
 /// Request payload for the `/close_thread` RAP protocol endpoint.
@@ -605,22 +652,23 @@ fn append_co_author_trailer(description: &str) -> String {
 
 /// Run an action inside a sandbox: create → action → push → cleanup.
 ///
-/// The closure receives the sandbox directory path and returns `(text, display_as)`.
-/// `text` is the full result sent to the model; `display_as` is an optional short
-/// summary shown in the CLI instead of the full text.
-async fn with_sandbox<B, M, C, F, Fut>(
+/// The closure receives the sandbox directory path and returns `(text, extra)`,
+/// where `text` is the full result sent to the model and `extra` carries any
+/// additional payload (typically the optional `display_as` segments, but
+/// handlers with structured content use a wider tuple).
+async fn with_sandbox<B, M, C, F, Fut, T>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
     jj_description: Option<&str>,
     action: F,
     modifies: bool,
-) -> DisplayResult
+) -> Result<(String, T), SandboxError>
 where
     B: SandboxBackend,
     M: MetadataStore,
     C: CallbackClient,
     F: FnOnce(PathBuf) -> Fut,
-    Fut: Future<Output = DisplayResult>,
+    Fut: Future<Output = Result<(String, T), SandboxError>>,
 {
     let group_id = &invocation.group_id;
     let repo_state = state
@@ -1247,22 +1295,76 @@ async fn handle_execute_command_streaming_inner<
     }
 }
 
+/// Detect an image's MIME type from its leading magic bytes. Only formats
+/// commonly accepted by multimodal models are recognized. Content-based
+/// detection (rather than by file extension) means a mislabeled or
+/// extension-less file is still classified correctly.
+fn detect_image_media_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && bytes[0..4] == *b"RIFF" && bytes[8..12] == *b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
 async fn handle_read_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
-) -> DisplayResult {
+) -> ContentResult {
     let args: ReadFileArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
-    with_sandbox(
+    let (text, (display, content)) = with_sandbox(
         state,
         invocation,
         None,
         |sandbox_dir| async move {
             let file_path = sandbox_dir.join(&args.path);
-            let content = tokio::fs::read_to_string(&file_path)
+            let bytes = tokio::fs::read(&file_path)
                 .await
                 .map_err(SandboxError::Io)?;
+
+            // Detect images by content (not extension) so mislabeled or
+            // extension-less files are still classified correctly. Image
+            // files are returned as structured content so multimodal models
+            // can see them.
+            if let Some(media_type) = detect_image_media_type(&bytes) {
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                let text = format!(
+                    "Read image file \"{}\" ({media_type}, {} bytes). The image is attached.",
+                    args.path,
+                    bytes.len()
+                );
+                // Image segment first for clients that can render it, with a
+                // text summary fallback for those that can't.
+                let display = vec![
+                    DisplaySegment::Image(rap_protocol::ImageContent {
+                        data: encoded.clone(),
+                        media_type: media_type.to_owned(),
+                    }),
+                    DisplaySegment::Text(format!(
+                        "Read image ({media_type}, {} bytes);",
+                        bytes.len()
+                    )),
+                ];
+                let content = vec![
+                    RapToolResultContent::Text { text: text.clone() },
+                    RapToolResultContent::Image {
+                        data: encoded,
+                        media_type: media_type.to_owned(),
+                    },
+                ];
+                return Ok((text, (Some(display), Some(content))));
+            }
+
+            let content = String::from_utf8(bytes)
+                .map_err(|e| SandboxError::Other(format!("file is not valid UTF-8: {e}")))?;
 
             let lines: Vec<&str> = content.lines().collect();
             let total_lines = lines.len();
@@ -1272,7 +1374,7 @@ async fn handle_read_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
 
             if start > total_lines {
                 let msg = format!("File has {total_lines} lines, but start_line is {start}");
-                return Ok((msg.clone(), Some(vec![DisplaySegment::Text(msg)])));
+                return Ok((msg.clone(), (Some(vec![DisplaySegment::Text(msg)]), None)));
             }
 
             let selected: Vec<String> = lines[start - 1..end]
@@ -1290,11 +1392,17 @@ async fn handle_read_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
                 selected.join("\n")
             );
 
-            Ok((text, Some(display)))
+            Ok((text, (Some(display), None)))
         },
         false,
     )
-    .await
+    .await?;
+
+    Ok(ToolOutput {
+        text,
+        display_as: display,
+        content,
+    })
 }
 
 /// Request user approval for a Direct-mode file write.
@@ -2233,7 +2341,7 @@ fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
             },
             ToolDef {
                 name: "read_file".to_owned(),
-                description: "Read the content of a single file with optional line range specification. Returns the file content with line numbers. Use start_line and end_line to focus on specific sections of large files.".to_owned(),
+                description: "Read the content of a single file with optional line range specification. Returns the file content with line numbers. Use start_line and end_line to focus on specific sections of large files. Image files (PNG, JPEG, GIF, WebP) are detected by content and returned as an image attachment instead of text; line ranges are ignored for images.".to_owned(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {

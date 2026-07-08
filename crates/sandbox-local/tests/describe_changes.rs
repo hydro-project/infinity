@@ -297,7 +297,7 @@ async fn describe_returns_display_segments() {
     )
     .await;
 
-    assert_eq!(result.text, "Edits described.");
+    assert_eq!(result.text.as_deref(), Some("Edits described."));
     let segments = result.display_as.expect("display_as should be Some");
     assert_eq!(segments.len(), 1);
     match &segments[0] {

@@ -35,8 +35,9 @@ Content-Type: application/json
 | `group_id` | `string` | Yes | Conversation thread identifier. MUST match the `group_id` from the original invocation. |
 | `id` | `string` | Yes | Tool call identifier. MUST match the `id` from the original invocation. |
 | `call_id` | `string \| null` | No | Secondary call identifier. If the original invocation included a `call_id`, it MUST be echoed here. |
-| `text` | `string` | Yes | Result content. MAY be plain text or JSON-encoded structured data. |
-| `display_as` | `array` | No | An array of display segments for human-facing UIs. Each segment is an object with `type` and `content` fields. Runtimes SHOULD iterate the array and render the first segment type they support. The LLM still receives the full `text`. See [Display Segments](#display-segments). |
+| `text` | `string` | One of | Plain-text result content (MAY be plain text or JSON-encoded structured data). A tool MUST provide either `text` or `content`. When both are present, `content` supersedes `text` for the model-facing result. |
+| `content` | `array` | One of | An array of structured [content items](#multimodal-content) (text and images). A tool MUST provide either `text` or `content`. When present, the runtime builds the model-facing tool result from these items; runtimes (or models) without image support replace each image item with a text placeholder. |
+| `display_as` | `array` | No | An array of display segments for human-facing UIs. Each segment is an object with `type` and `content` fields. Runtimes SHOULD iterate the array and render the first segment type they support. The LLM still receives the `text`/`content` result. See [Display Segments](#display-segments). |
 | `subscription` | `boolean` | No | When `true`, indicates that this tool call has started a [subscription](/docs/rap/spec/server/subscription-events). The runtime SHOULD record the tool call ID as an active subscription in the current thread's metadata so the agent can later cancel it. Defaults to `false`. |
 
 ## Response
@@ -66,6 +67,41 @@ When returning structured data, tools SHOULD JSON-encode the data and place it i
 
 Runtimes MAY parse the `text` field as JSON if the tool's schema indicates structured output, but MUST be prepared to handle plain text.
 
+### Multimodal Content
+
+Some tool results are not naturally representable as text — for example, reading an image file. The `content` field carries an ordered array of **content items**. A tool provides **either** `text` (the shorthand for a text-only result) **or** `content` (the general form, which may mix text and images). When `content` is present the runtime builds the model-facing tool result from it.
+
+Each item is an object tagged by a `type` field. Two item types are defined:
+
+#### Content Type: `text`
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | `string` | MUST be `"text"`. |
+| `text` | `string` | Plain text content. |
+
+#### Content Type: `image`
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | `string` | MUST be `"image"`. |
+| `data` | `string` | Base64-encoded image bytes. |
+| `mediaType` | `string` | MIME type of the image, e.g. `"image/png"`. |
+
+```json
+{
+  "type": "tool_result",
+  "group_id": "thread_xyz",
+  "id": "call_abc123",
+  "content": [
+    { "type": "text", "text": "Read image file \"logo.png\" (image/png, 4096 bytes). The image is attached." },
+    { "type": "image", "data": "iVBORw0KGgo…", "mediaType": "image/png" }
+  ]
+}
+```
+
+Tools returning images SHOULD include a leading `"text"` item describing them, so a runtime whose active model does not accept image inputs can degrade gracefully: it MUST NOT send the image data to the model, but rather than dropping the whole result it SHOULD replace each `image` item with a text placeholder, preserving the surrounding `text` items.
+
 ### Display Segments
 
 Tool results often contain verbose output — full file contents, large diffs, or detailed structured data — that is essential for the LLM but overwhelming for a human observer. The optional `display_as` field provides an array of **display segments** that runtimes SHOULD present in user-facing interfaces (CLIs, web UIs, dashboards) instead of the raw `text`.
@@ -76,7 +112,7 @@ Each segment in the array is an object with two fields:
 
 | Field | Type | Description |
 |---|---|---|
-| `type` | `string` | The segment type. Defined types are `"text"` and `"diff"`. |
+| `type` | `string` | The segment type. Defined types are `"text"`, `"diff"`, and `"image"`. |
 | `content` | `string \| object` | The segment content. Format depends on `type`. |
 
 #### Segment Type: `text`
@@ -105,6 +141,24 @@ A unified diff segment for rich rendering. The `content` field is an object:
   }
 }
 ```
+
+#### Segment Type: `image`
+
+An inline image for clients that can render images (e.g. web UIs). The `content` field is an object:
+
+| Field | Type | Description |
+|---|---|---|
+| `data` | `string` | Base64-encoded image bytes. |
+| `mediaType` | `string` | MIME type of the image, e.g. `"image/png"`. |
+
+```json
+{
+  "type": "image",
+  "content": { "data": "iVBORw0KGgo…", "mediaType": "image/png" }
+}
+```
+
+Tools returning an image segment SHOULD follow it with a `"text"` segment summarizing the image, so text-only clients (e.g. terminals) have a fallback.
 
 #### Rendering Behavior
 
