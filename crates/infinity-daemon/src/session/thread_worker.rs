@@ -81,6 +81,27 @@ pub async fn thread_worker(
     // Create a local display channel; a forwarding task converts events and broadcasts to subscribers.
     let (display_tx, mut display_fwd_rx) =
         mpsc::unbounded_channel::<DisplayEvent<ProviderStreamingResponse>>();
+    // The in-progress thinking text, if the model is currently mid-thinking.
+    // Streamed reasoning is only committed to history once complete, so this
+    // is replayed to clients attaching mid-thinking — otherwise they would
+    // appear idle even though the model is actively thinking. Shared with the
+    // forwarder task below; both run on the same LocalSet thread.
+    //
+    // Exactly-once invariant: display events flow through one ordered queue,
+    // the forwarder handles each event as "update this buffer, then broadcast
+    // to current subscribers" in a single synchronous block, and
+    // `handle_subscribe` does "read this buffer → send Replay → register
+    // subscriber" in a single synchronous block. Both tasks share one thread,
+    // so each event is either reflected in the buffer before the subscriber
+    // registers (→ part of the replay) or broadcast to it afterwards
+    // (→ delivered live, in order); never both, never neither. A forwarder
+    // that hasn't been scheduled yet only shifts events from "replayed" to
+    // "live". This holds only while neither block contains an `.await`
+    // between its buffer access and its subscriber-list access — do not
+    // introduce one.
+    let current_thinking: std::rc::Rc<std::cell::RefCell<Option<String>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
+    let fwd_current_thinking = current_thinking.clone();
     let fwd_group_id = active_group_id.clone();
     let fwd_subscribers = subscribers.clone();
     let fwd_conversation_store = conversation_store.clone();
@@ -134,6 +155,38 @@ pub async fn thread_worker(
                 // Remove pending choices when completed/cancelled.
                 if let DisplayEvent::UserChoiceComplete { ref choice_id } = evt {
                     fwd_conversation_store.remove_pending_choice(&fwd_root_session_id, choice_id);
+                }
+
+                // Track the in-progress thinking text. Chunks accumulate; any
+                // event that moves the stream past the thinking chain (it is
+                // then either persisted to history or superseded) clears it.
+                // No `.await` between this update and the broadcast below —
+                // see the exactly-once invariant on `current_thinking`.
+                match &evt {
+                    DisplayEvent::ThinkingChunk { chunk } => {
+                        fwd_current_thinking
+                            .borrow_mut()
+                            .get_or_insert_default()
+                            .push_str(chunk);
+                    }
+                    DisplayEvent::StartOutput
+                    | DisplayEvent::ThinkingStart
+                    | DisplayEvent::ThinkingEnd
+                    | DisplayEvent::TextChunk { .. }
+                    | DisplayEvent::ToolCall { .. }
+                    | DisplayEvent::ToolResult { .. }
+                    | DisplayEvent::ResponseDone(_) => {
+                        *fwd_current_thinking.borrow_mut() = None;
+                    }
+                    // Not part of the model's output stream — they neither
+                    // extend nor close the thinking chain.
+                    DisplayEvent::Info(_)
+                    | DisplayEvent::UserInput(_)
+                    | DisplayEvent::SubscriptionEvent { .. }
+                    | DisplayEvent::OAuthRequired { .. }
+                    | DisplayEvent::UserChoiceRequired { .. }
+                    | DisplayEvent::UserChoiceComplete { .. }
+                    | DisplayEvent::CompactionApplied => {}
                 }
 
                 if let Some(dm) = display_event_to_daemon(&fwd_group_id, evt) {
@@ -206,9 +259,13 @@ pub async fn thread_worker(
     let mut completion_fut = None;
     let mut completion_cancel_tx: Option<oneshot::Sender<()>> = None;
 
-    let handle_subscribe = async |tx: mpsc::UnboundedSender<DaemonMessage>, want_replay: bool| {
+    // No `.await` between reading `current_thinking` and pushing `tx` into
+    // `subscribers` — see the exactly-once invariant on `current_thinking`.
+    let handle_subscribe = async |tx: mpsc::UnboundedSender<DaemonMessage>,
+                                  want_replay: bool,
+                                  completion_in_flight: bool| {
         if want_replay {
-            let history: Vec<DaemonMessage> = {
+            let mut history: Vec<DaemonMessage> = {
                 // Include the in-flight buffered turn so a subscriber connecting
                 // mid-stream still replays the partial assistant message.
                 let hist = current_history.current_turn_view();
@@ -216,6 +273,19 @@ pub async fn thread_worker(
                     .filter_map(|m| history_message_to_daemon(m, &active_group_id, &hist))
                     .collect()
             };
+            // Include the in-progress thinking (streamed reasoning is only
+            // committed to history once it completes) so a client attaching
+            // mid-thinking recomputes a live "thinking" state from the end
+            // of the replay instead of appearing idle.
+            if let Some(thinking) = current_thinking.borrow().clone() {
+                history.push(DaemonMessage::ThinkingStart {
+                    thread_id: Some(active_group_id.clone()),
+                });
+                history.push(DaemonMessage::ThinkingChunk {
+                    thread_id: Some(active_group_id.clone()),
+                    chunk: thinking,
+                });
+            }
             let choices = conversation_store.get_pending_choice_messages(&root_session_id);
             let views = conversation_store.get_views(&active_group_id);
             if !history.is_empty() || !choices.is_empty() || !views.is_empty() {
@@ -223,6 +293,11 @@ pub async fn thread_worker(
                     history,
                     pending_choices: choices,
                     views,
+                    // Only an actual in-flight completion counts: while
+                    // waiting on a tool result the clients derive their
+                    // "waiting for tool call" spinner from the trailing
+                    // ToolCall in the history instead.
+                    in_progress: completion_in_flight,
                 });
             }
         }
@@ -303,7 +378,7 @@ pub async fn thread_worker(
                 },
                 req = subscribe_rx.recv() => {
                     if let Some((tx, want_replay)) = req {
-                        handle_subscribe(tx, want_replay).await;
+                        handle_subscribe(tx, want_replay, true).await;
                     }
                     continue;
                 }
@@ -358,7 +433,7 @@ pub async fn thread_worker(
 
                     while let Ok((tx, want_replay)) = subscribe_rx.try_recv() {
                         // handle replays before idling
-                        handle_subscribe(tx, want_replay).await;
+                        handle_subscribe(tx, want_replay, false).await;
                     }
 
                     if !last_is_tool_call && !has_subs {
@@ -378,7 +453,7 @@ pub async fn thread_worker(
                             }
                             req = subscribe_rx.recv() => {
                                 if let Some((tx, want_replay)) = req {
-                                    handle_subscribe(tx, want_replay).await;
+                                    handle_subscribe(tx, want_replay, false).await;
                                 }
                             }
                         }
@@ -562,6 +637,7 @@ mod tests {
         tools: Vec<Box<dyn Tool<InMemoryMessageSender>>>,
     ) -> (
         mpsc::UnboundedSender<(InputMessage, String)>,
+        mpsc::UnboundedSender<SubscribeRequest>,
         mpsc::UnboundedReceiver<DaemonMessage>,
         mpsc::UnboundedReceiver<()>,
         ActiveThreads,
@@ -569,7 +645,7 @@ mod tests {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (client_tx, client_rx) = mpsc::unbounded_channel();
         let (idle_tx, idle_rx) = mpsc::unbounded_channel();
-        let (_subscribe_tx, subscribe_rx) = mpsc::unbounded_channel();
+        let (subscribe_tx, subscribe_rx) = mpsc::unbounded_channel();
         let active_threads: ActiveThreads =
             Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         let sender = InMemoryMessageSender::new(input_tx.clone());
@@ -598,7 +674,7 @@ mod tests {
             None,
             idle_tx,
         ));
-        (input_tx, client_rx, idle_rx, active_threads)
+        (input_tx, subscribe_tx, client_rx, idle_rx, active_threads)
     }
 
     async fn collect_until_done(rx: &mut mpsc::UnboundedReceiver<DaemonMessage>) -> Vec<String> {
@@ -622,7 +698,7 @@ mod tests {
             .run_until(async {
                 let (conv, state, _dir) = tmp_stores();
                 let (model, mut ctrl) = mock_model();
-                let (tx, mut display_rx, mut idle_rx, workers) =
+                let (tx, _subscribe_tx, mut display_rx, mut idle_rx, workers) =
                     spawn_worker("t1", conv, state, model, vec![]).await;
                 tx.send(user_text_input("t1", "hello"))
                     .expect("send user input");
@@ -673,7 +749,7 @@ mod tests {
                         Ok(())
                     }
                 }
-                let (tx, mut display_rx, mut idle_rx, workers) =
+                let (tx, subscribe_tx, mut display_rx, mut idle_rx, workers) =
                     spawn_worker("t1", conv, state, model, vec![Box::new(DummyTool)]).await;
                 tx.send(user_text_input("t1", "use tool"))
                     .expect("send user input");
@@ -699,6 +775,29 @@ mod tests {
                         .expect("bug: workers mutex poisoned")
                         .contains("t1")
                 );
+                // A client attaching while the worker waits for the tool
+                // result gets a replay with no completion in flight; the
+                // trailing unresolved ToolCall in the history is what tells
+                // the client to show its "waiting for tool result" state.
+                let (tx2, mut rx2) = mpsc::unbounded_channel();
+                subscribe_tx.send((tx2, true)).expect("send subscribe");
+                match tokio::time::timeout(std::time::Duration::from_secs(2), rx2.recv()).await {
+                    Ok(Some(DaemonMessage::Replay {
+                        history,
+                        in_progress,
+                        ..
+                    })) => {
+                        assert!(!in_progress, "no completion is in flight");
+                        assert!(
+                            matches!(
+                                history.last(),
+                                Some(DaemonMessage::ToolCall { name, .. }) if name == "dummy"
+                            ),
+                            "replay should end with the unresolved tool call, got {history:?}"
+                        );
+                    }
+                    other => panic!("expected Replay, got {other:?}"),
+                }
                 tx.send(tool_result_input("t1", "tc-1", "tool done"))
                     .expect("send tool result");
                 let _req2 = ctrl.next_request().await;
@@ -719,7 +818,7 @@ mod tests {
             .run_until(async {
                 let (conv, state, _dir) = tmp_stores();
                 let (model, mut ctrl) = mock_model();
-                let (tx, mut display_rx, _, _) =
+                let (tx, _subscribe_tx, mut display_rx, _, _) =
                     spawn_worker("t1", conv, state, model, vec![]).await;
                 tx.send(user_text_input("t1", "first"))
                     .expect("send first user input");
@@ -793,7 +892,7 @@ mod tests {
                         Ok(())
                     }
                 }
-                let (tx, mut display_rx, _, _) =
+                let (tx, _subscribe_tx, mut display_rx, _, _) =
                     spawn_worker("t1", conv, state, model, vec![Box::new(DummyTool)]).await;
                 tx.send(user_text_input("t1", "do stuff"))
                     .expect("send user input");
@@ -887,7 +986,7 @@ mod tests {
                         Ok(())
                     }
                 }
-                let (tx, mut display_rx, _, _) =
+                let (tx, _subscribe_tx, mut display_rx, _, _) =
                     spawn_worker("t1", conv, state, model, vec![Box::new(SubTool)]).await;
                 tx.send(user_text_input("t1", "subscribe"))
                     .expect("send user input");
@@ -998,7 +1097,7 @@ mod tests {
                         Ok(())
                     }
                 }
-                let (tx, mut display_rx, mut idle_rx, workers) =
+                let (tx, _subscribe_tx, mut display_rx, mut idle_rx, workers) =
                     spawn_worker("t1", conv, state, model, vec![Box::new(CloseThreadStub)]).await;
                 tx.send(user_text_input("t1", "close"))
                     .expect("send user input");
@@ -1065,7 +1164,7 @@ mod tests {
                         Ok(())
                     }
                 }
-                let (tx, mut display_rx, _, _) =
+                let (tx, _subscribe_tx, mut display_rx, _, _) =
                     spawn_worker("t1", conv, state, model, vec![Box::new(AsyncTool)]).await;
 
                 // 1. User sends input, model calls async_tool.
@@ -1201,7 +1300,7 @@ mod tests {
                         Ok(())
                     }
                 }
-                let (tx, mut display_rx, _, _) =
+                let (tx, _subscribe_tx, mut display_rx, _, _) =
                     spawn_worker("t1", conv, state, model, vec![Box::new(AsyncTool)]).await;
 
                 // 1. User sends input, model calls async_tool.
@@ -1294,6 +1393,125 @@ mod tests {
                     has_thread_report,
                     "deferred thread report should be in completion"
                 );
+            })
+            .await;
+    }
+
+    /// A client attaching while the model is mid-thinking gets the in-flight
+    /// thinking appended to the history in the `Replay` message, so it can
+    /// recompute a live "thinking" spinner state from the end of the replay.
+    /// Streamed reasoning is not part of history until it completes, so
+    /// without the in-memory buffer the new client would see nothing until
+    /// the next live chunk.
+    #[tokio::test(flavor = "current_thread")]
+    async fn subscribe_mid_thinking_replays_current_thinking() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (conv, state, _dir) = tmp_stores();
+                let (model, mut ctrl) = mock_model();
+                let (tx, subscribe_tx, mut display_rx, _idle_rx, _) =
+                    spawn_worker("t1", conv, state, model, vec![]).await;
+                tx.send(user_text_input("t1", "think hard"))
+                    .expect("send user input");
+                let _req = ctrl.next_request().await;
+
+                // Stream two reasoning deltas — the completion is now mid-thinking.
+                ctrl.send_chunk(rig::streaming::RawStreamingChoice::ReasoningDelta {
+                    id: None,
+                    reasoning: "deep ".into(),
+                });
+                ctrl.send_chunk(rig::streaming::RawStreamingChoice::ReasoningDelta {
+                    id: None,
+                    reasoning: "thought".into(),
+                });
+
+                // Wait until the already-attached client has seen both chunks;
+                // the forwarder buffers a chunk before broadcasting it, so the
+                // in-flight thinking is guaranteed to be recorded by then.
+                let mut seen = String::new();
+                while seen != "deep thought" {
+                    match tokio::time::timeout(std::time::Duration::from_secs(2), display_rx.recv())
+                        .await
+                    {
+                        Ok(Some(DaemonMessage::ThinkingChunk { chunk, .. })) => {
+                            seen.push_str(&chunk)
+                        }
+                        Ok(Some(_)) => {}
+                        _ => panic!("timed out waiting for thinking chunks"),
+                    }
+                }
+
+                // Attach a new client mid-thinking: the replay history must
+                // end with the in-progress thinking and be marked in-progress
+                // (so the client keeps a live spinner instead of showing idle).
+                let (tx2, mut rx2) = mpsc::unbounded_channel();
+                subscribe_tx.send((tx2, true)).expect("send subscribe");
+                match tokio::time::timeout(std::time::Duration::from_secs(2), rx2.recv()).await {
+                    Ok(Some(DaemonMessage::Replay {
+                        history,
+                        in_progress,
+                        ..
+                    })) => {
+                        assert!(in_progress, "completion is in flight");
+                        assert!(
+                            history.iter().any(|m| matches!(
+                                m,
+                                DaemonMessage::UserInputEcho { text, .. } if text == "think hard"
+                            )),
+                            "replay should include the user input"
+                        );
+                        match &history[history.len() - 2..] {
+                            [
+                                DaemonMessage::ThinkingStart { .. },
+                                DaemonMessage::ThinkingChunk { chunk, .. },
+                            ] => {
+                                assert_eq!(chunk, "deep thought");
+                            }
+                            tail => panic!(
+                                "replay should end with the in-progress thinking, got {tail:?}"
+                            ),
+                        }
+                    }
+                    other => panic!("expected Replay, got {other:?}"),
+                }
+
+                // Move past the thinking chain: the model streams text. A
+                // client attaching now must NOT get stale thinking replayed.
+                ctrl.send_text("the answer");
+                loop {
+                    match tokio::time::timeout(std::time::Duration::from_secs(2), rx2.recv()).await
+                    {
+                        Ok(Some(DaemonMessage::TextChunk { .. })) => break,
+                        Ok(Some(_)) => {}
+                        _ => panic!("timed out waiting for text chunk"),
+                    }
+                }
+
+                let (tx3, mut rx3) = mpsc::unbounded_channel();
+                subscribe_tx.send((tx3, true)).expect("send subscribe");
+                match tokio::time::timeout(std::time::Duration::from_secs(2), rx3.recv()).await {
+                    Ok(Some(DaemonMessage::Replay {
+                        history,
+                        in_progress,
+                        ..
+                    })) => {
+                        assert!(in_progress, "completion is still in flight");
+                        assert!(
+                            !history.iter().any(|m| matches!(
+                                m,
+                                DaemonMessage::ThinkingStart { .. }
+                                    | DaemonMessage::ThinkingChunk { .. }
+                            )),
+                            "no stale thinking should be replayed after the thinking chain \
+                             ended, got {history:?}"
+                        );
+                    }
+                    other => panic!("expected Replay, got {other:?}"),
+                }
+
+                ctrl.finish();
+                collect_until_done(&mut display_rx).await;
             })
             .await;
     }

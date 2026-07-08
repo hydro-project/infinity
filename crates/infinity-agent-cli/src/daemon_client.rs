@@ -563,7 +563,7 @@ where
                                 let _ = to_daemon.send(ClientMessage::UserInput { session_id: sid, text });
                             }
                         }
-                        DaemonMessage::Replay { history, pending_choices, .. } => {
+                        DaemonMessage::Replay { history, pending_choices, in_progress, .. } => {
                             for m in history {
                                 if let Some(evt) = daemon_msg_to_display(m) {
                                     let _ = display_tx.send(evt);
@@ -572,7 +572,12 @@ where
                             // End-of-replay marker: closes any open stream/spinner
                             // state. Deliberately carries no usage info so it does
                             // not clobber the total from the Connected message.
-                            let _ = display_tx.send((None, DisplayEvent::ResponseDone(None)));
+                            // Skipped when the response is still in progress — the
+                            // spinner state implied by the end of the history (e.g.
+                            // mid-thinking) is live, and more events will follow.
+                            if !in_progress {
+                                let _ = display_tx.send((None, DisplayEvent::ResponseDone(None)));
+                            }
                             for m in pending_choices {
                                 if let Some(evt) = daemon_msg_to_display(m) {
                                     let _ = display_tx.send(evt);

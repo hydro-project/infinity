@@ -432,3 +432,84 @@ async fn reload_replays_history() -> Result<(), BoxError> {
         })
         .await
 }
+
+/// Reloading mid-thinking must revive the thinking state. Streamed reasoning
+/// is only committed to history once it completes, so the daemon buffers the
+/// in-progress thinking, appends it to the replayed history, and marks the
+/// replay `in_progress` — the UI keeps the "Thinking…" spinner alive instead
+/// of showing an idle input, and the live stream then finishes on the
+/// reconnected page.
+#[tokio::test]
+async fn reload_mid_thinking_keeps_spinner() -> Result<(), BoxError> {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (model, mut ctrl) = mock_model();
+            let daemon = start_daemon(model).await?;
+            let harness = BrowserHarness::launch().await?;
+            let page = harness.open(daemon.port).await?;
+
+            create_session_via_picker(&page, &daemon.cwd.path().to_string_lossy()).await?;
+
+            // First exchange titles the session so it can be found in the
+            // sidebar after the reload.
+            send_chat_message(&page, "Please title this session").await?;
+            let _req = next_request(&mut ctrl).await?;
+            ctrl.send_tool_call(
+                "call-title",
+                "set_title",
+                serde_json::json!({"title": "Deep thinker"}),
+            );
+            ctrl.finish();
+            let _req = next_request(&mut ctrl).await?;
+            ctrl.send_text("Titled.");
+            ctrl.finish();
+            expect(page.get_by_text("Titled.", false).await)
+                .to_be_visible()
+                .await?;
+
+            // Second turn: the model starts thinking and stays mid-thought
+            // (reasoning deltas stream, the completion never finishes).
+            send_chat_message(&page, "Think hard about this").await?;
+            let _req = next_request(&mut ctrl).await?;
+            ctrl.send_chunk(rig::streaming::RawStreamingChoice::ReasoningDelta {
+                id: None,
+                reasoning: "Pondering the imponderable".into(),
+            });
+            expect(page.get_by_text("Pondering the imponderable", false).await)
+                .to_be_visible()
+                .await?;
+            assert_screenshot(&page, "mid-thinking-live", &[]).await?;
+
+            // Reload mid-thinking and reconnect: the replayed history must
+            // restore the in-progress thinking text and the live spinner.
+            page.reload(None).await?;
+            let session_item = page.get_by_text("Deep thinker", true).await;
+            expect(session_item.clone()).to_be_visible().await?;
+            session_item.click(None).await?;
+
+            expect(page.get_by_text("Pondering the imponderable", false).await)
+                .to_be_visible()
+                .await?;
+            expect(page.get_by_text("Thinking…", true).await)
+                .to_be_visible()
+                .await?;
+            assert_screenshot(&page, "mid-thinking-reconnect", &[]).await?;
+
+            // The stream then completes live on the reconnected page: the
+            // answer arrives and the spinner clears.
+            ctrl.send_text("The answer.");
+            ctrl.finish();
+            expect(page.get_by_text("The answer.", false).await)
+                .to_be_visible()
+                .await?;
+            expect(page.get_by_text("Thinking…", true).await)
+                .to_be_hidden()
+                .await?;
+            assert_screenshot(&page, "mid-thinking-finished", &[]).await?;
+
+            harness.close().await?;
+            Ok(())
+        })
+        .await
+}

@@ -356,9 +356,7 @@ where
                 match evt {
                     DisplayEvent::ThinkingStart => {
                         if is_root {
-                            if spinner_state == Some(SpinnerState::LoadingContext) {
-                                spinner_state = Some(SpinnerState::Thinking);
-                            }
+                            spinner_state = Some(SpinnerState::Thinking);
                             thinking_start = Instant::now();
                             thinking_text_buffer.clear();
                         }

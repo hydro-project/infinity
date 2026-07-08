@@ -237,6 +237,14 @@ pub enum DaemonMessage {
         pending_choices: Vec<DaemonMessage>,
         #[serde(default)]
         views: HashMap<String, serde_json::Value>,
+        /// Whether a completion is currently in flight for this thread. When
+        /// false, clients should treat the end of the replay as an implicit
+        /// ResponseDone (a trailing unresolved ToolCall in the history still
+        /// implies a "waiting for tool result" state); when true, the
+        /// spinner state implied by the end of the history is live and more
+        /// events will follow.
+        #[serde(default)]
+        in_progress: bool,
     },
     /// Sent immediately on socket connection with session list and default model info.
     Welcome {
