@@ -22,7 +22,7 @@ use agent_client_protocol::{
 };
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use infinity_protocol::{ClientMessage, DaemonMessage, SessionInfo};
+use infinity_protocol::{ClientMessage, DaemonMessage, SessionInfo, length_delimited_codec};
 use std::sync::Mutex;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
@@ -85,7 +85,7 @@ struct SessionCmd {
 pub async fn run() -> Result<(), BoxError> {
     // Control connection — gets Welcome and SessionsUpdated.
     let control_stream = crate::daemon_client::ensure_daemon_running().await?;
-    let mut control_framed = Framed::new(control_stream, LengthDelimitedCodec::new());
+    let mut control_framed = Framed::new(control_stream, length_delimited_codec());
 
     let welcome = recv(&mut control_framed).await?;
     let sessions = match welcome {
@@ -440,7 +440,7 @@ async fn run_session_connection(
     mut cmd_rx: mpsc::UnboundedReceiver<SessionCmd>,
 ) -> Result<(), BoxError> {
     let stream = crate::daemon_client::ensure_daemon_running().await?;
-    let mut framed = Framed::new(stream, LengthDelimitedCodec::new());
+    let mut framed = Framed::new(stream, length_delimited_codec());
 
     // Skip Welcome on this connection.
     let _ = recv(&mut framed).await?;

@@ -2304,6 +2304,7 @@ dependencies = [
  "rap-protocol",
  "serde",
  "serde_json",
+ "tokio-util",
 ]
 
 [[package]]

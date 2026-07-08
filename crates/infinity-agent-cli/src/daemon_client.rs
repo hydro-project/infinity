@@ -6,7 +6,9 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use infinity_agent_core::batch_processor::DisplayEvent;
-use infinity_protocol::{ClientMessage, DaemonMessage, ModelRef, SessionInfo, TokenUsage};
+use infinity_protocol::{
+    ClientMessage, DaemonMessage, ModelRef, SessionInfo, TokenUsage, length_delimited_codec,
+};
 use rig::completion::GetTokenUsage;
 use tokio::io::AsyncBufReadExt;
 use tokio::net::UnixStream;
@@ -256,7 +258,7 @@ async fn launch_daemon() -> Result<(), BoxError> {
 /// Send a task to the daemon and exit without opening the TUI.
 pub async fn run_headless(message: String) -> Result<(), BoxError> {
     let stream = ensure_daemon_running().await?;
-    let mut framed = Framed::new(stream, LengthDelimitedCodec::new());
+    let mut framed = Framed::new(stream, length_delimited_codec());
 
     /// Receive the next DaemonMessage from the framed socket.
     async fn recv(
@@ -329,7 +331,7 @@ pub async fn run_with_daemon(
     session: Option<String>,
 ) -> Result<(), BoxError> {
     let stream = ensure_daemon_running().await?;
-    let mut framed = Framed::new(stream, LengthDelimitedCodec::new());
+    let mut framed = Framed::new(stream, length_delimited_codec());
 
     let (to_daemon_tx, mut to_daemon_rx) = mpsc::unbounded_channel::<ClientMessage>();
     let (from_daemon_tx, from_daemon_rx) = mpsc::unbounded_channel::<DaemonMessage>();
