@@ -19,6 +19,8 @@ The protocol doesn't prescribe how the runtime is built. The reference implement
 
 **Result routing.** Tool results, subscription events, and user messages all arrive through the same input channel. The runtime doesn't distinguish between them at the transport level — it loads state, appends the new message, and runs the LLM again. The `group_id` field routes messages to the correct conversation thread.
 
+**Recovery.** Because tool calls are asynchronous, a conversation can be waiting on a callback when the runtime — or the tool server — restarts. If the tool server lost the call in the meantime, the conversation would hang forever. On boot, the runtime can reconcile its pending tool calls and active subscriptions by querying each tool server's [`/tool_call_status`](/docs/rap/spec/basic/tool-call-status) endpoint, pruning calls the server has given up on by injecting synthetic failure results the LLM can react to.
+
 **Tool definitions.** The runtime maintains the set of available tools and their JSON Schema definitions. These are passed to the LLM on each completion request so it knows what tools it can call. How definitions are stored and loaded is implementation-specific.
 
 ## Capabilities provided to tools

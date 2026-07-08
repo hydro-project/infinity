@@ -537,6 +537,9 @@ mod tests {
         async fn post(&self, _: &str, _: &str) -> Result<u16, E> {
             Ok(200)
         }
+        async fn post_read(&self, _: &str, _: &str) -> Result<(u16, Vec<u8>), E> {
+            Ok((200, vec![]))
+        }
         async fn get(&self, _: &str) -> Result<(u16, Vec<u8>), E> {
             Ok((200, vec![]))
         }

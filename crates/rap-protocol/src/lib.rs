@@ -126,6 +126,34 @@ pub enum RapCallback {
     ViewUpdate(RapViewUpdate),
 }
 
+/// Request body for the `/tool_call_status` endpoint (runtime → tool server).
+///
+/// Asks the tool server whether a previously dispatched tool call — or the
+/// subscription it established — is still alive (i.e. the server still
+/// intends to deliver a tool result or further subscription events for it).
+/// Runtimes use this after a restart to detect tool calls and subscriptions
+/// that the tool server has given up on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RapToolCallStatusRequest {
+    /// The conversation thread identifier (`group_id`) of the thread
+    /// containing the tool call. Matches the `group_id` sent in the original
+    /// tool invocation.
+    pub thread_id: String,
+    /// The unique identifier of the tool call to query. Matches the `id`
+    /// sent in the original tool invocation.
+    pub tool_call_id: String,
+}
+
+/// Response body for the `/tool_call_status` endpoint (tool server → runtime).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RapToolCallStatusResponse {
+    /// `true` if the server is still processing the tool call or still
+    /// maintains an active subscription for it; `false` if the server has no
+    /// record of the tool call (e.g. it was lost in a restart, completed
+    /// long ago, or was cancelled).
+    pub alive: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolsetManifest {
     pub name: String,

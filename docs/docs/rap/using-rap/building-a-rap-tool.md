@@ -204,6 +204,24 @@ Include `subscription: true` in the [tool result](/docs/rap/spec/basic/tool-resu
 
 The runtime spawns a child thread for each subscription event, giving each event a clean context window. The subscription remains active until explicitly cancelled.
 
+## Answering status checks
+
+Runtimes that restart while one of your tool calls is pending — or while one of your subscriptions is active — may ask whether the call is still alive by POSTing to `/tool_call_status` (see the [Tool Call Status Check spec](/docs/rap/spec/basic/tool-call-status)). Answer `alive: true` if you're still working on the call or still hold the subscription, and `alive: false` if you have no record of it. That lets the runtime prune calls you've given up on (e.g. lost in a restart) instead of waiting forever.
+
+```javascript
+// POST /tool_call_status
+async function handleToolCallStatus(body, res) {
+  const { tool_call_id } = body;
+  const stillProcessing = inFlight.has(tool_call_id);
+  const stillSubscribed = Boolean(await db.get(tool_call_id));
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ alive: stillProcessing || stillSubscribed }));
+}
+```
+
+Implement this endpoint if your tool does any asynchronous work or maintains subscriptions: runtimes treat a server that responds without supporting the status check (a 404, or any non-JSON answer) as unable to vouch for the call, and will prune your pending calls and subscriptions as failed whenever the runtime restarts. Only unreachable servers (connection errors, 5xx) are given the benefit of the doubt and left pending.
+
 ## Schema evolution
 
 Runtimes cache your toolset definition for the duration of an agent session. If you deploy a breaking schema change while agents hold cached definitions, they'll send invocations with stale arguments. Your tool should handle this gracefully — either maintain backward compatibility or return a clear error via the normal tool result path. See [Loading Toolsets](/docs/rap/spec/basic/toolsets#loading-toolsets) for details on caching behavior.
