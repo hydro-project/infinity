@@ -39,6 +39,12 @@ dirs = "6"
 tokio-tungstenite = "0.26"
 include_dir = { version = "0.7", optional = true }
 
+# For the `e2e-web` feature only (browser-based end-to-end tests). This is a
+# regular optional dependency rather than a dev-dependency because Cargo
+# does not support optional dev-dependencies; nothing outside `tests/` uses
+# it.
+playwright-rs = { version = "0.14", optional = true, default-features = false, features = ["macros", "screenshot-diff", "rustls-tls-webpki-roots"] }
+
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["signal"] }
 
@@ -50,6 +56,10 @@ insta = { workspace = true }
 
 [features]
 bundled-web = ["dep:include_dir"]
+# End-to-end tests of the bundled web UI driven through a real browser
+# (tests/web_e2e.rs). Requires npm (to build the web assets) and Playwright
+# browsers (`npx playwright@1.60.0 install chromium`).
+e2e-web = ["bundled-web", "dep:playwright-rs"]
 
 [lints]
 workspace = true

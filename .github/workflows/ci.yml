@@ -94,6 +94,48 @@ jobs:
       - name: Run tests
         run: cargo test --all-targets
 
+      # Web UI e2e tests run only on Linux: they need a Playwright browser
+      # and the goldens are rendered with Linux font rendering.
+      - name: Setup Node.js (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+
+      - name: Install Playwright driver + browsers (Linux)
+        if: runner.os == 'Linux'
+        # Version must match the driver bundled by playwright-rs (1.60.0).
+        #
+        # playwright-rs's build script downloads its driver from a CDN that
+        # has proven unreliable (404s), so skip it and point the runtime at
+        # the npm-installed driver instead (same mechanism check.bash
+        # documents for old-glibc hosts): with PLAYWRIGHT_SKIP_DRIVER_DOWNLOAD
+        # the bundled-driver lookup is empty and resolution falls through to
+        # PLAYWRIGHT_NODE_EXE + PLAYWRIGHT_CLI_JS.
+        run: |
+          mkdir -p "$RUNNER_TEMP/pw-driver"
+          (cd "$RUNNER_TEMP/pw-driver" && npm install playwright@1.60.0)
+          echo "PLAYWRIGHT_SKIP_DRIVER_DOWNLOAD=1" >> "$GITHUB_ENV"
+          echo "PLAYWRIGHT_NODE_EXE=$(command -v node)" >> "$GITHUB_ENV"
+          echo "PLAYWRIGHT_CLI_JS=$RUNNER_TEMP/pw-driver/node_modules/playwright/cli.js" >> "$GITHUB_ENV"
+          npx playwright@1.60.0 install --with-deps chromium
+
+      - name: Run web UI e2e tests (Linux)
+        if: runner.os == 'Linux'
+        run: cargo test -p infinity-daemon --features e2e-web --test web_e2e
+
+      # On screenshot mismatches the test writes `-actual`/`-diff` PNGs next
+      # to the goldens; upload them so mismatches can be reviewed (and, if
+      # the differences are benign rendering drift, used to decide on a
+      # tolerance bump or regenerated goldens).
+      - name: Upload web e2e screenshots (Linux)
+        if: failure() && runner.os == 'Linux'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: web-e2e-screenshots
+          path: crates/infinity-daemon/tests/web_snapshots/
+          if-no-files-found: ignore
+
   test-all:
     if: ${{ always() }}
     runs-on: ubuntu-latest

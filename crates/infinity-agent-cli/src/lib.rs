@@ -1,5 +1,6 @@
 pub mod choice_picker;
 pub mod component;
+pub mod daemon_client;
 pub mod inline_viewport;
 pub mod install;
 pub mod model_picker;

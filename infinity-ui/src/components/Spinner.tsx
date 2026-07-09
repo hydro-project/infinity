@@ -65,8 +65,21 @@ export function Spinner({ state }: Props) {
     canvas.width = NUM_BARS * (barW + gap);
     canvas.height = h;
 
+    // With reduced motion, render a single static frame (as if at t=0)
+    // instead of a requestAnimationFrame loop. This is also what makes
+    // screenshot-based e2e tests deterministic.
+    const reduceMotion =
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    const scheduleNext = () => {
+      if (!reduceMotion) {
+        rafRef.current = requestAnimationFrame(draw);
+      }
+    };
+
     function draw() {
-      const elapsed = (performance.now() - startRef.current) / 1000;
+      const elapsed = reduceMotion
+        ? 0
+        : (performance.now() - startRef.current) / 1000;
       ctx.clearRect(0, 0, canvas!.width, canvas!.height);
 
       for (let i = 0; i < NUM_BARS; i++) {
@@ -114,7 +127,7 @@ export function Spinner({ state }: Props) {
           ctx.beginPath();
           ctx.roundRect(0, 0, totalW, h, 4);
           ctx.fill();
-          rafRef.current = requestAnimationFrame(draw);
+          scheduleNext();
           return;
         } else {
           // tool: slow breathing blue
@@ -132,10 +145,10 @@ export function Spinner({ state }: Props) {
         ctx.fill();
       }
 
-      rafRef.current = requestAnimationFrame(draw);
+      scheduleNext();
     }
 
-    rafRef.current = requestAnimationFrame(draw);
+    draw();
     return () => cancelAnimationFrame(rafRef.current);
   }, [state]);
 

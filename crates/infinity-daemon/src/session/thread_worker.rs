@@ -507,8 +507,11 @@ mod tests {
         tempfile::TempDir,
     ) {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let conv =
-            InMemoryConversationStore::new_with_dir(dir.path().join("threads"), test_model_ref());
+        let conv = InMemoryConversationStore::new_with_dir(
+            dir.path().join("threads"),
+            test_model_ref(),
+            Arc::new(crate::ids::UuidIdSource),
+        );
         let state = InMemoryStateStore::new(dir.path().join("state"));
         (conv, state, dir)
     }

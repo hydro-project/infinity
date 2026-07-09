@@ -15,6 +15,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::config;
+use crate::ids::IdSource;
 use crate::mcp_proxy;
 use crate::memory_store::{InMemoryConversationStore, InMemoryMessageSender, InMemoryStateStore};
 use crate::models::{self, ModelCatalog};
@@ -67,6 +68,27 @@ pub struct Session {
 
 pub type SessionStoreHandle = Arc<tokio::sync::Mutex<session_store::SessionStore>>;
 
+/// Configuration for building a [`SessionManager`]. The non-generic
+/// constructor ([`SessionManager::new`]) fills in the home-directory
+/// defaults; tests can point everything at temp dirs for hermetic runs.
+pub struct SessionManagerConfig {
+    /// Directory for persisted daemon state (`sessions.json`, thread
+    /// history, tool state).
+    pub state_dir: PathBuf,
+    /// Base URL for the RAP callback server.
+    pub callback_url: String,
+    /// Path to the user-level RAP config merged into every session
+    /// (`~/.infinity/rap.json` in production). `None` disables user-level
+    /// RAP servers, so sessions only boot servers from their cwd config.
+    pub user_rap_config: Option<PathBuf>,
+    /// Source of session/thread ids. Production uses random UUIDs
+    /// ([`crate::ids::UuidIdSource`]); tests use
+    /// [`crate::ids::SequentialIdSource`] so ids rendered in UIs are
+    /// deterministic. Shared (`Arc`) between the manager and the
+    /// conversation store so all ids come from one sequence.
+    pub id_source: Arc<dyn IdSource>,
+}
+
 /// Manages all active sessions.
 pub struct SessionManager {
     pub sessions: HashMap<String, Session>,
@@ -77,6 +99,11 @@ pub struct SessionManager {
     state_store: InMemoryStateStore,
     /// Registered model providers and their available models.
     pub catalog: Arc<ModelCatalog>,
+    /// Path to the user-level RAP config (see [`SessionManagerConfig`]).
+    user_rap_config: Option<PathBuf>,
+    /// Source of new session ids (thread ids come from the conversation
+    /// store, which shares the same source).
+    id_source: Arc<dyn IdSource>,
     /// Spawned model provider processes. Held so the providers stay alive
     /// for the daemon's lifetime (the processes are killed on drop).
     _provider_processes: Vec<tokio::process::Child>,
@@ -87,6 +114,9 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
+    /// Build a manager with the production defaults: providers are spawned
+    /// from `~/.infinity/providers.json` and the user-level RAP config is
+    /// `~/.infinity/rap.json`.
     pub async fn new(state_dir: PathBuf, callback_url: String) -> Result<Self, BoxError> {
         // Spawn the model providers configured in `~/.infinity/providers.json`
         // (each runs as a separate process serving a Unix socket) and register
@@ -95,6 +125,38 @@ impl SessionManager {
         let providers_config = models::load_providers_config(&config::providers_config_path()?)?;
         let (providers, provider_processes) =
             models::spawn_configured_providers(&providers_config).await?;
+        Self::with_providers(
+            SessionManagerConfig {
+                state_dir,
+                callback_url,
+                user_rap_config: Some(config::user_config_path()?),
+                id_source: Arc::new(crate::ids::UuidIdSource),
+            },
+            providers,
+            provider_processes,
+        )
+        .await
+    }
+
+    /// Build a manager from explicit `(provider_id, provider)` pairs instead
+    /// of spawning provider processes from the on-disk config. This is the
+    /// generic constructor used by tests (e.g. with an in-process mock
+    /// provider); `provider_processes` are held for the manager's lifetime
+    /// and killed on drop.
+    pub async fn with_providers(
+        config: SessionManagerConfig,
+        providers: Vec<(
+            String,
+            Arc<dyn infinity_agent_core::model_provider::ModelProvider>,
+        )>,
+        provider_processes: Vec<tokio::process::Child>,
+    ) -> Result<Self, BoxError> {
+        let SessionManagerConfig {
+            state_dir,
+            callback_url,
+            user_rap_config,
+            id_source,
+        } = config;
         let catalog = Arc::new(ModelCatalog::new(providers).await?);
 
         std::fs::create_dir_all(&state_dir).ok();
@@ -110,8 +172,11 @@ impl SessionManager {
 
         let threads_dir = state_dir.join("threads");
         std::fs::create_dir_all(&threads_dir).ok();
-        let mut conversation_store =
-            InMemoryConversationStore::new_with_dir(&threads_dir, catalog.default_ref().clone());
+        let mut conversation_store = InMemoryConversationStore::new_with_dir(
+            &threads_dir,
+            catalog.default_ref().clone(),
+            id_source.clone(),
+        );
         conversation_store.set_change_tx(change_tx_for_conv);
         let state_store = InMemoryStateStore::new(state_dir.join("state"));
 
@@ -156,6 +221,8 @@ impl SessionManager {
             conversation_store,
             state_store,
             catalog,
+            user_rap_config,
+            id_source,
             _provider_processes: provider_processes,
             broadcast_clients,
             remote_daemons: None,
@@ -217,7 +284,7 @@ impl SessionManager {
         model: ModelRef,
         emit: &mut impl AsyncFnMut(DaemonMessage),
     ) -> Result<String, BoxError> {
-        let session_id = uuid::Uuid::new_v4().to_string();
+        let session_id = self.id_source.generate();
         {
             let mut store = self.session_store.lock().await;
             store.create(&session_id, cwd.to_path_buf());
@@ -305,9 +372,13 @@ impl SessionManager {
             text,
         };
 
-        let boot_result = boot_rap_servers(cwd, &mut async |text: String| {
-            emit(info(text)).await;
-        })
+        let boot_result = boot_rap_servers(
+            cwd,
+            self.user_rap_config.as_deref(),
+            &mut async |text: String| {
+                emit(info(text)).await;
+            },
+        )
         .await;
         let booted = match boot_result {
             Ok(b) => b,
@@ -914,10 +985,12 @@ pub struct BootedRapServers {
     pub urls: Vec<String>,
 }
 
-/// Boot RAP servers at the given cwd using local + user config.
+/// Boot RAP servers at the given cwd using the cwd-local config
+/// (`{cwd}/.infinity/rap.json`) merged with the optional user-level config.
 /// The `emit` callback streams individual progress messages as servers launch.
 pub async fn boot_rap_servers(
     cwd: &Path,
+    user_config_path: Option<&Path>,
     emit: &mut impl AsyncFnMut(String),
 ) -> Result<BootedRapServers, BoxError> {
     let cwd_rap = cwd.join(".infinity").join("rap.json");
@@ -925,8 +998,9 @@ pub async fn boot_rap_servers(
         .exists()
         .then(|| config::load_config(&cwd_rap))
         .transpose()?;
-    let user_config = config::user_config_path()
-        .and_then(|p| p.exists().then(|| config::load_config(&p)).transpose())?;
+    let user_config = user_config_path
+        .and_then(|p| p.exists().then(|| config::load_config(p)))
+        .transpose()?;
 
     let config = match (local_config, user_config) {
         (None, None) => {
