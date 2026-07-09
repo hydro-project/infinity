@@ -119,6 +119,10 @@ pub struct HistoryManager<C: ConversationStore, S: StateStore> {
     processed_tool_calls: RefCell<HashSet<String>>,
     metadata: RefCell<Option<serde_json::Value>>,
     pending_items: RefCell<Vec<PendingItem>>,
+    /// until a turn is complete the data lives here. If errors occur,
+    /// it'll get discarded, if the turn completes, then it will get flushed to
+    /// _both_ pending_items and history.
+    turn_buffer: RefCell<Vec<PendingItem>>,
     pending_complete_tool_calls: RefCell<HashSet<String>>,
     /// Tool call IDs that were interrupted by a new user message during
     /// `handle_content`. Callers can drain this via `take_interrupted_tool_calls`
@@ -179,6 +183,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             processed_tool_calls: RefCell::new(processed_tool_calls),
             metadata: RefCell::new(metadata),
             pending_items: RefCell::new(Vec::new()),
+            turn_buffer: RefCell::new(Vec::new()),
             pending_complete_tool_calls: RefCell::new(HashSet::new()),
             interrupted_tool_calls: RefCell::new(Vec::new()),
             compacted_up_to: RefCell::new(compacted_up_to),
@@ -291,6 +296,11 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         }
     }
 
+    /// Buffer a streamed assistant chunk for the current turn. The chunk is
+    /// **not** committed to `history` yet — it accumulates in `turn_buffer`
+    /// until the turn reaches a flush point ([`Self::flush_turn`]) or is
+    /// discarded on failure ([`Self::discard_turn`]). This keeps partial,
+    /// possibly-abandoned turns out of committed history.
     pub fn handle_completion<R>(
         &self,
         completion: &StreamedAssistantContent<R>,
@@ -300,11 +310,11 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         if self.processed_message_ids.borrow().contains(&completion_id) {
             return;
         }
-        // Coalesce consecutive streamed text chunks into a single pending item
+        // Coalesce consecutive streamed text chunks into a single buffer entry
         // so that a multi-chunk assistant response is persisted as one message
         // rather than one row per chunk (which blows up disk usage).
         if let StreamedAssistantContent::Text(text) = completion
-            && self.try_merge_pending_text(&text.text)
+            && self.try_merge_buffer_text(&text.text)
         {
             return;
         }
@@ -327,10 +337,79 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 return;
             }
         };
-        self.append_pending(infinity_message, completion_id);
+        self.turn_buffer.borrow_mut().push(PendingItem {
+            message: infinity_message,
+            message_id: completion_id,
+        });
+    }
+
+    /// Commit the buffered current-turn content into `history` and
+    /// `pending_items`. Called at a flush point: a completed turn (`Final`) or
+    /// a turn-ending tool call. After this, the buffered messages are part of
+    /// committed history and will be persisted by the next [`Self::sync`].
+    pub fn flush_turn(&self) {
+        let drained = std::mem::take(&mut *self.turn_buffer.borrow_mut());
+        for item in drained {
+            self.append_pending(item.message, item.message_id);
+        }
+    }
+
+    /// Like [`Self::flush_turn`], but first drops any trailing assistant
+    /// reasoning (and empty text) from the buffer so the committed turn does not
+    /// end on a reasoning block.
+    pub fn flush_turn_trimming_reasoning(&self) {
+        {
+            let mut buffer = self.turn_buffer.borrow_mut();
+            // Pop trailing reasoning and empty text together (an empty text
+            // entry between two reasoning blocks must not strand the earlier
+            // one), stopping at the first non-empty text or any other content.
+            while let Some(PendingItem {
+                message: InfinityMessage::Assistant { content },
+                ..
+            }) = buffer.last()
+            {
+                match content {
+                    AssistantContent::Reasoning(_) => {}
+                    AssistantContent::Text(text) if text.text.trim().is_empty() => {}
+                    _ => break,
+                }
+                buffer.pop();
+            }
+        }
+        self.flush_turn();
+    }
+
+    /// Drop the buffered current-turn content without committing it. Called
+    /// when a turn fails mid-stream (timeout, disconnect) and will be retried:
+    /// the retry rebuilds the request from clean committed `history`, so the
+    /// abandoned partial turn must not linger.
+    pub fn discard_turn(&self) {
+        self.turn_buffer.borrow_mut().clear();
+    }
+
+    pub fn turn_buffer_is_empty(&self) -> bool {
+        self.turn_buffer.borrow().is_empty()
+    }
+
+    /// Committed history followed by the in-flight buffered turn. Used for
+    /// mid-turn subscriber replay so a client connecting while the model is
+    /// streaming still sees the partial assistant message.
+    pub fn current_turn_view(&self) -> Vec<InfinityMessage> {
+        let history = self.history.borrow();
+        let buffer = self.turn_buffer.borrow();
+        history
+            .iter()
+            .cloned()
+            .chain(buffer.iter().map(|item| item.message.clone()))
+            .collect()
     }
 
     fn append_pending(&self, message: InfinityMessage, message_id: String) {
+        assert!(
+            self.turn_buffer.borrow().is_empty(),
+            "bug: append_pending called with un-flushed turn_buffer content"
+        );
+
         self.history.borrow_mut().push(message.clone());
         if let InfinityMessage::ToolResult { ref result, .. }
         | InfinityMessage::SubscriptionEvent { ref result, .. } = message
@@ -343,17 +422,13 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         });
     }
 
-    /// If the last not-yet-synced pending item is an assistant text message,
-    /// append `text` to it (and keep the in-memory history entry in sync) and
-    /// return `true`. Otherwise return `false` so the caller appends a new
-    /// pending item.
-    ///
-    /// Because `sync` drains `pending_items`, merging only happens across
-    /// chunks that have not been persisted yet, so an already-persisted text
-    /// message is never mutated.
-    fn try_merge_pending_text(&self, text: &str) -> bool {
-        let mut pending_items = self.pending_items.borrow_mut();
-        let Some(last) = pending_items.last_mut() else {
+    /// If the last buffered turn entry is an assistant text message, append
+    /// `text` to it and return `true`. Otherwise return `false` so the caller
+    /// pushes a new buffer entry. This coalesces consecutive text chunks within
+    /// a turn into one message.
+    fn try_merge_buffer_text(&self, text: &str) -> bool {
+        let mut buffer = self.turn_buffer.borrow_mut();
+        let Some(last) = buffer.last_mut() else {
             return false;
         };
         let InfinityMessage::Assistant {
@@ -363,17 +438,6 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             return false;
         };
         existing.text.push_str(text);
-        // The last pending item always corresponds to the last history entry
-        // (both are pushed/popped together while an item is pending), so keep
-        // the in-memory history in sync with the merged text.
-        let mut history = self.history.borrow_mut();
-        let Some(InfinityMessage::Assistant {
-            content: AssistantContent::Text(hist_text),
-        }) = history.last_mut()
-        else {
-            panic!("bug: pending_items and history out of sync");
-        };
-        hist_text.text.push_str(text);
         true
     }
 
@@ -387,6 +451,14 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     }
 
     pub async fn sync(&self) -> Result<(), BoxError> {
+        // `sync` only persists committed (`pending_items`) content. Any in-flight
+        // turn must have been flushed or discarded before this point; otherwise a
+        // flush point was missed and buffered content would be silently lost.
+        assert!(
+            self.turn_buffer.borrow().is_empty(),
+            "bug: sync() called with un-flushed turn_buffer content"
+        );
+
         let pending_items = std::mem::take(&mut *self.pending_items.borrow_mut());
         let pending_complete_tool_calls =
             std::mem::take(&mut *self.pending_complete_tool_calls.borrow_mut());
@@ -440,28 +512,6 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 .collect::<Vec<_>>(),
         )
         .expect("bug: history should never be empty")
-    }
-
-    pub fn remove_trailing_reasoning(&self) {
-        let mut history = self.history.borrow_mut();
-        let mut pending_items = self.pending_items.borrow_mut();
-        while let Some(msg) = history.last() {
-            match msg {
-                InfinityMessage::Assistant {
-                    content: AssistantContent::Reasoning(_),
-                } => {
-                    history.pop();
-                    pending_items.pop();
-                }
-                InfinityMessage::Assistant {
-                    content: AssistantContent::Text(text),
-                } if text.text.trim().is_empty() => {
-                    history.pop();
-                    pending_items.pop();
-                }
-                _ => break,
-            }
-        }
     }
 
     /// Returns the full thread stack: [root, ..ancestors, current_thread].
@@ -1056,6 +1106,12 @@ where
         };
 
         'outer: loop {
+            // The turn buffer should be flushed or discarded at the end of each turn.
+            assert!(
+                history.turn_buffer_is_empty(),
+                "bug: entered completion loop with un-flushed turn buffer"
+            );
+
             let stream_result = provider
                 .invoke_model(model_id, CompletionRequest {
                     model: None,
@@ -1076,7 +1132,6 @@ where
                 }
                 _ = &mut cancel_rx => {
                     tracing::info!("Completion cancelled during request initiation");
-                    // there must be no trailing reasoning because we drop it when retrying post-initiation
                     return;
                 }
                 _ = tokio::time::sleep(Duration::from_secs(60)) => {
@@ -1093,7 +1148,6 @@ where
             let mut llm_stream = match stream_result {
                 Ok(s) => s,
                 Err(e) => {
-                    // there must be no trailing reasoning because we drop it when retrying post-initiation
                     let err_str = format!("{}", e);
                     tracing::error!(error = %e, "Completion stream initiation failed");
 
@@ -1145,8 +1199,10 @@ where
                         cancelled = false;
                         if retry_count < 10 {
                             yield CompletionEvent::Info("Stream error (timeout), retrying...".to_owned());
-                            tracing::warn!("Stream ended unexpectedly, removing trailing reasoning and retrying...");
-                            history.remove_trailing_reasoning();
+                            tracing::warn!("Stream stalled, discarding partial turn and retrying...");
+                            // Retry rebuilds the request from committed history, so
+                            // drop the abandoned partial turn.
+                            history.discard_turn();
                             if is_thinking {
                                 is_thinking = false;
                                 yield CompletionEvent::ThinkingEnd;
@@ -1154,6 +1210,11 @@ where
                             retry_count += 1;
                             continue 'outer;
                         } else {
+                            // Giving up: preserve whatever visible text streamed,
+                            // but trim trailing reasoning — the next turn appends a
+                            // user message and reasoning-then-user is rejected by
+                            // some providers.
+                            history.flush_turn_trimming_reasoning();
                             Err(Into::<BoxError>::into("Stream timed out"))
                         }
                     },
@@ -1161,7 +1222,10 @@ where
 
                 if cancelled {
                     tracing::info!("Completion cancelled");
-                    history.remove_trailing_reasoning();
+                    // Terminal: keep the visible partial text, but trim trailing
+                    // reasoning. This path fires on user interruption, so the next
+                    // message is a user turn and must not follow a reasoning block.
+                    history.flush_turn_trimming_reasoning();
                     if is_thinking {
                         yield CompletionEvent::ThinkingEnd;
                     }
@@ -1169,18 +1233,23 @@ where
                 }
 
                 let Some(res) = llm_next else {
-                    history.remove_trailing_reasoning();
                     if is_thinking {
                         is_thinking = false;
                         yield CompletionEvent::ThinkingEnd;
                     }
                     if retry_count < 10 {
+                        // Retry rebuilds the request from committed history, so
+                        // drop the abandoned partial turn.
+                        history.discard_turn();
                         yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_owned());
-                        tracing::warn!("Stream ended unexpectedly, removing trailing reasoning and retrying...");
+                        tracing::warn!("Stream ended unexpectedly, discarding partial turn and retrying...");
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         retry_count += 1;
                         continue 'outer;
                     } else {
+                        // Giving up: keep visible text, trim trailing reasoning
+                        // (the next appended message is a user turn).
+                        history.flush_turn_trimming_reasoning();
                         Err(Into::<BoxError>::into("Stream timed out"))?;
                         unreachable!()
                     }
@@ -1192,19 +1261,23 @@ where
                         c
                     },
                     Err(e) => {
-                        history.remove_trailing_reasoning();
                         if is_thinking {
                             is_thinking = false;
                             yield CompletionEvent::ThinkingEnd;
                         }
                         let err_str = format!("{}", e);
                         if (err_str.contains("unexpected end of stream") || err_str.contains("unexpected error when processing the request")) && retry_count < 10 {
+                            // Retry rebuilds from committed history.
+                            history.discard_turn();
                             yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_owned());
-                            tracing::warn!("Stream error (unexpected end), retrying...");
+                            tracing::warn!("Stream error (unexpected end), discarding partial turn and retrying...");
                             tokio::time::sleep(Duration::from_secs(1)).await;
                             retry_count += 1;
                             continue 'outer;
                         } else {
+                            // Giving up: keep visible text, trim trailing reasoning
+                            // (the next appended message is a user turn).
+                            history.flush_turn_trimming_reasoning();
                             Err(Into::<BoxError>::into(e))?;
                             unreachable!()
                         }
@@ -1251,6 +1324,14 @@ where
                                   tracing::info!("Ignoring batched tool call");
                               } else {
                                   has_emitted_tool_call = true;
+                                  // A tool call ends the turn: commit the buffered
+                                  // assistant content (any preceding text/reasoning
+                                  // plus this tool call) so it is in `history` before
+                                  // the tool-result `handle_content` calls below match
+                                  // on `history.last()`, and so an async tool call is
+                                  // persisted by the caller's `sync()` before its
+                                  // result arrives on a later turn.
+                                  history.flush_turn();
                                   if call.function.name == "receive_event__injected" {
                                       let tool_result = InfinityMessage::ToolResult {
                                           result: ToolResult {
@@ -1356,6 +1437,8 @@ where
                                 yield CompletionEvent::ThinkingEnd;
                             }
                             tracing::info!("Received final message");
+                            // Turn complete
+                            history.flush_turn();
                             yield CompletionEvent::Action(CompletionAction::Done(r));
 
                             if should_loop_back {
@@ -1709,8 +1792,14 @@ mod tests {
         hm.handle_completion(&text_chunk(", "), "c-2".to_owned(), None);
         hm.handle_completion(&text_chunk("world"), "c-3".to_owned(), None);
 
-        // The three chunks should collapse into a single pending item /
-        // history entry with the text concatenated together.
+        // While streaming, the chunks accumulate in the buffer (not yet
+        // committed) and coalesce into a single entry.
+        assert_eq!(hm.turn_buffer.borrow().len(), 1);
+        assert!(hm.history.borrow().is_empty());
+
+        // Committing the turn moves the single coalesced message into both the
+        // pending items (to be persisted) and the in-memory history.
+        hm.flush_turn();
         insta::assert_json_snapshot!(hm.pending_items.borrow().clone());
         insta::assert_json_snapshot!(hm.history.borrow().clone());
     }
@@ -1723,23 +1812,200 @@ mod tests {
         let text_chunk = |s: &str| {
             StreamedAssistantContent::<()>::Text(rig::message::Text { text: s.to_owned() })
         };
+        let tool_call = StreamedAssistantContent::<()>::ToolCall {
+            tool_call: ToolCall {
+                id: "tc-1".to_owned(),
+                call_id: None,
+                function: ToolFunction {
+                    name: "some_tool".to_owned(),
+                    arguments: serde_json::json!({}),
+                },
+                additional_params: None,
+                signature: None,
+            },
+            internal_call_id: "tc-1".to_owned(),
+        };
 
         hm.handle_completion(&text_chunk("before"), "c-1".to_owned(), None);
         // A non-text item in between breaks the run of text chunks.
-        hm.append_pending(
-            InfinityMessage::from_rig_message(tool_call_msg(
-                "tc-1",
-                "some_tool",
-                serde_json::json!({}),
-            )),
-            "c-2".to_owned(),
-        );
+        hm.handle_completion(&tool_call, "c-2".to_owned(), None);
         hm.handle_completion(&text_chunk("after"), "c-3".to_owned(), None);
 
         // The tool call between the two text chunks should prevent them from
-        // being coalesced, leaving three distinct items.
+        // being coalesced, leaving three distinct buffered items which commit
+        // in order on flush.
+        hm.flush_turn();
         insta::assert_json_snapshot!(hm.pending_items.borrow().clone());
         insta::assert_json_snapshot!(hm.history.borrow().clone());
+    }
+
+    #[tokio::test]
+    async fn buffered_turn_is_not_committed_until_flush() {
+        let store = StubConversationStore::new();
+        let hm = make_history(
+            &store,
+            vec![Message::User {
+                content: OneOrMany::one(UserContent::text("do the thing")),
+            }],
+        )
+        .await;
+
+        let reasoning = StreamedAssistantContent::<()>::Reasoning(
+            rig::message::Reasoning::new_with_signature("thinking", Some("sig".to_owned())),
+        );
+        let text = StreamedAssistantContent::<()>::Text(rig::message::Text {
+            text: "partial answer".to_owned(),
+        });
+        hm.handle_completion(&reasoning, "c-1".to_owned(), None);
+        hm.handle_completion(&text, "c-2".to_owned(), None);
+
+        // Mid-turn: committed history still ends on the user message; the
+        // streamed content lives only in the buffer, so nothing is persisted or
+        // sent on a rebuild.
+        assert_eq!(hm.history.borrow().len(), 1);
+        assert!(hm.pending_items.borrow().is_empty());
+        assert_eq!(hm.turn_buffer.borrow().len(), 2);
+
+        hm.flush_turn();
+
+        // After flush the buffered content is committed to history + pending
+        // items and the buffer is empty.
+        assert_eq!(hm.history.borrow().len(), 3);
+        assert_eq!(hm.pending_items.borrow().len(), 2);
+        assert!(hm.turn_buffer.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn discard_turn_drops_buffer_leaving_history_clean() {
+        let store = StubConversationStore::new();
+        let hm = make_history(
+            &store,
+            vec![Message::User {
+                content: OneOrMany::one(UserContent::text("do the thing")),
+            }],
+        )
+        .await;
+
+        let text = StreamedAssistantContent::<()>::Text(rig::message::Text {
+            text: "partial answer".to_owned(),
+        });
+        hm.handle_completion(&text, "c-1".to_owned(), None);
+        assert_eq!(hm.turn_buffer.borrow().len(), 1);
+
+        hm.discard_turn();
+
+        // The abandoned partial turn is gone; committed history is untouched, so
+        // a rebuilt request ends on the user message.
+        assert!(hm.turn_buffer.borrow().is_empty());
+        assert_eq!(hm.history.borrow().len(), 1);
+        assert!(matches!(
+            hm.history.borrow().last(),
+            Some(InfinityMessage::User { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn flush_turn_trimming_reasoning_keeps_text_drops_trailing_reasoning() {
+        let store = StubConversationStore::new();
+        let hm = make_history(
+            &store,
+            vec![Message::User {
+                content: OneOrMany::one(UserContent::text("do the thing")),
+            }],
+        )
+        .await;
+
+        // A turn that streamed visible text and then a (complete) reasoning
+        // block before being abandoned — e.g. the user interrupted it.
+        let text = StreamedAssistantContent::<()>::Text(rig::message::Text {
+            text: "here is the answer".to_owned(),
+        });
+        let reasoning = StreamedAssistantContent::<()>::Reasoning(
+            rig::message::Reasoning::new_with_signature("still thinking", Some("sig".to_owned())),
+        );
+        hm.handle_completion(&text, "c-1".to_owned(), None);
+        hm.handle_completion(&reasoning, "c-2".to_owned(), None);
+        assert_eq!(hm.turn_buffer.borrow().len(), 2);
+
+        hm.flush_turn_trimming_reasoning();
+
+        // The visible text is preserved, but the trailing reasoning is dropped
+        // so committed history does not end on a reasoning block (which the next
+        // user turn would then illegally follow).
+        assert!(hm.turn_buffer.borrow().is_empty());
+        let history = hm.history.borrow();
+        assert_eq!(history.len(), 2);
+        assert!(matches!(
+            history.last(),
+            Some(InfinityMessage::Assistant {
+                content: AssistantContent::Text(t),
+            }) if t.text == "here is the answer"
+        ));
+    }
+
+    #[tokio::test]
+    async fn flush_turn_trimming_reasoning_trims_interleaved_empty_text() {
+        let store = StubConversationStore::new();
+        let hm = make_history(
+            &store,
+            vec![Message::User {
+                content: OneOrMany::one(UserContent::text("do the thing")),
+            }],
+        )
+        .await;
+
+        // reasoning, then an empty-text entry, then more reasoning at the tail:
+        // trimming must remove all three (the empty text must not strand the
+        // earlier reasoning block), leaving history ending on the user message.
+        let reasoning = |s: &str| {
+            StreamedAssistantContent::<()>::Reasoning(rig::message::Reasoning::new_with_signature(
+                s,
+                Some("sig".to_owned()),
+            ))
+        };
+        let empty_text = StreamedAssistantContent::<()>::Text(rig::message::Text {
+            text: "  ".to_owned(),
+        });
+        hm.handle_completion(&reasoning("first"), "c-1".to_owned(), None);
+        hm.handle_completion(&empty_text, "c-2".to_owned(), None);
+        hm.handle_completion(&reasoning("second"), "c-3".to_owned(), None);
+
+        hm.flush_turn_trimming_reasoning();
+
+        assert!(hm.turn_buffer.borrow().is_empty());
+        let history = hm.history.borrow();
+        assert_eq!(history.len(), 1);
+        assert!(matches!(history.last(), Some(InfinityMessage::User { .. })));
+    }
+
+    #[tokio::test]
+    async fn current_turn_view_appends_buffer_to_history() {
+        let store = StubConversationStore::new();
+        let hm = make_history(
+            &store,
+            vec![Message::User {
+                content: OneOrMany::one(UserContent::text("hi")),
+            }],
+        )
+        .await;
+
+        // With an empty buffer the view equals committed history.
+        assert_eq!(hm.current_turn_view().len(), 1);
+
+        let text = StreamedAssistantContent::<()>::Text(rig::message::Text {
+            text: "streaming...".to_owned(),
+        });
+        hm.handle_completion(&text, "c-1".to_owned(), None);
+
+        // Mid-turn the view includes the buffered partial message even though
+        // it is not yet in committed history (for subscriber replay).
+        let view = hm.current_turn_view();
+        assert_eq!(view.len(), 2);
+        assert_eq!(hm.history.borrow().len(), 1);
+        assert!(matches!(
+            view.last(),
+            Some(InfinityMessage::Assistant { .. })
+        ));
     }
 
     #[tokio::test]
@@ -2907,6 +3173,88 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_after_reasoning_does_not_commit_trailing_reasoning() {
+        // A user interrupts the model after it streamed some visible text and a
+        // complete reasoning block. On cancel we keep the text but must trim the
+        // trailing reasoning: the next input is a user turn, and a user message
+        // immediately following a reasoning block is rejected by some providers.
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (provider, mut ctrl) = mock_provider();
+                let convo_store = StubConversationStore::new();
+                let hm = std::rc::Rc::new(
+                    make_history(
+                        &convo_store,
+                        vec![Message::User {
+                            content: OneOrMany::one(UserContent::text("do the thing")),
+                        }],
+                    )
+                    .await,
+                );
+                let (tool_names, tool_defs, tool_registry) = no_tools();
+                let ctx = tool_context();
+                let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let hm_task = hm.clone();
+                let handle = tokio::task::spawn_local(async move {
+                    let stream = run_completion(
+                        &provider,
+                        "mock",
+                        &hm_task,
+                        &tool_names,
+                        &tool_defs,
+                        &tool_registry,
+                        &ctx,
+                        "thread-1",
+                        "msg-1",
+                        None,
+                        cancel_rx,
+                    );
+                    tokio::pin!(stream);
+                    while stream.next().await.is_some() {}
+                });
+
+                let _req = ctrl.next_request().await;
+                ctrl.send_text("here is the answer");
+                // A complete reasoning block (has a signature, so it is buffered).
+                ctrl.send_chunk(rig::streaming::RawStreamingChoice::Reasoning {
+                    id: None,
+                    content: rig::message::ReasoningContent::Text {
+                        text: "still thinking".to_owned(),
+                        signature: Some("sig".to_owned()),
+                    },
+                });
+                tokio::task::yield_now().await;
+                tokio::task::yield_now().await;
+                cancel_tx.send(()).expect("send cancel signal");
+
+                handle.await.expect("await task handle");
+
+                // Committed history: user + assistant text, with the trailing
+                // reasoning trimmed off.
+                let history = hm.history.borrow();
+                assert!(
+                    !matches!(
+                        history.last(),
+                        Some(InfinityMessage::Assistant {
+                            content: AssistantContent::Reasoning(_),
+                        })
+                    ),
+                    "history must not end on a reasoning block, got: {:?}",
+                    history.last()
+                );
+                assert!(matches!(
+                    history.last(),
+                    Some(InfinityMessage::Assistant {
+                        content: AssistantContent::Text(t),
+                    }) if t.text == "here is the answer"
+                ));
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn multiple_sync_tool_calls_chain() {
         let local = tokio::task::LocalSet::new();
         local
@@ -2979,6 +3327,278 @@ mod tests {
                 let (sync_calls, texts) = handle.await.expect("await task handle");
                 assert_eq!(sync_calls, 2);
                 assert_eq!(texts, vec!["all done"]);
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn broken_stream_discards_partial_turn_before_retry() {
+        // End-to-end guard for the original bug: the model streams visible text,
+        // then the stream breaks. The retry must rebuild the request from clean
+        // committed history — ending on the user message, not the partial
+        // assistant text (which Bedrock thinking models reject as "assistant
+        // message prefill"). Under the buffering model this holds structurally:
+        // the partial turn was never committed, so the discard is implicit.
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (provider, mut ctrl) = mock_provider();
+                let convo_store = StubConversationStore::new();
+                let hm = make_history(
+                    &convo_store,
+                    vec![Message::User {
+                        content: OneOrMany::one(UserContent::text("do the thing")),
+                    }],
+                )
+                .await;
+                let (tool_names, tool_defs, tool_registry) = no_tools();
+                let ctx = tool_context();
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let handle = tokio::task::spawn_local(async move {
+                    let stream = run_completion(
+                        &provider,
+                        "mock",
+                        &hm,
+                        &tool_names,
+                        &tool_defs,
+                        &tool_registry,
+                        &ctx,
+                        "thread-1",
+                        "msg-1",
+                        None,
+                        cancel_rx,
+                    );
+                    tokio::pin!(stream);
+                    let mut texts = Vec::new();
+                    let mut got_done = false;
+                    while let Some(ev) = stream.next().await {
+                        match ev.expect("receive stream event") {
+                            CompletionEvent::TextChunk(t) => texts.push(t),
+                            CompletionEvent::Action(CompletionAction::Done(_)) => got_done = true,
+                            _ => {}
+                        }
+                    }
+                    (texts, got_done)
+                });
+
+                // Round 1: stream text, then break the stream without a Final.
+                let _req = ctrl.next_request().await;
+                ctrl.send_text("I'll take a look");
+                tokio::task::yield_now().await;
+                tokio::task::yield_now().await;
+                ctrl.drop_stream();
+
+                // Round 2: the retry request must end on the user message.
+                let req2 = ctrl.next_request().await;
+                let last_msg = req2
+                    .chat_history
+                    .into_iter()
+                    .last()
+                    .expect("bug: chat history is empty");
+                assert!(
+                    matches!(last_msg, Message::User { .. }),
+                    "retry request must not end on an assistant message, got: {last_msg:?}"
+                );
+
+                ctrl.send_text("done");
+                ctrl.finish();
+
+                let (texts, got_done) = handle.await.expect("await task handle");
+                assert!(got_done, "completion should finish after a clean retry");
+                assert_eq!(texts, vec!["I'll take a look", "done"]);
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn async_tool_call_flushes_tool_call_before_turn_ends() {
+        // An async tool call ends the turn; its result arrives on a later,
+        // separate turn. The assistant tool-call message (and any preceding
+        // text) must be committed to history before the turn exits so the
+        // caller's sync() persists it and the returning result matches.
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (provider, mut ctrl) = mock_provider();
+                let convo_store = StubConversationStore::new();
+                let hm = std::rc::Rc::new(
+                    make_history(
+                        &convo_store,
+                        vec![Message::User {
+                            content: OneOrMany::one(UserContent::text("use the tool")),
+                        }],
+                    )
+                    .await,
+                );
+
+                struct AsyncTool;
+                #[async_trait]
+                impl Tool<StubSender> for AsyncTool {
+                    fn name(&self) -> &str {
+                        "do_async"
+                    }
+                    fn description(&self) -> &str {
+                        "async"
+                    }
+                    fn parameters(&self) -> serde_json::Value {
+                        serde_json::json!({"type": "object"})
+                    }
+                    async fn execute(
+                        &self,
+                        _: serde_json::Value,
+                        _: String,
+                        _: Option<String>,
+                        _: &ToolContext<StubSender>,
+                    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                        Ok(())
+                    }
+                }
+                static ASYNC_TOOL: AsyncTool = AsyncTool;
+
+                let mut tool_names = HashSet::new();
+                tool_names.insert("do_async".to_owned());
+                let tool_defs = vec![ToolDefinition {
+                    name: "do_async".into(),
+                    description: "async".into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                }];
+                let mut tool_registry: HashMap<String, &dyn Tool<StubSender>> = HashMap::new();
+                tool_registry.insert("do_async".into(), &ASYNC_TOOL);
+                let ctx = tool_context();
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let hm_task = hm.clone();
+                let handle = tokio::task::spawn_local(async move {
+                    let stream = run_completion(
+                        &provider,
+                        "mock",
+                        &hm_task,
+                        &tool_names,
+                        &tool_defs,
+                        &tool_registry,
+                        &ctx,
+                        "thread-1",
+                        "msg-1",
+                        None,
+                        cancel_rx,
+                    );
+                    tokio::pin!(stream);
+                    let mut got_action = false;
+                    while let Some(ev) = stream.next().await {
+                        if let CompletionEvent::Action(CompletionAction::ExecuteToolCall {
+                            ..
+                        }) = ev.expect("receive stream event")
+                        {
+                            got_action = true;
+                        }
+                    }
+                    got_action
+                });
+
+                let _req = ctrl.next_request().await;
+                ctrl.send_text("let me check");
+                ctrl.send_tool_call("tc-1", "do_async", serde_json::json!({}));
+                ctrl.finish();
+
+                let got_action = handle.await.expect("await task handle");
+                assert!(got_action, "async tool call should yield ExecuteToolCall");
+
+                // The text and the tool call are committed to history (and
+                // pending_items), so a subsequent tool-result turn will match.
+                let history = hm.history.borrow();
+                assert!(matches!(
+                    history.last(),
+                    Some(InfinityMessage::ToolCall { .. })
+                ));
+                assert!(
+                    history
+                        .iter()
+                        .any(|m| matches!(m, InfinityMessage::Assistant { .. })),
+                    "preceding assistant text should be committed too"
+                );
+                assert!(
+                    hm.turn_buffer.borrow().is_empty(),
+                    "buffer must be flushed when the turn ends"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn sync_tool_loop_back_includes_flushed_tool_call() {
+        // When a sync tool loops back within the same run_completion, the
+        // re-sent request must include the assistant tool call and the injected
+        // tool result — i.e. the buffer was flushed before the loop-back.
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (provider, mut ctrl) = mock_provider();
+                let convo_store = StubConversationStore::new();
+                let hm = make_history(
+                    &convo_store,
+                    vec![Message::User {
+                        content: OneOrMany::one(UserContent::text("echo something")),
+                    }],
+                )
+                .await;
+
+                let mut tool_names = HashSet::new();
+                tool_names.insert("echo_sync".to_owned());
+                let tool_defs = vec![ToolDefinition {
+                    name: "echo_sync".into(),
+                    description: "echoes".into(),
+                    parameters: serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}}),
+                }];
+                let mut tool_registry: HashMap<String, &dyn Tool<StubSender>> = HashMap::new();
+                tool_registry.insert("echo_sync".into(), &ECHO_TOOL);
+                let ctx = tool_context();
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let handle = tokio::task::spawn_local(async move {
+                    let stream = run_completion(
+                        &provider, "mock", &hm, &tool_names, &tool_defs, &tool_registry,
+                        &ctx, "thread-1", "msg-1", None, cancel_rx,
+                    );
+                    tokio::pin!(stream);
+                    let mut got_done = false;
+                    while let Some(ev) = stream.next().await {
+                        if let CompletionEvent::Action(CompletionAction::Done(_)) =
+                            ev.expect("receive stream event")
+                        {
+                            got_done = true;
+                        }
+                    }
+                    got_done
+                });
+
+                // Round 1: sync tool call.
+                let _req = ctrl.next_request().await;
+                ctrl.send_tool_call("tc-1", "echo_sync", serde_json::json!({"text": "hi"}));
+                ctrl.finish();
+
+                // Round 2 (loop-back): request must contain the assistant tool
+                // call and the injected tool result.
+                let req2 = ctrl.next_request().await;
+                let msgs: Vec<Message> = req2.chat_history.into_iter().collect();
+                let has_tool_call = msgs.iter().any(|m| matches!(
+                    m,
+                    Message::Assistant { content, .. }
+                        if matches!(content.first(), AssistantContent::ToolCall(_))
+                ));
+                let has_tool_result = msgs.iter().any(|m| matches!(
+                    m,
+                    Message::User { content }
+                        if matches!(content.first(), UserContent::ToolResult(_))
+                ));
+                assert!(has_tool_call, "loop-back must include the assistant tool call");
+                assert!(has_tool_result, "loop-back must include the injected tool result");
+
+                ctrl.send_text("all done");
+                ctrl.finish();
+
+                let got_done = handle.await.expect("await task handle");
+                assert!(got_done);
             })
             .await;
     }
