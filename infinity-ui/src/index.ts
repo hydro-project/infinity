@@ -29,6 +29,7 @@ export type {
   SubthreadInfo,
   SessionInfo,
   ModelInfo,
+  ModelRef,
   RemoteInfo,
   TokenUsage,
   DisplaySegment,

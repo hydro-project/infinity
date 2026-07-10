@@ -64,11 +64,25 @@ impl E2eHarness {
             context_window: 100_000,
             max_output_tokens: None,
         };
-        let providers = vec![(
-            "mock".to_owned(),
-            Arc::new(SingleModelProvider::new(entry, model)) as Arc<dyn ModelProvider>,
-        )];
+        let harness = Self::spawn_with_providers(
+            cols,
+            rows,
+            vec![(
+                "mock".to_owned(),
+                Arc::new(SingleModelProvider::new(entry, model)) as Arc<dyn ModelProvider>,
+            )],
+        )
+        .await;
+        (harness, ctrl)
+    }
 
+    /// Like [`spawn`](Self::spawn) but with an explicit provider list. The
+    /// first model of the first provider is the daemon's default.
+    async fn spawn_with_providers(
+        cols: u16,
+        rows: u16,
+        providers: Vec<(String, Arc<dyn ModelProvider>)>,
+    ) -> Self {
         let state_dir = tempfile::tempdir().expect("create state temp dir");
         let cwd = tempfile::tempdir().expect("create cwd temp dir");
 
@@ -120,7 +134,7 @@ impl E2eHarness {
             _cwd: cwd,
         };
         harness.settle().await;
-        (harness, ctrl)
+        harness
     }
 
     /// Let all tasks process everything queued so far (paused-clock
@@ -360,6 +374,164 @@ async fn switch_back_mid_thinking_revives_spinner() {
             ctrl.finish();
             h.settle().await;
             assert_screen!("e2e_mid_thinking_finished", h.screen());
+        })
+        .await;
+}
+
+// ── Mid-session model switching ──────────────────────────────────────────────
+
+/// Two mock providers: "mock" ("Mock Model", 100k ctx — the daemon default)
+/// and "mock2" ("Second Model", 200k ctx), each with its own controller.
+async fn spawn_two_provider_harness(
+    cols: u16,
+    rows: u16,
+) -> (E2eHarness, MockModelController, MockModelController) {
+    let (model1, ctrl1) = mock_model();
+    let (model2, ctrl2) = mock_model();
+    let harness = E2eHarness::spawn_with_providers(
+        cols,
+        rows,
+        vec![
+            (
+                "mock".to_owned(),
+                Arc::new(SingleModelProvider::new(
+                    ModelEntry {
+                        model_id: "mock-model".to_owned(),
+                        display_name: "Mock Model".to_owned(),
+                        context_window: 100_000,
+                        max_output_tokens: None,
+                    },
+                    model1,
+                )) as Arc<dyn ModelProvider>,
+            ),
+            (
+                "mock2".to_owned(),
+                Arc::new(SingleModelProvider::new(
+                    ModelEntry {
+                        model_id: "second-model".to_owned(),
+                        display_name: "Second Model".to_owned(),
+                        context_window: 200_000,
+                        max_output_tokens: None,
+                    },
+                    model2,
+                )) as Arc<dyn ModelProvider>,
+            ),
+        ],
+    )
+    .await;
+    (harness, ctrl1, ctrl2)
+}
+
+/// Switching models between turns: the first turn runs on the default model,
+/// `/model` selects the second provider's model, and the next turn's request
+/// reaches the second provider (the respawned worker resolves the persisted
+/// selection). The status line reflects the switch.
+#[tokio::test(start_paused = true)]
+async fn switch_model_mid_session() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (h, mut ctrl1, mut ctrl2) = spawn_two_provider_harness(80, 20).await;
+
+            // First turn on the default model.
+            h.type_str("hello");
+            h.key(KeyCode::Enter);
+            h.settle().await;
+            let req = next_request(&mut ctrl1).await;
+            assert!(
+                history_contains_user_text(&req, "hello"),
+                "first turn should reach the default model"
+            );
+            ctrl1.send_text("from model one");
+            ctrl1.finish();
+            h.settle().await;
+
+            // Open the model picker.
+            h.type_str("/model");
+            h.key(KeyCode::Enter);
+            h.settle().await;
+            assert_screen!("e2e_model_picker", h.screen());
+
+            // Select the second model.
+            h.key(KeyCode::Down);
+            h.key(KeyCode::Enter);
+            h.settle().await;
+            assert_screen!("e2e_model_switched", h.screen());
+
+            // The next turn goes to the second provider.
+            h.type_str("again");
+            h.key(KeyCode::Enter);
+            h.settle().await;
+            let req = next_request(&mut ctrl2).await;
+            assert!(
+                history_contains_user_text(&req, "again"),
+                "post-switch turn should reach the second model"
+            );
+            assert!(
+                ctrl1.try_next_request().is_none(),
+                "the old model should not receive requests after the switch"
+            );
+            ctrl2.send_text("from model two");
+            ctrl2.finish();
+            h.settle().await;
+            assert_screen!("e2e_model_switched_response", h.screen());
+        })
+        .await;
+}
+
+/// Switching while a completion is in flight: the running completion
+/// finishes undisturbed on the old model; the following turn uses the new
+/// model.
+#[tokio::test(start_paused = true)]
+async fn switch_model_while_busy() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (h, mut ctrl1, mut ctrl2) = spawn_two_provider_harness(80, 20).await;
+
+            h.type_str("long task");
+            h.key(KeyCode::Enter);
+            h.settle().await;
+            let _req = next_request(&mut ctrl1).await;
+            ctrl1.send_text("streaming on model one...");
+            h.settle().await;
+
+            // Switch models while the completion streams.
+            h.type_str("/model");
+            h.key(KeyCode::Enter);
+            h.settle().await;
+            h.key(KeyCode::Down);
+            h.key(KeyCode::Enter);
+            h.settle().await;
+
+            // The in-flight completion finishes on the old model. (The
+            // "Switched to model" notice may interleave with the streamed
+            // text, so check both chunks rather than one contiguous string.)
+            ctrl1.send_text(" and done");
+            ctrl1.finish();
+            h.settle().await;
+            let screen = h.screen();
+            assert!(
+                screen.contains("streaming on model one...") && screen.contains("and done"),
+                "in-flight completion should finish undisturbed; screen:\n{screen}"
+            );
+
+            // The next turn goes to the second provider.
+            h.type_str("and now?");
+            h.key(KeyCode::Enter);
+            h.settle().await;
+            let req = next_request(&mut ctrl2).await;
+            assert!(
+                history_contains_user_text(&req, "and now?"),
+                "post-switch turn should reach the second model"
+            );
+            assert!(
+                ctrl1.try_next_request().is_none(),
+                "the old model should not receive requests after the switch"
+            );
+            ctrl2.send_text("model two here");
+            ctrl2.finish();
+            h.settle().await;
         })
         .await;
 }

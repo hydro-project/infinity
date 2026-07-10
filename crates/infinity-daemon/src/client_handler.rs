@@ -165,6 +165,17 @@ fn prefix_daemon_message(msg: DaemonMessage, remote_name: &str) -> DaemonMessage
         DaemonMessage::CompactionApplied { thread_id } => DaemonMessage::CompactionApplied {
             thread_id: prefix_thread_id(thread_id, remote_name),
         },
+        DaemonMessage::ModelSwitched {
+            thread_id,
+            model_name,
+            context_window,
+            provider_id,
+        } => DaemonMessage::ModelSwitched {
+            thread_id: format!("{remote_name}/{thread_id}"),
+            model_name,
+            context_window,
+            provider_id,
+        },
         DaemonMessage::Error { thread_id, text } => DaemonMessage::Error {
             thread_id: prefix_thread_id(thread_id, remote_name),
             text,
@@ -563,8 +574,19 @@ pub async fn handle_client_channels(
                             subscription: false,
                         }, None), Some(client_tx.clone()), &mut emit).await;
                     }
-                    ClientMessage::SwitchModel { .. } => {
-                        let _ = daemon_tx.send(DaemonMessage::Info { thread_id: None, text: "Model switching not yet implemented".into() });
+                    ClientMessage::SwitchModel { session_id: thread_id, model } => {
+                        let mgr = session_manager.lock().await;
+                        match mgr.switch_model(&thread_id, model) {
+                            Ok(confirmation) => {
+                                let _ = daemon_tx.send(confirmation);
+                            }
+                            Err(e) => {
+                                let _ = daemon_tx.send(DaemonMessage::Error {
+                                    thread_id: Some(thread_id),
+                                    text: format!("failed to switch model: {e}"),
+                                });
+                            }
+                        }
                     }
                     ClientMessage::UserChoiceAnswered { choice_id, selected } => {
                         if let Some(ref sid) = attached_session_id {

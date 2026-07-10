@@ -14,6 +14,7 @@ use crate::session::ActiveThreads;
 struct WorkerChannels {
     input_tx: mpsc::UnboundedSender<(infinity_agent_core::message::InputMessage, String)>,
     subscribe_tx: mpsc::UnboundedSender<SubscribeRequest>,
+    model_switch_tx: mpsc::UnboundedSender<infinity_protocol::ModelRef>,
     handle: tokio::task::JoinHandle<()>,
 }
 
@@ -52,6 +53,7 @@ pub async fn agent_loop(
         let thread_id = match &msg {
             AgentMessage::Input(input, _) => input.group_id.clone(),
             AgentMessage::Subscribe { thread_id, .. } => thread_id.clone(),
+            AgentMessage::SwitchModel { thread_id, .. } => thread_id.clone(),
         };
 
         // Check if worker is alive.
@@ -66,10 +68,21 @@ pub async fn agent_loop(
                         let _ = w.subscribe_tx.send(request);
                         // TODO(shadaj): also subscribe to alive children
                     }
+                    AgentMessage::SwitchModel { model, .. } => {
+                        let _ = w.model_switch_tx.send(model);
+                    }
                 }
                 continue;
             }
             workers.remove(&thread_id);
+        }
+
+        // No live worker. A model switch is already persisted in the
+        // conversation store, so there is nothing to deliver — the worker
+        // resolves the stored selection when it next spawns. Don't spin up a
+        // worker just for this (it would immediately idle out again).
+        if matches!(msg, AgentMessage::SwitchModel { .. }) {
+            continue;
         }
 
         // Spawn a new worker.
@@ -83,6 +96,7 @@ pub async fn agent_loop(
         };
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (subscribe_tx, subscribe_rx) = mpsc::unbounded_channel();
+        let (model_switch_tx, model_switch_rx) = mpsc::unbounded_channel();
 
         let subscribers = subscriber_map
             .lock()
@@ -97,6 +111,7 @@ pub async fn agent_loop(
                 thread_id.clone(),
                 input_rx,
                 subscribe_rx,
+                model_switch_rx,
                 active_threads.clone(),
                 subscribers,
                 session_id.clone(),
@@ -119,12 +134,16 @@ pub async fn agent_loop(
             AgentMessage::Subscribe { request, .. } => {
                 let _ = subscribe_tx.send(request);
             }
+            AgentMessage::SwitchModel { .. } => {
+                unreachable!("bug: SwitchModel with no live worker is handled above")
+            }
         }
         workers.insert(
             thread_id,
             WorkerChannels {
                 input_tx,
                 subscribe_tx,
+                model_switch_tx,
                 handle,
             },
         );

@@ -30,6 +30,12 @@ export interface ModelInfo {
   context_window: number;
 }
 
+/** Globally unique reference to a model: provider id + provider-scoped id. */
+export interface ModelRef {
+  provider_id: string;
+  model_id: string;
+}
+
 export interface RemoteInfo {
   name: string;
   status: string;
@@ -116,6 +122,14 @@ export type DaemonMessage =
   | { ThinkingEnd: { thread_id: string | null } }
   | { ThinkingChunk: { thread_id: string | null; chunk: string } }
   | { CompactionApplied: { thread_id: string | null } }
+  | {
+      ModelSwitched: {
+        thread_id: string;
+        model_name: string;
+        context_window: number;
+        provider_id: string;
+      };
+    }
   | { Error: { thread_id: string | null; text: string } }
   | { UserChoiceComplete: { choice_id: string } }
   | {
@@ -151,7 +165,7 @@ export type ClientMessage =
       CreateSession: {
         cwd: string;
         location: string | null;
-        model_id?: string | null;
+        model?: ModelRef | null;
       };
     }
   | { Connect: { session_id: string; thread_id: string | null } }
@@ -160,7 +174,7 @@ export type ClientMessage =
   | { SoftDetach: { session_id: string } }
   | { ShutdownSession: { session_id: string } }
   | { LoadSession: { target_session_id: string } }
-  | { SwitchModel: { session_id: string; model_id: string } }
+  | { SwitchModel: { session_id: string; model: ModelRef } }
   | { UserChoiceAnswered: { choice_id: string; selected: number } }
   | { TriggerCompaction: { session_id: string } }
   | {

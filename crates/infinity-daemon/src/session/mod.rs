@@ -36,12 +36,21 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// Re-export from thread_worker.
 pub use thread_worker::{SubscribeRequest, ThreadSubscribers};
 
-/// Message sent to the agent loop — either user input or a subscribe request.
+/// Message sent to the agent loop — either user input, a subscribe request,
+/// or a model switch for a specific thread.
 pub enum AgentMessage {
     Input(Box<InputMessage>, String),
     Subscribe {
         thread_id: String,
         request: SubscribeRequest,
+    },
+    /// Switch the model a live thread worker uses for future requests. The
+    /// selection is already persisted in the conversation store by the time
+    /// this is sent, so an idle (not running) thread needs no message — it
+    /// picks the new model up when its worker next spawns.
+    SwitchModel {
+        thread_id: String,
+        model: ModelRef,
     },
 }
 
@@ -580,6 +589,55 @@ impl SessionManager {
         } else {
             false
         }
+    }
+
+    /// Switch the model used for future requests on a specific thread. The
+    /// switch affects only `thread_id` — it does not propagate to child
+    /// threads.
+    ///
+    /// The selection is validated against the catalog and persisted in the
+    /// conversation store, so idle threads pick it up when their worker next
+    /// spawns. A live worker is notified through its model-switch channel,
+    /// applies the switch between completions (an in-flight completion
+    /// finishes on the old model), and broadcasts the confirmation to the
+    /// thread's subscribers when it does.
+    ///
+    /// On success, returns the [`DaemonMessage::ModelSwitched`] confirmation
+    /// for the requesting client.
+    pub fn switch_model(&self, thread_id: &str, model: ModelRef) -> Result<DaemonMessage, String> {
+        let Some(entry) = self.catalog.find(&model) else {
+            return Err(format!(
+                "unknown model {}/{}",
+                model.provider_id, model.model_id
+            ));
+        };
+        if !self.conversation_store.has_thread(thread_id) {
+            return Err(format!("thread {thread_id} not found"));
+        }
+
+        // Persist so future workers (and daemon restarts) resolve the new
+        // selection.
+        self.conversation_store
+            .set_thread_model(thread_id, model.clone());
+
+        let msg = DaemonMessage::ModelSwitched {
+            thread_id: thread_id.to_owned(),
+            model_name: entry.display_name.clone(),
+            context_window: entry.context_window,
+            provider_id: model.provider_id.clone(),
+        };
+
+        // Tell a live worker to switch for future requests. If the session
+        // (or just this thread's worker) is not running, the persisted
+        // selection is resolved when the worker next spawns.
+        let session_id = self.conversation_store.get_root_thread_id(thread_id);
+        if let Some(session) = self.sessions.get(&session_id) {
+            let _ = session.agent_tx.send(AgentMessage::SwitchModel {
+                thread_id: thread_id.to_owned(),
+                model,
+            });
+        }
+        Ok(msg)
     }
 
     /// List all sessions — active ones plus persisted ones from the cache.

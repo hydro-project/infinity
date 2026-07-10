@@ -387,6 +387,7 @@ pub struct TuiHarness {
     pub event_tx: mpsc::UnboundedSender<Event>,
     pub display_tx: mpsc::UnboundedSender<DisplayItem>,
     pub session_tx: mpsc::UnboundedSender<SessionChanged>,
+    pub model_switched_tx: mpsc::UnboundedSender<terminal::ModelSwitched>,
     pub sessions_updated_tx: mpsc::UnboundedSender<HashMap<String, SessionInfo>>,
     pub detach_result_tx: mpsc::UnboundedSender<DetachResult>,
     pub input_rx: mpsc::UnboundedReceiver<String>,
@@ -441,6 +442,7 @@ impl TuiHarness {
         let (load_session_tx, load_session_rx) = mpsc::unbounded_channel();
         let (model_switch_tx, model_switch_rx) = mpsc::unbounded_channel();
         let (session_tx, session_rx) = mpsc::unbounded_channel();
+        let (model_switched_tx, model_switched_rx) = mpsc::unbounded_channel();
         let (sessions_updated_tx, sessions_updated_rx) = mpsc::unbounded_channel();
         let (soft_detach_tx, soft_detach_rx) = mpsc::unbounded_channel();
         let (detach_result_tx, detach_result_rx) = mpsc::unbounded_channel();
@@ -460,6 +462,7 @@ impl TuiHarness {
             opts.available_models,
             opts.initial_message,
             session_rx,
+            model_switched_rx,
             sessions_updated_rx,
             soft_detach_tx,
             detach_result_rx,
@@ -471,6 +474,7 @@ impl TuiHarness {
             event_tx,
             display_tx,
             session_tx,
+            model_switched_tx,
             sessions_updated_tx,
             detach_result_tx,
             input_rx,
