@@ -209,7 +209,9 @@ pub async fn thread_worker(
     let handle_subscribe = async |tx: mpsc::UnboundedSender<DaemonMessage>, want_replay: bool| {
         if want_replay {
             let history: Vec<DaemonMessage> = {
-                let hist = current_history.history.borrow();
+                // Include the in-flight buffered turn so a subscriber connecting
+                // mid-stream still replays the partial assistant message.
+                let hist = current_history.current_turn_view();
                 hist.iter()
                     .filter_map(|m| history_message_to_daemon(m, &active_group_id, &hist))
                     .collect()
@@ -265,8 +267,8 @@ pub async fn thread_worker(
                         // Interrupt the in-flight completion and wait for it to
                         // wind down so pending history items (e.g. a tool result
                         // that was being processed) are synced to the store. The
-                        // cancellation path strips trailing reasoning before the
-                        // sync, so no partial thinking is persisted.
+                        // cancellation path flushes the in-flight turn before the
+                        // sync, so whatever streamed so far is preserved.
                         let _ = completion_cancel_tx.take().expect("bug: cancel_tx missing during shutdown").send(());
                         completion_fut.take().expect("bug: completion_fut missing during shutdown").await;
                         return;
