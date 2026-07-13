@@ -414,6 +414,15 @@ impl InMemoryConversationStore {
         self.load_views(thread_id);
     }
 
+    /// Whether metadata exists for this thread (in memory or on disk).
+    pub fn has_thread(&self, thread_id: &str) -> bool {
+        self.ensure_thread_metadata_loaded(thread_id);
+        self.threads
+            .lock()
+            .expect("bug: mutex poisoned")
+            .contains_key(thread_id)
+    }
+
     /// Resolve a thread ID to its root thread ID (i.e. the session ID).
     pub fn get_root_thread_id(&self, thread_id: &str) -> String {
         self.ensure_thread_metadata_loaded(thread_id);

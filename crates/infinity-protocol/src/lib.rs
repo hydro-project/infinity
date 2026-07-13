@@ -93,6 +93,11 @@ pub enum ClientMessage {
     ArchiveSession {
         session_id: String,
     },
+    /// Switch the model used for future requests on a thread. `session_id`
+    /// may be any thread id (root or subthread); the switch affects only that
+    /// specific thread — it does not propagate to child threads. If a
+    /// completion is currently in flight on the thread, it finishes on the
+    /// old model and the switch applies to subsequent requests.
     SwitchModel {
         session_id: String,
         model: ModelRef,
@@ -220,6 +225,16 @@ pub enum DaemonMessage {
     },
     CompactionApplied {
         thread_id: Option<String>,
+    },
+    /// Confirmation that a thread's model was switched (via
+    /// [`ClientMessage::SwitchModel`]). Sent to the requesting client and
+    /// broadcast to the thread's subscribers so every attached UI can update
+    /// its model indicator.
+    ModelSwitched {
+        thread_id: String,
+        model_name: String,
+        context_window: usize,
+        provider_id: String,
     },
     Error {
         thread_id: Option<String>,

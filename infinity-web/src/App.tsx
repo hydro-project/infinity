@@ -46,6 +46,13 @@ function resolveTheme(t: Theme): "light" | "dark" {
     : "dark";
 }
 
+/** Compact context-window size for the model dropdown, e.g. `100k ctx`. */
+function formatContextSize(cw: number): string {
+  return cw >= 1_000_000
+    ? `${Math.round(cw / 1_000_000)}m ctx`
+    : `${Math.round(cw / 1_000)}k ctx`;
+}
+
 export function App() {
   const [msgState, setMsgState] = useState<{
     messages: MessageItem[];
@@ -67,9 +74,10 @@ export function App() {
     inputDraftRef.current = "";
   }, []);
   const [sessions, setSessions] = useState<Record<string, SessionInfo>>({});
-  const [_models, setModels] = useState<ModelInfo[]>([]);
+  const [models, setModels] = useState<ModelInfo[]>([]);
   const [modelName, setModelName] = useState("");
   const [providerName, setProviderName] = useState("");
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [contextWindow, setContextWindow] = useState(0);
   const [totalTokens, setTotalTokens] = useState(0);
   const [spinner, setSpinner] = useState<SpinnerState | null>(null);
@@ -402,6 +410,24 @@ export function App() {
             }
             break;
           }
+          case "ModelSwitched": {
+            const p = msgPayload<{
+              thread_id: string;
+              model_name: string;
+              context_window: number;
+              provider_id: string;
+            }>(m);
+            if (isForCurrentView(p.thread_id)) {
+              setModelName(p.model_name);
+              setProviderName(p.provider_id);
+              setContextWindow(p.context_window);
+              appendMessage({
+                type: "info",
+                text: `Switched model to ${p.provider_id}: ${p.model_name}`,
+              });
+            }
+            break;
+          }
           case "SubscriptionEvent": {
             const p = msgPayload<{
               name: string;
@@ -699,6 +725,23 @@ export function App() {
     });
   }, []);
 
+  const handleModelSelect = useCallback(
+    (m: ModelInfo) => {
+      setModelMenuOpen(false);
+      const target = viewThreadId ?? threadRef.current;
+      if (!target) return;
+      // No optimistic update — the pill changes when the daemon confirms
+      // with ModelSwitched.
+      send({
+        SwitchModel: {
+          session_id: target,
+          model: { provider_id: m.provider_id, model_id: m.model_id },
+        },
+      });
+    },
+    [send, viewThreadId],
+  );
+
   const currentHost =
     (sessionRef.current && sessions[sessionRef.current]?.remote) ?? null;
 
@@ -911,12 +954,51 @@ export function App() {
             {currentHost ?? "local"}
           </button>
         )}
-        <span className={css.infoPill}>
-          {providerName && `${providerName}: `}
-          {modelName}
-          {modelName && " \u00b7 "}
-          {Math.round(contextPct)}% context
-        </span>
+        <div
+          className={css.modelPillWrap}
+          onMouseEnter={() => setModelMenuOpen(true)}
+          onMouseLeave={() => setModelMenuOpen(false)}
+        >
+          <span className={css.infoPill} data-testid="model-pill">
+            {providerName && `${providerName}: `}
+            {modelName}
+            {modelName && " \u00b7 "}
+            {Math.round(contextPct)}% context
+          </span>
+          {modelMenuOpen && sessionConnected && models.length > 0 && (
+            <div className={css.modelDropdown}>
+              <div className={css.modelDropdownPanel}>
+                {models.map((m) => {
+                  const selected =
+                    m.provider_id === providerName &&
+                    m.display_name === modelName;
+                  return (
+                    <button
+                      key={`${m.provider_id}/${m.model_id}`}
+                      className={css.modelOption}
+                      data-testid="model-option"
+                      data-selected={selected || undefined}
+                      onClick={() => handleModelSelect(m)}
+                    >
+                      <span className={css.modelOptionProvider}>
+                        {m.provider_id}
+                      </span>
+                      <span className={css.modelOptionName}>
+                        {m.display_name}
+                      </span>
+                      <span className={css.modelOptionCtx}>
+                        {formatContextSize(m.context_window)}
+                      </span>
+                      <span className={css.modelOptionCheck}>
+                        {selected ? "\u2713" : ""}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
         {sessionRef.current && (
           <button
             className={css.archivePill}

@@ -79,6 +79,16 @@ pub struct SessionChanged {
     pub provider_id: String,
 }
 
+/// Daemon confirmation that a thread's model was switched (see
+/// [`infinity_protocol::DaemonMessage::ModelSwitched`]). Updates the status
+/// line when it targets the thread currently being viewed.
+pub struct ModelSwitched {
+    pub thread_id: String,
+    pub model_name: String,
+    pub provider_id: String,
+    pub context_window: usize,
+}
+
 /// Result of a SoftDetach attempt, sent back from daemon_client to terminal.
 pub enum DetachResult {
     /// Agent was idle — session already detached, proceed directly.
@@ -115,6 +125,7 @@ pub async fn run<R, T, E>(
     available_models: Vec<crate::model_picker::ModelInfo>,
     initial_message: Option<String>,
     mut session_rx: mpsc::UnboundedReceiver<SessionChanged>,
+    mut model_switched_rx: mpsc::UnboundedReceiver<ModelSwitched>,
     mut sessions_updated_rx: mpsc::UnboundedReceiver<
         std::collections::HashMap<String, infinity_protocol::SessionInfo>,
     >,
@@ -236,6 +247,27 @@ where
                     Style::default().fg(Color::Cyan),
                 )))?;
                 draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, &provider_id, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
+            }
+
+            switched = model_switched_rx.recv() => {
+                let Some(switched) = switched else {
+                    viewport.print_line_above(Line::from(vec![
+                        Span::styled("Connection to daemon dropped unexpectedly, exiting", Style::default().fg(Color::Red)),
+                    ]))?;
+
+                    tracing::error!("Model-switched channel closed, exiting");
+                    cleanup(viewport.term_mut())?;
+                    return Ok(true);
+                };
+
+                // Only the currently viewed thread's model is shown in the
+                // status line; switches on other threads don't affect it.
+                if thread_id.as_deref() == Some(switched.thread_id.as_str()) {
+                    model_name = switched.model_name;
+                    provider_id = switched.provider_id;
+                    context_window = switched.context_window;
+                    draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, &provider_id, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
+                }
             }
 
             updates = sessions_updated_rx.recv() => {

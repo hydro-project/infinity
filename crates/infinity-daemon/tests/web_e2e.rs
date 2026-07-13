@@ -63,19 +63,26 @@ struct TestDaemon {
 /// Boot the daemon parts (session manager with a mock provider, RAP callback
 /// server, HTTP/WS listener) on temp state. Must run inside a `LocalSet`.
 async fn start_daemon(model: MockCompletionModel) -> Result<TestDaemon, BoxError> {
-    let state_dir = tempfile::tempdir()?;
-    let cwd = tempfile::tempdir()?;
-
     let entry = ModelEntry {
         model_id: "mock-model".to_owned(),
         display_name: "Mock Model".to_owned(),
         context_window: 100_000,
         max_output_tokens: None,
     };
-    let providers = vec![(
+    start_daemon_with_providers(vec![(
         "mock".to_owned(),
         Arc::new(SingleModelProvider::new(entry, model)) as Arc<dyn ModelProvider>,
-    )];
+    )])
+    .await
+}
+
+/// Like [`start_daemon`] but with an explicit provider list (in registration
+/// order — the first model of the first provider is the default).
+async fn start_daemon_with_providers(
+    providers: Vec<(String, Arc<dyn ModelProvider>)>,
+) -> Result<TestDaemon, BoxError> {
+    let state_dir = tempfile::tempdir()?;
+    let cwd = tempfile::tempdir()?;
 
     let (cb_listener, callback_url) = rap_client::callback_server::bind_callback_listener().await?;
     let manager = SessionManager::with_providers(
@@ -507,6 +514,132 @@ async fn reload_mid_thinking_keeps_spinner() -> Result<(), BoxError> {
                 .to_be_hidden()
                 .await?;
             assert_screenshot(&page, "mid-thinking-finished", &[]).await?;
+
+            harness.close().await?;
+            Ok(())
+        })
+        .await
+}
+
+// ── Model switching ──────────────────────────────────────────────────────────
+
+/// Hovering the model pill drops down the list of available models; clicking
+/// one switches the session's model mid-session: the pill and transcript
+/// confirm the switch, and the next request goes to the new model's provider.
+#[tokio::test]
+async fn switch_model_mid_session() -> Result<(), BoxError> {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (model1, mut ctrl1) = mock_model();
+            let (model2, mut ctrl2) = mock_model();
+            let daemon = start_daemon_with_providers(vec![
+                (
+                    "mock".to_owned(),
+                    Arc::new(SingleModelProvider::new(
+                        ModelEntry {
+                            model_id: "mock-model".to_owned(),
+                            display_name: "Mock Model".to_owned(),
+                            context_window: 100_000,
+                            max_output_tokens: None,
+                        },
+                        model1,
+                    )) as Arc<dyn ModelProvider>,
+                ),
+                (
+                    "mock2".to_owned(),
+                    Arc::new(SingleModelProvider::new(
+                        ModelEntry {
+                            model_id: "second-model".to_owned(),
+                            display_name: "Second Model".to_owned(),
+                            context_window: 200_000,
+                            max_output_tokens: None,
+                        },
+                        model2,
+                    )) as Arc<dyn ModelProvider>,
+                ),
+            ])
+            .await?;
+            let harness = BrowserHarness::launch().await?;
+            let page = harness.open(daemon.port).await?;
+
+            // ── First exchange runs on the default model (provider "mock") ──
+            create_session_via_picker(&page, &daemon.cwd.path().to_string_lossy()).await?;
+            send_chat_message(&page, "hello").await?;
+            let req = next_request(&mut ctrl1).await?;
+            assert!(
+                history_json(&req).contains("hello"),
+                "first request should reach the default model"
+            );
+            ctrl1.send_text("from model one");
+            ctrl1.finish();
+            expect(page.get_by_text("from model one", false).await)
+                .to_be_visible()
+                .await?;
+
+            // ── Hover the pill: the dropdown lists both models ──
+            let pill = page.get_by_test_id("model-pill").await;
+            expect(pill.clone())
+                .to_contain_text("mock: Mock Model")
+                .await?;
+            pill.hover(None).await?;
+            expect(page.locator("[data-testid='model-option']").await)
+                .to_have_count(2)
+                .await?;
+            expect(page.get_by_text("Second Model", true).await)
+                .to_be_visible()
+                .await?;
+            expect(page.get_by_text("100k ctx", true).await)
+                .to_be_visible()
+                .await?;
+            expect(page.get_by_text("200k ctx", true).await)
+                .to_be_visible()
+                .await?;
+            // The active model is marked as selected.
+            expect(
+                page.locator("[data-testid='model-option'][data-selected]")
+                    .await,
+            )
+            .to_contain_text("Mock Model")
+            .await?;
+
+            assert_screenshot(&page, "model-dropdown-open", &[]).await?;
+
+            // ── Click the second model: the daemon confirms the switch ──
+            page.get_by_text("Second Model", true)
+                .await
+                .click(None)
+                .await?;
+            expect(pill.clone())
+                .to_contain_text("mock2: Second Model")
+                .await?;
+            expect(
+                page.get_by_text("Switched model to mock2: Second Model", false)
+                    .await,
+            )
+            .to_be_visible()
+            .await?;
+
+            // ── The next exchange runs on the new model (provider "mock2") ──
+            send_chat_message(&page, "again").await?;
+            let req = next_request(&mut ctrl2).await?;
+            assert!(
+                history_json(&req).contains("again"),
+                "post-switch request should reach the second model"
+            );
+            assert!(
+                ctrl1.try_next_request().is_none(),
+                "the old model must not receive requests after the switch"
+            );
+            ctrl2.send_text("from model two");
+            ctrl2.finish();
+            expect(page.get_by_text("from model two", false).await)
+                .to_be_visible()
+                .await?;
+
+            // Park the mouse so no hover styling leaks into the screenshot.
+            page.mouse().move_to(0, 0, None).await?;
+            assert_screenshot(&page, "model-switched", &[]).await?;
 
             harness.close().await?;
             Ok(())

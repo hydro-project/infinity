@@ -46,6 +46,58 @@ fn is_deferrable_synthetic_event(msg: &InputMessage) -> bool {
     })
 }
 
+/// Apply a model switch to this worker: place the resolved model in
+/// `model_slot` so the next completion round uses it, and broadcast the
+/// [`DaemonMessage::ModelSwitched`] confirmation to the thread's subscribers.
+/// The selection was already validated and persisted by the session manager
+/// before it was sent here, so an unknown model (it disappeared from the
+/// catalog in between) just keeps the current one.
+fn apply_model_switch(
+    selected: infinity_protocol::ModelRef,
+    catalog: &ModelCatalog,
+    subscribers: &ThreadSubscribers,
+    group_id: &str,
+    display_tx: &mpsc::UnboundedSender<DisplayEvent<ProviderStreamingResponse>>,
+    model_slot: &mut Option<(
+        infinity_protocol::ModelRef,
+        Arc<dyn infinity_agent_core::model_provider::ModelProvider>,
+    )>,
+    context_window: &mut usize,
+) {
+    let Some(entry) = catalog.find(&selected) else {
+        let _ = display_tx.send(DisplayEvent::Info(format!(
+            "Warning: model {}/{} is not available; keeping the current model",
+            selected.provider_id, selected.model_id
+        )));
+        return;
+    };
+    tracing::info!(
+        "Thread {} switching model to {}/{}",
+        group_id,
+        selected.provider_id,
+        selected.model_id
+    );
+    let msg = DaemonMessage::ModelSwitched {
+        thread_id: group_id.to_owned(),
+        model_name: entry.display_name.clone(),
+        context_window: entry.context_window,
+        provider_id: selected.provider_id.clone(),
+    };
+    subscribers
+        .lock()
+        .expect("bug: mutex poisoned")
+        .retain(|tx| tx.send(msg.clone()).is_ok());
+    let provider = catalog
+        .provider(&selected.provider_id)
+        .expect("bug: cataloged model's provider missing from catalog")
+        .clone();
+    *context_window = entry.context_window;
+    // If a completion round is in flight the slot is empty; filling it makes
+    // the round drop its (old) model when it finishes instead of putting it
+    // back.
+    *model_slot = Some((selected, provider));
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "thread worker requires many dependencies"
@@ -54,6 +106,7 @@ pub async fn thread_worker(
     active_group_id: String,
     mut rx: mpsc::UnboundedReceiver<(InputMessage, String)>,
     subscribe_rx: mpsc::UnboundedReceiver<SubscribeRequest>,
+    mut model_switch_rx: mpsc::UnboundedReceiver<infinity_protocol::ModelRef>,
     active_threads: ActiveThreads,
     subscribers: ThreadSubscribers,
     root_session_id: String,
@@ -214,6 +267,14 @@ pub async fn thread_worker(
     // Resolve this thread's model. Every thread stores its own selection (no
     // parent fallback); selections that are no longer available fall back to
     // the global default.
+    //
+    // The model lives in a slot: each completion round takes it out (the
+    // round's future owns the provider for its duration) and puts it back
+    // when the round ends — unless a switch from `model_switch_rx` committed
+    // a new model into the slot in the meantime, in which case the round's
+    // old model is simply dropped. Switches therefore only ever affect
+    // future requests; an in-flight completion always finishes on the model
+    // it started with.
     let selected = conversation_store.get_thread_model(&active_group_id);
     let (model_ref, model_entry, fell_back) = catalog.resolve(&selected);
     if fell_back {
@@ -226,7 +287,14 @@ pub async fn thread_worker(
         .provider(&model_ref.provider_id)
         .expect("bug: resolved model's provider missing from catalog")
         .clone();
-    let context_window = model_entry.context_window;
+    let mut context_window = model_entry.context_window;
+    let mut model_slot: Option<(
+        infinity_protocol::ModelRef,
+        Arc<dyn infinity_agent_core::model_provider::ModelProvider>,
+    )> = Some((model_ref, provider));
+    // Set when `model_switch_rx` is closed, so selects stop polling it (a
+    // closed channel is always ready and would otherwise spin).
+    let mut model_switch_closed = false;
 
     let tool_names: std::collections::HashSet<String> =
         tool_impls.iter().map(|t| t.name().to_owned()).collect();
@@ -307,9 +375,16 @@ pub async fn thread_worker(
     loop {
         let inputs_before_pending = if let Some(mut_fut) = completion_fut.as_mut() {
             tokio::select! {
-                _ = mut_fut => {
+                biased;
+
+                returned = mut_fut => {
                     #[expect(clippy::let_underscore_future, reason = "dropping completed future")]
                     let _ = completion_fut.take().expect("bug: completion_fut missing after poll");
+                    // Give the round's model back unless a switch committed a
+                    // new one mid-round.
+                    if model_slot.is_none() {
+                        model_slot = Some(returned);
+                    }
 
                     // Background compaction: trigger if total tokens > 75% of context window
                     let total_tokens = total_tokens_cell.get() as usize;
@@ -336,6 +411,24 @@ pub async fn thread_worker(
 
                     continue;
                 },
+                switch = model_switch_rx.recv(), if !model_switch_closed => {
+                    // Applied immediately (subscribers are notified); the
+                    // in-flight completion keeps its own model and the switch
+                    // takes effect on the next round.
+                    match switch {
+                        Some(selected) => apply_model_switch(
+                            selected,
+                            &catalog,
+                            &subscribers,
+                            &active_group_id,
+                            &display_tx,
+                            &mut model_slot,
+                            &mut context_window,
+                        ),
+                        None => model_switch_closed = true,
+                    }
+                    continue;
+                },
                 first = rx.recv() => {
                     let Some(first) = first else {
                         // Input channel closed — the session is shutting down.
@@ -357,7 +450,10 @@ pub async fn thread_worker(
                     {
                         let _ = completion_cancel_tx.take().expect("bug: cancel_tx missing during interrupt").send(());
                         let completion_fut_taken = completion_fut.take().expect("bug: completion_fut missing during interrupt");
-                        completion_fut_taken.await;
+                        let returned = completion_fut_taken.await;
+                        if model_slot.is_none() {
+                            model_slot = Some(returned);
+                        }
 
                         let (mut user_inputs, non_user_inputs): (Vec<_>, Vec<_>) = batch
                             .into_iter()
@@ -447,6 +543,21 @@ pub async fn thread_worker(
                 if first.is_none() {
                     loop {
                         tokio::select! {
+                            biased;
+                            switch = model_switch_rx.recv(), if !model_switch_closed => {
+                                match switch {
+                                    Some(selected) => apply_model_switch(
+                                        selected,
+                                        &catalog,
+                                        &subscribers,
+                                        &active_group_id,
+                                        &display_tx,
+                                        &mut model_slot,
+                                        &mut context_window,
+                                    ),
+                                    None => model_switch_closed = true,
+                                }
+                            }
                             msg = rx.recv() => {
                                 first = msg;
                                 break;
@@ -505,28 +616,83 @@ pub async fn thread_worker(
             }
         }
 
-        let result = infinity_agent_core::batch_processor::process_batch(
-            all_inputs.into_iter(),
-            &current_history,
-            &conversation_store,
-            &display_tx,
-            &active_group_id,
-            provider.as_ref(),
-            &model_ref.model_id,
-            &tool_names,
-            &tool_defs,
-            &tool_registry,
-            tool_context.clone(),
-            &extra_system_prompt,
-            rap_notifier.as_ref(),
-            Some(&total_tokens_cell),
-        )
-        .await;
-
-        if let Some((fut, ct)) = result {
-            completion_cancel_tx = Some(ct);
-            completion_fut = Some(fut);
+        // Start a completion round on the latest selection: apply switches
+        // that queued while we weren't selecting on the channel (e.g. while
+        // awaiting an interrupted round), so a switch sent before a message
+        // applies to that message's round. The round then takes the model out
+        // of its slot and owns it for the duration (giving it back at the end
+        // unless a newer switch refilled the slot in the meantime), so
+        // applying a switch never aliases with the model in use.
+        while let Ok(selected) = model_switch_rx.try_recv() {
+            apply_model_switch(
+                selected,
+                &catalog,
+                &subscribers,
+                &active_group_id,
+                &display_tx,
+                &mut model_slot,
+                &mut context_window,
+            );
         }
+        let (round_model, round_provider) = model_slot
+            .take()
+            .expect("bug: model slot empty outside a completion round");
+        let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+        completion_cancel_tx = Some(cancel_tx);
+
+        completion_fut = Some({
+            // Shadow the worker's locals as references so `async move` moves
+            // the references (and the round's owned model) rather than the
+            // locals themselves.
+            let current_history = &current_history;
+            let conversation_store = &conversation_store;
+            let display_tx = &display_tx;
+            let active_group_id = &active_group_id;
+            let tool_names = &tool_names;
+            let tool_defs = &tool_defs;
+            let tool_registry = &tool_registry;
+            let tool_context = tool_context.clone();
+            let extra_system_prompt = &extra_system_prompt;
+            let rap_notifier = rap_notifier.as_ref();
+            let total_tokens_cell = &total_tokens_cell;
+            Box::pin(async move {
+                // Scope the round's borrows of the owned model so it can be
+                // returned to the worker afterwards.
+                {
+                    let result = infinity_agent_core::batch_processor::process_batch(
+                        all_inputs.into_iter(),
+                        current_history,
+                        conversation_store,
+                        display_tx,
+                        active_group_id,
+                        round_provider.as_ref(),
+                        &round_model.model_id,
+                        tool_names,
+                        tool_defs,
+                        tool_registry,
+                        tool_context,
+                        extra_system_prompt,
+                        rap_notifier,
+                        Some(total_tokens_cell),
+                    )
+                    .await;
+                    if let Some((mut inner_fut, inner_cancel)) = result {
+                        tokio::select! {
+                            biased;
+                            _ = &mut cancel_rx => {
+                                // Interrupted: cancel the completion and let
+                                // it wind down (flushing pending history
+                                // items).
+                                let _ = inner_cancel.send(());
+                                inner_fut.await;
+                            }
+                            _ = &mut inner_fut => {}
+                        }
+                    }
+                }
+                (round_model, round_provider)
+            })
+        });
     }
 }
 
@@ -578,7 +744,43 @@ mod tests {
         )
     }
 
+    async fn two_model_catalog(
+        model1: rig_mock::MockCompletionModel,
+        model2: rig_mock::MockCompletionModel,
+    ) -> Arc<ModelCatalog> {
+        let entry = |id: &str| ModelEntry {
+            model_id: id.to_owned(),
+            display_name: id.to_owned(),
+            context_window: 0,
+            max_output_tokens: None,
+        };
+        Arc::new(
+            ModelCatalog::new(vec![
+                (
+                    "provider1".to_owned(),
+                    Arc::new(SingleModelProvider::new(entry("model1"), model1)) as _,
+                ),
+                (
+                    "provider2".to_owned(),
+                    Arc::new(SingleModelProvider::new(entry("model2"), model2)) as _,
+                ),
+            ])
+            .await
+            .expect("build two-model catalog"),
+        )
+    }
+
     fn tmp_stores() -> (
+        InMemoryConversationStore,
+        InMemoryStateStore,
+        tempfile::TempDir,
+    ) {
+        tmp_stores_with_default(test_model_ref())
+    }
+
+    fn tmp_stores_with_default(
+        default_model: infinity_protocol::ModelRef,
+    ) -> (
         InMemoryConversationStore,
         InMemoryStateStore,
         tempfile::TempDir,
@@ -586,7 +788,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp dir");
         let conv = InMemoryConversationStore::new_with_dir(
             dir.path().join("threads"),
-            test_model_ref(),
+            default_model,
             Arc::new(crate::ids::UuidIdSource),
         );
         let state = InMemoryStateStore::new(dir.path().join("state"));
@@ -642,10 +844,31 @@ mod tests {
         mpsc::UnboundedReceiver<()>,
         ActiveThreads,
     ) {
+        let (tx, subscribe_tx, display_rx, idle_rx, threads, _switch_tx) =
+            spawn_worker_with_catalog(group_id, conv, state, test_catalog(model).await, tools)
+                .await;
+        (tx, subscribe_tx, display_rx, idle_rx, threads)
+    }
+
+    async fn spawn_worker_with_catalog(
+        group_id: &str,
+        conv: InMemoryConversationStore,
+        state: InMemoryStateStore,
+        catalog: Arc<ModelCatalog>,
+        tools: Vec<Box<dyn Tool<InMemoryMessageSender>>>,
+    ) -> (
+        mpsc::UnboundedSender<(InputMessage, String)>,
+        mpsc::UnboundedSender<SubscribeRequest>,
+        mpsc::UnboundedReceiver<DaemonMessage>,
+        mpsc::UnboundedReceiver<()>,
+        ActiveThreads,
+        mpsc::UnboundedSender<infinity_protocol::ModelRef>,
+    ) {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (client_tx, client_rx) = mpsc::unbounded_channel();
         let (idle_tx, idle_rx) = mpsc::unbounded_channel();
         let (subscribe_tx, subscribe_rx) = mpsc::unbounded_channel();
+        let (model_switch_tx, model_switch_rx) = mpsc::unbounded_channel();
         let active_threads: ActiveThreads =
             Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         let sender = InMemoryMessageSender::new(input_tx.clone());
@@ -661,10 +884,11 @@ mod tests {
             group_id.into(),
             input_rx,
             subscribe_rx,
+            model_switch_rx,
             active_threads.clone(),
             subscribers,
             group_id.into(),
-            test_catalog(model).await,
+            catalog,
             conv,
             state,
             sender,
@@ -674,7 +898,14 @@ mod tests {
             None,
             idle_tx,
         ));
-        (input_tx, subscribe_tx, client_rx, idle_rx, active_threads)
+        (
+            input_tx,
+            subscribe_tx,
+            client_rx,
+            idle_rx,
+            active_threads,
+            model_switch_tx,
+        )
     }
 
     async fn collect_until_done(rx: &mut mpsc::UnboundedReceiver<DaemonMessage>) -> Vec<String> {
@@ -1512,6 +1743,193 @@ mod tests {
 
                 ctrl.finish();
                 collect_until_done(&mut display_rx).await;
+            })
+            .await;
+    }
+
+    // ── Mid-session model switching ──────────────────────────────────────────
+
+    use async_trait::async_trait;
+
+    /// An async tool whose result is delivered later via the input queue —
+    /// keeps the worker alive between completion rounds.
+    struct AsyncStubTool;
+    #[async_trait]
+    impl Tool<InMemoryMessageSender> for AsyncStubTool {
+        fn name(&self) -> &str {
+            "async_tool"
+        }
+        fn description(&self) -> &str {
+            "a"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type":"object","properties":{}})
+        }
+        async fn execute(
+            &self,
+            _: serde_json::Value,
+            _: String,
+            _: Option<String>,
+            _: &ToolContext<InMemoryMessageSender>,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            Ok(())
+        }
+    }
+
+    fn model2_ref() -> infinity_protocol::ModelRef {
+        infinity_protocol::ModelRef {
+            provider_id: "provider2".to_owned(),
+            model_id: "model2".to_owned(),
+        }
+    }
+
+    /// Wait for a `ModelSwitched` broadcast on the subscriber channel.
+    async fn expect_model_switched(rx: &mut mpsc::UnboundedReceiver<DaemonMessage>) {
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await {
+                Ok(Some(DaemonMessage::ModelSwitched {
+                    thread_id,
+                    provider_id,
+                    ..
+                })) => {
+                    assert_eq!(thread_id, "t1");
+                    assert_eq!(provider_id, "provider2");
+                    return;
+                }
+                Ok(Some(_)) => {}
+                _ => panic!("timed out waiting for ModelSwitched"),
+            }
+        }
+    }
+
+    /// A switch received while the worker waits for an async tool result is
+    /// applied to the next completion round.
+    #[tokio::test(flavor = "current_thread")]
+    async fn model_switch_applies_to_next_completion() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (conv, state, _dir) = tmp_stores_with_default(infinity_protocol::ModelRef {
+                    provider_id: "provider1".to_owned(),
+                    model_id: "model1".to_owned(),
+                });
+                let (model1, mut ctrl1) = mock_model();
+                let (model2, mut ctrl2) = mock_model();
+                let (tx, _subscribe_tx, mut display_rx, _idle_rx, _, switch_tx) =
+                    spawn_worker_with_catalog(
+                        "t1",
+                        conv,
+                        state,
+                        two_model_catalog(model1, model2).await,
+                        vec![Box::new(AsyncStubTool)],
+                    )
+                    .await;
+
+                // First round runs on model1 and leaves an async tool call
+                // pending (so the worker stays alive).
+                tx.send(user_text_input("t1", "use the tool"))
+                    .expect("send user input");
+                let _req = ctrl1.next_request().await;
+                ctrl1.send_tool_call("tc-1", "async_tool", serde_json::json!({}));
+                ctrl1.finish();
+                loop {
+                    match tokio::time::timeout(std::time::Duration::from_secs(2), display_rx.recv())
+                        .await
+                    {
+                        Ok(Some(DaemonMessage::ResponseDone { .. })) => break,
+                        Ok(Some(_)) => {}
+                        _ => panic!("timed out waiting for first ResponseDone"),
+                    }
+                }
+
+                // Switch while the worker idles waiting for the tool result.
+                switch_tx.send(model2_ref()).expect("send model switch");
+                expect_model_switched(&mut display_rx).await;
+
+                // The tool result triggers the next round — on model2.
+                tx.send(tool_result_input("t1", "tc-1", "tool done"))
+                    .expect("send tool result");
+                let _req2 = ctrl2.next_request().await;
+                ctrl2.send_text("hello from model2");
+                ctrl2.finish();
+                collect_until_done(&mut display_rx).await;
+                assert!(
+                    ctrl1.try_next_request().is_none(),
+                    "model1 should not receive requests after the switch"
+                );
+            })
+            .await;
+    }
+
+    /// A switch received while a completion is in flight does not disturb
+    /// that completion — it finishes on the old model — but the next round
+    /// uses the new one.
+    #[tokio::test(flavor = "current_thread")]
+    async fn model_switch_during_completion_applies_to_next_round() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (conv, state, _dir) = tmp_stores_with_default(infinity_protocol::ModelRef {
+                    provider_id: "provider1".to_owned(),
+                    model_id: "model1".to_owned(),
+                });
+                let (model1, mut ctrl1) = mock_model();
+                let (model2, mut ctrl2) = mock_model();
+                let (tx, _subscribe_tx, mut display_rx, _idle_rx, _, switch_tx) =
+                    spawn_worker_with_catalog(
+                        "t1",
+                        conv,
+                        state,
+                        two_model_catalog(model1, model2).await,
+                        vec![Box::new(AsyncStubTool)],
+                    )
+                    .await;
+
+                // Start a completion on model1 and leave it in flight.
+                tx.send(user_text_input("t1", "start"))
+                    .expect("send user input");
+                let _req = ctrl1.next_request().await;
+                ctrl1.send_text("streaming on model1...");
+                loop {
+                    match tokio::time::timeout(std::time::Duration::from_secs(2), display_rx.recv())
+                        .await
+                    {
+                        Ok(Some(DaemonMessage::TextChunk { .. })) => break,
+                        Ok(Some(_)) => {}
+                        _ => panic!("timed out waiting for text chunk"),
+                    }
+                }
+
+                // Switch mid-completion: the confirmation is broadcast right
+                // away, but the in-flight round keeps streaming on model1.
+                switch_tx.send(model2_ref()).expect("send model switch");
+                expect_model_switched(&mut display_rx).await;
+
+                // The in-flight completion finishes undisturbed on model1
+                // (ending with an async tool call so the worker stays alive).
+                ctrl1.send_tool_call("tc-1", "async_tool", serde_json::json!({}));
+                ctrl1.finish();
+                loop {
+                    match tokio::time::timeout(std::time::Duration::from_secs(2), display_rx.recv())
+                        .await
+                    {
+                        Ok(Some(DaemonMessage::ResponseDone { .. })) => break,
+                        Ok(Some(_)) => {}
+                        _ => panic!("timed out waiting for ResponseDone"),
+                    }
+                }
+
+                // The next round (tool result) goes to model2.
+                tx.send(tool_result_input("t1", "tc-1", "tool done"))
+                    .expect("send tool result");
+                let _req2 = ctrl2.next_request().await;
+                ctrl2.send_text("hello from model2");
+                ctrl2.finish();
+                collect_until_done(&mut display_rx).await;
+                assert!(
+                    ctrl1.try_next_request().is_none(),
+                    "model1 should not receive requests after the switch"
+                );
             })
             .await;
     }

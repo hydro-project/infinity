@@ -121,6 +121,7 @@ fn daemon_msg_to_display(
         | DaemonMessage::Welcome { .. }
         | DaemonMessage::Replay { .. }
         | DaemonMessage::SessionsUpdated { .. }
+        | DaemonMessage::ModelSwitched { .. }
         | DaemonMessage::DisconnectNotIdle
         | DaemonMessage::DetachedIdle
         | DaemonMessage::EmigrateResult { .. }
@@ -467,6 +468,8 @@ where
     let (load_session_tx, load_session_rx) = mpsc::unbounded_channel::<(Option<String>, bool)>();
     let (model_switch_tx, model_switch_rx) = mpsc::unbounded_channel::<usize>();
     let (session_tx, session_rx) = mpsc::unbounded_channel::<SessionChanged>();
+    let (model_switched_tx, model_switched_rx) =
+        mpsc::unbounded_channel::<crate::terminal::ModelSwitched>();
     let (sessions_updated_tx, sessions_updated_rx) =
         mpsc::unbounded_channel::<HashMap<String, SessionInfo>>();
     let (soft_detach_tx, soft_detach_rx) = mpsc::unbounded_channel::<()>();
@@ -520,6 +523,7 @@ where
         available_models,
         initial_message,
         session_rx,
+        model_switched_rx,
         sessions_updated_rx,
         soft_detach_tx,
         detach_result_rx,
@@ -562,6 +566,11 @@ where
                                 let sid = active_session.as_ref().expect("bug: active_session should be set after Connected").clone();
                                 let _ = to_daemon.send(ClientMessage::UserInput { session_id: sid, text });
                             }
+                        }
+                        DaemonMessage::ModelSwitched { thread_id, model_name, context_window, provider_id } => {
+                            let _ = model_switched_tx.send(crate::terminal::ModelSwitched {
+                                thread_id, model_name, provider_id, context_window,
+                            });
                         }
                         DaemonMessage::Replay { history, pending_choices, in_progress, .. } => {
                             for m in history {

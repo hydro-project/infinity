@@ -57,6 +57,76 @@
   white-space: nowrap;
 }
 
+/* ── Model pill hover dropdown ── */
+
+.modelPillWrap {
+  position: relative;
+}
+
+/* Transparent hover bridge between the pill and the panel, so moving the
+   pointer down into the dropdown doesn't leave the wrapper. */
+.modelDropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  padding-top: 6px;
+  z-index: 10;
+}
+
+.modelDropdownPanel {
+  background: var(--glass-bg);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 8px 24px var(--glass-shadow);
+  border-radius: 12px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  min-width: 280px;
+}
+
+.modelOption {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: var(--font-sans);
+  color: var(--text-dim);
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.modelOption:hover {
+  background: var(--bg-hover);
+}
+.modelOption[data-selected] {
+  color: var(--text);
+}
+
+.modelOptionProvider {
+  color: var(--text-muted);
+  min-width: 60px;
+}
+
+.modelOptionName {
+  flex: 1;
+}
+
+.modelOptionCtx {
+  color: var(--text-muted);
+}
+
+.modelOptionCheck {
+  color: var(--accent);
+  width: 12px;
+}
+
 .themePill {
   background: var(--glass-bg);
   backdrop-filter: blur(24px) saturate(1.4);
