@@ -347,6 +347,8 @@ export function App() {
                 type: "tool_result",
                 segments: p.segments,
               });
+              // The result arrived — the model continues its turn.
+              setSpinner((prev) => (prev === "tool" ? "thinking" : prev));
             }
             break;
           }
@@ -458,11 +460,20 @@ export function App() {
               history: DaemonMessage[];
               pending_choices: DaemonMessage[];
               views: Record<string, any>;
+              in_progress?: boolean;
             }>(m);
             for (const h of p.history) processOne(h);
             // After replay, mark any open assistant as done
             finishAssistant();
-            setSpinner(null);
+            // If the response is still in progress, the spinner state
+            // implied by the end of the history (thinking, tool, …) is live
+            // and more events will follow. Otherwise the response finished
+            // and the spinner clears — except a trailing unresolved tool
+            // call, which keeps its "tool" spinner (same as a live
+            // ResponseDone, and matching the terminal's WaitingToolCall).
+            if (!p.in_progress) {
+              setSpinner((prev) => (prev === "tool" ? prev : null));
+            }
             for (const c of p.pending_choices) processOne(c);
             if (p.views && Object.keys(p.views).length > 0) {
               setViews(p.views);

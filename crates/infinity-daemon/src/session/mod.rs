@@ -509,6 +509,8 @@ impl SessionManager {
                     history,
                     pending_choices: choices,
                     views,
+                    // The session is not running, so nothing is in flight.
+                    in_progress: false,
                 });
             }
         }

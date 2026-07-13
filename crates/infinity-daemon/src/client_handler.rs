@@ -182,6 +182,7 @@ fn prefix_daemon_message(msg: DaemonMessage, remote_name: &str) -> DaemonMessage
             history,
             pending_choices,
             views,
+            in_progress,
         } => DaemonMessage::Replay {
             history: history
                 .into_iter()
@@ -192,6 +193,7 @@ fn prefix_daemon_message(msg: DaemonMessage, remote_name: &str) -> DaemonMessage
                 .map(|m| prefix_daemon_message(m, remote_name))
                 .collect(),
             views,
+            in_progress,
         },
         other => other,
     }

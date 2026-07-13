@@ -303,3 +303,63 @@ async fn quit_picker_when_agent_busy() {
         })
         .await;
 }
+
+/// Reconnecting to a session whose model is mid-thinking must revive the
+/// thinking spinner. Streamed reasoning is only committed to history once it
+/// completes, so the daemon buffers the in-progress thinking, appends it to
+/// the replayed history, and marks the replay `in_progress` (suppressing the
+/// client's end-of-replay ResponseDone). Switching away and back with a
+/// single client exercises the same detach/replay path as a fresh attach.
+#[tokio::test(start_paused = true)]
+async fn switch_back_mid_thinking_revives_spinner() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (h, mut ctrl) = E2eHarness::spawn(80, 20).await;
+
+            h.type_str("think hard");
+            h.key(KeyCode::Enter);
+            h.settle().await;
+            let req = next_request(&mut ctrl).await;
+            assert!(
+                history_contains_user_text(&req, "think hard"),
+                "model request should contain the user's message"
+            );
+
+            // Stream reasoning deltas; the completion stays in flight.
+            ctrl.send_chunk(rig::streaming::RawStreamingChoice::ReasoningDelta {
+                id: None,
+                reasoning: "Deep thought ".into(),
+            });
+            ctrl.send_chunk(rig::streaming::RawStreamingChoice::ReasoningDelta {
+                id: None,
+                reasoning: "in progress".into(),
+            });
+            h.settle().await;
+            assert_screen!("e2e_mid_thinking_live", h.screen());
+
+            // Switch away to a lazy new session (soft detach answers NotIdle
+            // because the completion is still running)…
+            h.type_str("/new");
+            h.key(KeyCode::Enter);
+            h.settle().await;
+
+            // …and back via the session picker: the replay ends with the
+            // buffered thinking and is marked in-progress, so the spinner
+            // comes back alive instead of an idle prompt.
+            h.type_str("/load");
+            h.key(KeyCode::Enter);
+            h.settle().await;
+            h.key(KeyCode::Enter); // select the (only) running session
+            h.settle().await;
+            assert_screen!("e2e_mid_thinking_after_reconnect", h.screen());
+
+            // The stream then completes live on the re-attached client: the
+            // answer streams in and the spinner clears.
+            ctrl.send_text("The answer.");
+            ctrl.finish();
+            h.settle().await;
+            assert_screen!("e2e_mid_thinking_finished", h.screen());
+        })
+        .await;
+}
