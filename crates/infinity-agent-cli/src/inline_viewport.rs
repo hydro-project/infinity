@@ -232,8 +232,18 @@ impl OutputTracker {
                 .expect("bug: print_above wrote invalid UTF-8");
             for ch in text.chars() {
                 let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) as u32;
-                let col = this.line_len % this.width as u32;
-                if col + w > this.width as u32 {
+                if w == 0 {
+                    continue;
+                }
+                let width = this.width as u32;
+                let col = this.line_len % width;
+                // The char starts on the next row when it doesn't fit on
+                // the current one (wide char at the last column), or when
+                // the previous char exactly filled the row — the terminal
+                // defers that wrap until the next printable char, so a
+                // full row (`col == 0` with a non-empty line) advances on
+                // the char after it.
+                if (col == 0 && this.line_len > 0) || col + w > width {
                     // Auto-wrap: the char starts on the next row.
                     this.line_advances += 1;
                 }

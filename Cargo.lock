@@ -2366,6 +2366,7 @@ name = "infinity-provider-bedrock"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "aws-config",
  "infinity-agent-core",
  "rig-bedrock",
  "rig-core",

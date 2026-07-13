@@ -1,0 +1,50 @@
+---
+source: crates/infinity-agent-cli/tests/tui_submit_wrap_snapshots.rs
+expression: h.screen_with_bg()
+---
+┌────────────────────────────────────────────────────────────────────────────────┐
+│history line 13                                                                 │
+│history line 14                                                                 │
+│history line 15                                                                 │
+│history line 16                                                                 │
+│history line 17                                                                 │
+│history line 18                                                                 │
+│history line 19                                                                 │
+│history line 20                                                                 │
+│> warm up the session                                                           │
+│> please refactor the parser module to support incremental reparsing and then ad│
+│d regression tests covering the new behavior end to end, including the error rec│
+│overy paths and the checkpoint serialization logic                              │
+│                                                                                │
+│▄▄▄▄▄▄▄▄▄▄                                                                      │
+│child-a1 child working                                                          │
+│────────────────────────────────────────────────────────────────────────────────│
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│/help for commands                                 mock: mock-model · 0% context│
+└────────────────────────────────────────────────────────────────────────────────┘
+cursor: row=17 col=1
+bg:
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│################################################################################│
+│################################################################################│
+│################################################################################│
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
