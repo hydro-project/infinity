@@ -588,6 +588,10 @@ where
                             viewport.print_line_above(Line::from(vec![
                                 Span::styled("✦ Compaction applied", Style::default().fg(Color::Magenta)),
                             ]))?;
+                            // The pre-compaction usage is stale; reset the
+                            // context indicator until the next response
+                            // reports fresh usage.
+                            total_tokens_used = 0;
                         }
                     }
                     DisplayEvent::UserInput(text) => {

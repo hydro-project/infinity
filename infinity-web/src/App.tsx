@@ -407,6 +407,9 @@ export function App() {
             const p = msgPayload<{ thread_id: string | null }>(m);
             if (isForCurrentView(p.thread_id)) {
               appendMessage({ type: "compaction" });
+              // The pre-compaction usage is stale; reset the context indicator
+              // until the next response reports fresh usage.
+              setTotalTokens(0);
             }
             break;
           }
