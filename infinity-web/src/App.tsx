@@ -21,6 +21,7 @@ import type {
   DisplaySegment,
   SessionInfo,
   ModelInfo,
+  ModelRef,
   RemoteInfo,
   SpinnerState,
   MessageItemType as MessageItem,
@@ -110,6 +111,9 @@ export function App() {
   const sessionRef = useRef<string | null>(null);
   const threadRef = useRef<string | null>(null);
   const pendingInputRef = useRef<string[]>([]);
+  // The model most recently selected while no session was connected. Passed
+  // when creating new sessions so the choice applies from the first request.
+  const pendingModelRef = useRef<ModelRef | null>(null);
   const sendRef = useRef<(msg: ClientMessage) => void>(() => {});
   // Track whether we're currently accumulating assistant text
   const streamingRef = useRef(false);
@@ -705,7 +709,13 @@ export function App() {
   const handleNewSessionConfirm = useCallback(
     (destination: string | null, cwd: string) => {
       setNewSessionPickerOpen(false);
-      send({ CreateSession: { cwd, location: destination } });
+      send({
+        CreateSession: {
+          cwd,
+          location: destination,
+          model: pendingModelRef.current,
+        },
+      });
     },
     [send],
   );
@@ -729,15 +739,27 @@ export function App() {
     (m: ModelInfo) => {
       setModelMenuOpen(false);
       const target = viewThreadId ?? threadRef.current;
-      if (!target) return;
-      // No optimistic update — the pill changes when the daemon confirms
-      // with ModelSwitched.
-      send({
-        SwitchModel: {
-          session_id: target,
-          model: { provider_id: m.provider_id, model_id: m.model_id },
-        },
-      });
+      if (target) {
+        // No optimistic update — the pill changes when the daemon confirms
+        // with ModelSwitched.
+        send({
+          SwitchModel: {
+            session_id: target,
+            model: { provider_id: m.provider_id, model_id: m.model_id },
+          },
+        });
+      } else {
+        // No session yet — remember the choice for the next CreateSession
+        // and reflect it in the pill immediately (there is no daemon
+        // confirmation to wait for).
+        pendingModelRef.current = {
+          provider_id: m.provider_id,
+          model_id: m.model_id,
+        };
+        setModelName(m.display_name);
+        setProviderName(m.provider_id);
+        setContextWindow(m.context_window);
+      }
     },
     [send, viewThreadId],
   );
@@ -965,7 +987,7 @@ export function App() {
             {modelName && " \u00b7 "}
             {Math.round(contextPct)}% context
           </span>
-          {modelMenuOpen && sessionConnected && models.length > 0 && (
+          {modelMenuOpen && models.length > 0 && (
             <div className={css.modelDropdown}>
               <div className={css.modelDropdownPanel}>
                 {models.map((m) => {
