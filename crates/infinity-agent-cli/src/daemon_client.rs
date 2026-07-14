@@ -150,16 +150,101 @@ pub async fn ensure_daemon_running() -> Result<UnixStream, BoxError> {
         })
 }
 
+/// Returns the pid of the running daemon, or `None` if it is not running.
+/// Probes the pid recorded in the pid file with signal 0: only `ESRCH` (no
+/// such process) is treated as not running, so a stale pid file (e.g. left
+/// behind by a crash) is detected while an unsignalable-but-alive process
+/// (`EPERM`) is not misreported as stopped. Pid reuse is an accepted risk:
+/// the daemon removes its pid file on clean shutdown, and both the file and
+/// the daemon are per-user.
+pub fn running_daemon_pid() -> Option<i32> {
+    let pid_str = std::fs::read_to_string(infinity_protocol::pid_path()).ok()?;
+    let pid: i32 = pid_str.trim().parse().ok()?;
+    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
+        Err(nix::errno::Errno::ESRCH) => None,
+        _ => Some(pid),
+    }
+}
+
+/// Stop the running daemon: send SIGTERM and wait for the process to fully
+/// exit (so its shutdown cleanup of the socket and pid files completes).
+/// Returns `Ok(Some(pid))` if a daemon was stopped, `Ok(None)` if no daemon
+/// is running.
+pub async fn stop_daemon() -> Result<Option<i32>, BoxError> {
+    let Some(pid) = running_daemon_pid() else {
+        return Ok(None);
+    };
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid),
+        nix::sys::signal::Signal::SIGTERM,
+    )
+    .map_err(|e| format!("failed to send SIGTERM to daemon (pid {pid}): {e}"))?;
+    println!("stopping daemon (pid {pid})...");
+    wait_for_daemon_exit(pid).await?;
+    Ok(Some(pid))
+}
+
+/// How long to wait for the daemon to exit after SIGTERM. Generous because
+/// shutdown cleans up all active sessions.
+const DAEMON_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Restart the daemon: stop the running instance (if any), then launch a
+/// fresh one.
+pub async fn restart_daemon() -> Result<(), BoxError> {
+    if stop_daemon().await?.is_none() {
+        println!("daemon is not running — starting a fresh one");
+    }
+    launch_daemon().await?;
+    println!("daemon started");
+    Ok(())
+}
+
+/// Wait until the given pid no longer exists, or error out after
+/// [`DAEMON_SHUTDOWN_TIMEOUT`].
+async fn wait_for_daemon_exit(pid: i32) -> Result<(), BoxError> {
+    let deadline = tokio::time::Instant::now() + DAEMON_SHUTDOWN_TIMEOUT;
+    // Signal 0 probes liveness without delivering a signal; only ESRCH means
+    // the process is gone (see `running_daemon_pid`).
+    while !matches!(
+        nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None),
+        Err(nix::errno::Errno::ESRCH)
+    ) {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "daemon (pid {pid}) did not exit within {}s after SIGTERM",
+                DAEMON_SHUTDOWN_TIMEOUT.as_secs()
+            )
+            .into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    Ok(())
+}
+
 /// How long to wait for a launched daemon to either report readiness or
 /// exit. Generous because daemon startup spawns model provider processes.
 const DAEMON_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Path to the CLI binary to spawn as the daemon. Usually the current
+/// executable, but after a self-update `/proc/self/exe` on Linux points at
+/// the replaced (deleted) inode and its path ends with " (deleted)" — strip
+/// that marker so we spawn the freshly installed binary at the original path.
+fn daemon_exe_path() -> Result<PathBuf, BoxError> {
+    let exe = std::env::current_exe()?;
+    if let Some(s) = exe.to_str()
+        && let Some(stripped) = s.strip_suffix(" (deleted)")
+    {
+        return Ok(PathBuf::from(stripped));
+    }
+    Ok(exe)
+}
 
 /// Launch the daemon as a background process and wait until it prints its
 /// ready line on stdout. If the daemon exits first (e.g. a configuration
 /// error), the error includes everything it printed to stdout/stderr, which
 /// would otherwise be invisible for a detached process.
-async fn launch_daemon() -> Result<(), BoxError> {
-    let current_exe = std::env::current_exe()?;
+pub async fn launch_daemon() -> Result<(), BoxError> {
+    let current_exe = daemon_exe_path()?;
     let mut child = tokio::process::Command::new(&current_exe)
         .arg("daemon")
         .env(

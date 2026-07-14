@@ -434,6 +434,48 @@ async fn update_providers(
     Ok(failed)
 }
 
+/// After an update, ensure the daemon runs the freshly installed binaries:
+/// boot one if none is running, or warn that the running instance is still
+/// executing pre-update code and needs `infinity daemon restart`. Returns
+/// `Ok(false)` if the daemon needed to be started but failed to boot (the
+/// error is printed to the viewport), so callers can reflect it in their
+/// exit code after cleaning up the terminal.
+async fn ensure_fresh_daemon(
+    viewport: &mut InlineViewport<CrosstermTerm>,
+) -> Result<bool, BoxError> {
+    if let Some(pid) = crate::daemon_client::running_daemon_pid() {
+        viewport.print_line_above(Line::from(Span::styled(
+            format!(
+                "⚠ The daemon (pid {pid}) is still running the previous version — run `infinity daemon restart` to pick up the update"
+            ),
+            Style::default().fg(Color::Yellow),
+        )))?;
+        return Ok(true);
+    }
+
+    viewport.print_line_above(Line::from(Span::styled(
+        "Daemon is not running — starting it...",
+        Style::default().fg(Color::Yellow),
+    )))?;
+    viewport.draw(2, |_| {})?;
+    match crate::daemon_client::launch_daemon().await {
+        Ok(()) => {
+            viewport.print_line_above(Line::from(Span::styled(
+                "✓ Daemon started",
+                Style::default().fg(Color::Green),
+            )))?;
+            Ok(true)
+        }
+        Err(e) => {
+            viewport.print_line_above(Line::from(Span::styled(
+                format!("✗ Failed to start daemon: {e}"),
+                Style::default().fg(Color::Red),
+            )))?;
+            Ok(false)
+        }
+    }
+}
+
 /// `infinity provider update` — re-install all providers with recorded sources.
 pub async fn run_provider_update() -> Result<(), BoxError> {
     let mut term = CrosstermTerm::new();
@@ -441,6 +483,7 @@ pub async fn run_provider_update() -> Result<(), BoxError> {
     let mut viewport = InlineViewport::new(term, 2)?;
 
     let failed = update_providers(&mut viewport).await?;
+    let daemon_ok = ensure_fresh_daemon(&mut viewport).await?;
 
     let summary = if failed.is_empty() {
         Span::styled("✓ All providers updated", Style::default().fg(Color::Green))
@@ -454,10 +497,12 @@ pub async fn run_provider_update() -> Result<(), BoxError> {
     viewport.draw(2, |_| {})?;
     terminal::cleanup(viewport.term_mut())?;
 
-    if failed.is_empty() {
-        Ok(())
-    } else {
+    if !failed.is_empty() {
         Err("some providers failed to update".into())
+    } else if !daemon_ok {
+        Err("failed to start daemon after update".into())
+    } else {
+        Ok(())
     }
 }
 
@@ -511,6 +556,7 @@ pub async fn run_update() -> Result<(), BoxError> {
     let mut viewport = InlineViewport::new(term, 2)?;
 
     let failed = update_rap_tools(&mut viewport).await?;
+    let daemon_ok = ensure_fresh_daemon(&mut viewport).await?;
 
     let summary = if failed.is_empty() {
         Span::styled("✓ All tools updated", Style::default().fg(Color::Green))
@@ -524,10 +570,12 @@ pub async fn run_update() -> Result<(), BoxError> {
     viewport.draw(2, |_| {})?;
     terminal::cleanup(viewport.term_mut())?;
 
-    if failed.is_empty() {
-        Ok(())
-    } else {
+    if !failed.is_empty() {
         Err("some tools failed to update".into())
+    } else if !daemon_ok {
+        Err("failed to start daemon after update".into())
+    } else {
+        Ok(())
     }
 }
 
@@ -593,6 +641,7 @@ pub async fn run_self_update(features_override: Option<&str>) -> Result<(), BoxE
 
     let rap_failed = update_rap_tools(&mut viewport).await?;
     let provider_failed = update_providers(&mut viewport).await?;
+    let daemon_ok = ensure_fresh_daemon(&mut viewport).await?;
 
     let failed_count = rap_failed.len() + provider_failed.len();
     let summary = if failed_count == 0 {
@@ -607,9 +656,11 @@ pub async fn run_self_update(features_override: Option<&str>) -> Result<(), BoxE
     viewport.draw(2, |_| {})?;
     terminal::cleanup(viewport.term_mut())?;
 
-    if failed_count == 0 {
-        Ok(())
-    } else {
+    if failed_count != 0 {
         Err("some components failed to update".into())
+    } else if !daemon_ok {
+        Err("failed to start daemon after update".into())
+    } else {
+        Ok(())
     }
 }

@@ -69,6 +69,8 @@ enum Commands {
 enum DaemonCommands {
     /// Stop the running daemon
     Stop,
+    /// Restart the daemon (stop it if running, then start a fresh instance)
+    Restart,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -178,18 +180,13 @@ async fn async_main(cli: Cli) -> Result<(), BoxError> {
             Commands::Update { features } => install::run_self_update(features.as_deref()).await,
             Commands::Daemon { action } => match action {
                 Some(DaemonCommands::Stop) => {
-                    let pid_path = infinity_protocol::pid_path();
-                    let pid_str = std::fs::read_to_string(&pid_path)
-                        .map_err(|_| "daemon is not running (no pid file)")?;
-                    let pid: i32 = pid_str.trim().parse().map_err(|_| "invalid pid file")?;
-                    nix::sys::signal::kill(
-                        nix::unistd::Pid::from_raw(pid),
-                        nix::sys::signal::Signal::SIGTERM,
-                    )
-                    .map_err(|e| format!("failed to send SIGTERM: {e}"))?;
-                    println!("sent SIGTERM to daemon (pid {pid})");
+                    let pid = daemon_client::stop_daemon()
+                        .await?
+                        .ok_or("daemon is not running")?;
+                    println!("daemon stopped (pid {pid})");
                     Ok(())
                 }
+                Some(DaemonCommands::Restart) => daemon_client::restart_daemon().await,
                 None => infinity_daemon::run_daemon(true).await,
             },
             Commands::Rap { action } => match action {
