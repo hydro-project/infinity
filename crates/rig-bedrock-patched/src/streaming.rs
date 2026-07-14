@@ -48,6 +48,22 @@ struct ReasoningState {
     signature: Option<String>,
 }
 
+/// Finalize a completed tool-use content block into a [`RawStreamingChoice::ToolCall`].
+fn finish_tool_call(
+    tool_call: ToolCallState,
+) -> Result<RawStreamingChoice<BedrockStreamingResponse>, CompletionError> {
+    // Handle empty input_json for tools with no parameters
+    let tool_input = if tool_call.input_json.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str(tool_call.input_json.as_str())?
+    };
+    Ok(RawStreamingChoice::ToolCall(
+        RawStreamingToolCall::new(tool_call.id, tool_call.name, tool_input)
+            .with_internal_call_id(tool_call.internal_call_id),
+    ))
+}
+
 impl CompletionModel {
     pub(crate) async fn stream(
         &self,
@@ -171,6 +187,13 @@ impl CompletionModel {
                         }
                     },
                     aws_bedrock::ConverseStreamOutput::ContentBlockStop(_event) => {
+                        // Each tool-use content block is closed individually; yield the
+                        // completed tool call here so that multiple (concurrent) tool
+                        // calls in a single assistant message are all emitted, not just
+                        // the last one.
+                        if let Some(tool_call) = current_tool_call.take() {
+                            yield finish_tool_call(tool_call);
+                        }
                         if let Some(reasoning_state) = current_reasoning.take()
                             && !reasoning_state.content.is_empty() {
                                 yield Ok(RawStreamingChoice::Reasoning {
@@ -185,19 +208,10 @@ impl CompletionModel {
                     aws_bedrock::ConverseStreamOutput::MessageStop(message_stop_event) => {
                         match message_stop_event.stop_reason {
                             aws_bedrock::StopReason::ToolUse => {
+                                // Tool calls are normally yielded at ContentBlockStop; this
+                                // only fires if the stream ended without closing the block.
                                 if let Some(tool_call) = current_tool_call.take() {
-                                    // Handle empty input_json for tools with no parameters
-                                    let tool_input = if tool_call.input_json.is_empty() {
-                                        serde_json::json!({})
-                                    } else {
-                                        serde_json::from_str(tool_call.input_json.as_str())?
-                                    };
-                                    yield Ok(RawStreamingChoice::ToolCall(
-                                        RawStreamingToolCall::new(tool_call.id, tool_call.name, tool_input)
-                                            .with_internal_call_id(tool_call.internal_call_id)
-                                    ));
-                                } else {
-                                    yield Err(CompletionError::ProviderError("Failed to call tool".into()))
+                                    yield finish_tool_call(tool_call);
                                 }
                             }
                             aws_bedrock::StopReason::MaxTokens => {
