@@ -170,6 +170,36 @@ async fn diff_and_empty_tool_results() {
     insta::assert_snapshot!("empty_tool_result", h.screen_with_scrollback());
 }
 
+/// Tool output containing ANSI escape sequences and stray control bytes
+/// (e.g. `cat`ing a file with captured TUI output) must be stripped before
+/// printing instead of panicking the anchor tracker
+/// (<https://github.com/hydro-project/infinity/issues/69>).
+#[tokio::test(start_paused = true)]
+async fn ansi_in_tool_result_is_stripped() {
+    let h = TuiHarness::spawn_reflowing(80, 18).await;
+
+    h.display(Evt::UserInput("cat the snapshot".to_owned()));
+    h.display(Evt::StartOutput);
+    h.display(Evt::ToolCall {
+        name: "execute_command".to_owned(),
+        args: serde_json::json!({"command": "cat snap.txt"}),
+        display_as: Some("$ cat \x1b[1msnap.txt\x1b[0m".to_owned()),
+    });
+    // OSC (the sequence from the issue), SGR colors, cursor movement, a DCS
+    // string, and a stray control byte — all across multiple lines.
+    h.display(Evt::ToolResult {
+        segments: vec![rap_protocol::DisplaySegment::Text(
+            "\x1b]0;window title\x07first line \x1b[31mred\x1b[0m\n\
+             second\x08 line \x1b[2J\x1b[10;20H\n\
+             \x1bPq#0;2;0;0;0\x1b\\third line"
+                .to_owned(),
+        )],
+    });
+    h.display(Evt::ResponseDone(None));
+    h.settle().await;
+    insta::assert_snapshot!("ansi_tool_result_stripped", h.screen_with_scrollback());
+}
+
 /// Child-thread lifecycle specifics: a `close_thread` tool call removes the
 /// row immediately (it never gets a result), and child subscription events
 /// print with a `[thread-id] ` prefix.
