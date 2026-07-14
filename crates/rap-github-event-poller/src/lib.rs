@@ -176,6 +176,16 @@ impl<C: CallbackClient> Poller<C> {
         repos.retain(|_, state| !state.subscriptions.is_empty());
     }
 
+    /// Whether a subscription with the given tool_call_id is still active.
+    /// Used to answer `/tool_call_status` queries so a restarted runtime can
+    /// detect subscriptions this server no longer tracks.
+    pub async fn is_active(&self, tool_call_id: &str) -> bool {
+        let repos = self.repos.read().await;
+        repos
+            .values()
+            .any(|state| state.subscriptions.contains_key(tool_call_id))
+    }
+
     /// Run the polling loop. This never returns.
     pub async fn run(&self) -> ! {
         loop {
@@ -520,5 +530,50 @@ fn describe_filters(f: &Filters) -> String {
         "No filters (will match all events).".to_owned()
     } else {
         format!("Filters: {}", parts.join(", "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rap_protocol::PlainCallbackClient;
+
+    fn test_invocation(id: &str) -> RapInvocation {
+        RapInvocation {
+            operation: "subscribe_github_events".to_owned(),
+            arguments: serde_json::json!({"owner": "octocat", "repo": "hello-world"}),
+            id: id.to_owned(),
+            call_id: None,
+            callback_url: "http://127.0.0.1:1/callback".to_owned(),
+            group_id: "thread-1".to_owned(),
+            user_id: None,
+            thread_ancestors: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn is_active_reflects_subscription_lifecycle() {
+        let poller = Poller::new(PlainCallbackClient::new(), None);
+
+        assert!(
+            !poller.is_active("tc-1").await,
+            "unknown tool_call_id should not be active"
+        );
+
+        poller.subscribe(&test_invocation("tc-1")).await;
+        assert!(
+            poller.is_active("tc-1").await,
+            "subscription should be active after subscribe"
+        );
+        assert!(
+            !poller.is_active("tc-other").await,
+            "other tool_call_ids should stay inactive"
+        );
+
+        poller.cancel("tc-1").await;
+        assert!(
+            !poller.is_active("tc-1").await,
+            "subscription should be inactive after cancel"
+        );
     }
 }

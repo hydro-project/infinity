@@ -55,6 +55,8 @@ Cancellation is tool-specific — the tool exposes a separate operation (e.g. `c
 
 The runtime does not automatically cancel subscriptions when a thread closes. Agents should cancel subscriptions explicitly before shutting down. If a subscription isn't cancelled and the subscribing thread is closed, events will still arrive at the callback URL but the runtime may not have a valid thread to process them in.
 
+The reverse failure mode also exists: the tool server can lose a subscription (say, it restarted without durable storage) while the runtime still tracks it — leaving the agent waiting for events that will never come. Runtimes can detect this after a restart by asking the tool server whether the subscription is still alive via the [tool call status check](/docs/rap/spec/basic/tool-call-status), and surface lost subscriptions to the agent as a final event so it can re-subscribe.
+
 :::warning
 
 This is an active area of development and subject to change. Future versions of RAP will include a standard protocol for cancelling subscriptions to enable auto-cleanup.

@@ -126,6 +126,49 @@ impl HttpClient for RapHttpClient {
         Ok(response.status().as_u16())
     }
 
+    async fn post_read(&self, url: &str, body: &str) -> Result<(u16, Vec<u8>), HttpError> {
+        let parsed = url::Url::parse(url).map_err(|e| HttpError(e.to_string()))?;
+        let host = parsed
+            .host_str()
+            .ok_or(HttpError("missing host".into()))?
+            .to_owned();
+
+        let signed_headers = self
+            .sign_request(
+                "POST",
+                url,
+                std::iter::once(("host", host.as_str()))
+                    .chain(std::iter::once(("content-type", "application/json"))),
+                SignableBody::Bytes(body.as_bytes()),
+            )
+            .await?;
+
+        let mut request = self
+            .http_client
+            .post(url)
+            .header("host", &host)
+            .header("content-type", "application/json");
+
+        for (name, value) in &signed_headers {
+            request = request.header(name.as_str(), value.as_str());
+        }
+
+        let response = request
+            .body(body.to_owned())
+            .send()
+            .await
+            .map_err(|e| HttpError(e.to_string()))?;
+
+        let status = response.status().as_u16();
+        let body_bytes = response
+            .bytes()
+            .await
+            .map_err(|e| HttpError(e.to_string()))?
+            .to_vec();
+
+        Ok((status, body_bytes))
+    }
+
     async fn get(&self, url: &str) -> Result<(u16, Vec<u8>), HttpError> {
         let parsed = url::Url::parse(url).map_err(|e| HttpError(e.to_string()))?;
         let host = parsed

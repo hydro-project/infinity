@@ -9,7 +9,8 @@ use tracing_subscriber::EnvFilter;
 
 use rap_github_event_poller::Poller;
 use rap_protocol::{
-    PlainCallbackClient, RapInvocation, ToolDef, ToolsetManifest, send_tool_result,
+    PlainCallbackClient, RapInvocation, RapToolCallStatusRequest, RapToolCallStatusResponse,
+    ToolDef, ToolsetManifest, send_tool_result,
 };
 
 #[derive(Parser)]
@@ -126,6 +127,14 @@ async fn cancel_handler(
     StatusCode::OK
 }
 
+async fn tool_call_status_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RapToolCallStatusRequest>,
+) -> Json<RapToolCallStatusResponse> {
+    let alive = state.is_active(&req.tool_call_id).await;
+    Json(RapToolCallStatusResponse { alive })
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let log_file =
         std::fs::File::create("./rap-github-event-poller.log").expect("failed to create log file");
@@ -162,6 +171,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .route("/.well-known/rap-toolset", get(toolset_handler))
                 .route("/invoke", post(invoke_handler))
                 .route("/cancel_tool_call", post(cancel_handler))
+                .route("/tool_call_status", post(tool_call_status_handler))
                 .with_state(poller);
 
             let embedded = std::env::var("RAP_EMBEDDED").is_ok();

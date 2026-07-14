@@ -11,6 +11,10 @@ pub trait HttpClient: Send + Sync + Clone {
 
     /// POST a JSON body to the given URL. Returns the HTTP status code.
     async fn post(&self, url: &str, body: &str) -> Result<u16, Self::Error>;
+    /// POST a JSON body to the given URL. Returns the HTTP status code and
+    /// response body. Used for request/response style protocol messages
+    /// (e.g. `/tool_call_status`) where the runtime needs to read the reply.
+    async fn post_read(&self, url: &str, body: &str) -> Result<(u16, Vec<u8>), Self::Error>;
     /// GET the given URL. Returns the HTTP status code and response body.
     async fn get(&self, url: &str) -> Result<(u16, Vec<u8>), Self::Error>;
 }
@@ -74,6 +78,24 @@ impl HttpClient for SimpleHttpClient {
             .await
             .map_err(|e| SimpleHttpError(e.to_string()))?;
         Ok(resp.status().as_u16())
+    }
+
+    async fn post_read(&self, url: &str, body: &str) -> Result<(u16, Vec<u8>), SimpleHttpError> {
+        let resp = self
+            .client
+            .post(url)
+            .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .body(body.to_owned())
+            .send()
+            .await
+            .map_err(|e| SimpleHttpError(e.to_string()))?;
+        let status = resp.status().as_u16();
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| SimpleHttpError(e.to_string()))?;
+        Ok((status, bytes.to_vec()))
     }
 
     async fn get(&self, url: &str) -> Result<(u16, Vec<u8>), SimpleHttpError> {

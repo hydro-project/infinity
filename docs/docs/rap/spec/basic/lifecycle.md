@@ -21,6 +21,8 @@ When a tool provider starts, it MUST expose two HTTP endpoints:
 
 The tool provider SHOULD also expose a **thread closure endpoint** at `/close_thread` to receive best-effort cleanup notifications from the runtime. See [Thread Closure](/docs/rap/spec/basic/thread-closure) for details.
 
+Tool providers that track in-flight invocations or maintain [subscriptions](/docs/rap/spec/server/subscription-events) SHOULD additionally expose a **status endpoint** at `/tool_call_status`, which lets runtimes ask whether a previously dispatched tool call is still alive. See [Tool Call Status Check](/docs/rap/spec/basic/tool-call-status) for details.
+
 The tool provider MUST be ready to serve both required endpoints before accepting traffic. The discovery endpoint is how runtimes learn what operations the tool supports — if it is unavailable or returns an invalid toolset, no runtime will be able to invoke the tool.
 
 ```mermaid
@@ -109,7 +111,7 @@ Tool providers MUST handle stale invocations gracefully — either by maintainin
 
 The protocol does not define a shutdown handshake for tool providers. When a tool provider shuts down:
 
-- Active invocations that have been acknowledged but not yet completed MAY be lost. Tool providers SHOULD persist in-flight work to allow recovery on restart.
+- Active invocations that have been acknowledged but not yet completed MAY be lost. Tool providers SHOULD persist in-flight work to allow recovery on restart. Tool providers that expose a [`/tool_call_status`](/docs/rap/spec/basic/tool-call-status) endpoint allow runtimes to detect invocations that were lost this way and prune them instead of waiting forever.
 - Active subscriptions SHOULD continue to function if the tool provider restarts. Tools that store subscription state durably can resume event delivery after restart.
 - The discovery endpoint becomes unavailable. Runtimes that have already cached the toolset definition will continue to send invocations to the invocation endpoint, which will fail with connection errors. The runtime SHOULD record these failures as tool results with error descriptions.
 
@@ -118,6 +120,12 @@ The protocol does not define a shutdown handshake for tool providers. When a too
 When a runtime closes a conversation thread, it sends a best-effort notification to every tool server so they can clean up thread-specific resources (e.g., cached sandboxes, temporary workspaces). The runtime POSTs a `{"thread_id": "..."}` payload to each tool server's `/close_thread` endpoint, where `thread_id` corresponds to the `group_id` of the closed thread.
 
 This notification is strictly best-effort — the runtime MUST NOT retry on failure, and tool servers MAY ignore it entirely. Tool servers that do handle the notification MUST always respond with HTTP 200. See [Thread Closure](/docs/rap/spec/basic/thread-closure) for the full specification.
+
+### Tool Call Status Checks
+
+Because both participants can restart independently, a runtime may find itself waiting on a tool call that the tool provider has given up on — for example, an invocation that was in flight when the tool provider restarted and lost its in-memory state. To recover from this, a runtime that boots with pending tool calls or active subscriptions in its persisted state SHOULD query each originating tool server's `/tool_call_status` endpoint. If the server answers that a call is no longer alive, the runtime SHOULD prune it — injecting a synthetic failed tool result (or a synthetic final subscription event) so the LLM can reason about the failure and retry.
+
+Unlike the best-effort notifications, the status check is a request/response query: the runtime interprets the response body. An `"alive": false` answer — or a response showing the server does not support the endpoint (4xx / invalid body) — means the call is lost and SHOULD be pruned; only transport errors and transient 5xx responses leave the call pending. Tool providers that perform asynchronous work or maintain subscriptions SHOULD therefore implement `/tool_call_status`, or their in-flight work will be treated as failed whenever a runtime restarts. See [Tool Call Status Check](/docs/rap/spec/basic/tool-call-status) for the full specification.
 
 ## Concurrency
 

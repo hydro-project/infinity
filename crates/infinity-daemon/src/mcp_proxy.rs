@@ -9,7 +9,10 @@ use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use rap_protocol::{DisplaySegment, RapCallback, RapInvocation, RapToolResult};
+use rap_protocol::{
+    DisplaySegment, RapCallback, RapInvocation, RapToolCallStatusRequest,
+    RapToolCallStatusResponse, RapToolResult,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -294,6 +297,26 @@ struct ProxyState {
     client_factory: McpClientFactory,
     client: Mutex<Option<Box<dyn McpTransport>>>,
     port: u16,
+    /// Tool call IDs currently being processed, for `/tool_call_status`
+    /// queries. Uses a std mutex so it can be updated from a drop guard.
+    in_flight: std::sync::Mutex<std::collections::HashSet<String>>,
+}
+
+/// RAII guard that removes a tool call ID from the proxy's in-flight set when
+/// the invocation task finishes (on any exit path).
+struct InFlightGuard {
+    id: String,
+    state: Arc<ProxyState>,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.state
+            .in_flight
+            .lock()
+            .expect("bug: in_flight mutex poisoned")
+            .remove(&self.id);
+    }
 }
 
 impl ProxyState {
@@ -457,19 +480,52 @@ async fn handle(req: Request<Incoming>, state: Arc<ProxyState>) -> Response<Full
         return text_response(StatusCode::METHOD_NOT_ALLOWED, "POST only");
     }
 
-    // Parse invocation
+    // Parse body
     let body = match req.into_body().collect().await {
         Ok(b) => b.to_bytes(),
         Err(_) => return text_response(StatusCode::BAD_REQUEST, "bad body"),
     };
+
+    // Tool call status query: report whether an invocation is still in flight.
+    // A freshly restarted proxy has an empty in-flight set, so calls from
+    // before the restart correctly report `alive: false`.
+    if path.ends_with("/tool_call_status") {
+        let request: RapToolCallStatusRequest = match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(e) => return text_response(StatusCode::BAD_REQUEST, &format!("bad json: {e}")),
+        };
+        let alive = state
+            .in_flight
+            .lock()
+            .expect("bug: in_flight mutex poisoned")
+            .contains(&request.tool_call_id);
+        let response = serde_json::to_string(&RapToolCallStatusResponse { alive })
+            .expect("bug: serialize RapToolCallStatusResponse");
+        return json_response(StatusCode::OK, &response);
+    }
+
+    // Parse invocation
     let inv: RapInvocation = match serde_json::from_slice(&body) {
         Ok(i) => i,
         Err(e) => return text_response(StatusCode::BAD_REQUEST, &format!("bad json: {e}")),
     };
 
+    // Track the invocation as in-flight for the duration of the async task,
+    // so `/tool_call_status` reports it alive until the callback is sent.
+    state
+        .in_flight
+        .lock()
+        .expect("bug: in_flight mutex poisoned")
+        .insert(inv.id.clone());
+    let in_flight_guard = InFlightGuard {
+        id: inv.id.clone(),
+        state: state.clone(),
+    };
+
     // Return immediately, process async
     let state = state.clone();
     tokio::spawn(rap_protocol::log_panic("mcp_proxy_invoke", async move {
+        let _in_flight_guard = in_flight_guard;
         let res = if inv.operation.ends_with("_list_tools") {
             state.list_tools().await
         } else if inv.operation.ends_with("_invoke_tool") {
@@ -580,6 +636,7 @@ pub async fn start_proxy_server(name: String, factory: McpClientFactory) -> Resu
         client_factory: factory,
         client: Mutex::new(None),
         port,
+        in_flight: std::sync::Mutex::new(std::collections::HashSet::new()),
     });
 
     tokio::spawn(rap_protocol::log_panic(

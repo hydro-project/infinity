@@ -319,6 +319,7 @@ This is a minimal runtime to demonstrate the protocol. A production runtime woul
 
 - **Subscription event handling** — requires generating [synthetic tool calls](/docs/rap/about/subscription-events#synthetic-tool-calls) to present events to the LLM in a way it can reason about. See [Subscription Events](/docs/rap/about/subscription-events) for the full design.
 - **Concurrency control** — serialize messages within a thread (e.g. with a queue or database lock). See [Agent Runtime](/docs/rap/about/agent-runtime#interruption-model).
+- **Recovery after restarts** — durable state means a restarted runtime can find itself waiting on tool calls or subscriptions that the tool server has meanwhile given up on. On boot, query each originating server's `/tool_call_status` endpoint and prune dead calls by injecting synthetic failure results. Servers that respond without supporting the endpoint are treated as having given up too; only unreachable servers leave the call pending. See the [Tool Call Status Check spec](/docs/rap/spec/basic/tool-call-status).
 - **Hibernation** — for a serverless deployment, replace the Express server with a Lambda triggered by SQS, and use scheduled messages for sleep. See [Agent Hibernation](/docs/rap/about/architecture#hibernation).
 - **Authentication** — sign requests to tool servers with SigV4 or bearer tokens, and authenticate callback requests to prevent unauthorized message injection.
 - **Streaming** — stream LLM responses to the user instead of waiting for the full completion.

@@ -54,6 +54,8 @@ Tool cancellation notifications are **best-effort** by design. The protocol expl
 
 Because this notification is advisory, tool servers SHOULD NOT rely on it as the sole mechanism for managing in-flight operations. Tool servers SHOULD implement independent timeout and cleanup strategies to handle cases where the notification is never received.
 
+Conversely, runtimes SHOULD NOT rely on cancellation notifications to keep their view of in-flight work consistent with the tool server's. A runtime can ask a tool server whether a dispatched call is still being processed at all — for example, after a restart — using the [tool call status check](/docs/rap/spec/basic/tool-call-status), which detects calls the tool server has lost or given up on entirely.
+
 ## Cancellation Behavior
 
 When a tool server receives a `/cancel_tool_call` notification, it MAY attempt to abort the identified operation. The specific behavior depends on the tool:

@@ -26,6 +26,7 @@ use crate::sleep_tools::{SleepTool, SleepUntilTool};
 
 pub mod agent_loop;
 pub mod display;
+pub mod reconcile;
 pub mod thread_worker;
 
 pub use agent_loop::agent_loop;
@@ -404,7 +405,9 @@ impl SessionManager {
         let spawned_servers = booted.spawned_servers;
         let urls = booted.urls;
 
-        let rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>> = if !urls.is_empty() {
+        let rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>>;
+        let rap_tool_servers: HashMap<String, String>;
+        if !urls.is_empty() {
             let servers_with_ids: Vec<(String, Option<String>)> = urls
                 .iter()
                 .map(|u| {
@@ -418,16 +421,19 @@ impl SessionManager {
 
                     emit(info(String::new())).await;
 
-                    loaded.tools
+                    rap_tools = loaded.tools;
+                    rap_tool_servers = loaded.tool_servers;
                 }
                 Err(e) => {
                     emit(info(format!("Warning: failed to load RAP tools: {e}"))).await;
-                    Vec::new()
+                    rap_tools = Vec::new();
+                    rap_tool_servers = HashMap::new();
                 }
             }
         } else {
-            Vec::new()
-        };
+            rap_tools = Vec::new();
+            rap_tool_servers = HashMap::new();
+        }
 
         let extra_system_prompt = Some(format!(
             "The user's current working directory is: {cwd:?}\n\n\
@@ -440,6 +446,28 @@ impl SessionManager {
         let state_store = self.state_store.clone();
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        // Reconcile pending RAP tool calls / active subscriptions against
+        // their servers in the background: if the server gave up on any of
+        // them while the agent was down, inject failure messages so the
+        // affected threads don't hang forever. See `session::reconcile`.
+        if !rap_tool_servers.is_empty() {
+            let conversation_store = self.conversation_store.clone();
+            let reconcile_state_store = self.state_store.clone();
+            let reconcile_sender = sender.clone();
+            let reconcile_session_id = session_id.clone();
+            tokio::task::spawn_local(rap_protocol::log_panic("rap_reconcile", async move {
+                reconcile::reconcile_rap_state(
+                    &conversation_store,
+                    &reconcile_state_store,
+                    &reconcile_session_id,
+                    &rap_tool_servers,
+                    &rap_tools::SimpleHttpClient::new(),
+                    &reconcile_sender,
+                )
+                .await;
+            }));
+        }
 
         let (idle_tx, agent_handle, subscriber_map) = self.start_agent_loop(
             session_id.clone(),

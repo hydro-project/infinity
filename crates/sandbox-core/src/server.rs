@@ -15,8 +15,9 @@ use tokio::task::JoinHandle;
 use tracing;
 
 use rap_protocol::{
-    CallbackClient, DiffContent, DisplaySegment, RapCallback, RapInvocation, RapToolResult,
-    ToolDef, ToolsetManifest, send_subscription_event, send_tool_result, send_user_choice,
+    CallbackClient, DiffContent, DisplaySegment, RapCallback, RapInvocation,
+    RapToolCallStatusRequest, RapToolCallStatusResponse, RapToolResult, ToolDef, ToolsetManifest,
+    send_subscription_event, send_tool_result, send_user_choice,
 };
 
 type DisplayResult = Result<(String, Option<Vec<DisplaySegment>>), SandboxError>;
@@ -48,6 +49,43 @@ type PendingTasks = Arc<Mutex<Vec<JoinHandle<()>>>>;
 /// cancellation; the handler receives it and sends SIGTERM to the process.
 type InFlightMap = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>>;
 
+/// Tool call IDs currently being processed by this server, for answering
+/// `/tool_call_status` queries. Unlike [`InFlightMap`] (which only tracks
+/// cancellable `execute_command` invocations), this covers every accepted
+/// invocation for the full duration of its background task.
+///
+/// Uses a `std::sync::Mutex` so entries can be removed from a `Drop` impl.
+type ActiveInvocations = Arc<std::sync::Mutex<HashSet<String>>>;
+
+/// RAII guard that registers a tool call ID as active and removes it on drop,
+/// so every exit path of an invocation task (success, error, cancellation,
+/// panic) clears the entry.
+struct ActiveInvocationGuard {
+    id: String,
+    set: ActiveInvocations,
+}
+
+impl ActiveInvocationGuard {
+    fn register(id: String, set: &ActiveInvocations) -> Self {
+        set.lock()
+            .expect("bug: active invocations mutex poisoned")
+            .insert(id.clone());
+        Self {
+            id,
+            set: set.clone(),
+        }
+    }
+}
+
+impl Drop for ActiveInvocationGuard {
+    fn drop(&mut self) {
+        self.set
+            .lock()
+            .expect("bug: active invocations mutex poisoned")
+            .remove(&self.id);
+    }
+}
+
 /// Send SIGTERM to a process group by PID.
 ///
 /// The spawned command is expected to have set its PGID to its own PID
@@ -69,6 +107,8 @@ struct AppState<B: SandboxBackend, M: MetadataStore, C: CallbackClient> {
     callback_client: C,
     pending_tasks: PendingTasks,
     in_flight: InFlightMap,
+    /// All invocation IDs currently being processed (see [`ActiveInvocations`]).
+    active_invocations: ActiveInvocations,
     /// Pending user choice responses, keyed by tool call ID.
     /// The sender delivers the user's selected index.
     pending_choices: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<usize>>>>,
@@ -143,6 +183,7 @@ where
         callback_client,
         pending_tasks: tracker.pending_tasks.clone(),
         in_flight,
+        active_invocations: Arc::new(std::sync::Mutex::new(HashSet::new())),
         pending_choices: Arc::new(Mutex::new(HashMap::new())),
         server_base_url: std::sync::OnceLock::new(),
         needs_migration,
@@ -157,6 +198,10 @@ where
         .route(
             "/cancel_tool_call",
             post(cancel_tool_call_handler::<B, M, C>),
+        )
+        .route(
+            "/tool_call_status",
+            post(tool_call_status_handler::<B, M, C>),
         )
         .route(
             "/user_choice_response",
@@ -203,6 +248,12 @@ async fn invoke_handler<
     State(state): State<Arc<AppState<B, M, C>>>,
     Json(invocation): Json<RapInvocation>,
 ) -> StatusCode {
+    // Register the invocation as active synchronously (before spawning the
+    // task) so `/tool_call_status` reports it alive for the entire time the
+    // server is working on it. The guard removes it when the task finishes.
+    let active_guard =
+        ActiveInvocationGuard::register(invocation.id.clone(), &state.active_invocations);
+
     // For execute_command, register the cancellation channel synchronously
     // (before spawning the task) so that cancel_tool_call always finds an
     // entry — even if the cancel arrives before the command starts.
@@ -216,6 +267,7 @@ async fn invoke_handler<
 
         let state_clone = state.clone();
         let handle = tokio::spawn(async move {
+            let _active_guard = active_guard;
             handle_execute_command_streaming(&state_clone, &invocation, cancel_rx).await;
         });
         state.pending_tasks.lock().await.push(handle);
@@ -224,6 +276,7 @@ async fn invoke_handler<
 
     let state_clone = state.clone();
     let handle = tokio::spawn(async move {
+        let _active_guard = active_guard;
         let result_text = match invocation.operation.as_str() {
             "clone_repo" => handle_clone_repo(&state_clone, &invocation)
                 .await
@@ -363,6 +416,36 @@ async fn cancel_tool_call_handler<
     }
 
     StatusCode::OK
+}
+
+/// Query endpoint for the `/tool_call_status` RAP protocol message.
+///
+/// The runtime POSTs `{"thread_id":"…","tool_call_id":"…"}` (typically after
+/// a restart) to ask whether this server is still processing the tool call.
+/// Responds `{"alive": true}` while the invocation task is running (including
+/// while it is blocked on a user choice), and `{"alive": false}` for unknown
+/// or completed tool calls — signalling the runtime that no result will ever
+/// be delivered and the call can be pruned.
+async fn tool_call_status_handler<
+    B: SandboxBackend + 'static,
+    M: MetadataStore + 'static,
+    C: CallbackClient + 'static,
+>(
+    State(state): State<Arc<AppState<B, M, C>>>,
+    Json(request): Json<RapToolCallStatusRequest>,
+) -> Json<RapToolCallStatusResponse> {
+    let alive = state
+        .active_invocations
+        .lock()
+        .expect("bug: active invocations mutex poisoned")
+        .contains(&request.tool_call_id);
+    tracing::info!(
+        tool_call_id = %request.tool_call_id,
+        thread_id = %request.thread_id,
+        alive,
+        "answered tool_call_status query"
+    );
+    Json(RapToolCallStatusResponse { alive })
 }
 
 /// Request payload for the `/user_choice_response` endpoint.
@@ -2371,6 +2454,28 @@ fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn active_invocation_guard_tracks_liveness() {
+        let set: ActiveInvocations = Arc::new(std::sync::Mutex::new(HashSet::new()));
+
+        let guard = ActiveInvocationGuard::register("tc-1".to_owned(), &set);
+        assert!(
+            set.lock()
+                .expect("bug: active invocations mutex poisoned")
+                .contains("tc-1"),
+            "id should be active while the guard is alive"
+        );
+
+        // Dropping the guard (any exit path of the invocation task) removes it.
+        drop(guard);
+        assert!(
+            !set.lock()
+                .expect("bug: active invocations mutex poisoned")
+                .contains("tc-1"),
+            "id should be removed once the guard is dropped"
+        );
+    }
 
     #[test]
     fn detects_cd_to_exact_repo_path() {

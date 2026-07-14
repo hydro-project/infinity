@@ -128,6 +128,12 @@ Tools that support subscriptions MUST store the `callback_url`, `group_id`, and 
 
 To enable cancellation, tools SHOULD include a subscription identifier in the initial `tool_result` (e.g., `"Subscribed to pull_request events. Subscription ID: sub_abc"`). The tool result MUST include `"subscription": true` so that the runtime can [track the subscription](/docs/rap/spec/basic/tool-result).
 
+## Liveness
+
+Subscriptions are long-lived, so the runtime and the tool can lose sync — most commonly when the tool server restarts without durable storage and silently drops its subscriptions. The runtime would then track a subscription that will never produce another event.
+
+Runtimes MAY verify that a subscription is still alive — typically after a runtime restart — by sending a [tool call status check](/docs/rap/spec/basic/tool-call-status) to the tool server with the subscription's originating `tool_call_id`. Tools that maintain subscriptions SHOULD implement the `/tool_call_status` endpoint and report `"alive": true` for as long as the subscription is active — runtimes treat a server that responds without supporting the endpoint as unable to vouch for the subscription, and prune it just as if the server had answered `"alive": false`. When a subscription is reported (or presumed) lost, the runtime SHOULD remove it from its active tracking and surface the loss to the agent (e.g. as a synthetic final event) so it can re-subscribe if needed.
+
 ## Cancellation
 
 ### Subscription tracking

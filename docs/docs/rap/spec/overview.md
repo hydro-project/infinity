@@ -56,6 +56,7 @@ The protocol defines two roles that communicate through the HTTP message contrac
 - **User ID**: An optional end-user identity that tools MAY use for authorization decisions, personalization, or audit logging.
 - **Thread closure notifications**: A best-effort signal sent to tool servers when a conversation thread is closed, allowing them to clean up thread-specific resources. See [Thread Closure](/docs/rap/spec/basic/thread-closure).
 - **Tool cancellation notifications**: A best-effort signal sent to tool servers when a tool call is interrupted, allowing them to abort in-flight operations. See [Tool Cancellation](/docs/rap/spec/basic/tool-cancellation).
+- **Tool call status checks**: A query sent to tool servers to ask whether a pending tool call or active subscription is still alive, allowing runtimes to detect and prune calls that were lost (e.g. across restarts). See [Tool Call Status Check](/docs/rap/spec/basic/tool-call-status).
 
 **Tools** are independent HTTP services that receive invocations, process them on their own schedule, and return results through the callback mechanism. Tools provide the following capabilities to runtimes:
 
@@ -67,11 +68,12 @@ The protocol defines two roles that communicate through the HTTP message contrac
 
 ### Message Types
 
-The protocol defines four message types that cover the full range of communication between runtimes and tools. Tool invocations flow from runtime to tool, while the remaining three message types flow from tool to runtime through the callback URL.
+The protocol defines seven message types that cover the full range of communication between runtimes and tools. Tool invocations and tool call status checks flow from runtime to tool, while the remaining message types flow from tool to runtime through the callback URL.
 
 | Message | Direction | Description |
 |---|---|---|
 | [Tool Invocation](/docs/rap/spec/basic/tool-invocation) | Runtime → Tool | Invoke a tool operation. Contains the operation name, arguments, callback URL, and routing identifiers. |
+| [Tool Call Status Check](/docs/rap/spec/basic/tool-call-status) | Runtime → Tool | Ask whether a pending tool call or active subscription is still alive. The tool answers with an `alive` boolean, letting the runtime prune calls the tool server has given up on. |
 | [Tool Result](/docs/rap/spec/basic/tool-result) | Tool → Runtime | Return the result of a completed operation. Contains the result text and the identifiers needed to match it to the original invocation. |
 | [Subscription Event](/docs/rap/spec/server/subscription-events) | Tool → Runtime | Deliver an event from an active subscription. References the original subscription tool call so the runtime can associate the event with the correct context. |
 | [OAuth](/docs/rap/spec/server/oauth) | Tool → Runtime | Initiate a user authorization flow. Contains an authorization URL that the runtime surfaces to the user. The tool retries the original operation after authorization completes. |
@@ -121,6 +123,8 @@ Explore the detailed specification for each protocol component:
   - [Toolsets](/docs/rap/spec/basic/toolsets) — Declaring and discovering tool definitions
   - [Thread Closure](/docs/rap/spec/basic/thread-closure) — Best-effort thread cleanup notifications
   - [Tool Cancellation](/docs/rap/spec/basic/tool-cancellation) — Best-effort tool call cancellation notifications
+  - [Tool Call Status Check](/docs/rap/spec/basic/tool-call-status) — Querying whether a tool call or subscription is still alive
+  - [Migration](/docs/rap/spec/basic/migration) — Migrating tool server state between servers
 
 - **Server Features**
   - [Subscription Events](/docs/rap/spec/server/subscription-events) — Event-driven subscriptions
