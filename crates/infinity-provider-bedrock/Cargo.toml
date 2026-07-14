@@ -5,7 +5,7 @@ edition = "2024"
 license = "Apache-2.0"
 
 [dependencies]
-infinity-agent-core = { path = "../infinity-agent-core" }
+infinity-provider-protocol = { path = "../infinity-provider-protocol" }
 aws-config = { version = "*", default-features = false, features = ["credentials-process"] }
 rig-core = { workspace = true }
 rig-bedrock = { workspace = true }

@@ -2237,6 +2237,7 @@ dependencies = [
  "infinity-agent-core",
  "infinity-daemon",
  "infinity-protocol",
+ "infinity-provider-protocol",
  "insta",
  "nix",
  "rap-client",
@@ -2266,17 +2267,16 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "futures-util",
+ "infinity-provider-protocol",
  "insta",
  "rap-client",
  "rap-protocol",
  "rhai",
  "rig-core",
  "rig-mock",
- "schemars 1.2.1",
  "serde",
  "serde_json",
  "tokio",
- "tokio-util",
  "tracing",
  "url",
  "uuid",
@@ -2331,6 +2331,7 @@ dependencies = [
  "include_dir",
  "infinity-agent-core",
  "infinity-protocol",
+ "infinity-provider-protocol",
  "insta",
  "nix",
  "playwright-rs",
@@ -2367,12 +2368,30 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "aws-config",
- "infinity-agent-core",
+ "infinity-provider-protocol",
  "rig-bedrock",
  "rig-core",
  "serde_json",
  "tokio",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "infinity-provider-protocol"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "futures-util",
+ "rig-core",
+ "rig-mock",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -16,7 +16,7 @@ Providers own all backend-specific behavior. Callers hand them a plain [rig](htt
 
 ## The `ModelProvider` trait
 
-Defined in `infinity_agent_core::model_provider`:
+Defined in the `infinity-provider-protocol` crate — a deliberately lightweight crate so provider implementations can depend on it without pulling in the rest of the runtime:
 
 ```rust
 #[async_trait]
@@ -79,13 +79,13 @@ The trait is dyn-compatible, which requires erasing the backend-specific streami
 
 ## The provider process transport
 
-The local daemon (Infinity Code) runs each provider as a separate process configured in `~/.infinity/providers.json` (see [Model Providers in the Infinity Code docs](/docs/infinity-code/model-providers) for installing and configuring them) and aggregates their models into one catalog, with the first model of the first configured provider as the default. These provider processes are served over a **Unix domain socket**. You rarely need the details — `infinity_agent_core::model_provider::remote` provides both sides — but they matter when packaging a provider as an installable crate.
+The local daemon (Infinity Code) runs each provider as a separate process configured in `~/.infinity/providers.json` (see [Model Providers in the Infinity Code docs](/docs/infinity-code/model-providers) for installing and configuring them) and aggregates their models into one catalog, with the first model of the first configured provider as the default. These provider processes are served over a **Unix domain socket**. You rarely need the details — `infinity_provider_protocol::remote` provides both sides — but they matter when packaging a provider as an installable crate.
 
 A provider binary does three things:
 
 ```rust
 use std::sync::Arc;
-use infinity_agent_core::model_provider::remote::serve_provider;
+use infinity_provider_protocol::remote::serve_provider;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

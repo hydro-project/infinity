@@ -11,6 +11,7 @@ members = [
     "crates/rap-steering-server",
     "crates/rap-github-event-poller",
     "crates/infinity-protocol",
+    "crates/infinity-provider-protocol",
     "crates/infinity-daemon",
     "crates/infinity-provider-bedrock",
     "crates/rig-mock",

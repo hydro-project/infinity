@@ -6,7 +6,7 @@
 //! token limits. Callers only deal in plain rig [`CompletionRequest`]s.
 
 use async_trait::async_trait;
-use infinity_agent_core::model_provider::{
+use infinity_provider_protocol::{
     ModelEntry, ModelProvider, ProviderCompletionResponse, erase_streaming_response,
 };
 use rig::client::CompletionClient;

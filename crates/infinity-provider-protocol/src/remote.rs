@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use tokio::net::{UnixListener, UnixStream};
 use tokio_util::codec::{Framed, LinesCodec};
 
-use super::{ModelEntry, ModelProvider, ProviderCompletionResponse, ProviderStreamingResponse};
+use crate::{ModelEntry, ModelProvider, ProviderCompletionResponse, ProviderStreamingResponse};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -166,7 +166,7 @@ pub enum WireStreamItem {
 
 /// Convert one streamed item from the server-side provider into wire items.
 /// `Reasoning` fans out into one item per content block, mirroring
-/// [`super::erase_streaming_response`].
+/// [`crate::erase_streaming_response`].
 fn content_to_wire(
     item: Result<StreamedAssistantContent<ProviderStreamingResponse>, CompletionError>,
 ) -> Vec<WireStreamItem> {
@@ -487,7 +487,7 @@ impl ModelProvider for RemoteModelProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model_provider::SingleModelProvider;
+    use crate::SingleModelProvider;
     use rig::completion::Usage;
     use rig::message::UserContent;
     use rig_mock::mock_model;

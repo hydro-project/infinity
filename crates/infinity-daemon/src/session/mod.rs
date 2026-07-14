@@ -154,10 +154,7 @@ impl SessionManager {
     /// and killed on drop.
     pub async fn with_providers(
         config: SessionManagerConfig,
-        providers: Vec<(
-            String,
-            Arc<dyn infinity_agent_core::model_provider::ModelProvider>,
-        )>,
+        providers: Vec<(String, Arc<dyn infinity_provider_protocol::ModelProvider>)>,
         provider_processes: Vec<tokio::process::Child>,
     ) -> Result<Self, BoxError> {
         let SessionManagerConfig {

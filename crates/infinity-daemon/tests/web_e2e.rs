@@ -33,11 +33,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use infinity_agent_core::model_provider::{ModelEntry, ModelProvider, SingleModelProvider};
 use infinity_daemon::ids::SequentialIdSource;
 use infinity_daemon::rap_callback;
 use infinity_daemon::session::{SessionManager, SessionManagerConfig};
 use infinity_daemon::ws_handler;
+use infinity_provider_protocol::{ModelEntry, ModelProvider, SingleModelProvider};
 use playwright_rs::{
     Animations, Browser, BrowserContext, Page, Playwright, ScreenshotAssertionOptions, expect,
     expect_page,

@@ -17,9 +17,9 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::event_processor::{self, CompletionAction, HistoryManager};
 use crate::message::{InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind};
-use crate::model_provider::{ModelProvider, ProviderStreamingResponse};
 use crate::tools::{Tool, ToolContext};
 use crate::traits::{ConversationStore, InputSender, StateStore};
+use infinity_provider_protocol::{ModelProvider, ProviderStreamingResponse};
 use rap_client::http::HttpClient;
 use rap_client::notifier::RapNotifier;
 
@@ -388,11 +388,11 @@ mod tests {
     use super::DisplayEvent;
     use crate::event_processor::HistoryManager;
     use crate::message::{InputMessage, InputMessageContent, OAuthRequired, UserChoiceRequired};
-    use crate::model_provider::ProviderStreamingResponse;
     use crate::test_helpers::mock_provider;
     use crate::tools::{Tool, ToolContext};
     use crate::traits::{ConversationStore, InputSender, StateStore};
     use async_trait::async_trait;
+    use infinity_provider_protocol::ProviderStreamingResponse;
     use rap_client::http::HttpClient;
     use rig::OneOrMany;
     use rig::completion::ToolDefinition;

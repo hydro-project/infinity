@@ -50,6 +50,7 @@ vt100 = { workspace = true }
 alacritty_terminal = { workspace = true }
 rig-mock = { path = "../rig-mock" }
 rap-client = { path = "../rap-client" }
+infinity-provider-protocol = { path = "../infinity-provider-protocol" }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time", "test-util"] }
 

@@ -2,7 +2,7 @@
 
 use rig_mock::{MockCompletionModel, MockModelController, mock_model};
 
-use crate::model_provider::{ModelEntry, SingleModelProvider};
+use infinity_provider_protocol::{ModelEntry, SingleModelProvider};
 
 /// Wrap a mock model as a single-model provider. The model is registered as
 /// `"mock"` with a zero context window and no output token limit.
