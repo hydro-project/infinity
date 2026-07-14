@@ -104,7 +104,10 @@ async fn run_cargo_install(
                 match line {
                     Some(text) => {
                         viewport.print_line_above(
-                            Line::from(Span::styled(&text, Style::default().fg(Color::DarkGray))),
+                            Line::from(Span::styled(
+                                crate::sanitize::strip_ansi(&text),
+                                Style::default().fg(Color::DarkGray),
+                            )),
                         )?;
                         draw_spinner(viewport, &spinner_start, &status)?;
                     }

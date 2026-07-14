@@ -193,9 +193,12 @@ fn write_spans<'a>(
 ///
 /// Understands CR/LF/tab stops, skips SGR styling sequences, measures
 /// printable text by display width, and accounts for auto-wrap at the
-/// terminal width. Anything else printed through
-/// [`InlineViewport::print_above`] would silently desynchronize the anchor
+/// terminal width. Only the exact sequences the TUI itself emits through
+/// [`InlineViewport::print_above`] (SGR styling, i.e. `CSI <digits/;> m`)
+/// are recognized; anything else would silently desynchronize the anchor
 /// tracking, so unrecognized control bytes and escape sequences panic.
+/// External text (tool results, model output, ...) must be sanitized with
+/// [`crate::sanitize::strip_ansi`] before it is printed.
 struct OutputTracker {
     width: u16,
     /// Display width of the logical line printed so far (since last CR/LF).
@@ -289,18 +292,18 @@ impl OutputTracker {
                     );
                     self.state = TrackerState::Csi;
                 }
-                TrackerState::Csi => {
-                    if (0x40..=0x7e).contains(&b) {
-                        // Only SGR (styling) is cursor-neutral; anything
-                        // else would desynchronize the anchor tracking.
-                        assert!(
-                            b == b'm',
-                            "bug: print_above wrote untracked CSI sequence ending in {:?}",
-                            b as char
-                        );
-                        self.state = TrackerState::Ground;
-                    }
-                }
+                TrackerState::Csi => match b {
+                    // Parameter bytes of the SGR sequences the TUI emits
+                    // (crossterm's SetColors/SetAttribute): digits and `;`.
+                    b'0'..=b'9' | b';' => {}
+                    // Only SGR (styling) is cursor-neutral; anything else
+                    // would desynchronize the anchor tracking.
+                    b'm' => self.state = TrackerState::Ground,
+                    _ => panic!(
+                        "bug: print_above wrote untracked CSI byte {:?} (only SGR is tracked)",
+                        b as char
+                    ),
+                },
             }
         }
         flush_run(self, run_start.take(), bytes.len());

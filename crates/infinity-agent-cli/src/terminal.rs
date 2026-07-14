@@ -4,6 +4,7 @@ use crate::{
     inline_viewport::{InlineViewport, ResetScrollRegion},
     model_picker::{ModelPicker, ModelPickerResult, ModelPickerWidget},
     quit_picker::{QuitPicker, QuitPickerResult, QuitPickerWidget},
+    sanitize::strip_ansi,
     session_picker::{SessionPicker, SessionPickerResult, SessionPickerWidget},
     term_io::{EventSource, TermOut},
     text_input::{TextInput, TextInputWidget},
@@ -400,9 +401,9 @@ where
                     }
                     DisplayEvent::ThinkingChunk { chunk } => {
                         if is_root {
-                            thinking_text_buffer.push_str(&chunk);
+                            thinking_text_buffer.push_str(&strip_ansi(&chunk));
                         } else {
-                            thread_buffers.entry(child_tid).or_default().push_str(&chunk);
+                            thread_buffers.entry(child_tid).or_default().push_str(&strip_ansi(&chunk));
                         }
                     }
                     DisplayEvent::StartOutput => {
@@ -435,11 +436,12 @@ where
 
                             spinner_state = Some(SpinnerState::Thinking);
 
+                            let chunk = strip_ansi(&chunk);
                             let chunk = if stream_start {
                                 stream_start = false;
-                                chunk.trim_start().to_owned()
+                                chunk.trim_start()
                             } else {
-                                chunk
+                                &chunk
                             };
 
                             if !chunk.is_empty() {
@@ -454,7 +456,7 @@ where
                                 })?;
                             }
                         } else {
-                            thread_buffers.entry(child_tid).or_default().push_str(&chunk);
+                            thread_buffers.entry(child_tid).or_default().push_str(&strip_ansi(&chunk));
                         }
                     }
                     DisplayEvent::ResponseDone(r) => {
@@ -480,6 +482,7 @@ where
 
                         let display_text = display_as
                             .unwrap_or_else(|| format!("{}({})", name, args));
+                        let display_text = strip_ansi(&display_text);
 
                         if is_root {
                             spinner_state = Some(SpinnerState::WaitingToolCall);
@@ -523,7 +526,8 @@ where
                                     viewport.print_spans_above(Line::from(vec![
                                         Span::styled(" ✓", Style::default().fg(Color::Green)),
                                     ]))?;
-                                    let lines: Vec<&str> = diff.patch.lines().collect();
+                                    let patch = strip_ansi(&diff.patch);
+                                    let lines: Vec<&str> = patch.lines().collect();
                                     print_continuation_lines(
                                         &mut viewport,
                                         &lines,
@@ -533,6 +537,7 @@ where
                                     viewport.print_line_above(Line::from(vec![]))?;
                                 }
                                 Some(rap_protocol::DisplaySegment::Text(t)) => {
+                                    let t = strip_ansi(t);
                                     let lines: Vec<&str> = t.lines().collect();
                                     if lines.len() <= 1 {
                                         let first = lines.first().copied().unwrap_or("");
@@ -572,6 +577,7 @@ where
                         // Print each line separately: ratatui `Line` drops
                         // embedded newlines, and raw LF would not return the
                         // cursor to column 0 in raw mode anyway.
+                        let text = strip_ansi(&text);
                         for line in text.lines() {
                             viewport.print_line_above(Line::from(line.to_owned()))?;
                         }
@@ -585,7 +591,7 @@ where
                         }
                     }
                     DisplayEvent::UserInput(text) => {
-                        let sanitized = text.replace('\n', "\r\n");
+                        let sanitized = strip_ansi(&text).replace('\n', "\r\n");
                         end_stream(&mut viewport, &mut mid_stream)?;
                         viewport.print_line_above(Line::from(vec![
                             Span::styled(format!("> {}", sanitized), Style::default().add_modifier(Modifier::BOLD)),
@@ -598,6 +604,8 @@ where
                     DisplayEvent::SubscriptionEvent { name, text } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
                         let pfx = if !is_root { format!("[{}] ", &child_tid[..child_tid.len().min(8)]) } else { String::new() };
+                        let name = strip_ansi(&name);
+                        let text = strip_ansi(&text);
                         let lines: Vec<&str> = text.lines().collect();
                         if lines.len() <= 1 {
                             // Single line: print inline

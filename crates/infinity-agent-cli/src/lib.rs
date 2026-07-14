@@ -6,6 +6,7 @@ pub mod install;
 pub mod model_picker;
 pub mod modifier_diff;
 pub mod quit_picker;
+pub mod sanitize;
 pub mod session_picker;
 pub mod term_io;
 pub mod terminal;

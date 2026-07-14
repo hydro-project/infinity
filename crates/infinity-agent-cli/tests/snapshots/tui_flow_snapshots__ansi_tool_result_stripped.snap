@@ -1,0 +1,41 @@
+---
+source: crates/infinity-agent-cli/tests/tui_flow_snapshots.rs
+expression: h.screen_with_scrollback()
+---
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                │
+│                                                                                │
+│Infinity Agent CLI                                                              │
+│Type your messages below. /help for commands. Ctrl+C to exit.                   │
+│                                                                                │
+│> cat the snapshot                                                              │
+│◆ $ cat snap.txt                                                                │
+│✓ first line red                                                                │
+│  second line                                                                   │
+│  third line                                                                    │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│────────────────────────────────────────────────────────────────────────────────│
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│/help for commands                                 mock: mock-model · 0% context│
+└────────────────────────────────────────────────────────────────────────────────┘
+cursor: row=15 col=1
