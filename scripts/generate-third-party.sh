@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUTPUT="$ROOT_DIR/THIRD-PARTY"
 
 # Licenses permitted for npm dependencies (includes guessed variants with *)
-NPM_ALLOWED="MIT;MIT*;Apache-2.0;Apache*;ISC;BSD-2-Clause;BSD-3-Clause;0BSD;CC0-1.0;Unlicense;BlueOak-1.0.0;MPL-2.0"
+NPM_ALLOWED="MIT;MIT*;Apache-2.0;Apache*;ISC;BSD-2-Clause;BSD-3-Clause;0BSD;CC0-1.0;Unlicense;BlueOak-1.0.0;MPL-2.0;Custom: https://shiki.style/"
 
 cd "$ROOT_DIR"
 

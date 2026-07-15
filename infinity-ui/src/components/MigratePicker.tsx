@@ -84,8 +84,7 @@ export function MigratePicker({
   useEffect(() => {
     if (completionIndex >= 0 && listRef.current) {
       const item = listRef.current.children[completionIndex] as
-        | HTMLElement
-        | undefined;
+        HTMLElement | undefined;
       item?.scrollIntoView({ block: "nearest" });
     }
   }, [completionIndex]);
