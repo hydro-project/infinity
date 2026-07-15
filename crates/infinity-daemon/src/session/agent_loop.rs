@@ -939,6 +939,189 @@ mod tests {
             .await;
     }
 
+    /// Regression test for issue #64: after compaction is applied, the tracked
+    /// context usage must be reset so auto-compaction does not immediately
+    /// re-trigger on the stale pre-compaction token count.
+    ///
+    /// The worker must stay alive across the compaction round trip for the
+    /// stale count to survive (a respawned worker starts from zero), so the
+    /// model responds with an async tool call: the unanswered call keeps the
+    /// worker from idling out while the compaction child runs.
+    #[tokio::test(flavor = "current_thread")]
+    async fn compaction_does_not_retrigger_after_applied() {
+        use infinity_agent_core::tools::thread::CloseThreadTool;
+        use rig::completion::Usage;
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (conv, state, _dir) = tmp_stores();
+                let (model, mut ctrl) = mock_model();
+                conv.ensure_root_thread("t1")
+                    .await
+                    .expect("ensure root thread");
+
+                use async_trait::async_trait;
+                struct AsyncTool;
+                #[async_trait]
+                impl Tool<InMemoryMessageSender> for AsyncTool {
+                    fn name(&self) -> &str {
+                        "async_tool"
+                    }
+                    fn description(&self) -> &str {
+                        "a"
+                    }
+                    fn parameters(&self) -> serde_json::Value {
+                        serde_json::json!({"type":"object","properties":{}})
+                    }
+                    async fn execute(
+                        &self,
+                        _: serde_json::Value,
+                        _: String,
+                        _: Option<String>,
+                        _: &infinity_agent_core::tools::ToolContext<InMemoryMessageSender>,
+                    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                        Ok(())
+                    }
+                }
+
+                let tools: Vec<Box<dyn Tool<InMemoryMessageSender>>> = vec![
+                    Box::new(AsyncTool),
+                    Box::new(CloseThreadTool::<_, rap_client::http::SimpleHttpClient> {
+                        conversation_store: conv.clone(),
+                        rap_notifier: None,
+                    }),
+                ];
+
+                // context_window = 100, so 76 input tokens triggers compaction
+                let (tx, mut idle_rx, _, _shutdown) =
+                    spawn_test_agent_loop_with_tools("t1", conv.clone(), state, model, tools, 100)
+                        .await;
+
+                // 1. User input → async tool call + high usage → compaction triggers.
+                tx.send(user_text_input("t1", "do something"))
+                    .expect("send user input");
+                let _req = ctrl.next_request().await;
+                ctrl.send_tool_call("tc-1", "async_tool", serde_json::json!({}));
+                ctrl.finish_with_usage(Some(Usage {
+                    input_tokens: 76,
+                    output_tokens: 10,
+                    total_tokens: 86,
+                    cached_input_tokens: 0,
+                }));
+
+                let is_compaction_req = |req: &rig::completion::CompletionRequest| -> bool {
+                    req.chat_history.iter().any(|m| {
+                        if let rig::message::Message::User { content } = m
+                            && let UserContent::ToolResult(r) = content.first()
+                            && let rig::message::ToolResultContent::Text(t) = r.content.first()
+                        {
+                            t.text.contains("compaction thread")
+                        } else {
+                            false
+                        }
+                    })
+                };
+
+                // 2. The compaction child asks for a summary; close it. This
+                //    sends CompactionComplete to the parent worker, which is
+                //    still alive waiting on the tc-1 tool result.
+                let compaction_req = ctrl.next_request().await;
+                assert!(is_compaction_req(&compaction_req));
+                let child_thread_id = compaction_req
+                    .chat_history
+                    .iter()
+                    .find_map(|m| {
+                        if let rig::message::Message::User { content } = m
+                            && let UserContent::ToolResult(r) = content.first()
+                            && let rig::message::ToolResultContent::Text(t) = r.content.first()
+                            && t.text.contains("close_thread with your thread ID")
+                        {
+                            let start = t.text.find('(')? + 1;
+                            let end = t.text.find(')')?;
+                            Some(t.text[start..end].to_owned())
+                        } else {
+                            None
+                        }
+                    })
+                    .expect("should find child thread ID");
+                ctrl.send_tool_call(
+                    "tc-close",
+                    "close_thread",
+                    serde_json::json!({
+                        "thread_id": child_thread_id,
+                        "report_to_parent": "Summary of conversation so far"
+                    }),
+                );
+                ctrl.finish();
+
+                // 3. The tool result arrives. The parent applies the compaction
+                //    (CompactionComplete) and then processes the tool result.
+                //    With the bug, the stale 86-token count immediately
+                //    re-triggers compaction, spawning a second compaction child
+                //    whose model request would show up here.
+                tx.send(AgentMessage::Input(
+                    Box::new(InputMessage {
+                        content: InputMessageContent::User(UserContent::ToolResult(
+                            rig::message::ToolResult {
+                                id: "tc-1".into(),
+                                call_id: None,
+                                content: rig::OneOrMany::one(
+                                    rig::message::ToolResultContent::Text(rig::agent::Text {
+                                        text: "tool execution result".into(),
+                                    }),
+                                ),
+                            },
+                        )),
+                        group_id: "t1".into(),
+                        metadata: None,
+                        synthetic: None,
+                        display_as: None,
+                        subscription: false,
+                    }),
+                    uuid::Uuid::new_v4().to_string(),
+                ))
+                .expect("send tool result");
+
+                let req = ctrl.next_request().await;
+                assert!(
+                    !is_compaction_req(&req),
+                    "compaction must not re-trigger after being applied"
+                );
+                // Finish without usage so the tracked context usage stays at
+                // its post-compaction value.
+                ctrl.send_text("processed tool result");
+                ctrl.finish();
+
+                // 4. With the fix, all workers wind down. With the bug, a
+                //    second compaction child sits waiting on the mock model
+                //    forever and the session never idles.
+                tokio::time::timeout(std::time::Duration::from_secs(5), idle_rx.recv())
+                    .await
+                    .expect("session should idle after compaction (no re-trigger)");
+
+                // 5. Yield so the display forwarder drains its queue and any
+                //    erroneously-spawned second compaction child would have
+                //    issued its model request.
+                for _ in 0..100 {
+                    tokio::task::yield_now().await;
+                }
+                assert!(
+                    ctrl.try_next_request().is_none(),
+                    "no further model requests should be made after compaction is applied"
+                );
+
+                // The persisted context usage should have been reset when the
+                // compaction was applied (the final response reported no usage,
+                // so it must not have overwritten the reset).
+                assert_eq!(
+                    conv.get_total_tokens_used("t1"),
+                    0,
+                    "persisted context usage should be reset after compaction"
+                );
+            })
+            .await;
+    }
+
     /// Same as above but triggers compaction TWICE on the same worker without
     /// it reloading from the store. Exposes the mismatch between in-memory
     /// indices and absolute store orders after a prior compaction.

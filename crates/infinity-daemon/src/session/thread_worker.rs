@@ -179,6 +179,14 @@ pub async fn thread_worker(
                         .set_last_updated(&fwd_group_id, &chrono::Utc::now().to_rfc3339());
                 }
 
+                // Reset the persisted context usage once compaction is applied:
+                // the stored pre-compaction total is stale and would otherwise
+                // be shown (and replayed on reconnect) until the next response
+                // reports fresh usage.
+                if let DisplayEvent::CompactionApplied = evt {
+                    fwd_conversation_store.set_total_tokens_used(&fwd_group_id, 0);
+                }
+
                 // Store pending choices.
                 if let DisplayEvent::UserChoiceRequired {
                     ref id,
@@ -613,6 +621,11 @@ pub async fn thread_worker(
                 )
             }) {
                 compaction_triggered = false;
+                // Reset the tracked context usage: the pre-compaction value is
+                // stale now that the history has been compacted. Without this,
+                // the auto-compaction check would immediately re-trigger on the
+                // stale count. The next completion reports fresh usage.
+                total_tokens_cell.set(0);
             }
         }
 
