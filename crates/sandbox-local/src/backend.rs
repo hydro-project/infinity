@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
 use sandbox_core::error::SandboxError;
-use sandbox_core::git;
-use sandbox_core::jj::{self, run_jj};
-use sandbox_core::sandbox::{SandboxBackend, SpawnedCommand};
-use sandbox_core::types::{RepoState, SandboxMode};
+use sandbox_core::sandbox::{CloneContext, ModeInit, ModeProvider, SandboxBackend, SpawnedCommand};
+use sandbox_core::types::{ChangedFile, RepoState, SandboxMode};
+
+use crate::providers::{LocalGitProvider, LocalJjProvider};
 
 /// Cached sandbox entry: sandbox directory + the repo state that created it.
 struct CachedSandbox {
@@ -23,11 +23,12 @@ struct CachedSandbox {
 
 /// Local sandbox backend.
 /// The "remote" is just the original local git directory.
-/// Each sandbox is a temp dir with a jj workspace pointing at that local path.
+/// Each sandbox is a temp dir created by the mode's [`ModeProvider`]
+/// (a jj workspace or git worktree pointing at that local path).
 ///
 /// Sandbox directories are cached by group_id so that repeated
 /// `create_sandbox` calls for the same group reuse the existing workspace
-/// instead of running `jj workspace add` every time.
+/// instead of recreating it every time.
 ///
 /// Sandbox temp directories are created under `{remote_uri}/.infinity/.sandboxes/`.
 pub struct LocalBackend {
@@ -36,6 +37,11 @@ pub struct LocalBackend {
     /// Whether to use platform-specific sandboxing for command execution
     /// (macOS sandbox-exec or Linux bubblewrap).
     sandbox_enabled: bool,
+    /// Mode providers, consulted in order during `clone_repo` detection and
+    /// used to dispatch all mode-specific behavior. The built-in jj and git
+    /// providers are registered by default (git last, as the fallback);
+    /// external providers are prepended via [`LocalBackend::with_provider`].
+    providers: Vec<Arc<dyn ModeProvider>>,
 }
 
 /// Returns the list of additional writable paths for a sandbox.
@@ -109,21 +115,52 @@ impl LocalBackend {
         Self {
             cache: Mutex::new(HashMap::new()),
             sandbox_enabled,
+            providers: vec![Arc::new(LocalJjProvider), Arc::new(LocalGitProvider)],
         }
     }
 
-    /// Compute the sandboxes base directory for a given repo.
-    fn sandboxes_dir_for(remote_uri: &str) -> PathBuf {
-        PathBuf::from(remote_uri)
-            .join(".infinity")
-            .join(".sandboxes")
+    /// Register an additional [`ModeProvider`], consulted before the built-in
+    /// jj and git providers during `clone_repo` detection.
+    #[must_use]
+    pub fn with_provider(mut self, provider: Arc<dyn ModeProvider>) -> Self {
+        self.providers.insert(0, provider);
+        self
     }
 
-    /// Create a new temporary directory under `{remote_uri}/.infinity/.sandboxes/`.
-    fn make_tempdir(remote_uri: &str) -> std::io::Result<tempfile::TempDir> {
-        let base = Self::sandboxes_dir_for(remote_uri);
-        std::fs::create_dir_all(&base)?;
-        tempfile::tempdir_in(&base)
+    /// Find the provider that handles the given mode.
+    fn provider_for(&self, mode: &SandboxMode) -> Option<&Arc<dyn ModeProvider>> {
+        self.providers.iter().find(|p| p.handles(mode))
+    }
+
+    /// Find the provider that handles the given mode, or error.
+    fn require_provider(&self, mode: &SandboxMode) -> Result<&Arc<dyn ModeProvider>, SandboxError> {
+        self.provider_for(mode).ok_or_else(|| {
+            SandboxError::Other("no mode provider registered for this sandbox mode".to_owned())
+        })
+    }
+
+    /// Resolve a requested local path to a repository root.
+    ///
+    /// Validates that the path is absolute and exists, canonicalizes it, and
+    /// walks up to the repository root so paths nested inside a repo (e.g. a
+    /// cwd in a subdirectory of a jj repo, which has no `.jj`/`.git` marker
+    /// of its own) resolve to the repo itself. If no root is found, falls
+    /// back to the path as given so callers produce their usual "not a
+    /// repository" errors (or, for Direct mode, operate on non-VCS dirs).
+    fn resolve_repo_root(repo: &str) -> Result<PathBuf, SandboxError> {
+        let path = PathBuf::from(repo);
+        if !path.is_absolute() {
+            return Err(SandboxError::Other(format!(
+                "repo path must be absolute, got: {repo}"
+            )));
+        }
+        if !path.exists() {
+            return Err(SandboxError::Other(format!(
+                "local repo path does not exist: {repo}"
+            )));
+        }
+        let abs = path.canonicalize().map_err(SandboxError::Io)?;
+        Ok(sandbox_core::find_repo_root(&abs).unwrap_or(abs))
     }
 
     /// Get the canonicalized tmp dir path for a sandbox from the cache.
@@ -139,38 +176,20 @@ impl LocalBackend {
             .canonicalize()
             .map_err(SandboxError::Io)
     }
-}
 
-/// Check if a jj bookmark's commit is empty (no changes) using a synchronous command.
-fn jj_bookmark_is_empty(dir: &Path, bookmark: &str) -> bool {
-    Command::new("jj")
-        .args([
-            "--ignore-working-copy",
-            "log",
-            "--no-graph",
-            "-r",
-            bookmark,
-            "-T",
-            "empty",
-        ])
-        .current_dir(dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
-        .unwrap_or(false)
-}
-
-/// Check if the top commit on the current branch has no file changes (sync, for Drop).
-fn git_branch_top_is_empty_sync(dir: &Path) -> bool {
-    Command::new("git")
-        .args(["diff", "--quiet", "HEAD~1"])
-        .current_dir(dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    /// Extra writable paths granted by the sandbox's mode provider.
+    fn provider_writable_paths(&self, sandbox_dir: &Path) -> Vec<PathBuf> {
+        let mode = {
+            let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            cache
+                .values()
+                .find(|e| e.dir == sandbox_dir)
+                .map(|e| e.state.mode.clone())
+        };
+        mode.and_then(|mode| self.provider_for(&mode))
+            .map(|p| p.extra_writable_paths(sandbox_dir))
+            .unwrap_or_default()
+    }
 }
 
 impl Drop for LocalBackend {
@@ -178,37 +197,21 @@ impl Drop for LocalBackend {
         let cache = self.cache.get_mut().unwrap_or_else(|e| e.into_inner());
         for (group_id, entry) in cache.drain() {
             let dir = &entry.dir;
-            let branch = format!("sandbox-{group_id}");
             tracing::info!(group_id = %group_id, dir = %dir.display(), "dropping cached sandbox");
             match &entry.state.mode {
-                SandboxMode::Jj { .. } => {
-                    if jj_bookmark_is_empty(dir, &branch) {
-                        let _ = Command::new("jj")
-                            .args(["--ignore-working-copy", "abandon", &branch])
-                            .current_dir(dir)
-                            .status();
-                    }
-                    let _ = Command::new("jj")
-                        .args(["--ignore-working-copy", "workspace", "forget"])
-                        .current_dir(dir)
-                        .status();
-                    let _ = std::fs::remove_dir_all(dir);
-                }
-                SandboxMode::Git { .. } => {
-                    let original_repo = PathBuf::from(&entry.state.remote_uri);
-                    let empty = git_branch_top_is_empty_sync(dir);
-                    let _ = Command::new("git")
-                        .args(["worktree", "remove", "--force", &dir.to_string_lossy()])
-                        .current_dir(&original_repo)
-                        .status();
-                    if empty {
-                        let _ = Command::new("git")
-                            .args(["branch", "-D", &branch])
-                            .current_dir(&original_repo)
-                            .status();
-                    }
-                }
                 SandboxMode::Direct => {}
+                mode => {
+                    if let Some(provider) = self.providers.iter().find(|p| p.handles(mode)) {
+                        provider.cleanup_blocking(dir, &entry.state);
+                    } else {
+                        tracing::warn!(
+                            group_id = %group_id,
+                            dir = %dir.display(),
+                            "no mode provider registered for cached sandbox; \
+                             skipping cleanup (temp directory and repo state may be left behind)"
+                        );
+                    }
+                }
             }
         }
     }
@@ -216,35 +219,9 @@ impl Drop for LocalBackend {
 
 #[async_trait]
 impl SandboxBackend for LocalBackend {
-    /// For local mode, the repo arg is a path to an existing git dir.
-    /// We don't need to do anything special — just validate it exists,
-    /// resolve the repository root (walking up from nested paths), and
-    /// return the root path as the remote URI.
-    async fn init_repo(&self, repo: &str, _group_id: &str) -> Result<String, SandboxError> {
-        let path = PathBuf::from(repo);
-        if !path.is_absolute() {
-            return Err(SandboxError::Other(format!(
-                "repo path must be absolute, got: {repo}"
-            )));
-        }
-        if !path.exists() {
-            return Err(SandboxError::Other(format!(
-                "local repo path does not exist: {repo}"
-            )));
-        }
-        let abs = path.canonicalize().map_err(SandboxError::Io)?;
-        // Walk up to the repository root so paths nested inside a repo
-        // (e.g. a cwd in a subdirectory of a jj repo, which has no
-        // `.jj`/`.git` marker of its own) resolve to the repo itself.
-        // If no root is found, fall back to the path as given so callers
-        // produce their usual "not a repository" errors.
-        let root = sandbox_core::find_repo_root(&abs).unwrap_or(abs);
-        Ok(root.to_string_lossy().to_string())
-    }
-
     /// Create a sandbox for the given group. If a cached directory already
-    /// exists for this group_id it is returned directly; otherwise a new
-    /// temp dir is created and `jj workspace add` is run.
+    /// exists for this group_id it is refreshed and returned directly;
+    /// otherwise the mode's provider creates a new one.
     async fn create_sandbox(&self, state: &RepoState) -> Result<PathBuf, SandboxError> {
         // Fast path: return cached dir if we already have one.
         {
@@ -257,11 +234,10 @@ impl SandboxBackend for LocalBackend {
                 && dir.exists()
             {
                 tracing::info!(group_id = %state.group_id, "reusing cached sandbox");
-                match &state.mode {
-                    SandboxMode::Jj { .. } => {
-                        run_jj(&dir, &["workspace", "update-stale"]).await?;
-                    }
-                    SandboxMode::Git { .. } | SandboxMode::Direct => {}
+                if !matches!(state.mode, SandboxMode::Direct) {
+                    self.require_provider(&state.mode)?
+                        .refresh_sandbox(&dir, state)
+                        .await?;
                 }
                 return Ok(dir);
             } else {
@@ -271,30 +247,7 @@ impl SandboxBackend for LocalBackend {
 
         let sandbox_dir = match &state.mode {
             SandboxMode::Direct => PathBuf::from(&state.remote_uri),
-            SandboxMode::Jj { base_revision } => {
-                let tmp = Self::make_tempdir(&state.remote_uri).map_err(SandboxError::Io)?;
-                let sandbox_dir = tmp.keep();
-                jj::jj_git_clone(
-                    &state.remote_uri,
-                    &sandbox_dir,
-                    &state.bookmark,
-                    base_revision,
-                )
-                .await?;
-                sandbox_dir
-            }
-            SandboxMode::Git { base_revision } => {
-                let tmp = Self::make_tempdir(&state.remote_uri).map_err(SandboxError::Io)?;
-                let sandbox_dir = tmp.keep();
-                git::git_worktree_add(
-                    &PathBuf::from(&state.remote_uri),
-                    &sandbox_dir,
-                    &state.bookmark,
-                    Some(base_revision),
-                )
-                .await?;
-                sandbox_dir
-            }
+            mode => self.require_provider(mode)?.create_sandbox(state).await?,
         };
 
         // Store in cache for future reuse.
@@ -363,6 +316,7 @@ impl SandboxBackend for LocalBackend {
                     writable.push(p.to_path_buf());
                 }
             }
+            writable.extend(self.provider_writable_paths(sandbox_dir));
             let writable_iter: Box<dyn Iterator<Item = String>> = if sandbox_writable {
                 Box::new(
                     std::iter::once(sandbox_dir_str.to_string())
@@ -428,6 +382,7 @@ impl SandboxBackend for LocalBackend {
                     writable.push(p.to_path_buf());
                 }
             }
+            writable.extend(self.provider_writable_paths(sandbox_dir));
             let mut bwrap_args = vec![
                 "--ro-bind",
                 "/",
@@ -497,27 +452,15 @@ impl SandboxBackend for LocalBackend {
             let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             cache.get(group_id).map(|e| e.state.clone())
         };
-        match state.as_ref().map(|s| &s.mode) {
-            Some(SandboxMode::Direct) => Ok(()),
-            Some(SandboxMode::Git { .. }) => git::git_amend_all(sandbox_dir, description).await,
-            Some(SandboxMode::Jj { .. }) => {
-                let bookmark = format!("sandbox-{group_id}");
-                jj::jj_push_working_copy(sandbox_dir, &bookmark).await?;
-                // Keep colocated git refs in sync so git commands via
-                // write-orig see the latest jj state.
-                let orig = PathBuf::from(
-                    &state
-                        .as_ref()
-                        .expect("bug: state should be Some")
-                        .remote_uri,
-                );
-                if orig.join(".git").exists()
-                    && let Err(e) = run_jj(&orig, &["--ignore-working-copy", "git", "export"]).await
-                {
-                    tracing::warn!(error = %e, "jj git export failed");
+        match state {
+            Some(state) => match &state.mode {
+                SandboxMode::Direct => Ok(()),
+                mode => {
+                    self.require_provider(mode)?
+                        .push_sandbox(sandbox_dir, &state, description)
+                        .await
                 }
-                Ok(())
-            }
+            },
             None => Err(SandboxError::Other(format!(
                 "no cached sandbox state for group_id: {group_id}"
             ))),
@@ -532,7 +475,8 @@ impl SandboxBackend for LocalBackend {
 
     /// Permanently clean up the cached sandbox for the given group_id.
     ///
-    /// For jj mode: runs `jj workspace forget` and deletes the sandbox directory.
+    /// Delegates to the mode's provider (e.g. `jj workspace forget` and
+    /// deleting the sandbox directory for jj mode).
     async fn cleanup_sandbox_permanently(&self, group_id: &str) -> Result<(), SandboxError> {
         let entry = {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -545,34 +489,88 @@ impl SandboxBackend for LocalBackend {
         };
 
         let dir = &entry.dir;
-        let branch = format!("sandbox-{group_id}");
         tracing::info!(group_id = %group_id, dir = %dir.display(), "permanently cleaning up sandbox");
 
         match &entry.state.mode {
-            SandboxMode::Jj { .. } => {
-                if jj::jj_bookmark_is_empty(dir, &branch).await {
-                    let _ = run_jj(dir, &["--ignore-working-copy", "abandon", &branch]).await;
-                }
-                let _ = run_jj(dir, &["--ignore-working-copy", "workspace", "forget"]).await;
-                if dir.exists() {
-                    std::fs::remove_dir_all(dir).map_err(SandboxError::Io)?;
-                }
-            }
-            SandboxMode::Git { .. } => {
-                let original_repo = PathBuf::from(&entry.state.remote_uri);
-                let empty = git::git_branch_top_is_empty(dir).await;
-                let _ = git::git_worktree_remove(&original_repo, dir).await;
-                if empty {
-                    let _ = git::git_delete_branch(&original_repo, &branch).await;
-                }
-            }
             SandboxMode::Direct => {
                 tracing::info!(group_id = %group_id, "direct mode — nothing to clean up");
+            }
+            mode => {
+                self.require_provider(mode)?
+                    .cleanup(dir, &entry.state)
+                    .await?;
             }
         }
 
         // tmp_dir is cleaned up automatically when `entry` is dropped.
 
         Ok(())
+    }
+
+    /// For local mode, the requested path points at an existing repo on
+    /// disk: resolve it to the repository root, then let the providers
+    /// claim it.
+    async fn detect_mode(&self, ctx: &CloneContext<'_>) -> Result<Option<ModeInit>, SandboxError> {
+        let root = Self::resolve_repo_root(ctx.requested_path)?;
+        for provider in &self.providers {
+            if let Some(init) = provider.detect(&root, ctx).await? {
+                return Ok(Some(init));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Direct mode operates on the resolved repository root itself (falling
+    /// back to the requested directory when it has no VCS markers at all).
+    async fn init_direct(&self, repo: &str) -> Result<String, SandboxError> {
+        Ok(Self::resolve_repo_root(repo)?.to_string_lossy().to_string())
+    }
+
+    async fn describe_sandbox(
+        &self,
+        sandbox_dir: &Path,
+        state: &RepoState,
+        description: &str,
+    ) -> Result<(), SandboxError> {
+        match &state.mode {
+            SandboxMode::Direct => Ok(()),
+            mode => {
+                self.require_provider(mode)?
+                    .describe(sandbox_dir, state, description)
+                    .await
+            }
+        }
+    }
+
+    async fn detect_external_change(
+        &self,
+        sandbox_dir: &Path,
+        state: &RepoState,
+    ) -> Option<String> {
+        self.provider_for(&state.mode)?
+            .detect_external_change(sandbox_dir, state)
+            .await
+    }
+
+    async fn squash_sandbox(
+        &self,
+        sandbox_dir: &Path,
+        state: &RepoState,
+        from_bookmark: &str,
+    ) -> Result<(), SandboxError> {
+        self.require_provider(&state.mode)?
+            .squash(sandbox_dir, state, from_bookmark)
+            .await
+    }
+
+    async fn diff_files(
+        &self,
+        sandbox_dir: &Path,
+        state: &RepoState,
+    ) -> Result<Vec<ChangedFile>, SandboxError> {
+        match self.provider_for(&state.mode) {
+            Some(provider) => provider.diff_files(sandbox_dir, state).await,
+            None => Ok(Vec::new()),
+        }
     }
 }

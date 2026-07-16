@@ -2,6 +2,8 @@ use std::path::Path;
 use std::process::Stdio;
 
 use crate::error::SandboxError;
+use crate::sandbox::ModeInit;
+use crate::types::{ChangedFile, FileChangeStatus, SandboxMode, parse_changed_files};
 
 /// Run a git command in the given directory, returning stdout on success.
 #[tracing::instrument(level = "warn")]
@@ -147,4 +149,91 @@ pub async fn git_configured_user(dir: &Path) -> Option<(String, String)> {
     let name = run_git(dir, &["config", "user.name"]).await.ok()?;
     let email = run_git(dir, &["config", "user.email"]).await.ok()?;
     Some((name.trim().to_owned(), email.trim().to_owned()))
+}
+
+// ── Shared git mode logic, used by the built-in git mode providers ──
+
+/// Detect a git repository during `clone_repo` and resolve its base revision.
+///
+/// This is the fallback mode: it claims every repository not claimed by an
+/// earlier provider, and produces a helpful error (pointing at
+/// `open_sandbox_direct`) when no commit can be resolved — e.g. for empty
+/// repos or non-repository directories.
+pub async fn detect_mode(
+    repo_path: &Path,
+    base_bookmark: Option<&str>,
+) -> Result<Option<ModeInit>, SandboxError> {
+    let rev = base_bookmark.unwrap_or("HEAD");
+    let Ok(output) = run_git(repo_path, &["rev-parse", rev]).await else {
+        return Err(SandboxError::Other(
+            "Failed to resolve the HEAD commit. This can happen when the repository \
+             has no commits yet. Use the `open_sandbox_direct` tool instead, which \
+             operates directly on the repository without requiring an existing commit."
+                .to_owned(),
+        ));
+    };
+    let base_revision = output.trim().to_owned();
+
+    let message = match base_bookmark {
+        Some(rev) => format!("Repository initialized on top of {rev}."),
+        None => "Repository initialized (using Git worktrees).".to_owned(),
+    };
+    // `ModeInit::repo_root` is documented as canonicalized; `repo_root_note`
+    // compares it against a canonicalized requested path.
+    let repo_root = repo_path.canonicalize().map_err(SandboxError::Io)?;
+    Ok(Some(ModeInit {
+        mode: SandboxMode::Git { base_revision },
+        repo_root,
+        message,
+        precreate: false,
+    }))
+}
+
+/// Squash the changes from `from_branch` into the sandbox by merging, then
+/// delete the branch (best-effort).
+pub async fn squash_from(sandbox_dir: &Path, from_branch: &str) -> Result<(), SandboxError> {
+    git_merge_branch(sandbox_dir, from_branch).await?;
+    let _ = git_delete_branch(sandbox_dir, from_branch).await;
+    Ok(())
+}
+
+/// Compute the changed files (with old/new contents) between the sandbox
+/// branch and its parent, for the diff view. Runs against the original repo
+/// (`repo_path`), which shares refs with the sandbox worktree.
+pub async fn diff_files(
+    repo_path: &Path,
+    bookmark: &str,
+) -> Result<Vec<ChangedFile>, SandboxError> {
+    let bookmark_parent = format!("{bookmark}~1");
+    let summary = run_git(
+        repo_path,
+        &["diff", "--name-status", &bookmark_parent, bookmark],
+    )
+    .await?;
+    let mut files = Vec::new();
+    for (status, path) in parse_changed_files(&summary) {
+        let old_contents = if matches!(status, FileChangeStatus::Added) {
+            String::new()
+        } else {
+            let ref_path = format!("{bookmark_parent}:{path}");
+            run_git(repo_path, &["show", &ref_path])
+                .await
+                .unwrap_or_default()
+        };
+        let new_contents = if matches!(status, FileChangeStatus::Deleted) {
+            String::new()
+        } else {
+            let ref_path = format!("{bookmark}:{path}");
+            run_git(repo_path, &["show", &ref_path])
+                .await
+                .unwrap_or_default()
+        };
+        files.push(ChangedFile {
+            path: path.to_owned(),
+            status,
+            old_contents,
+            new_contents,
+        });
+    }
+    Ok(files)
 }

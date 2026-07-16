@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use crate::error::SandboxError;
+use crate::sandbox::ModeInit;
+use crate::types::{ChangedFile, FileChangeStatus, SandboxMode, parse_changed_files};
 
 /// Build a jj command in the given directory.
 fn jj_command(dir: &Path, args: &[&str]) -> tokio::process::Command {
@@ -206,4 +208,134 @@ pub async fn jj_configured_user(dir: &Path) -> Option<(String, String)> {
         return None;
     }
     Some((name, email))
+}
+
+// ── Shared jj mode logic, used by the built-in jj mode providers ──
+
+/// Detect a Jujutsu repository during `clone_repo` and resolve its base
+/// revision. Returns `None` when `repo_path` has no `.jj` directory.
+///
+/// `base_bookmark` is the bookmark to base the sandbox on (from
+/// `base_thread_id`); when `None` the sandbox is based on the current tip.
+pub async fn detect_mode(
+    repo_path: &Path,
+    base_bookmark: Option<&str>,
+) -> Result<Option<ModeInit>, SandboxError> {
+    if !repo_path.join(".jj").is_dir() {
+        return Ok(None);
+    }
+
+    let _ = run_jj(repo_path, &["workspace", "update-stale"]).await;
+    let default_rev = if base_bookmark.is_none() && jj_bookmark_is_empty(repo_path, "@").await {
+        "@-"
+    } else {
+        "@"
+    };
+    let Ok(base_revision) =
+        jj_resolve_revision(repo_path, base_bookmark.unwrap_or(default_rev)).await
+    else {
+        return Err(SandboxError::Other(
+            "Failed to resolve the base revision. This can happen when the repository \
+                 has no commits yet. Use the `open_sandbox_direct` tool instead, which \
+                 operates directly on the repository without requiring an existing commit."
+                .to_owned(),
+        ));
+    };
+
+    let message = match base_bookmark {
+        Some(rev) => format!("Repository initialized on top of {rev}."),
+        None => "Repository initialized (using Jujutsu workspaces).".to_owned(),
+    };
+    // `ModeInit::repo_root` is documented as canonicalized; `repo_root_note`
+    // compares it against a canonicalized requested path.
+    let repo_root = repo_path.canonicalize().map_err(SandboxError::Io)?;
+    Ok(Some(ModeInit {
+        mode: SandboxMode::Jj { base_revision },
+        repo_root,
+        message,
+        precreate: false,
+    }))
+}
+
+/// Record a change description on the sandbox working copy.
+pub async fn describe(sandbox_dir: &Path, description: &str) -> Result<(), SandboxError> {
+    run_jj(sandbox_dir, &["describe", "-m", description]).await?;
+    Ok(())
+}
+
+/// Detect an external move of the sandbox bookmark, returning a human-facing
+/// warning when the bookmark no longer points at the working copy.
+pub async fn detect_external_change(sandbox_dir: &Path, bookmark: &str) -> Option<String> {
+    if jj_detect_external_bookmark_move(sandbox_dir, bookmark).await {
+        Some(format!(
+            "Warning: bookmark '{bookmark}' was moved externally; overwriting with sandbox working copy."
+        ))
+    } else {
+        None
+    }
+}
+
+/// Squash the changes from `from_bookmark` into the sandbox working copy and
+/// delete the bookmark. The caller is responsible for pushing afterwards.
+pub async fn squash_from(sandbox_dir: &Path, from_bookmark: &str) -> Result<(), SandboxError> {
+    run_jj(
+        sandbox_dir,
+        &[
+            "squash",
+            "--from",
+            from_bookmark,
+            "--use-destination-message",
+        ],
+    )
+    .await?;
+    run_jj(sandbox_dir, &["bookmark", "delete", from_bookmark]).await?;
+    Ok(())
+}
+
+/// Compute the changed files (with old/new contents) between the sandbox
+/// bookmark and its parent, for the diff view.
+pub async fn diff_files(
+    sandbox_dir: &Path,
+    bookmark: &str,
+) -> Result<Vec<ChangedFile>, SandboxError> {
+    let bookmark_parent = format!("{bookmark}-");
+    let summary = run_jj(
+        sandbox_dir,
+        &[
+            "diff",
+            "--from",
+            &bookmark_parent,
+            "--to",
+            bookmark,
+            "--summary",
+        ],
+    )
+    .await?;
+    let mut files = Vec::new();
+    for (status, path) in parse_changed_files(&summary) {
+        let old_contents = if matches!(status, FileChangeStatus::Added) {
+            String::new()
+        } else {
+            run_jj(
+                sandbox_dir,
+                &["file", "show", "--revision", &bookmark_parent, path],
+            )
+            .await
+            .unwrap_or_default()
+        };
+        let new_contents = if matches!(status, FileChangeStatus::Deleted) {
+            String::new()
+        } else {
+            run_jj(sandbox_dir, &["file", "show", "--revision", bookmark, path])
+                .await
+                .unwrap_or_default()
+        };
+        files.push(ChangedFile {
+            path: path.to_owned(),
+            status,
+            old_contents,
+            new_contents,
+        });
+    }
+    Ok(files)
 }

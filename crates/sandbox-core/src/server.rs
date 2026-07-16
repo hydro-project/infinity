@@ -23,9 +23,9 @@ type DisplayResult = Result<(String, Option<Vec<DisplaySegment>>), SandboxError>
 
 use crate::error::SandboxError;
 use crate::git;
-use crate::jj::{self, run_jj};
+use crate::jj::run_jj;
 use crate::metadata::MetadataStore;
-use crate::sandbox::SandboxBackend;
+use crate::sandbox::{CloneContext, SandboxBackend};
 use crate::types::{
     CloneRepoArgs, CreateFileArgs, DescribeOverallChangesArgs, EditFileArgs, ExecuteCommandArgs,
     GrepArgs, OpenSandboxDirectArgs, ReadFileArgs, RepoState, SandboxMode, SquashSandboxArgs,
@@ -461,108 +461,56 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
         ));
     }
 
-    let remote_uri = state
-        .backend
-        .init_repo(&args.repo, &invocation.group_id)
-        .await?;
-
     let bookmark = format!("sandbox-{}", invocation.group_id);
-    let path = PathBuf::from(&remote_uri);
+
+    // The backend sets up the repository (resolving the root locally, or
+    // mirroring a remote URL), then consults its mode providers in order.
+    // The built-in jj and git providers are registered last, with git acting
+    // as the fallback for any repository not claimed earlier.
+    let base_bookmark = args
+        .base_thread_id
+        .as_ref()
+        .map(|id| format!("sandbox-{id}"));
+    let ctx = CloneContext {
+        group_id: &invocation.group_id,
+        requested_path: &args.repo,
+        bookmark: &bookmark,
+        base_bookmark: base_bookmark.as_deref(),
+    };
+    let Some(init) = state.backend.detect_mode(&ctx).await? else {
+        return Err(SandboxError::Other(
+            "No sandbox mode provider claimed this repository.".to_owned(),
+        ));
+    };
+
+    // The provider resolved the repo root itself; it is authoritative.
+    let remote_uri = init.repo_root.to_string_lossy().into_owned();
+    let repo_state = RepoState {
+        group_id: invocation.group_id.clone(),
+        remote_uri: remote_uri.clone(),
+        bookmark: bookmark.clone(),
+        mode: init.mode,
+        sandbox_path: None,
+        write_orig_granted: false,
+        write_path_grants: Default::default(),
+        root_thread_id: Some(
+            invocation
+                .thread_ancestors
+                .as_ref()
+                .and_then(|a| a.first().cloned())
+                .unwrap_or_else(|| invocation.group_id.clone()),
+        ),
+    };
+    state.metadata.put(&repo_state).await?;
+    if init.precreate {
+        state.backend.create_sandbox(&repo_state).await?;
+    }
+    tracing::info!(group_id = %invocation.group_id, remote = %remote_uri, "repo cloned");
 
     // If the requested path was nested inside the repository (rather than
     // being the repo root itself), note the detected root in the response.
-    let root_note = repo_root_note(&args.repo, &path);
-
-    // Resolve the base revision to an absolute jj change_id.
-    let (repo_state, mut msg) = if path.join(".jj").is_dir() {
-        // Jujutsu repo — resolve base revision via jj.
-        let _ = run_jj(&path, &["workspace", "update-stale"]).await;
-        let rev_to_resolve = args
-            .base_thread_id
-            .as_ref()
-            .map(|id| format!("sandbox-{}", id));
-        let default_rev = if rev_to_resolve.is_none() && jj::jj_bookmark_is_empty(&path, "@").await
-        {
-            "@-"
-        } else {
-            "@"
-        };
-        let Ok(base_revision) =
-            jj::jj_resolve_revision(&path, rev_to_resolve.as_deref().unwrap_or(default_rev)).await
-        else {
-            return Err(SandboxError::Other(
-                "Failed to resolve the base revision. This can happen when the repository \
-                     has no commits yet. Use the `open_sandbox_direct` tool instead, which \
-                     operates directly on the repository without requiring an existing commit."
-                    .to_owned(),
-            ));
-        };
-
-        let rs = RepoState {
-            group_id: invocation.group_id.clone(),
-            remote_uri: remote_uri.clone(),
-            bookmark: bookmark.clone(),
-            mode: SandboxMode::Jj { base_revision },
-            sandbox_path: None,
-            write_orig_granted: false,
-            write_path_grants: Default::default(),
-            root_thread_id: Some(
-                invocation
-                    .thread_ancestors
-                    .as_ref()
-                    .and_then(|a| a.first().cloned())
-                    .unwrap_or_else(|| invocation.group_id.clone()),
-            ),
-        };
-        let msg = match rev_to_resolve {
-            Some(rev) => format!("Repository initialized on top of {rev}."),
-            None => "Repository initialized (using Jujutsu workspaces).".to_owned(),
-        };
-        (rs, msg)
-    } else {
-        // Plain git repo — resolve base revision via git rev-parse.
-        let rev_to_resolve = args
-            .base_thread_id
-            .as_ref()
-            .map(|id| format!("sandbox-{}", id));
-        let rev = rev_to_resolve.as_deref().unwrap_or("HEAD");
-        let Ok(output) = git::run_git(&path, &["rev-parse", rev]).await else {
-            return Err(SandboxError::Other(
-                "Failed to resolve the HEAD commit. This can happen when the repository \
-                 has no commits yet. Use the `open_sandbox_direct` tool instead, which \
-                 operates directly on the repository without requiring an existing commit."
-                    .to_owned(),
-            ));
-        };
-        let base_revision = output.trim().to_owned();
-
-        let rs = RepoState {
-            group_id: invocation.group_id.clone(),
-            remote_uri: remote_uri.clone(),
-            bookmark: bookmark.clone(),
-            mode: SandboxMode::Git { base_revision },
-            sandbox_path: None,
-            write_orig_granted: false,
-            write_path_grants: Default::default(),
-            root_thread_id: Some(
-                invocation
-                    .thread_ancestors
-                    .as_ref()
-                    .and_then(|a| a.first().cloned())
-                    .unwrap_or_else(|| invocation.group_id.clone()),
-            ),
-        };
-        let msg = match rev_to_resolve {
-            Some(rev) => format!("Repository initialized on top of {rev}."),
-            None => "Repository initialized (using Git worktrees).".to_owned(),
-        };
-        (rs, msg)
-    };
-
-    state.metadata.put(&repo_state).await?;
-
-    tracing::info!(group_id = %invocation.group_id, remote = %remote_uri, "repo cloned");
-    if let Some(note) = root_note {
+    let mut msg = init.message;
+    if let Some(note) = repo_root_note(&args.repo, &init.repo_root) {
         msg.push_str(&note);
     }
     Ok(msg)
@@ -593,10 +541,7 @@ async fn handle_open_sandbox_direct<B: SandboxBackend, M: MetadataStore, C: Call
     let args: OpenSandboxDirectArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
-    let remote_uri = state
-        .backend
-        .init_repo(&args.repo, &invocation.group_id)
-        .await?;
+    let remote_uri = state.backend.init_direct(&args.repo).await?;
 
     let repo_state = RepoState {
         group_id: invocation.group_id.clone(),
@@ -645,7 +590,7 @@ fn append_co_author_trailer(description: &str) -> String {
 async fn with_sandbox<B, M, C, F, Fut>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
-    jj_description: Option<&str>,
+    description: Option<&str>,
     action: F,
     modifies: bool,
 ) -> DisplayResult
@@ -665,27 +610,24 @@ where
 
     let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;
 
-    let description_with_trailer = jj_description.map(append_co_author_trailer);
+    let description_with_trailer = description.map(append_co_author_trailer);
     let description_ref = description_with_trailer.as_deref();
 
-    if let Some(description) = description_ref
-        && let SandboxMode::Jj { .. } = &repo_state.mode
-    {
-        run_jj(&sandbox_dir, &["describe", "-m", description]).await?;
+    if let Some(description) = description_ref {
+        state
+            .backend
+            .describe_sandbox(&sandbox_dir, &repo_state, description)
+            .await?;
     }
 
     let result = action(sandbox_dir.clone()).await;
 
-    // Detect external bookmark moves before push overwrites them.
-    let push_warning = if modifies
-        && result.is_ok()
-        && matches!(repo_state.mode, SandboxMode::Jj { .. })
-        && jj::jj_detect_external_bookmark_move(&sandbox_dir, &repo_state.bookmark).await
-    {
-        Some(format!(
-            "Warning: bookmark '{}' was moved externally; overwriting with sandbox working copy.",
-            repo_state.bookmark
-        ))
+    // Detect external changes (e.g. bookmark moves) before push overwrites them.
+    let push_warning = if modifies && result.is_ok() {
+        state
+            .backend
+            .detect_external_change(&sandbox_dir, &repo_state)
+            .await
     } else {
         None
     };
@@ -1683,10 +1625,19 @@ async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackC
         .ok_or_else(|| SandboxError::RepoNotFound(invocation.group_id.clone()))?;
 
     let result = match &repo_state.mode {
-        SandboxMode::Git { .. } => {
+        SandboxMode::Direct => Err(SandboxError::Other(
+            "squash_sandbox is not supported in Direct mode".to_owned(),
+        )),
+        _ => {
             let sandbox_dir = state.backend.create_sandbox(&repo_state).await?;
-            git::git_merge_branch(&sandbox_dir, &from_bookmark).await?;
-            let _ = git::git_delete_branch(&sandbox_dir, &from_bookmark).await;
+            state
+                .backend
+                .squash_sandbox(&sandbox_dir, &repo_state, &from_bookmark)
+                .await?;
+            push_diff_view(state, invocation, &sandbox_dir).await;
+            if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {
+                tracing::warn!("failed to cleanup sandbox: {e}");
+            }
             Ok((
                 format!("Squashed changes from {from_bookmark}."),
                 Some(vec![DisplaySegment::Text(format!(
@@ -1694,37 +1645,6 @@ async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackC
                 ))]),
             ))
         }
-        SandboxMode::Jj { .. } => {
-            with_sandbox(
-                state,
-                invocation,
-                None,
-                |sandbox_dir| async move {
-                    run_jj(
-                        &sandbox_dir,
-                        &[
-                            "squash",
-                            "--from",
-                            &from_bookmark,
-                            "--use-destination-message",
-                        ],
-                    )
-                    .await?;
-                    run_jj(&sandbox_dir, &["bookmark", "delete", &from_bookmark]).await?;
-                    Ok((
-                        format!("Squashed changes from {from_bookmark}."),
-                        Some(vec![DisplaySegment::Text(format!(
-                            "Squashed from {from_bookmark}"
-                        ))]),
-                    ))
-                },
-                true,
-            )
-            .await
-        }
-        SandboxMode::Direct => Err(SandboxError::Other(
-            "squash_sandbox is not supported in Direct mode".to_owned(),
-        )),
     };
 
     // Remove the child's metadata so migration doesn't try to bundle a deleted bookmark.
@@ -1733,36 +1653,6 @@ async fn handle_squash_sandbox<B: SandboxBackend, M: MetadataStore, C: CallbackC
     }
 
     result
-}
-
-#[derive(Debug, Clone, Copy, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-enum FileChangeStatus {
-    Added,
-    Deleted,
-    Modified,
-}
-
-/// Parse `git diff --name-status` or `jj diff --summary` output into (status, path) pairs.
-fn parse_changed_files(output: &str) -> Vec<(FileChangeStatus, &str)> {
-    output
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            // jj format: "M path" or "A path" or "D path"
-            // git format: "M\tpath" or "A\tpath" or "D\tpath"
-            let (status, path) =
-                if let Some(rest) = line.strip_prefix("M\t").or(line.strip_prefix("M ")) {
-                    (FileChangeStatus::Modified, rest)
-                } else if let Some(rest) = line.strip_prefix("A\t").or(line.strip_prefix("A ")) {
-                    (FileChangeStatus::Added, rest)
-                } else {
-                    let rest = line.strip_prefix("D\t").or(line.strip_prefix("D "))?;
-                    (FileChangeStatus::Deleted, rest)
-                };
-            Some((status, path.trim()))
-        })
-        .collect()
 }
 
 /// Compute the overall diff for a sandbox and send a `view_update` callback.
@@ -1776,100 +1666,25 @@ async fn push_diff_view<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     let Ok(Some(repo_state)) = state.metadata.get(&invocation.group_id).await else {
         return;
     };
-    let repo_path = PathBuf::from(&repo_state.remote_uri);
 
     let files: Vec<serde_json::Value> = match &repo_state.mode {
-        SandboxMode::Jj { .. } => {
-            let bookmark_parent = format!("{}-", repo_state.bookmark);
-            let Ok(summary) = run_jj(
-                sandbox_dir,
-                &[
-                    "diff",
-                    "--from",
-                    &bookmark_parent,
-                    "--to",
-                    &repo_state.bookmark,
-                    "--summary",
-                ],
-            )
-            .await
-            else {
+        SandboxMode::Direct => Vec::new(),
+        _ => {
+            let Ok(changed) = state.backend.diff_files(sandbox_dir, &repo_state).await else {
                 return;
             };
-            let mut files = Vec::new();
-            for (status, path) in parse_changed_files(&summary) {
-                let old_contents = if matches!(status, FileChangeStatus::Added) {
-                    String::new()
-                } else {
-                    run_jj(
-                        sandbox_dir,
-                        &["file", "show", "--revision", &bookmark_parent, path],
-                    )
-                    .await
-                    .unwrap_or_default()
-                };
-                let new_contents = if matches!(status, FileChangeStatus::Deleted) {
-                    String::new()
-                } else {
-                    run_jj(
-                        sandbox_dir,
-                        &["file", "show", "--revision", &repo_state.bookmark, path],
-                    )
-                    .await
-                    .unwrap_or_default()
-                };
-                files.push(serde_json::json!({
-                    "path": path,
-                    "status": status,
-                    "oldContents": old_contents,
-                    "newContents": new_contents,
-                }));
-            }
-            files
+            changed
+                .into_iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "path": c.path,
+                        "status": c.status,
+                        "oldContents": c.old_contents,
+                        "newContents": c.new_contents,
+                    })
+                })
+                .collect()
         }
-        SandboxMode::Git { .. } => {
-            let bookmark_parent = format!("{}~1", repo_state.bookmark);
-            let Ok(summary) = git::run_git(
-                &repo_path,
-                &[
-                    "diff",
-                    "--name-status",
-                    &bookmark_parent,
-                    &repo_state.bookmark,
-                ],
-            )
-            .await
-            else {
-                return;
-            };
-            let mut files = Vec::new();
-            for (status, path) in parse_changed_files(&summary) {
-                let old_contents = if matches!(status, FileChangeStatus::Added) {
-                    String::new()
-                } else {
-                    let ref_path = format!("{bookmark_parent}:{path}");
-                    git::run_git(&repo_path, &["show", &ref_path])
-                        .await
-                        .unwrap_or_default()
-                };
-                let new_contents = if matches!(status, FileChangeStatus::Deleted) {
-                    String::new()
-                } else {
-                    let ref_path = format!("{}:{path}", repo_state.bookmark);
-                    git::run_git(&repo_path, &["show", &ref_path])
-                        .await
-                        .unwrap_or_default()
-                };
-                files.push(serde_json::json!({
-                    "path": path,
-                    "status": status,
-                    "oldContents": old_contents,
-                    "newContents": new_contents,
-                }));
-            }
-            files
-        }
-        _ => Vec::new(),
     };
 
     if !files.is_empty() {
@@ -1973,6 +1788,11 @@ async fn migrate_inner<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
             SandboxMode::Direct => {
                 return Err(SandboxError::Other(
                     "cannot migrate Direct mode sandboxes".into(),
+                ));
+            }
+            SandboxMode::Custom { .. } => {
+                return Err(SandboxError::Other(
+                    "cannot migrate custom mode sandboxes".into(),
                 ));
             }
             SandboxMode::Jj { .. } => {

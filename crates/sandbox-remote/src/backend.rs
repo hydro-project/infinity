@@ -5,8 +5,8 @@ use async_trait::async_trait;
 
 use sandbox_core::error::SandboxError;
 use sandbox_core::jj::{self, run_jj};
-use sandbox_core::sandbox::{SandboxBackend, SpawnedCommand};
-use sandbox_core::types::{RepoState, SandboxMode};
+use sandbox_core::sandbox::{CloneContext, ModeInit, SandboxBackend, SpawnedCommand};
+use sandbox_core::types::{ChangedFile, RepoState, SandboxMode};
 
 /// EFS-backed sandbox backend for remote (Lambda) mode.
 ///
@@ -62,13 +62,9 @@ impl EfsBackend {
         }
         Ok(())
     }
-}
-
-#[async_trait]
-impl SandboxBackend for EfsBackend {
-    /// Clone the source repo into a bare repo on EFS, named by the normalized URI.
+    /// Mirror the source repo into a bare repo on EFS, named by the normalized URI.
     /// If the bare repo already exists, fetch latest changes from the upstream remote.
-    async fn init_repo(&self, repo: &str, group_id: &str) -> Result<String, SandboxError> {
+    async fn mirror_repo(&self, repo: &str, group_id: &str) -> Result<PathBuf, SandboxError> {
         let bare_path = self.bare_repo_path(repo);
 
         if bare_path.exists() {
@@ -79,7 +75,7 @@ impl SandboxBackend for EfsBackend {
                 "bare repo exists, fetching latest changes"
             );
             Self::git_fetch_upstream(&bare_path).await?;
-            return Ok(bare_path.to_string_lossy().to_string());
+            return Ok(bare_path);
         }
 
         // Create a bare clone on EFS
@@ -111,9 +107,12 @@ impl SandboxBackend for EfsBackend {
             path = %bare_path.display(),
             "created jj repo on EFS"
         );
-        Ok(bare_path.to_string_lossy().to_string())
+        Ok(bare_path)
     }
+}
 
+#[async_trait]
+impl SandboxBackend for EfsBackend {
     /// Create a temp dir and jj git clone from the EFS bare repo.
     /// If we have a previous bookmark, fetch and create a new working copy on top of it.
     async fn create_sandbox(&self, state: &RepoState) -> Result<PathBuf, SandboxError> {
@@ -179,5 +178,48 @@ impl SandboxBackend for EfsBackend {
         tokio::fs::remove_dir_all(sandbox_dir)
             .await
             .map_err(SandboxError::Io)
+    }
+
+    /// The EFS backend only supports remote git URIs and Jujutsu mode: the
+    /// requested URI is mirrored into a bare jj repo on EFS, and detection
+    /// runs against that mirror (which always has a `.jj` directory).
+    async fn detect_mode(&self, ctx: &CloneContext<'_>) -> Result<Option<ModeInit>, SandboxError> {
+        let mirror = self.mirror_repo(ctx.requested_path, ctx.group_id).await?;
+        jj::detect_mode(&mirror, ctx.base_bookmark).await
+    }
+
+    async fn describe_sandbox(
+        &self,
+        sandbox_dir: &Path,
+        _state: &RepoState,
+        description: &str,
+    ) -> Result<(), SandboxError> {
+        jj::describe(sandbox_dir, description).await
+    }
+
+    async fn detect_external_change(
+        &self,
+        sandbox_dir: &Path,
+        state: &RepoState,
+    ) -> Option<String> {
+        jj::detect_external_change(sandbox_dir, &state.bookmark).await
+    }
+
+    async fn squash_sandbox(
+        &self,
+        sandbox_dir: &Path,
+        state: &RepoState,
+        from_bookmark: &str,
+    ) -> Result<(), SandboxError> {
+        jj::squash_from(sandbox_dir, from_bookmark).await?;
+        jj::jj_push_working_copy(sandbox_dir, &state.bookmark).await
+    }
+
+    async fn diff_files(
+        &self,
+        sandbox_dir: &Path,
+        state: &RepoState,
+    ) -> Result<Vec<ChangedFile>, SandboxError> {
+        jj::diff_files(sandbox_dir, &state.bookmark).await
     }
 }
