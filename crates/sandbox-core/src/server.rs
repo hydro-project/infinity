@@ -705,15 +705,11 @@ fn detect_cd_to_original_repo(command: &str, remote_uri: &str) -> Option<String>
 
     // Strip optional quotes around the path.
     let (path_str, _rest) = if let Some(stripped) = after_cd.strip_prefix('"') {
-        match stripped.find('"') {
-            Some(end) => (&stripped[..end], &after_cd[2 + end..]),
-            None => return None,
-        }
+        let end = stripped.find('"')?;
+        (&stripped[..end], &after_cd[2 + end..])
     } else if let Some(stripped) = after_cd.strip_prefix('\'') {
-        match stripped.find('\'') {
-            Some(end) => (&stripped[..end], &after_cd[2 + end..]),
-            None => return None,
-        }
+        let end = stripped.find('\'')?;
+        (&stripped[..end], &after_cd[2 + end..])
     } else {
         // Unquoted: take until whitespace, `&&`, or `;`.
         let end = after_cd
@@ -1726,10 +1722,9 @@ fn parse_changed_files(output: &str) -> Vec<(FileChangeStatus, &str)> {
                     (FileChangeStatus::Modified, rest)
                 } else if let Some(rest) = line.strip_prefix("A\t").or(line.strip_prefix("A ")) {
                     (FileChangeStatus::Added, rest)
-                } else if let Some(rest) = line.strip_prefix("D\t").or(line.strip_prefix("D ")) {
-                    (FileChangeStatus::Deleted, rest)
                 } else {
-                    return None;
+                    let rest = line.strip_prefix("D\t").or(line.strip_prefix("D "))?;
+                    (FileChangeStatus::Deleted, rest)
                 };
             Some((status, path.trim()))
         })
