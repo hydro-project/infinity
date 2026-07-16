@@ -523,6 +523,44 @@ async fn reload_mid_thinking_keeps_spinner() -> Result<(), BoxError> {
 
 // ── Model switching ──────────────────────────────────────────────────────────
 
+/// Named provider list as accepted by [`start_daemon_with_providers`].
+type ProviderList = Vec<(String, Arc<dyn ModelProvider>)>;
+
+/// Two mock providers ("mock"/Mock Model and "mock2"/Second Model) plus their
+/// controllers, for tests that exercise model switching. The first provider's
+/// model is the daemon default.
+fn two_mock_providers() -> (ProviderList, MockModelController, MockModelController) {
+    let (model1, ctrl1) = mock_model();
+    let (model2, ctrl2) = mock_model();
+    let providers = vec![
+        (
+            "mock".to_owned(),
+            Arc::new(SingleModelProvider::new(
+                ModelEntry {
+                    model_id: "mock-model".to_owned(),
+                    display_name: "Mock Model".to_owned(),
+                    context_window: 100_000,
+                    max_output_tokens: None,
+                },
+                model1,
+            )) as Arc<dyn ModelProvider>,
+        ),
+        (
+            "mock2".to_owned(),
+            Arc::new(SingleModelProvider::new(
+                ModelEntry {
+                    model_id: "second-model".to_owned(),
+                    display_name: "Second Model".to_owned(),
+                    context_window: 200_000,
+                    max_output_tokens: None,
+                },
+                model2,
+            )) as Arc<dyn ModelProvider>,
+        ),
+    ];
+    (providers, ctrl1, ctrl2)
+}
+
 /// Hovering the model pill drops down the list of available models; clicking
 /// one switches the session's model mid-session: the pill and transcript
 /// confirm the switch, and the next request goes to the new model's provider.
@@ -531,35 +569,8 @@ async fn switch_model_mid_session() -> Result<(), BoxError> {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let (model1, mut ctrl1) = mock_model();
-            let (model2, mut ctrl2) = mock_model();
-            let daemon = start_daemon_with_providers(vec![
-                (
-                    "mock".to_owned(),
-                    Arc::new(SingleModelProvider::new(
-                        ModelEntry {
-                            model_id: "mock-model".to_owned(),
-                            display_name: "Mock Model".to_owned(),
-                            context_window: 100_000,
-                            max_output_tokens: None,
-                        },
-                        model1,
-                    )) as Arc<dyn ModelProvider>,
-                ),
-                (
-                    "mock2".to_owned(),
-                    Arc::new(SingleModelProvider::new(
-                        ModelEntry {
-                            model_id: "second-model".to_owned(),
-                            display_name: "Second Model".to_owned(),
-                            context_window: 200_000,
-                            max_output_tokens: None,
-                        },
-                        model2,
-                    )) as Arc<dyn ModelProvider>,
-                ),
-            ])
-            .await?;
+            let (providers, mut ctrl1, mut ctrl2) = two_mock_providers();
+            let daemon = start_daemon_with_providers(providers).await?;
             let harness = BrowserHarness::launch().await?;
             let page = harness.open(daemon.port).await?;
 
@@ -640,6 +651,81 @@ async fn switch_model_mid_session() -> Result<(), BoxError> {
             // Park the mouse so no hover styling leaks into the screenshot.
             page.mouse().move_to(0, 0, None).await?;
             assert_screenshot(&page, "model-switched", &[]).await?;
+
+            harness.close().await?;
+            Ok(())
+        })
+        .await
+}
+
+/// The model dropdown also works on a freshly loaded client with no session
+/// selected: hovering the pill lists the models, and selecting one applies to
+/// the next session created — the pill updates immediately and the new
+/// session's first request goes to the chosen model's provider.
+#[tokio::test]
+async fn select_model_before_first_session() -> Result<(), BoxError> {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (providers, mut ctrl1, mut ctrl2) = two_mock_providers();
+            let daemon = start_daemon_with_providers(providers).await?;
+            let harness = BrowserHarness::launch().await?;
+            let page = harness.open(daemon.port).await?;
+
+            // ── Fresh client, no session: the pill shows the default model ──
+            expect(page.get_by_text("No sessions yet", false).await)
+                .to_be_visible()
+                .await?;
+            let pill = page.get_by_test_id("model-pill").await;
+            expect(pill.clone())
+                .to_contain_text("mock: Mock Model")
+                .await?;
+
+            // ── Hover the pill: the dropdown opens with both models, the
+            // default marked as selected ──
+            pill.hover(None).await?;
+            expect(page.locator("[data-testid='model-option']").await)
+                .to_have_count(2)
+                .await?;
+            expect(
+                page.locator("[data-testid='model-option'][data-selected]")
+                    .await,
+            )
+            .to_contain_text("Mock Model")
+            .await?;
+
+            assert_screenshot(&page, "model-dropdown-no-session", &[]).await?;
+
+            // ── Select the second model: the pill reflects the choice
+            // immediately (there is no session to confirm through) ──
+            page.get_by_text("Second Model", true)
+                .await
+                .click(None)
+                .await?;
+            expect(pill.clone())
+                .to_contain_text("mock2: Second Model")
+                .await?;
+
+            // ── Create a session: it boots on the selected model — the first
+            // request reaches the second provider, never the default ──
+            create_session_via_picker(&page, &daemon.cwd.path().to_string_lossy()).await?;
+            send_chat_message(&page, "hello new session").await?;
+            let req = next_request(&mut ctrl2).await?;
+            assert!(
+                history_json(&req).contains("hello new session"),
+                "the new session's first request should reach the selected model"
+            );
+            assert!(
+                ctrl1.try_next_request().is_none(),
+                "the default model must not receive requests for the new session"
+            );
+            ctrl2.send_text("hello from model two");
+            ctrl2.finish();
+            expect(page.get_by_text("hello from model two", false).await)
+                .to_be_visible()
+                .await?;
+            // After Connected, the pill still shows the selected model.
+            expect(pill).to_contain_text("mock2: Second Model").await?;
 
             harness.close().await?;
             Ok(())

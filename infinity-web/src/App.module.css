@@ -100,7 +100,6 @@
   cursor: pointer;
   text-align: left;
   white-space: nowrap;
-  transition: background 0.15s;
 }
 .modelOption:hover {
   background: var(--bg-hover);
