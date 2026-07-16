@@ -3,9 +3,9 @@ use std::sync::Arc;
 use infinity_agent_core::batch_processor::DisplayEvent;
 use infinity_agent_core::event_processor;
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
-use infinity_agent_core::model_provider::ProviderStreamingResponse;
 use infinity_agent_core::tools::{Tool, ToolContext};
 use infinity_protocol::DaemonMessage;
+use infinity_provider_protocol::ProviderStreamingResponse;
 use rig::message::UserContent;
 use tokio::sync::{mpsc, oneshot};
 
@@ -60,7 +60,7 @@ fn apply_model_switch(
     display_tx: &mpsc::UnboundedSender<DisplayEvent<ProviderStreamingResponse>>,
     model_slot: &mut Option<(
         infinity_protocol::ModelRef,
-        Arc<dyn infinity_agent_core::model_provider::ModelProvider>,
+        Arc<dyn infinity_provider_protocol::ModelProvider>,
     )>,
     context_window: &mut usize,
 ) {
@@ -298,7 +298,7 @@ pub async fn thread_worker(
     let mut context_window = model_entry.context_window;
     let mut model_slot: Option<(
         infinity_protocol::ModelRef,
-        Arc<dyn infinity_agent_core::model_provider::ModelProvider>,
+        Arc<dyn infinity_provider_protocol::ModelProvider>,
     )> = Some((model_ref, provider));
     // Set when `model_switch_rx` is closed, so selects stop polling it (a
     // closed channel is always ready and would otherwise spin).
@@ -729,8 +729,8 @@ impl Drop for WorkerGuard {
 #[expect(clippy::collapsible_if, reason = "test readability")]
 mod tests {
     use super::*;
-    use infinity_agent_core::model_provider::{ModelEntry, SingleModelProvider};
     use infinity_agent_core::traits::{ConversationStore, InputSender};
+    use infinity_provider_protocol::{ModelEntry, SingleModelProvider};
     use rig_mock::mock_model;
 
     fn test_model_ref() -> infinity_protocol::ModelRef {

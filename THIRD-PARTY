@@ -7910,6 +7910,7 @@ Used by:
   infinity-daemon 0.1.0
   infinity-protocol 0.1.0
   infinity-provider-bedrock 0.1.0
+  infinity-provider-protocol 0.1.0
   rap-client 0.1.0
   rap-github-event-poller 0.1.0
   rap-protocol 0.1.0

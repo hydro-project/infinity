@@ -17,9 +17,9 @@ use tracing;
 use crate::message::{
     InfinityMessage, InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind,
 };
-use crate::model_provider::{ModelProvider, ProviderStreamingResponse};
 use crate::tools::{Tool, ToolContext};
 use crate::traits::{ConversationStore, InputSender, StateStore};
+use infinity_provider_protocol::{ModelProvider, ProviderStreamingResponse};
 
 // ── Public types ──
 

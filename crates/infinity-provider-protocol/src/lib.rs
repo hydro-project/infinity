@@ -1,4 +1,8 @@
-//! Extensible model provider abstraction.
+//! Extensible model provider abstraction and its remote wire protocol.
+//!
+//! This crate is intentionally lightweight so that out-of-process provider
+//! implementations (e.g. `infinity-provider-bedrock`) can depend on it
+//! without pulling in the rest of the agent stack.
 //!
 //! A [`ModelProvider`] exposes async APIs for listing the models it offers and
 //! for invoking one of them. Implementations internally wrap a rig

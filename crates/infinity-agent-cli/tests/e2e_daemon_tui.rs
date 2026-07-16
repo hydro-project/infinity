@@ -21,11 +21,11 @@ use std::time::Duration;
 
 use common::{ScriptedEvents, SharedEmulator, VirtualTerm, Vt100Emulator, render_screen};
 use infinity_agent_cli::daemon_client;
-use infinity_agent_core::model_provider::{ModelEntry, ModelProvider, SingleModelProvider};
 use infinity_daemon::client_handler::handle_client_channels;
 use infinity_daemon::ids::SequentialIdSource;
 use infinity_daemon::session::{SessionManager, SessionManagerConfig};
 use infinity_protocol::{ClientMessage, DaemonMessage};
+use infinity_provider_protocol::{ModelEntry, ModelProvider, SingleModelProvider};
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use rig::message::UserContent;
 use rig_mock::{MockModelController, mock_model};

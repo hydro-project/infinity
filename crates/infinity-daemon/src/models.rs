@@ -9,16 +9,16 @@
 //! provider id to the command that serves that provider over a Unix socket.
 //! The daemon spawns each command, reads the socket path the process prints
 //! on stdout, and talks to it through a
-//! [`RemoteModelProvider`](infinity_agent_core::model_provider::remote::RemoteModelProvider).
+//! [`RemoteModelProvider`](infinity_provider_protocol::remote::RemoteModelProvider).
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use infinity_agent_core::model_provider::remote::RemoteModelProvider;
-use infinity_agent_core::model_provider::{ModelEntry, ModelProvider};
 use infinity_protocol::ModelRef;
+use infinity_provider_protocol::remote::RemoteModelProvider;
+use infinity_provider_protocol::{ModelEntry, ModelProvider};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncBufReadExt;
 

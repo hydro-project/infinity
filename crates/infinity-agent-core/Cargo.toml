@@ -7,12 +7,11 @@ license = "Apache-2.0"
 [dependencies]
 rap-client = { path = "../rap-client" }
 rap-protocol = { path = "../rap-protocol" }
+infinity-provider-protocol = { path = "../infinity-provider-protocol" }
 rig-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-schemars = { workspace = true }
-tokio = { workspace = true, features = ["net", "rt", "time"] }
-tokio-util = { version = "0.7", features = ["codec"] }
+tokio = { workspace = true, features = ["rt", "time"] }
 futures-util = { workspace = true }
 async-trait = { workspace = true }
 async-stream = "0.3"

@@ -175,8 +175,8 @@ mod tests {
 
     use super::*;
     use infinity_agent_core::message::{InputMessage, InputMessageContent};
-    use infinity_agent_core::model_provider::{ModelEntry, SingleModelProvider};
     use infinity_agent_core::traits::ConversationStore;
+    use infinity_provider_protocol::{ModelEntry, SingleModelProvider};
     use rig::message::UserContent;
     use rig_mock::mock_model;
 
