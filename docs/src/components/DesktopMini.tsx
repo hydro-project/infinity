@@ -93,7 +93,7 @@ import { db } from "../../db";
 
 jest.mock("../../db");
 
-describe("login — property-based", () => {
+describe("login: property-based", () => {
   it("never returns a token for wrong passwords", () => {
     fc.assert(
       fc.asyncProperty(
@@ -280,7 +280,7 @@ const HISTORY: MessageItemType[] = [
   },
   {
     type: "assistant",
-    text: "Done — implemented `login.ts`, `session.ts`, and `token.ts`. All queries use parameterized statements and passwords are compared with timing-safe equality.",
+    text: "Done. Implemented `login.ts`, `session.ts`, and `token.ts`. All queries use parameterized statements and passwords are compared with timing-safe equality.",
     done: true,
   },
 ];
@@ -376,7 +376,7 @@ function typeAndSend(text: string, firstDelay: number, charDelay = 30): Step[] {
       action: (s) => ({ ...s, typingInput: text.slice(0, i + 1) }),
     });
   }
-  // "Send" — move to messages, clear input
+  // "Send": move to messages, clear input
   steps.push({
     delay: 300,
     action: (s) => ({
@@ -407,7 +407,7 @@ const STEPS: Step[] = [
   ),
   // Agent responds (word by word)
   ...streamAssistant(
-    "I'll spawn two threads — one for property-based tests and one for documentation — so they run in parallel.",
+    "I'll spawn two threads, one for property-based tests and one for documentation, so they run in parallel.",
     1500,
   ),
   // Spawn test thread
@@ -707,7 +707,7 @@ export default function DesktopMini({
   /*
    * The wrapper uses `transform: scale(1)` which creates a new containing
    * block. This makes `position: fixed` children (SessionSidebar, chat panel)
-   * position relative to this container instead of the viewport — so the real
+   * position relative to this container instead of the viewport, so the real
    * components work exactly as in the app with zero overrides.
    */
   return (
@@ -727,7 +727,7 @@ export default function DesktopMini({
         color: "var(--text)",
       }}
     >
-      {/* Sidebar — uses position:fixed, contained by transform */}
+      {/* Sidebar: uses position:fixed, contained by transform */}
       <SessionSidebar
         sessions={state.sessions}
         activeSessionId={SESSION_ID}
@@ -744,7 +744,7 @@ export default function DesktopMini({
         embedded
       />
 
-      {/* Main content area — offset to account for sidebar */}
+      {/* Main content area: offset to account for sidebar */}
       <div
         style={{
           position: "absolute",
@@ -757,7 +757,7 @@ export default function DesktopMini({
         <DiffView files={state.diffFiles} theme={theme} />
       </div>
 
-      {/* Chat panel — uses position:fixed, contained by transform */}
+      {/* Chat panel: uses position:fixed, contained by transform */}
       <div
         className={`${chatCss.chatPanel} ${!state.chatVisible ? chatCss.chatPanelHidden : ""}`}
       >

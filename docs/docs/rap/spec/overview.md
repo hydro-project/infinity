@@ -13,7 +13,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 ## Overview
 
-RAP provides a standardized way for applications to invoke tools asynchronously via HTTP without blocking the agent process, receive tool results and event notifications through a unified callback mechanism, hibernate agent runtimes between tool calls at zero compute cost, and subscribe to ongoing external events that wake the agent on demand. Together, these capabilities enable agents that can run indefinitely — reacting to webhooks, waiting for CI pipelines, and monitoring data feeds — while paying only for the compute they actually use.
+RAP provides a standardized way for applications to invoke tools asynchronously via HTTP without blocking the agent process, receive tool results and event notifications through a unified callback mechanism, hibernate agent runtimes between tool calls at zero compute cost, and subscribe to ongoing external events that wake the agent on demand. Together, these capabilities enable agents that can run indefinitely (reacting to webhooks, waiting for CI pipelines, and monitoring data feeds) while paying only for the compute they actually use.
 
 The protocol defines HTTP message contracts between two roles:
 
@@ -33,7 +33,7 @@ sequenceDiagram
     Note over R: Runtime wakes, loads state, continues
 ```
 
-RAP takes inspiration from the [Model Context Protocol](https://modelcontextprotocol.io), which standardizes how to integrate tools and context into AI applications. RAP extends this model to support asynchronous execution, long-running operations, and event-driven subscriptions — capabilities that require the agent to release compute while waiting.
+RAP takes inspiration from the [Model Context Protocol](https://modelcontextprotocol.io), which standardizes how to integrate tools and context into AI applications. RAP extends this model to support asynchronous execution, long-running operations, and event-driven subscriptions: capabilities that require the agent to release compute while waiting.
 
 ## Key Details
 
@@ -67,7 +67,7 @@ The protocol defines two roles that communicate through the HTTP message contrac
 
 ### Message Types
 
-The protocol defines four message types that cover the full range of communication between runtimes and tools. Tool invocations flow from runtime to tool, while the remaining three message types flow from tool to runtime through the callback URL.
+The protocol defines six message types that cover the full range of communication between runtimes and tools. Tool invocations flow from runtime to tool, while the remaining five message types flow from tool to runtime through the callback URL.
 
 | Message | Direction | Description |
 |---|---|---|
@@ -80,7 +80,7 @@ The protocol defines four message types that cover the full range of communicati
 
 ### Toolset Definition
 
-Tools are organized into **toolsets** — declarative JSON manifests that describe the operations a tool server exposes. A toolset includes the tool server's endpoint URL and an array of tool definitions, each with a name, description, and JSON Schema for its input arguments.
+Tools are organized into **toolsets**, declarative JSON manifests that describe the operations a tool server exposes. A toolset includes the tool server's endpoint URL and an array of tool definitions, each with a name, description, and JSON Schema for its input arguments.
 
 Runtimes load toolset definitions at startup to discover available tools, validate invocation arguments at dispatch time, and pass tool schemas to the LLM on each completion request. Toolsets are fetched from the tool server's well-known discovery endpoint and MAY be cached within an agent session. See [Toolsets](/docs/rap/spec/basic/toolsets) for the full specification.
 
@@ -90,13 +90,13 @@ RAP enables powerful capabilities through arbitrary HTTP communication and async
 
 ### Key Principles
 
-**User Consent and Control.** Users MUST explicitly consent to and understand all tool operations before they are dispatched. Because RAP tools can perform long-running and potentially irreversible actions — deploying infrastructure, modifying repositories, sending messages on behalf of the user — runtimes MUST ensure that users retain control over what data is shared and what actions are taken. Implementors SHOULD provide clear interfaces for reviewing and authorizing tool invocations, especially for tools annotated as `destructive`.
+**User Consent and Control.** Users MUST explicitly consent to and understand all tool operations before they are dispatched. Because RAP tools can perform long-running and potentially irreversible actions (deploying infrastructure, modifying repositories, sending messages on behalf of the user), runtimes MUST ensure that users retain control over what data is shared and what actions are taken. Implementors SHOULD provide clear interfaces for reviewing and authorizing tool invocations, especially for tools annotated as `destructive`.
 
 **Data Privacy.** Runtimes MUST NOT expose user data to tools without explicit user consent. Tools MUST NOT store or transmit user data beyond what is required for the requested operation. Because callback URLs can persist for the lifetime of a subscription, they SHOULD be scoped and short-lived where possible to limit the window of exposure if a URL is compromised.
 
-**Tool Safety.** Tools represent arbitrary code execution and MUST be treated with appropriate caution. Tool descriptions and annotations are provided by the tool author and SHOULD be treated as untrusted input — they MUST NOT be used to execute code or modify runtime behavior. Runtimes SHOULD validate tool results before passing them to the LLM, and subscription events SHOULD be validated against the expected subscription before processing.
+**Tool Safety.** Tools represent arbitrary code execution and MUST be treated with appropriate caution. Tool descriptions and annotations are provided by the tool author and SHOULD be treated as untrusted input: they MUST NOT be used to execute code or modify runtime behavior. Runtimes SHOULD validate tool results before passing them to the LLM, and subscription events SHOULD be validated against the expected subscription before processing.
 
-**Authentication.** The authentication mechanism between runtime and tool is implementation-specific. The protocol does not mandate a particular scheme, but implementations SHOULD use established authentication mechanisms such as AWS SigV4, bearer tokens, or mutual TLS. Callback URLs are particularly sensitive because they accept messages that wake the runtime and inject content into conversations — they SHOULD be authenticated to prevent unauthorized message injection.
+**Authentication.** The authentication mechanism between runtime and tool is implementation-specific. The protocol does not mandate a particular scheme, but implementations SHOULD use established authentication mechanisms such as AWS SigV4, bearer tokens, or mutual TLS. Callback URLs are particularly sensitive because they accept messages that wake the runtime and inject content into conversations, so they SHOULD be authenticated to prevent unauthorized message injection.
 
 ### Implementation Guidelines
 
@@ -114,16 +114,16 @@ While RAP itself cannot enforce these security principles at the protocol level,
 Explore the detailed specification for each protocol component:
 
 - **Basic Protocol**
-  - [Lifecycle](/docs/rap/spec/basic/lifecycle) — Runtime execution model and hibernation
-  - [Transport](/docs/rap/spec/basic/transport) — HTTP message format and delivery
-  - [Tool Invocation](/docs/rap/spec/basic/tool-invocation) — Invoking tools from the runtime
-  - [Tool Result](/docs/rap/spec/basic/tool-result) — Returning results from tools
-  - [Toolsets](/docs/rap/spec/basic/toolsets) — Declaring and discovering tool definitions
-  - [Thread Closure](/docs/rap/spec/basic/thread-closure) — Best-effort thread cleanup notifications
-  - [Tool Cancellation](/docs/rap/spec/basic/tool-cancellation) — Best-effort tool call cancellation notifications
+  - [Lifecycle](/docs/rap/spec/basic/lifecycle): Runtime execution model and hibernation
+  - [Transport](/docs/rap/spec/basic/transport): HTTP message format and delivery
+  - [Tool Invocation](/docs/rap/spec/basic/tool-invocation): Invoking tools from the runtime
+  - [Tool Result](/docs/rap/spec/basic/tool-result): Returning results from tools
+  - [Toolsets](/docs/rap/spec/basic/toolsets): Declaring and discovering tool definitions
+  - [Thread Closure](/docs/rap/spec/basic/thread-closure): Best-effort thread cleanup notifications
+  - [Tool Cancellation](/docs/rap/spec/basic/tool-cancellation): Best-effort tool call cancellation notifications
 
 - **Server Features**
-  - [Subscription Events](/docs/rap/spec/server/subscription-events) — Event-driven subscriptions
-  - [OAuth](/docs/rap/spec/server/oauth) — User authorization flows
-  - [User Choice](/docs/rap/spec/server/user-choice) — User confirmation flows
-  - [View Updates](/docs/rap/spec/server/view-updates) — Tool-pushed view updates for client rendering
+  - [Subscription Events](/docs/rap/spec/server/subscription-events): Event-driven subscriptions
+  - [OAuth](/docs/rap/spec/server/oauth): User authorization flows
+  - [User Choice](/docs/rap/spec/server/user-choice): User confirmation flows
+  - [View Updates](/docs/rap/spec/server/view-updates): Tool-pushed view updates for client rendering

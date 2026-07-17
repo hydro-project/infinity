@@ -5,7 +5,7 @@ A tool protocol, agent runtime, and coding harness for principled agent concurre
 Infinity is an ecosystem for building AI agents that can wait for things, work in parallel, and cost nothing when idle. It consists of three layers:
 
 - **[Reactive Agent Protocol (RAP)](https://infinity.hydro.run/docs/rap/what-is-rap)**: An async tool protocol with native support for subscriptions, long-running operations, and agent hibernation.
-- **[Infinity Runtime](https://infinity.hydro.run/docs/infinity-runtime/overview)**: A time-sliced agent runtime that processes work in short bursts and releases resources between them, whether deployed as a serverless function or running as a local daemon.
+- **[Infinity Runtime](https://infinity.hydro.run/docs/infinity-runtime/overview)**: A time-sliced agent runtime that processes work in short bursts and releases resources between them. The first agent runtime that runs natively on serverless platforms, and it embeds in your own process through its Rust API.
 - **[Infinity Code](https://infinity.hydro.run/docs/infinity-code/overview)**: A coding agent built on the runtime, with sandboxed editing, durable concurrent threads, and background sessions.
 
 ## Core Capabilities
@@ -65,11 +65,11 @@ To update: `infinity update`
 
 ### Build a RAP Agent
 
-See the [Getting Started guide](https://infinity.hydro.run/docs/infinity-runtime/getting-started) for a walkthrough of running a RAP agent locally with a custom tool server.
+See [The Rust API](https://infinity.hydro.run/docs/infinity-runtime/rust-api) for embedding the runtime in your own process, and [Building a RAP Tool](https://infinity.hydro.run/docs/rap/using-rap/building-a-rap-tool) for writing a custom tool server.
 
 ### Deploy to Production
 
-The cloud runtime deploys to AWS Lambda via CDK. Agents persist state to Aurora DSQL, route messages through SQS FIFO, and hibernate at true zero compute. See [Cloud Deployment](https://infinity.hydro.run/docs/infinity-runtime/cloud-deployment).
+The cloud runtime deploys to AWS Lambda via CDK. Agents persist state to Aurora DSQL, route messages through SQS FIFO, and hibernate at true zero compute. See [Deploying on AWS Lambda](https://infinity.hydro.run/docs/infinity-runtime/deploying-on-lambda).
 
 ## Project Structure
 
@@ -78,7 +78,12 @@ crates/
   infinity-agent-core/       # Shared agent loop, tools, traits
   infinity-agent-cli/        # Local CLI binary (Infinity Code)
   infinity-agent-lambda/     # AWS Lambda runtime
-  infinity-daemon/           # Local Infinity Runtime
+  infinity-daemon/           # Local daemon embedding the runtime
+  infinity-protocol/         # Daemon <-> client protocol types
+  infinity-provider-protocol/# ModelProvider trait + provider process transport
+  infinity-provider-bedrock/ # Amazon Bedrock model provider
+  rap-protocol/              # RAP wire types and callback helpers
+  rap-client/                # Runtime-side RAP plumbing (discovery, notifier)
   sandbox-core/              # Sandbox RAP server (shared logic)
   sandbox-local/             # Local sandbox backend (macOS/Linux sandboxing + jj/git)
   sandbox-remote/            # Remote sandbox backend
@@ -86,5 +91,6 @@ crates/
   rap-github-event-poller/   # GitHub event subscription RAP server
 agent/                       # CDK constructs for cloud deployment
 docs/                        # RAP specification and documentation site
+infinity-ui/                 # Shared React components for the web UI
 infinity-web/                # Desktop web UI
 ```

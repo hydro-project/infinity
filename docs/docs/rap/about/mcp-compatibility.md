@@ -9,9 +9,9 @@ RAP is designed to coexist with MCP, not replace it. Any MCP server can be used 
 
 ## How the proxy works
 
-The proxy sits between the agent runtime and the MCP server. It exposes a standard RAP toolset interface (`/.well-known/rap-toolset`) and translates invocations into MCP JSON-RPC calls internally. Two wrapper tools are generated for each MCP server: `list_tools` (discover available tools) and `invoke_tool` (call a specific tool by name with arguments).
+The proxy sits between the agent runtime and the MCP server. It exposes a standard RAP toolset interface (`/.well-known/rap-toolset`) and translates invocations into MCP JSON-RPC calls internally. Two wrapper tools are generated for each MCP server, prefixed with the server's name: `{name}_list_tools` (discover available tools) and `{name}_invoke_tool` (call a specific tool by name with arguments). A server registered as `github` exposes `github_list_tools` and `github_invoke_tool`.
 
-When the agent invokes an MCP tool, the proxy acknowledges immediately — just like any RAP tool — then spawns the MCP server, sends the JSON-RPC request, waits for the synchronous response, and POSTs the result back to the agent's callback URL.
+When the agent invokes an MCP tool, the proxy acknowledges immediately, just like any RAP tool. It then spawns the MCP server, sends the JSON-RPC request, waits for the synchronous response, and POSTs the result back to the agent's callback URL.
 
 ```mermaid
 sequenceDiagram
@@ -34,7 +34,9 @@ sequenceDiagram
     Note over R: runtime wakes, continues conversation
 ```
 
-This turns a synchronous MCP call into an asynchronous RAP call. An MCP tool that takes 30 seconds to respond no longer blocks the agent for 30 seconds — the runtime hibernates at zero cost and resumes when the result arrives.
+This turns a synchronous MCP call into an asynchronous RAP call. An MCP tool that takes 30 seconds to respond no longer blocks the agent for 30 seconds; the runtime hibernates at zero cost and resumes when the result arrives.
+
+There are two proxy implementations. The Lambda proxy described on this page ships with the [CDK constructs](/docs/infinity-runtime/deploying-on-lambda#adding-rap-servers) for cloud deployments. The Infinity Code daemon includes an equivalent in-process proxy for local development, configured through `rap.json`; see [Configuring MCP Servers](/docs/infinity-code/configuring-mcp). Both expose the same `{name}_list_tools` / `{name}_invoke_tool` interface and support stdio and Streamable HTTP transports. OAuth support is currently specific to the Lambda proxy.
 
 ## MCP Transport Modes
 
@@ -131,8 +133,8 @@ new HTTPMCPToolSet(this, 'SecureServer', {
 
 ## Stateful MCP servers
 
-Some MCP servers maintain in-memory state across calls — database connections, authentication sessions, cached resources. These servers expect to stay alive for the duration of a conversation.
+Some MCP servers maintain in-memory state across calls: database connections, authentication sessions, cached resources. These servers expect to stay alive for the duration of a conversation.
 
 You can handle this in RAP by keeping the MCP server process running in a long-lived container, with the proxy routing requests to the persistent process. This works, but it undermines RAP's core value: you're back to paying for idle compute, and you lose durability if the process crashes.
 
-The model RAP pushes toward is one where MCP servers externalize their state — to a database, a cache, or a session store — and can be cold-started with a session ID to resume where they left off. This aligns with how modern web services work: stateless processes, externalized state, horizontal scaling. As more MCP servers adopt this pattern, the gap between MCP and RAP narrows, and agents get the best of both ecosystems.
+The model RAP pushes toward is one where MCP servers externalize their state (to a database, a cache, or a session store) and can be cold-started with a session ID to resume where they left off. This aligns with how modern web services work: stateless processes, externalized state, horizontal scaling. As more MCP servers adopt this pattern, the gap between MCP and RAP narrows, and agents get the best of both ecosystems.

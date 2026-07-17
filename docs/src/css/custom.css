@@ -31,13 +31,6 @@ html {
   letter-spacing: -0.03em;
 }
 
-.hero-section h1 .gradient-text {
-  background: linear-gradient(135deg, #79b8ff 0%, #3a7bd5 50%, #b392f0 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
 .hero-tagline {
   font-size: 1.35rem;
   line-height: 1.6;

@@ -55,7 +55,7 @@ const TERMINAL_LINES: TerminalLine[] = [
     delay: 400,
   },
   {
-    text: '  charge.succeeded — { id: "ch_3Nk9x", amount: "$847.00" }',
+    text: '  charge.succeeded: { id: "ch_3Nk9x", amount: "$847.00" }',
     className: "event",
     delay: 300,
   },

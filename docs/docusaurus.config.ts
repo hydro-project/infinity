@@ -56,15 +56,15 @@ const config: Config = {
       items: [
         {
           type: "docSidebar",
-          sidebarId: "rapSidebar",
-          position: "left",
-          label: "Reactive Agent Protocol",
-        },
-        {
-          type: "docSidebar",
           sidebarId: "infinityRuntimeSidebar",
           position: "left",
           label: "Infinity Runtime",
+        },
+        {
+          type: "docSidebar",
+          sidebarId: "rapSidebar",
+          position: "left",
+          label: "Reactive Agent Protocol",
         },
         {
           type: "docSidebar",
@@ -101,16 +101,16 @@ const config: Config = {
           title: "Build",
           items: [
             {
-              label: "Getting Started",
-              to: "/docs/infinity-runtime/getting-started",
+              label: "Infinity Runtime",
+              to: "/docs/infinity-runtime/overview",
+            },
+            {
+              label: "Deploy on AWS Lambda",
+              to: "/docs/infinity-runtime/deploying-on-lambda",
             },
             {
               label: "Build a RAP Tool",
               to: "/docs/rap/using-rap/building-a-rap-tool",
-            },
-            {
-              label: "Infinity Runtime",
-              to: "/docs/infinity-runtime/overview",
             },
           ],
         },

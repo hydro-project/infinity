@@ -5,7 +5,7 @@ title: View Updates
 
 # View Updates
 
-View updates allow tools to push structured UI state to connected clients through the runtime. This enables tools to maintain live, named "views" — such as a diff view showing the current state of sandbox changes — that clients can render alongside the conversation without embedding the data in chat history.
+View updates allow tools to push structured UI state to connected clients through the runtime. This enables tools to maintain live, named "views" (such as a diff view showing the current state of sandbox changes) that clients can render alongside the conversation without embedding the data in chat history.
 
 ## View Update Message
 
@@ -32,7 +32,7 @@ Content-Type: application/json
 | `type` | `string` | Yes | MUST be `"view_update"`. |
 | `group_id` | `string` | Yes | Conversation thread identifier. MUST match the `group_id` from the original invocation. |
 | `view_type` | `string` | Yes | Identifier for the kind of view being updated (e.g. `"diff"`). Clients use this to determine how to render the content. |
-| `content` | `object` | Yes | Arbitrary JSON payload whose schema depends on the `view_type`. The runtime does not interpret this value — it stores and forwards it to clients as-is. |
+| `content` | `object` | Yes | Arbitrary JSON payload whose schema depends on the `view_type`. The runtime does not interpret this value; it stores and forwards it to clients as-is. |
 
 ### Response
 
@@ -86,7 +86,7 @@ The `content` for a `"diff"` view type contains a unified diff patch:
 
 ## Tool Requirements
 
-Tools that send view updates MUST include a valid `group_id` matching the thread context of the operation that produced the view data. Tools SHOULD send view updates after operations that change the view state — for example, after file edits, command execution, or sandbox squash operations.
+Tools that send view updates MUST include a valid `group_id` matching the thread context of the operation that produced the view data. Tools SHOULD send view updates after operations that change the view state, for example after file edits, command execution, or sandbox squash operations.
 
 Tools MUST NOT send view updates for view types that have no meaningful content. If a view becomes empty (e.g. all changes are reverted), the tool SHOULD send a view update with empty content to signal that the view should be cleared.
 

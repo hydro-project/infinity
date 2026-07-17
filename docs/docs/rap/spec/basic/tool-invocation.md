@@ -60,7 +60,7 @@ After acknowledging the invocation, the tool:
 
 1. MUST process the request asynchronously
 2. MUST send a result to the `callback_url` when processing completes, using one of the [callback message types](/docs/rap/spec/basic/tool-result)
-3. MAY take arbitrarily long to process — the protocol defines no timeout
+3. MAY take arbitrarily long to process (the protocol defines no timeout)
 
 If the tool encounters an error during processing, it MUST still send a [tool result](/docs/rap/spec/basic/tool-result) with the error description. The tool MUST NOT silently drop invocations.
 
@@ -72,7 +72,7 @@ Before dispatching an invocation, the runtime MUST verify that the `operation` f
 
 ### Tool Validation
 
-Upon receiving an invocation, the tool MUST validate that the `operation` field references a supported operation. For any validation failure — malformed payload, unknown operation, invalid arguments — the tool SHOULD still return HTTP 200 to acknowledge receipt, then deliver the error asynchronously as a [tool result](/docs/rap/spec/basic/tool-result) with an error description.
+Upon receiving an invocation, the tool MUST validate that the `operation` field references a supported operation. For any validation failure (malformed payload, unknown operation, invalid arguments), the tool SHOULD still return HTTP 200 to acknowledge receipt, then deliver the error asynchronously as a [tool result](/docs/rap/spec/basic/tool-result) with an error description.
 
 ## Error Responses
 

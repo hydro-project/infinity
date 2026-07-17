@@ -5,7 +5,7 @@ title: Coding with Git
 
 # Coding with Git
 
-For plain git repos (no `.jj` directory), Infinity Code uses [git worktrees](https://git-scm.com/docs/git-worktree) to isolate agent changes. Each agent thread gets its own worktree on a branch named `sandbox-{thread_id}`. No extra dependencies beyond git. Your working directory is never modified — changes live on sandbox branches that you inspect and merge when ready.
+For plain git repos (no `.jj` directory), Infinity Code uses [git worktrees](https://git-scm.com/docs/git-worktree) to isolate agent changes. Each agent thread gets its own worktree on a branch named `sandbox-{thread_id}`. No extra dependencies beyond git. Your working directory is never modified; changes live on sandbox branches that you inspect and merge when ready.
 
 ## Walkthrough
 
@@ -43,7 +43,7 @@ new file mode 100644
 +    print("hello world")
 ```
 
-Now say you want to step away. Press Ctrl+D. Since the agent is idle, the CLI will immdiately shut down. If it were busy, you'd get a picker to choose "Continue running agent in background" or "Shut down agent". Either way, your sandbox is persistent and you can resume your work later.
+Now say you want to step away. Press Ctrl+D. Since the agent is idle, the CLI will immediately shut down. If it were busy, you'd get a picker to choose "Continue running agent in background" or "Shut down agent". Either way, your sandbox is persistent and you can resume your work later.
 
 Later, come back and pick up where you left off:
 
@@ -81,7 +81,7 @@ When you're happy with the changes, merge them into your branch:
 git merge sandbox-a1b2c3d4
 ```
 
-Or cherry-pick, rebase — whatever fits your workflow.
+Or cherry-pick, rebase, whatever fits your workflow.
 
 ## Child threads
 
@@ -91,7 +91,7 @@ When the agent needs to do parallel work, it spawns child threads. Each child ge
 > Add unit tests and update the README
 ```
 
-It spawns two child threads — one for tests, one for the README. You'll see multiple sandbox branches:
+It spawns two child threads, one for tests and one for the README. You'll see multiple sandbox branches:
 
 ```
 $ git branch

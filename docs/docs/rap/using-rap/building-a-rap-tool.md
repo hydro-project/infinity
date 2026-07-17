@@ -5,14 +5,14 @@ title: Building a RAP Server
 
 # Building a RAP Server
 
-A RAP server is an HTTP service that does three things: serves a [toolset definition](/docs/rap/spec/basic/toolsets) so runtimes can discover it, accepts [tool invocations](/docs/rap/spec/basic/tool-invocation) and acknowledges them immediately, and delivers [tool results](/docs/rap/spec/basic/tool-result) asynchronously to a callback URL. You can build one in any language on any platform — the only requirement is HTTP.
+A RAP server is an HTTP service that does three things: serves a [toolset definition](/docs/rap/spec/basic/toolsets) so runtimes can discover it, accepts [tool invocations](/docs/rap/spec/basic/tool-invocation) and acknowledges them immediately, and delivers [tool results](/docs/rap/spec/basic/tool-result) asynchronously to a callback URL. You can build one in any language on any platform; the only requirement is HTTP.
 
 ## RAP Server Architecture
 
 Your server is a single HTTP endpoint that handles two kinds of requests:
 
-- **GET `/.well-known/rap-toolset`** — Return your toolset definition (discovery)
-- **POST to your endpoint** — Receive a tool invocation, acknowledge it, process it, and POST the result back
+- **GET `/.well-known/rap-toolset`**: Return your toolset definition (discovery)
+- **POST to your endpoint**: Receive a tool invocation, acknowledge it, process it, and POST the result back
 
 ```mermaid
 sequenceDiagram
@@ -28,7 +28,7 @@ sequenceDiagram
     T->>R: POST callback_url (tool_result)
 ```
 
-The runtime never waits for your tool to finish. It dispatches the invocation, gets the HTTP 200 acknowledgement, persists its state, and exits. Your tool does its work on its own schedule and delivers the result whenever it's ready — milliseconds or days later.
+The runtime never waits for your tool to finish. It dispatches the invocation, gets the HTTP 200 acknowledgement, persists its state, and exits. Your tool does its work on its own schedule and delivers the result whenever it's ready, milliseconds or days later.
 
 ## Defining a toolset
 
@@ -57,7 +57,7 @@ const TOOLSET_MANIFEST = {
 };
 ```
 
-Each tool in the array has a `name` (which becomes the `operation` field in invocations), a `description` (passed to the LLM for tool selection), and an `inputSchema` (JSON Schema for argument validation). Tool names must be unique within the toolset and should use only letters, digits, underscores, and hyphens. Tools can optionally include a [`displayScript`](/docs/rap/spec/basic/toolsets#display-script) — a Rhai script that produces a human-readable string for the agent frontend to show instead of the raw tool call.
+Each tool in the array has a `name` (which becomes the `operation` field in invocations), a `description` (passed to the LLM for tool selection), and an `inputSchema` (JSON Schema for argument validation). Tool names must be unique within the toolset and should use only letters, digits, underscores, and hyphens. Tools can optionally include a [`displayScript`](/docs/rap/spec/basic/toolsets#display-script), a Rhai script that produces a human-readable string for the agent frontend to show instead of the raw tool call.
 
 ### Annotations
 
@@ -79,7 +79,7 @@ Tools can include optional [annotations](/docs/rap/spec/basic/toolsets#annotatio
 
 When the runtime invokes your tool, it sends a POST with a JSON body containing the operation name, arguments, and routing information. See the [Tool Invocation spec](/docs/rap/spec/basic/tool-invocation) for the full field reference.
 
-The critical requirement: **acknowledge immediately, process asynchronously**. Your HTTP response must return before you start doing real work. On Lambda, response streaming makes this straightforward — write the acknowledgement and close the stream, then continue processing in the same handler.
+The critical requirement: **acknowledge immediately, process asynchronously**. Your HTTP response must return before you start doing real work. On Lambda, response streaming makes this straightforward: write the acknowledgement and close the stream, then continue processing in the same handler.
 
 ```javascript
 import { sendToolResult } from 'rap-js';
@@ -124,10 +124,10 @@ Your tool receives a JSON body with these fields:
 |---|---|---|
 | `operation` | `string` | The tool name from your toolset definition |
 | `arguments` | `object` | Arguments matching your tool's `inputSchema` |
-| `id` | `string` | Unique call identifier — echo this in your result |
-| `call_id` | `string \| null` | Secondary identifier — echo this if present |
+| `id` | `string` | Unique call identifier; echo this in your result |
+| `call_id` | `string \| null` | Secondary identifier; echo this if present |
 | `callback_url` | `string` | Where to POST your result |
-| `group_id` | `string` | Conversation thread — include in your result |
+| `group_id` | `string` | Conversation thread; include in your result |
 | `user_id` | `string \| null` | End-user identity for authorization or personalization |
 
 ## Delivering results
@@ -149,7 +149,7 @@ await fetch(callback_url, {
 });
 ```
 
-The `text` field carries your result. It can be plain text or JSON-encoded structured data — the LLM receives it as-is and reasons about it in context.
+The `text` field carries your result. It can be plain text or JSON-encoded structured data; the LLM receives it as-is and reasons about it in context.
 
 ### Error results
 
@@ -161,11 +161,11 @@ await sendToolResult(callback_url, group_id, id, call_id,
 );
 ```
 
-Every invocation must produce a result. Never silently drop an invocation — the agent will wait indefinitely for a response that never comes.
+Every invocation must produce a result. Never silently drop an invocation: the agent will wait indefinitely for a response that never comes.
 
 ## Subscription tools
 
-Some tools create ongoing subscriptions rather than returning a single result. A GitHub webhook listener, a stock price monitor, a Slack channel watcher — these tools deliver events over time, each one waking the agent.
+Some tools create ongoing subscriptions rather than returning a single result. A GitHub webhook listener, a stock price monitor, a Slack channel watcher: these tools deliver events over time, each one waking the agent.
 
 The pattern: acknowledge the invocation, store the callback information durably, return a confirmation as a normal tool result, then send [`subscription_event`](/docs/rap/spec/server/subscription-events) messages whenever matching events occur.
 
@@ -174,7 +174,7 @@ import { sendToolResult, sendSubscriptionEvent } from 'rap-js';
 
 // Handle the initial subscription invocation
 async function handleSubscribe(args, id, callId, callbackUrl, groupId) {
-  // Store durably — events may arrive days later
+  // Store durably; events may arrive days later
   await db.put({
     subscriptionId: id,
     filter: args.filter,
@@ -206,11 +206,11 @@ The runtime spawns a child thread for each subscription event, giving each event
 
 ## Schema evolution
 
-Runtimes cache your toolset definition for the duration of an agent session. If you deploy a breaking schema change while agents hold cached definitions, they'll send invocations with stale arguments. Your tool should handle this gracefully — either maintain backward compatibility or return a clear error via the normal tool result path. See [Loading Toolsets](/docs/rap/spec/basic/toolsets#loading-toolsets) for details on caching behavior.
+Runtimes cache your toolset definition for the duration of an agent session. If you deploy a breaking schema change while agents hold cached definitions, they'll send invocations with stale arguments. Your tool should handle this gracefully: either maintain backward compatibility or return a clear error via the normal tool result path. See [Loading Toolsets](/docs/rap/spec/basic/toolsets#loading-toolsets) for details on caching behavior.
 
 ## CDK integration
 
-If you're using the Infinity Runtime, the `RapToolSet` construct connects your tool server to the agent. You don't declare tool names, descriptions, or schemas in CDK — the runtime discovers those from your tool's `/.well-known/rap-toolset` endpoint at startup. CDK just handles the infrastructure wiring.
+If you're using the Infinity Runtime, the `RapToolSet` construct connects your tool server to the agent. You don't declare tool names, descriptions, or schemas in CDK; the runtime discovers those from your tool's `/.well-known/rap-toolset` endpoint at startup. CDK just handles the infrastructure wiring.
 
 For a Lambda-based tool server, pass the handler function directly. The construct creates a Function URL with IAM auth and response streaming, grants the runtime permission to invoke it, and grants the tool permission to POST results back:
 
@@ -227,7 +227,7 @@ new RapToolSet(agent, 'WeatherTools', {
 });
 ```
 
-Your Lambda serves both the discovery endpoint and the invocation endpoint on the same Function URL — the handler distinguishes between GET requests for `/.well-known/rap-toolset` and POST requests for invocations, as shown in the [handler example above](#handling-invocations).
+Your Lambda serves both the discovery endpoint and the invocation endpoint on the same Function URL. The handler distinguishes between GET requests for `/.well-known/rap-toolset` and POST requests for invocations, as shown in the [handler example above](#handling-invocations).
 
 For tool servers hosted outside of your CDK stack (another account, a third-party service, a container), pass the base URL directly:
 
@@ -277,7 +277,7 @@ const server = createServer(async (req, res) => {
 server.listen(3001, '127.0.0.1');
 ```
 
-Point the CLI at your server with a `rap-servers.json` config file:
+Point Infinity Code at your server with a RAP config file, either `.infinity/rap.json` in the repository you run the agent from (project-level) or `~/.infinity/rap.json` (user-level, applies everywhere):
 
 ```json
 {
@@ -286,5 +286,7 @@ Point the CLI at your server with a `rap-servers.json` config file:
   ]
 }
 ```
+
+The daemon reads both files at session startup and merges them. The same `tool_sets` array also accepts MCP server entries (see [Configuring MCP Servers](/docs/infinity-code/configuring-mcp)) and installed RAP server commands (see [RAP Servers in the Infinity Code docs](/docs/infinity-code/rap-servers)).
 
 The `get-time` tool includes a ready-to-run local server at `agent/lib/toolsets/get-time/get-time-tool/local.mjs`, which you can use as a reference when building local RAP tools.
