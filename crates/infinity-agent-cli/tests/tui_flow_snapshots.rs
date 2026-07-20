@@ -426,3 +426,56 @@ async fn slash_command_feedback_without_session() {
     h.settle().await;
     insta::assert_snapshot!("command_feedback", h.screen());
 }
+
+/// Sessions with WaitingForChoice status sort above other sessions in the
+/// session picker, regardless of last_updated time.
+#[tokio::test(start_paused = true)]
+async fn waiting_for_choice_sorts_to_top() {
+    let mut sessions = std::collections::HashMap::new();
+    sessions.insert(
+        "session-recent".to_owned(),
+        infinity_protocol::SessionInfo {
+            title: Some("Recent session".to_owned()),
+            last_updated: "2025-06-15T12:00:00Z".to_owned(),
+            total_tokens_used: 500,
+            status: infinity_protocol::SessionStatus::Running,
+            threads: vec![],
+            remote: None,
+        },
+    );
+    sessions.insert(
+        "session-older".to_owned(),
+        infinity_protocol::SessionInfo {
+            title: Some("Needs attention".to_owned()),
+            last_updated: "2025-06-10T08:00:00Z".to_owned(),
+            total_tokens_used: 200,
+            status: infinity_protocol::SessionStatus::WaitingForChoice,
+            threads: vec![],
+            remote: None,
+        },
+    );
+    sessions.insert(
+        "session-idle".to_owned(),
+        infinity_protocol::SessionInfo {
+            title: Some("Idle session".to_owned()),
+            last_updated: "2025-06-14T10:00:00Z".to_owned(),
+            total_tokens_used: 100,
+            status: infinity_protocol::SessionStatus::Idle,
+            threads: vec![],
+            remote: None,
+        },
+    );
+    let h = TuiHarness::spawn_with(common::HarnessOptions {
+        cols: 80,
+        rows: 18,
+        initial_sessions: sessions,
+        ..common::HarnessOptions::default()
+    })
+    .await;
+
+    h.type_str("/load");
+    h.key(KeyCode::Enter);
+    h.settle().await;
+    // "Needs attention" (WaitingForChoice) should be first despite older timestamp.
+    insta::assert_snapshot!("waiting_for_choice_sorted_top", h.screen());
+}
