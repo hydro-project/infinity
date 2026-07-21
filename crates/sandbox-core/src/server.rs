@@ -469,8 +469,12 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
     let bookmark = format!("sandbox-{}", invocation.group_id);
     let path = PathBuf::from(&remote_uri);
 
+    // If the requested path was nested inside the repository (rather than
+    // being the repo root itself), note the detected root in the response.
+    let root_note = repo_root_note(&args.repo, &path);
+
     // Resolve the base revision to an absolute jj change_id.
-    let (repo_state, msg) = if path.join(".jj").is_dir() {
+    let (repo_state, mut msg) = if path.join(".jj").is_dir() {
         // Jujutsu repo — resolve base revision via jj.
         let _ = run_jj(&path, &["workspace", "update-stale"]).await;
         let rev_to_resolve = args
@@ -558,7 +562,28 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
     state.metadata.put(&repo_state).await?;
 
     tracing::info!(group_id = %invocation.group_id, remote = %remote_uri, "repo cloned");
+    if let Some(note) = root_note {
+        msg.push_str(&note);
+    }
     Ok(msg)
+}
+
+/// If `requested` is a local path nested inside the resolved repository
+/// `root`, return a note for the tool response pointing at the root.
+/// Returns `None` when the requested path is the root itself, or when it
+/// is not a resolvable local path (e.g. a git remote URI).
+fn repo_root_note(requested: &str, root: &Path) -> Option<String> {
+    let requested_abs = Path::new(requested).canonicalize().ok()?;
+    if requested_abs != root && requested_abs.starts_with(root) {
+        Some(format!(
+            " Note: the requested path `{requested}` is inside a repository rooted at `{}`; \
+             the sandbox operates on the whole repository, and file paths are relative to \
+             that root.",
+            root.display()
+        ))
+    } else {
+        None
+    }
 }
 
 async fn handle_open_sandbox_direct<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
@@ -593,7 +618,16 @@ async fn handle_open_sandbox_direct<B: SandboxBackend, M: MetadataStore, C: Call
     state.metadata.put(&repo_state).await?;
 
     tracing::info!(group_id = %invocation.group_id, remote = %remote_uri, "opened direct sandbox");
-    Ok("Repository initialized (Direct mode — file edits require approval, commands run without file write access unless write-orig is granted).".to_owned())
+    let mut msg = "Repository initialized (Direct mode — file edits require approval, commands run without file write access unless write-orig is granted).".to_owned();
+    // `args.repo` is the path as requested by the caller, while `remote_uri`
+    // is the backend-resolved repository root (canonicalized, walked up to
+    // the nearest `.jj`/`.git`). For a directory with no VCS at all, the
+    // backend falls back to the requested path itself, so Direct mode still
+    // works on non-VCS directories and no note is emitted.
+    if let Some(note) = repo_root_note(&args.repo, Path::new(&remote_uri)) {
+        msg.push_str(&note);
+    }
+    Ok(msg)
 }
 
 use crate::{DEFAULT_SANDBOX_EMAIL, DEFAULT_SANDBOX_NAME};
@@ -2126,12 +2160,12 @@ async fn migrate_import_inner<B: SandboxBackend, M: MetadataStore, C: CallbackCl
         .canonicalize()
         .map_err(|e| SandboxError::Other(format!("failed to canonicalize cwd: {e}")))?;
 
+    // Walk up to the repository root so a cwd nested inside the repo
+    // (including subdirectories of jj repos) is detected correctly.
+    let local_repo = crate::find_repo_root(&local_repo)
+        .ok_or_else(|| SandboxError::Other("cwd is not inside a git or jj repository".into()))?;
+
     let is_jj = local_repo.join(".jj").is_dir();
-    if !is_jj && !local_repo.join(".git").exists() {
-        return Err(SandboxError::Other(
-            "cwd is not a git or jj repository".into(),
-        ));
-    }
 
     // Write bundle to temp file
     let tmp = tempfile::NamedTempFile::new().map_err(SandboxError::Io)?;

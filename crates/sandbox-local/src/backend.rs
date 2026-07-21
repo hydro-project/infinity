@@ -217,8 +217,9 @@ impl Drop for LocalBackend {
 #[async_trait]
 impl SandboxBackend for LocalBackend {
     /// For local mode, the repo arg is a path to an existing git dir.
-    /// We don't need to do anything special — just validate it exists
-    /// and return the path as the remote URI.
+    /// We don't need to do anything special — just validate it exists,
+    /// resolve the repository root (walking up from nested paths), and
+    /// return the root path as the remote URI.
     async fn init_repo(&self, repo: &str, _group_id: &str) -> Result<String, SandboxError> {
         let path = PathBuf::from(repo);
         if !path.is_absolute() {
@@ -232,7 +233,13 @@ impl SandboxBackend for LocalBackend {
             )));
         }
         let abs = path.canonicalize().map_err(SandboxError::Io)?;
-        Ok(abs.to_string_lossy().to_string())
+        // Walk up to the repository root so paths nested inside a repo
+        // (e.g. a cwd in a subdirectory of a jj repo, which has no
+        // `.jj`/`.git` marker of its own) resolve to the repo itself.
+        // If no root is found, fall back to the path as given so callers
+        // produce their usual "not a repository" errors.
+        let root = sandbox_core::find_repo_root(&abs).unwrap_or(abs);
+        Ok(root.to_string_lossy().to_string())
     }
 
     /// Create a sandbox for the given group. If a cached directory already
