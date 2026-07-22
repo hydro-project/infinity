@@ -16,6 +16,7 @@ use infinity_agent_core::tools::thread::{
     CloseThreadTool, ReportToParentTool, SendMessageToChildTool, SpawnThreadTool,
 };
 use infinity_agent_core::tools::{Tool, ToolContext};
+use infinity_provider_protocol::ModelProvider;
 use rap_client::toolset_loader::ToolsetLoader;
 
 use crate::conversation_history::DsqlConversationStore;
@@ -235,6 +236,19 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     let (display_tx, mut display_rx) = tokio::sync::mpsc::unbounded_channel();
     let extra_system_prompt: Option<String> = None;
 
+    // Resolve the model's image-input capability once from its catalog entry.
+    let supports_image_input = provider
+        .list_models()
+        .await
+        .ok()
+        .and_then(|models| {
+            models
+                .into_iter()
+                .find(|m| m.model_id == MODEL_ID)
+                .map(|m| m.supports_image_input)
+        })
+        .unwrap_or(false);
+
     {
         let batch_result = batch_processor::process_batch(
             inputs.into_iter(),
@@ -244,6 +258,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
             &group_id,
             &provider,
             MODEL_ID,
+            supports_image_input,
             &tool_names,
             &tool_defs,
             &tool_registry,

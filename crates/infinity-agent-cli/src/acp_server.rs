@@ -764,17 +764,20 @@ fn daemon_msg_to_session_update(
                 .expect("bug: ToolResult without matching ToolCall");
             let (content, raw_output) = segments
                 .into_iter()
-                .map(|seg| match seg {
+                .filter_map(|seg| match seg {
                     rap_protocol::DisplaySegment::Diff(d) => {
                         let (old_text, new_text) = parse_unified_diff(&d.patch);
                         let diff = ToolCallContent::Diff(
                             AcpDiff::new(&d.path, new_text).old_text(old_text),
                         );
-                        (Some(vec![diff]), None)
+                        Some((Some(vec![diff]), None))
                     }
                     rap_protocol::DisplaySegment::Text(t) => {
-                        (None, Some(serde_json::Value::String(t)))
+                        Some((None, Some(serde_json::Value::String(t))))
                     }
+                    // Unsupported display types (e.g. images) — fall through
+                    // to the next segment.
+                    _ => None,
                 })
                 .next()
                 .unwrap_or((None, None));

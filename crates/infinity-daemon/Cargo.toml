@@ -51,6 +51,7 @@ nix = { version = "0.31", features = ["signal"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+rap-test-servers = { path = "../rap-test-servers" }
 tempfile = { workspace = true }
 rig-mock = { path = "../rig-mock" }
 insta = { workspace = true }

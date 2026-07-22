@@ -33,6 +33,10 @@ pub trait ModelProvider: Send + Sync {
         model_id: &str,
         request: CompletionRequest,
     ) -> Result<ProviderCompletionResponse, CompletionError>;
+
+    /// Whether the given model accepts image content in its input.
+    /// The default implementation looks the model up in `list_models`.
+    async fn supports_image_input(&self, model_id: &str) -> bool { /* default */ }
 }
 ```
 
@@ -49,6 +53,10 @@ pub struct ModelEntry {
     pub context_window: usize,
     /// Max output tokens per request (None = backend default).
     pub max_output_tokens: Option<u64>,
+    /// Whether the model accepts image content in its input (e.g. image
+    /// tool results). Defaults to false; the runtime replaces image content
+    /// with a text placeholder for models that don't support it.
+    pub supports_image_input: bool,
 }
 ```
 

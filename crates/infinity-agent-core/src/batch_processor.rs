@@ -131,7 +131,7 @@ where
                 if let InputMessageContent::User(UserContent::ToolResult(res)) = &input_msg.content
                     && let ToolResultContent::Text(text) = res.content.first()
                 {
-                    let orig_call = current_history.get_history().into_iter().find(|h| {
+                    let orig_call = current_history.get_history(true).into_iter().find(|h| {
                         if let Message::Assistant { content, .. } = h
                             && let AssistantContent::ToolCall(c) = content.first()
                         {
@@ -200,6 +200,9 @@ pub async fn process_batch<'a: 'b, 'b, P, C, S, M, H>(
     active_group_id: &'a str,
     provider: &'a P,
     model_id: &'a str,
+    // Whether the active model accepts image inputs (from its resolved
+    // `ModelEntry`).
+    supports_image_input: bool,
     tool_names: &'a HashSet<String>,
     tool_defs: &'a [ToolDefinition],
     tool_registry: &'a HashMap<String, &'a dyn Tool<M>>,
@@ -273,6 +276,7 @@ where
             let mut stream = std::pin::pin!(event_processor::run_completion(
                 provider,
                 model_id,
+                supports_image_input,
                 current_history,
                 tool_names,
                 tool_defs,
@@ -622,6 +626,7 @@ mod tests {
             "t1",
             &provider,
             "mock",
+            false,
             &tn,
             &td,
             &tr,
@@ -670,6 +675,7 @@ mod tests {
             "t1",
             &provider,
             "mock",
+            false,
             &tn,
             &td,
             &tr,
@@ -722,6 +728,7 @@ mod tests {
             "t1",
             &provider,
             "mock",
+            false,
             &tn,
             &td,
             &tr,
@@ -755,6 +762,7 @@ mod tests {
             "t1",
             &provider,
             "mock",
+            false,
             &tn,
             &td,
             &tr,
@@ -826,6 +834,7 @@ mod tests {
             "t1",
             &provider,
             "mock",
+            false,
             &tn,
             &td,
             &tr,
@@ -876,6 +885,7 @@ mod tests {
             "t1",
             &provider,
             "mock",
+            false,
             &tn,
             &td,
             &tr,
@@ -905,6 +915,7 @@ mod tests {
             "t1",
             &provider,
             "mock",
+            false,
             &tn,
             &td,
             &tr,
@@ -955,6 +966,7 @@ mod tests {
             "t1",
             &provider,
             "mock",
+            false,
             &tn,
             &td,
             &tr,

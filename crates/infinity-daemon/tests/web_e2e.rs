@@ -68,6 +68,7 @@ async fn start_daemon(model: MockCompletionModel) -> Result<TestDaemon, BoxError
         display_name: "Mock Model".to_owned(),
         context_window: 100_000,
         max_output_tokens: None,
+        supports_image_input: true,
     };
     start_daemon_with_providers(vec![(
         "mock".to_owned(),
@@ -313,6 +314,10 @@ async fn send_chat_message(page: &Page, text: &str) -> Result<(), BoxError> {
     Ok(())
 }
 
+// ── Stub RAP image tool server (shared, see `rap-test-servers`) ──────────────
+
+use rap_test_servers::{STUB_PNG_BASE64, start_stub_image_server, write_rap_config};
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 /// Happy path: create a session, exchange messages with the (mock) model,
@@ -541,6 +546,7 @@ fn two_mock_providers() -> (ProviderList, MockModelController, MockModelControll
                     display_name: "Mock Model".to_owned(),
                     context_window: 100_000,
                     max_output_tokens: None,
+                    supports_image_input: true,
                 },
                 model1,
             )) as Arc<dyn ModelProvider>,
@@ -553,6 +559,7 @@ fn two_mock_providers() -> (ProviderList, MockModelController, MockModelControll
                     display_name: "Second Model".to_owned(),
                     context_window: 200_000,
                     max_output_tokens: None,
+                    supports_image_input: true,
                 },
                 model2,
             )) as Arc<dyn ModelProvider>,
@@ -726,6 +733,68 @@ async fn select_model_before_first_session() -> Result<(), BoxError> {
                 .await?;
             // After Connected, the pill still shows the selected model.
             expect(pill).to_contain_text("mock2: Second Model").await?;
+
+            harness.close().await?;
+            Ok(())
+        })
+        .await
+}
+
+/// A RAP tool returns an image: the transcript renders the image display
+/// segment as an inline `<img>` (instead of the text fallback), and the
+/// image content reaches the (image-capable) mock model.
+#[tokio::test]
+async fn image_tool_result_renders_inline() -> Result<(), BoxError> {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (model, mut ctrl) = mock_model();
+            let daemon = start_daemon(model).await?;
+            let stub_port = start_stub_image_server().await?;
+
+            // Point sessions created in this cwd at the stub RAP server.
+            write_rap_config(daemon.cwd.path(), stub_port)?;
+
+            let harness = BrowserHarness::launch().await?;
+            let page = harness.open(daemon.port).await?;
+
+            create_session_via_picker(&page, &daemon.cwd.path().to_string_lossy()).await?;
+
+            // The model answers with a call to the stub's image tool.
+            send_chat_message(&page, "Show me the logo").await?;
+            let _req = next_request(&mut ctrl).await?;
+            ctrl.send_tool_call(
+                "call-img",
+                "read_image",
+                serde_json::json!({"path": "logo.png"}),
+            );
+            ctrl.finish();
+
+            // The stub's tool result comes back as a new model round with the
+            // image content intact (the mock model declares image support).
+            let req = next_request(&mut ctrl).await?;
+            assert!(
+                history_json(&req).contains(STUB_PNG_BASE64),
+                "follow-up request should contain the base64 image tool-result content"
+            );
+            ctrl.send_text("A lovely indigo rectangle.");
+            ctrl.finish();
+
+            expect(page.get_by_text("A lovely indigo rectangle.", false).await)
+                .to_be_visible()
+                .await?;
+
+            // The tool result renders as an inline image (the image display
+            // segment wins over the text fallback).
+            let img = page.get_by_test_id("tool-result-image").await;
+            expect(img.clone()).to_be_visible().await?;
+            let src = img
+                .get_attribute("src")
+                .await?
+                .ok_or("tool result image should have a src")?;
+            assert_eq!(src, format!("data:image/png;base64,{STUB_PNG_BASE64}"));
+
+            assert_screenshot(&page, "chat-image-result", &[]).await?;
 
             harness.close().await?;
             Ok(())

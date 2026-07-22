@@ -2242,6 +2242,7 @@ dependencies = [
  "nix",
  "rap-client",
  "rap-protocol",
+ "rap-test-servers",
  "ratatui",
  "reqwest",
  "rig-core",
@@ -2302,6 +2303,7 @@ dependencies = [
  "futures-util",
  "infinity-agent-core",
  "infinity-provider-bedrock",
+ "infinity-provider-protocol",
  "lambda_runtime",
  "rap-client",
  "reqwest",
@@ -2337,6 +2339,7 @@ dependencies = [
  "playwright-rs",
  "rap-client",
  "rap-protocol",
+ "rap-test-servers",
  "reqwest",
  "rig-core",
  "rig-mock",
@@ -3496,6 +3499,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rap-test-servers"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "rap-protocol",
+ "reqwest",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "ratatui"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3973,6 +3987,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64",
  "nix",
  "rap-protocol",
  "reqwest",
@@ -3992,6 +4007,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64",
  "clap",
  "insta",
  "nix",
