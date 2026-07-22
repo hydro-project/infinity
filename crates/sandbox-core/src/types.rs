@@ -15,9 +15,63 @@ pub enum SandboxMode {
         /// Absolute git commit hash the worktree is based on.
         base_revision: String,
     },
+    /// Externally-provided custom mode, keyed by a string id with opaque JSON data.
+    ///
+    /// The core server and backend treat this as opaque: all mode-specific
+    /// behavior is delegated to a registered [`crate::sandbox::ModeProvider`],
+    /// exactly like the built-in [`SandboxMode::Jj`] and [`SandboxMode::Git`]
+    /// modes.
+    Custom {
+        /// Provider-defined identifier for the custom mode.
+        id: String,
+        /// Provider-defined opaque payload.
+        data: serde_json::Value,
+    },
     /// Direct mode: operates on the original repo directory with no worktrees.
     /// File edits require user approval; commands run without file write access unless write-orig is granted.
     Direct,
+}
+
+/// Status of a changed file in a sandbox diff.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileChangeStatus {
+    Added,
+    Deleted,
+    Modified,
+}
+
+/// A single changed file with its old and new contents, used to render diffs.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChangedFile {
+    pub path: String,
+    pub status: FileChangeStatus,
+    #[serde(rename = "oldContents")]
+    pub old_contents: String,
+    #[serde(rename = "newContents")]
+    pub new_contents: String,
+}
+
+/// Parse `git diff --name-status` or `jj diff --summary` output into (status, path) pairs.
+pub(crate) fn parse_changed_files(output: &str) -> Vec<(FileChangeStatus, &str)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            // jj format: "M path" or "A path" or "D path"
+            // git format: "M\tpath" or "A\tpath" or "D\tpath"
+            let (status, path) =
+                if let Some(rest) = line.strip_prefix("M\t").or(line.strip_prefix("M ")) {
+                    (FileChangeStatus::Modified, rest)
+                } else if let Some(rest) = line.strip_prefix("A\t").or(line.strip_prefix("A ")) {
+                    (FileChangeStatus::Added, rest)
+                } else {
+                    let rest = line.strip_prefix("D\t").or(line.strip_prefix("D "))?;
+                    (FileChangeStatus::Deleted, rest)
+                };
+            Some((status, path.trim()))
+        })
+        .collect()
 }
 
 /// Metadata stored per group_id tracking the repo state.
