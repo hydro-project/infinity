@@ -6,11 +6,11 @@ sidebar_position: 2
 
 A RAP server is an independent HTTP service that offers a set of tools. It receives invocations from the agent runtime, does its work, and POSTs the result back to a callback URL. Just like MCP, these tools are abstracted away from agent runtime specifics such as the model or durable store, so a single RAP server can be used with any agent runtime that supports the RAP protocol.
 
-Unlike MCP servers, which spin up a separate processes or connections per-client, a single RAP server can concurrently process requests from *several* clients. This multienant approach makes it easy to scale RAP servers without running into operating system restrictions or fault-tolerance issues. RAP tools are standalone services with their own lifecycle, scaling, and failure characteristics.
+Unlike MCP servers, which spin up a separate process or connection per client, a single RAP server can concurrently process requests from *several* clients. This multitenant approach makes it easy to scale RAP servers without running into operating system restrictions or fault-tolerance issues. RAP tools are standalone services with their own lifecycle, scaling, and failure characteristics.
 
 ## Invocation
 
-All tool calls are issues via HTTP requests to the RAP server. The agent runtime POSTs a JSON payload to the tool's HTTP endpoint:
+All tool calls are issued via HTTP requests to the RAP server. The agent runtime POSTs a JSON payload to the tool's HTTP endpoint:
 
 ```json
 {
@@ -26,6 +26,8 @@ All tool calls are issues via HTTP requests to the RAP server. The agent runtime
 
 The tool must return HTTP 200 immediately, then process the request asynchronously. This allows the agent runtime to shut down while a tool call is processing because there are no long-lived connections.
 
+When the invocation comes from a child thread, the payload also carries `thread_ancestors`, the ordered list of ancestor thread IDs from root to parent. Tools can use it to inherit thread-scoped state (a sandbox, a permission grant) from parent threads. See the [Tool Invocation spec](/docs/rap/spec/basic/tool-invocation) for the full field reference.
+
 ## Returning results
 
 When the RAP tool call is complete, it POSTs the tool call result to the `callback_url` provided in the request:
@@ -35,15 +37,20 @@ When the RAP tool call is complete, it POSTs the tool call result to the `callba
   "type": "tool_result",
   "group_id": "thread_xyz",
   "id": "call_abc123",
-  "text": "Subscribed to pull_request events on acme/api. Subscription ID: sub_def456"
+  "text": "Subscribed to pull_request events on acme/api. Subscription ID: sub_def456",
+  "subscription": true
 }
 ```
 
-This API request wakes up the agent runtime, which will load the session state from durable storage, matches the result to the pending tool call via the `id` field, and continues the conversation. Again, because this is a separate HTTP request from the tool invocation, the agent runtime does not need to maintain any long-lived TCP connections and is free to shut down after processing the tool call result.
+This API request wakes up the agent runtime, which loads the session state from durable storage, matches the result to the pending tool call via the `id` field, and continues the conversation. Again, because this is a separate HTTP request from the tool invocation, the agent runtime does not need to maintain any long-lived TCP connections and is free to shut down after processing the tool call result.
+
+Results can optionally include a `display_as` array of display segments (a short summary, a rendered diff) that human-facing UIs show instead of the raw `text`. The LLM always receives the full `text`. See [Display Segments](/docs/rap/spec/basic/tool-result#display-segments).
 
 ## Subscription tools
 
 Some tools register an ongoing subscription instead of returning a single result. A GitHub webhook listener, a stock price monitor, a Slack channel watcher: these tools deliver events over time, each one waking the agent.
+
+The confirmation result for a subscription call should set `"subscription": true`, which tells the runtime to record the tool call as an active subscription in the thread. The runtime uses this tracking to let the agent cancel the subscription later.
 
 Whenever a matching event occurs, the RAP server POSTs a `subscription_event` to the callback URL associated with the subscription:
 
@@ -73,4 +80,4 @@ Tools that need user authorization can trigger an OAuth flow by sending an `oaut
 }
 ```
 
-The runtime surfaces this URL to the user. After authorization completes, the tool receives the callback, exchanges the code for a token, and retries the original operation — sending the actual result back through the normal flow.
+The runtime surfaces this URL to the user. After authorization completes, the tool receives the callback, exchanges the code for a token, and retries the original operation, sending the actual result back through the normal flow.

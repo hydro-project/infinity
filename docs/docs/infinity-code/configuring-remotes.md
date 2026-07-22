@@ -5,7 +5,7 @@ title: Configuring Remotes
 
 # Configuring Remotes
 
-Infinity Code can connect to Infinity daemons running on other machines over SSH. This lets you run agents on a powerful remote dev server while interacting with them from your laptop — remote sessions appear alongside local ones in the session picker.
+Infinity Code can connect to Infinity daemons running on other machines over SSH. This lets you run agents on a powerful remote dev server while interacting with them from your laptop. Remote sessions appear alongside local ones in the session picker.
 
 ## Adding Remotes via CLI
 
@@ -24,7 +24,7 @@ infinity remote add gpu-server -- ssh -J bastion.example.com gpu.internal
 
 This appends a new entry to `~/.infinity/remotes.json`, creating the file if it doesn't exist. If a remote with the same name already exists, the command will error.
 
-Restart the daemon (`infinity daemon stop`, then start a new session) for it to pick up the new remote.
+Restart the daemon (`infinity daemon restart`) for it to pick up the new remote.
 
 ## Configuration File
 
@@ -50,7 +50,7 @@ The daemon reads this file on startup and establishes an SSH tunnel to each remo
 
 ## SSH Setup
 
-The `ssh_args` array is passed directly to the `ssh` command, so you can use anything your SSH client supports — host aliases from `~/.ssh/config`, custom ports, jump hosts, etc.
+The `ssh_args` array is passed directly to the `ssh` command, so you can use anything your SSH client supports: host aliases from `~/.ssh/config`, custom ports, jump hosts, etc.
 
 ```json
 [
@@ -79,7 +79,7 @@ Once configured, remote sessions appear in the session picker (`/load` or Ctrl+L
     devbox/ghi789  frontend  1 hour ago
 ```
 
-Select a remote session and interact with it exactly like a local one — the daemon proxies all communication through the SSH tunnel transparently.
+Select a remote session and interact with it exactly like a local one; the daemon proxies all communication through the SSH tunnel transparently.
 
 You can also start new sessions on a remote by SSHing in and running `infinity` there. The session will show up in your local picker automatically.
 
@@ -87,9 +87,13 @@ You can also start new sessions on a remote by SSHing in and running `infinity` 
 
 The daemon auto-reconnects if an SSH tunnel drops, retrying every 5 seconds. Connection status for each remote is visible in the UI:
 
-- **connecting** — establishing the SSH tunnel
-- **connected** — tunnel is active, remote sessions are available
-- **disconnected** — tunnel failed (hover or check logs for the reason)
+- **connecting**: establishing the SSH tunnel
+- **connected**: tunnel is active, remote sessions are available
+- **disconnected**: tunnel failed (hover or check logs for the reason)
+
+## Migrating Sessions Between Machines
+
+A session doesn't have to stay where it started. From the desktop web UI you can migrate a session between your local daemon and any configured remote (in either direction). The daemon orchestrates the move: it shuts down the source session, transfers the conversation history and thread tree, and asks the session's RAP servers (like the sandbox) to migrate their state to servers on the destination. Pick the session, choose a destination and working directory, and continue the conversation on the other machine.
 
 ## Requirements
 

@@ -5,7 +5,7 @@ title: Toolsets
 
 # Toolsets
 
-The Reactive Agent Protocol (RAP) allows tool servers to expose operations that can be invoked by agent runtimes on behalf of an LLM. Tools are organized into **toolsets** — declarative JSON manifests that describe the operations a tool server exposes, how to reach it, and what arguments each operation expects.
+The Reactive Agent Protocol (RAP) allows tool servers to expose operations that can be invoked by agent runtimes on behalf of an LLM. Tools are organized into **toolsets**, declarative JSON manifests that describe the operations a tool server exposes, how to reach it, and what arguments each operation expects.
 
 Toolsets serve as the contract between tool authors and runtime implementors. The runtime loads toolset definitions at startup, passes the tool schemas to the LLM so it knows what operations are available, and uses the endpoint information to dispatch invocations correctly. Each tool within a toolset is uniquely identified by a name and includes a JSON Schema describing its expected input.
 
@@ -81,7 +81,7 @@ For tools that accept no parameters, the schema SHOULD explicitly indicate that 
 
 ### Annotations
 
-Tools MAY include an `annotations` object that provides metadata about their behavior. Annotations are informational — they help runtimes and LLMs make better decisions about when and how to invoke a tool, but they do not change the protocol mechanics. For example, a runtime might use the `destructive` annotation to prompt for user confirmation.
+Tools MAY include an `annotations` object that provides metadata about their behavior. Annotations are informational: they help runtimes and LLMs make better decisions about when and how to invoke a tool, but they do not change the protocol mechanics. For example, a runtime might use the `destructive` annotation to prompt for user confirmation.
 
 | Annotation | Type | Description |
 |---|---|---|
@@ -110,15 +110,15 @@ The runtime makes the tool's arguments available as a single `args` map variable
 
 When invoked with `{"owner": "acme", "repo": "widgets", "number": 42}`, the frontend would display: `PR #42 on acme/widgets`.
 
-The script MUST return a string. If the `displayScript` field is absent, if the script fails to evaluate, or if the frontend does not support Rhai evaluation, the frontend MUST fall back to its default tool call display. Frontends MUST NOT treat script evaluation failures as errors — they are expected when arguments are missing or have unexpected types.
+The script MUST return a string. If the `displayScript` field is absent, if the script fails to evaluate, or if the frontend does not support Rhai evaluation, the frontend MUST fall back to its default tool call display. Frontends MUST NOT treat script evaluation failures as errors; they are expected when arguments are missing or have unexpected types.
 
-Display scripts are purely cosmetic — they do not affect tool invocation, argument validation, or any other protocol behavior. They SHOULD be treated as untrusted input and evaluated in a sandboxed scripting environment.
+Display scripts are purely cosmetic and do not affect tool invocation, argument validation, or any other protocol behavior. They SHOULD be treated as untrusted input and evaluated in a sandboxed scripting environment.
 
 ## Loading Toolsets
 
 Runtimes MUST load toolset definitions by fetching them from the tool server's well-known discovery endpoint. The runtime MUST NOT load toolset definitions from local files, inline configuration, or any other source. This ensures that the runtime always obtains the authoritative definition directly from the tool server.
 
-Because RAP runtimes are ephemeral and may cache toolset definitions across invocations within a session, there can be a significant delay between when a toolset was fetched and when the LLM actually invokes one of its tools. Tool implementors MUST account for this gap — a tool server that deploys breaking changes to its schema while agents hold cached definitions will receive invocations with stale arguments. Tool servers SHOULD handle such invocations gracefully by returning an error via the normal [tool result](/docs/rap/spec/basic/tool-result) path rather than failing silently.
+Because RAP runtimes are ephemeral and may cache toolset definitions across invocations within a session, there can be a significant delay between when a toolset was fetched and when the LLM actually invokes one of its tools. Tool implementors MUST account for this gap: a tool server that deploys breaking changes to its schema while agents hold cached definitions will receive invocations with stale arguments. Tool servers SHOULD handle such invocations gracefully by returning an error via the normal [tool result](/docs/rap/spec/basic/tool-result) path rather than failing silently.
 
 ```mermaid
 sequenceDiagram
@@ -143,7 +143,7 @@ sequenceDiagram
     Note over TS: Tool handles gracefully,<br/>returns error via tool_result
 ```
 
-Runtimes SHOULD support loading multiple toolsets simultaneously. When multiple toolsets are loaded, tool names MUST be unique across all loaded toolsets — if two toolsets define a tool with the same name, the runtime MUST report an error and MUST NOT make either tool available. The runtime MUST resolve the correct endpoint for each tool based on its parent toolset's `endpoint` field.
+Runtimes SHOULD support loading multiple toolsets simultaneously. When multiple toolsets are loaded, tool names MUST be unique across all loaded toolsets. If two toolsets define a tool with the same name, the runtime MUST report an error and MUST NOT make either tool available. The runtime MUST resolve the correct endpoint for each tool based on its parent toolset's `endpoint` field.
 
 ### Discovery Endpoint
 
@@ -177,10 +177,10 @@ Runtimes SHOULD cache toolset definitions for the duration of the agent session 
 
 Runtimes MUST validate toolset definitions when loading them. The `name` field MUST be present and non-empty, and the `endpoint` field MUST be a valid URL. The `tools` array MUST contain at least one tool, and each tool MUST have a valid `name`, `description`, and `inputSchema` where the `inputSchema` is a valid JSON Schema object.
 
-If validation fails, the runtime MUST report the error and MUST NOT make the invalid toolset's tools available to the LLM. Partial loading — where some tools from an invalid toolset are made available — is not permitted.
+If validation fails, the runtime MUST report the error and MUST NOT make the invalid toolset's tools available to the LLM. Partial loading, where some tools from an invalid toolset are made available, is not permitted.
 
 ## Security Considerations
 
-Toolset definitions SHOULD be loaded from trusted sources only. Runtimes SHOULD verify the integrity of remotely-loaded toolset definitions — for example, via checksums, digital signatures, or pinned URLs — to prevent tampering.
+Toolset definitions SHOULD be loaded from trusted sources only. Runtimes SHOULD verify the integrity of remotely-loaded toolset definitions (for example, via checksums, digital signatures, or pinned URLs) to prevent tampering.
 
 Tool descriptions are passed directly to the LLM and SHOULD be treated as untrusted input. They MUST NOT be used to execute code or modify runtime behavior beyond informing the LLM's tool selection.

@@ -49,7 +49,7 @@ HTTP/1.1 200 OK
 
 ## Result Content
 
-The `text` field carries the tool's output. The protocol does not prescribe a specific format for result content — implementations MAY use plain text for human-readable results, JSON-encoded strings for structured data, or error descriptions for failed operations. The LLM receives the `text` value as the tool's response and reasons about it in the context of the ongoing conversation.
+The `text` field carries the tool's output. The protocol does not prescribe a specific format for result content: implementations MAY use plain text for human-readable results, JSON-encoded strings for structured data, or error descriptions for failed operations. The LLM receives the `text` value as the tool's response and reasons about it in the context of the ongoing conversation.
 
 ### Structured Results
 
@@ -68,7 +68,7 @@ Runtimes MAY parse the `text` field as JSON if the tool's schema indicates struc
 
 ### Display Segments
 
-Tool results often contain verbose output — full file contents, large diffs, or detailed structured data — that is essential for the LLM but overwhelming for a human observer. The optional `display_as` field provides an array of **display segments** that runtimes SHOULD present in user-facing interfaces (CLIs, web UIs, dashboards) instead of the raw `text`.
+Tool results often contain verbose output (full file contents, large diffs, or detailed structured data) that is essential for the LLM but overwhelming for a human observer. The optional `display_as` field provides an array of **display segments** that runtimes SHOULD present in user-facing interfaces (CLIs, web UIs, dashboards) instead of the raw `text`.
 
 When `display_as` is present, the runtime MUST still pass the full `text` value to the LLM as the tool's response. The `display_as` value is purely a presentation hint and MUST NOT alter the content the model receives. Runtimes that do not support display customization MAY ignore the field entirely.
 
@@ -123,7 +123,7 @@ A simple text-only display:
   "id": "call_abc123",
   "text": "Replaced text in src/main.rs",
   "display_as": [
-    { "type": "text", "content": "edit_file src/main.rs — 1 insertion" }
+    { "type": "text", "content": "edit_file src/main.rs: 1 insertion" }
   ]
 }
 ```
@@ -144,12 +144,12 @@ A diff display with text fallback:
         "patch": "--- src/main.rs\n+++ src/main.rs\n@@ -1,3 +1,4 @@\n fn main() {\n+    println!(\"hello\");\n }"
       }
     },
-    { "type": "text", "content": "edit_file src/main.rs — 1 insertion" }
+    { "type": "text", "content": "edit_file src/main.rs: 1 insertion" }
   ]
 }
 ```
 
-Tools SHOULD keep `"text"` segments short — typically a single line summarizing the operation and its outcome. If the result text is already concise enough for display, tools SHOULD omit `display_as` and let the runtime show `text` directly.
+Tools SHOULD keep `"text"` segments short, typically a single line summarizing the operation and its outcome. If the result text is already concise enough for display, tools SHOULD omit `display_as` and let the runtime show `text` directly.
 
 ## Error Handling
 
@@ -164,13 +164,13 @@ There is no separate error message type. If the tool encounters an error during 
 }
 ```
 
-The LLM receives this as the tool's response and can decide how to handle it — retry, inform the user, or try a different approach.
+The LLM receives this as the tool's response and can decide how to handle it: retry, inform the user, or try a different approach.
 
-Tools MUST NOT silently drop errors. Every invocation MUST eventually produce either a `tool_result` or an [`oauth`](/docs/rap/spec/server/oauth) message.
+Tools MUST NOT silently drop errors. Every invocation MUST eventually produce a `tool_result`, unless it is deferred by an [`oauth`](/docs/rap/spec/server/oauth) or [`user_choice`](/docs/rap/spec/server/user-choice) message awaiting user interaction.
 
 ### Error Conventions
 
-While the protocol does not mandate error formatting, tools SHOULD prefix error messages with `"Error: "` to help the LLM distinguish errors from successful results. Error messages SHOULD include actionable information — such as retry timing, missing permissions, or alternative approaches — so the LLM can attempt recovery. Tools SHOULD avoid exposing internal implementation details or stack traces in error messages, as these provide no value to the LLM and may leak sensitive information.
+While the protocol does not mandate error formatting, tools SHOULD prefix error messages with `"Error: "` to help the LLM distinguish errors from successful results. Error messages SHOULD include actionable information, such as retry timing, missing permissions, or alternative approaches, so the LLM can attempt recovery. Tools SHOULD avoid exposing internal implementation details or stack traces in error messages, as these provide no value to the LLM and may leak sensitive information.
 
 ## Routing
 
@@ -183,6 +183,6 @@ If the runtime receives a tool result with an unknown `group_id` or `id`, it SHO
 
 ## Security Considerations
 
-Runtimes MUST validate that the `group_id` and `id` in an incoming tool result correspond to an actual pending tool call. This prevents unauthorized parties from injecting fabricated results into conversations. Runtimes SHOULD also validate the `text` content before passing it to the LLM — while the LLM is generally resilient to unexpected input, sanitization reduces the risk of prompt injection through tool results.
+Runtimes MUST validate that the `group_id` and `id` in an incoming tool result correspond to an actual pending tool call. This prevents unauthorized parties from injecting fabricated results into conversations. Runtimes SHOULD also validate the `text` content before passing it to the LLM: while the LLM is generally resilient to unexpected input, sanitization reduces the risk of prompt injection through tool results.
 
 Tools MUST NOT include sensitive data (credentials, tokens, internal identifiers) in results unless the operation explicitly requires it. Runtimes SHOULD implement idempotent result processing to handle duplicate deliveries gracefully, since network retries may cause the same result to arrive more than once.

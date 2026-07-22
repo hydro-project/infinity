@@ -1,0 +1,284 @@
+---
+sidebar_position: 4
+title: Deploying on AWS Lambda
+---
+
+import CloudArchitecture from '@site/static/img/cloud-architecture.svg';
+
+# Deploying on AWS Lambda
+
+The Lambda deployment is the production embedding of the Infinity Runtime, and the one that takes fullest advantage of the [yielding architecture](./architecture.md): when a slice ends, the Lambda invocation ends, and an idle agent consumes no compute at all. This page covers the AWS architecture and the CDK constructs that provision it. If you want to run the runtime inside your own process instead, see [The Rust API](./rust-api.md).
+
+## Architecture
+
+The agent runs as a short-lived Lambda function. It starts when a message arrives, loads conversation history from Aurora DSQL, runs the model via Bedrock, dispatches tool calls, saves state back, and exits. Between messages, nothing is running: zero compute, zero cost.
+
+<CloudArchitecture style={{width: '100%', maxWidth: '960px', margin: '1.5rem 0'}} />
+
+Everything flows through a single SQS FIFO queue. User messages, tool results, subscription events, and sleep wake-ups all enter through the same channel. The queue serializes messages per thread (via `MessageGroupId`), so a single conversation processes in order while independent threads run concurrently on separate Lambda invocations.
+
+Tools are independent HTTP services. The runtime POSTs an invocation to a tool's Function URL and moves on without waiting for a response. When the tool finishes, it POSTs the result to a RAP Receiver Lambda, which enqueues it back on the input queue. This closes the loop: the agent wakes up again, picks up the tool result, and continues the conversation. Note that the receiver currently accepts `tool_result`, `oauth`, and `subscription_event` callbacks; the `user_choice` and `view_update` [server features](/docs/rap/spec/server/user-choice) are only supported by the embedded daemon runtime today.
+
+The `sleep` and `sleep_until` tools use AWS infrastructure for durable timers:
+
+- Delays of 900 seconds or less go through an SQS queue with `DelaySeconds`, which then submits the tool call result to the input queue
+- Longer delays create a one-time EventBridge schedule that sends a message directly to the input queue
+
+Both are interruptible. If a user message or subscription event arrives while the agent is sleeping, the runtime processes it immediately; the pending sleep result arrives later and is appended to history normally.
+
+## Deploying an Agent
+
+The Infinity repo includes a CDK library that automates the entire deployment. The `InfinityAgent` construct provisions the full stack (Lambda, SQS, DSQL, Function URLs, IAM permissions) and you add tools as child constructs. A single `cdk deploy` creates everything.
+
+### Prerequisites
+
+Before deploying, you'll need a few tools installed and AWS credentials configured. The agent Lambda is a Rust binary compiled for ARM64 Lambda. You need:
+
+- Rust toolchain (stable): [rustup.rs](https://rustup.rs/)
+- [cargo-lambda](https://www.cargo-lambda.info/) for cross-compiling to Lambda:
+
+```bash
+brew install cargo-lambda/tap/cargo-lambda
+# OR
+pip install cargo-lambda
+```
+
+The infrastructure is defined in CDK (TypeScript). You need:
+
+- Node.js 20+
+- AWS CDK CLI:
+
+```bash
+npm install -g aws-cdk
+```
+
+Finally, you need credentials with permissions to deploy CloudFormation stacks, create Lambda functions, SQS queues, DynamoDB tables, DSQL clusters, and IAM roles. You also need Bedrock model access enabled in your target region: the Lambda runtime currently invokes a fixed Claude Sonnet model through the Bedrock provider (see `MODEL_ID` in `crates/infinity-agent-lambda`), so make sure the Anthropic models are enabled.
+
+```bash
+aws sso login --profile your-profile
+export AWS_PROFILE=your-profile
+export CDK_DEFAULT_ACCOUNT=123456789012
+export CDK_DEFAULT_REGION=us-east-1
+```
+
+If you haven't used CDK in this account/region before, bootstrap it first:
+
+```bash
+npx cdk bootstrap aws://123456789012/us-east-1
+```
+
+### Launching the Agent
+
+The repo includes an example agent at `agent/lib/example-agent.ts` that wires up several tools. Clone the repo and install dependencies:
+
+```bash
+git clone https://github.com/hydro-project/infinity
+cd infinity/agent
+npm install
+```
+
+The example agent looks like this:
+
+```typescript
+import { InfinityAgent } from './infinity-agents';
+import { HTTPMCPToolSet } from './infinity-agents/mcp';
+import { GetTimeToolSet, Ec2ToolSet, GitHubEventToolSet, FinanceToolSet, SandboxToolSet } from './toolsets';
+
+export class ExampleAgent extends InfinityAgent {
+  constructor(scope: Construct, id: string, gateway: apigateway.RestApi) {
+    super(scope, id);
+
+    new HTTPMCPToolSet(this, 'GithubMcp', {
+      name: 'github',
+      url: 'https://api.githubcopilot.com/mcp/',
+      oauth: {
+        callbackGateway: gateway,
+        stageName: 'prod',
+        clientId: process.env.GITHUB_OAUTH_CLIENT_ID,
+        clientSecret: process.env.GITHUB_OAUTH_CLIENT_SECRET,
+      },
+    });
+
+    // Custom tool sets
+    new GetTimeToolSet(this, 'GetTimeToolSet');
+    new Ec2ToolSet(this, 'Ec2ToolSet');
+
+    // Event subscriptions
+    new GitHubEventToolSet(this, 'GitHubEventToolSet', { webhookGateway: gateway });
+
+    // Finance tools (subscriptions + paper trading)
+    new FinanceToolSet(this, 'FinanceToolSet');
+
+    // Sandboxed code editing / execution
+    new SandboxToolSet(this, 'SandboxToolSet');
+  }
+}
+```
+
+The bundled tool sets are examples you can keep, remove, or use as references for your own:
+
+- **`GetTimeToolSet`**: a minimal RAP tool server returning the current time in any timezone. The simplest reference implementation.
+- **`Ec2ToolSet`**: launches EC2 instances and monitors their state transitions via a subscription, so the agent hibernates while an instance boots.
+- **`GitHubEventToolSet`**: `subscribe_github_events` backed by an API Gateway webhook receiver, plus a GitHub Actions status checker.
+- **`FinanceToolSet`**: stock price subscriptions driven by a poller, plus paper-trading tools.
+- **`SandboxToolSet`**: cloud sandboxed coding tools (the same sandbox server Infinity Code uses locally, deployed via the `sandbox-remote` crate) as a container-image Lambda with git and jj, backed by EFS for repository storage and DynamoDB for metadata. Creates a VPC unless you pass one in.
+
+If you include the GitHub MCP server, you will also need to configure OAuth credentials:
+
+```bash
+export GITHUB_OAUTH_CLIENT_ID=your-client-id
+export GITHUB_OAUTH_CLIENT_SECRET=your-client-secret
+```
+
+Finally, you can deploy the agent with a single command:
+
+```bash
+npx cdk deploy
+```
+
+The first deploy takes a few minutes. CDK will show you the resources being created and ask for confirmation on IAM changes. Once complete, it outputs the queue URLs and Function URLs you need to interact with the agent.
+
+## Talking to the Agent
+
+The deployed agent has no HTTP frontend of its own; you talk to it through the queues. Send a JSON message to the input FIFO queue, with `MessageGroupId` selecting the conversation and a unique `MessageDeduplicationId`:
+
+```bash
+aws sqs send-message \
+  --queue-url "$INPUT_QUEUE_URL" \
+  --message-group-id my-conversation \
+  --message-deduplication-id "$(date +%s)" \
+  --message-body '{
+    "content": { "type": "text", "text": "What time is it in Tokyo?" },
+    "group_id": "my-conversation"
+  }'
+```
+
+Each `group_id` is an independent conversation thread with its own persisted history; reuse the same value to continue a conversation. The agent's replies (and notices such as OAuth challenges) arrive as JSON messages on the output queue, each carrying the response `text` and the conversation `metadata`.
+
+### Slack integration
+
+The repo also includes a `SlackIntegration` construct that turns Slack into the agent's chat frontend. It provisions a webhook receiver (wired to Slack's Events API, verified with `SLACK_SIGNING_SECRET`) that maps each Slack thread to a conversation `group_id` on the input queue, and a responder (authenticated with `SLACK_BOT_TOKEN`) that posts output queue messages back into the originating thread:
+
+```typescript
+const slack = new SlackIntegration(agent, 'SlackIntegration', { webhookGateway: gateway });
+new cdk.CfnOutput(this, 'SlackWebhookUrl', { value: slack.webhookUrl });
+```
+
+Point a Slack app's event subscription at the emitted webhook URL, and mentioning the app in a channel starts a durable agent conversation in that thread.
+
+## Adding RAP Servers
+
+There are three ways to add tools to your agent:
+
+- `RapToolSet`: a native RAP tool server (Lambda or remote URL). Serves `/.well-known/rap-toolset` for discovery. The runtime fetches tool definitions at startup.
+- `LambdaMCPToolSet` / `HTTPMCPToolSet`: wraps an MCP server in a proxy Lambda. See [MCP Compatibility](/docs/rap/about/mcp-compatibility) for details on how the proxy translates between protocols.
+
+All tool constructs automatically handle Function URL creation, IAM permissions (SigV4 auth between the agent Lambda and tool Lambdas), and tool configuration registration.
+
+### RapToolSet
+
+Use `RapToolSet` when you have a tool server that implements the RAP protocol, serving a toolset definition at `/.well-known/rap-toolset` and handling invocations asynchronously. This is the most common way to add tools.
+
+For a Lambda-based tool server, pass the handler directly. The construct creates a Function URL with IAM auth and response streaming, and wires up all permissions automatically:
+
+```typescript
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as cdk from 'aws-cdk-lib';
+import * as path from 'path';
+import { RapToolSet } from './infinity-agents/tools';
+
+const weatherFunction = new lambda.Function(this, 'WeatherTool', {
+  runtime: lambda.Runtime.NODEJS_24_X,
+  handler: 'index.handler',
+  code: lambda.Code.fromAsset(path.join(__dirname, 'weather-tool')),
+  timeout: cdk.Duration.seconds(30),
+});
+
+new RapToolSet(agent, 'WeatherTools', {
+  handler: weatherFunction,
+});
+```
+
+For tool servers hosted outside your CDK stack (another account, a third-party service, a container), pass the base URL instead:
+
+```typescript
+new RapToolSet(agent, 'ExternalTools', {
+  serverUrl: 'https://tools.example.com',
+});
+```
+
+The runtime fetches the toolset definition from `https://tools.example.com/.well-known/rap-toolset` at startup and dispatches invocations to whatever `endpoint` the toolset declares.
+
+### HTTPMCPToolSet
+
+Use `HTTPMCPToolSet` to connect to a remote MCP server over HTTP (Streamable HTTP transport). A proxy Lambda translates between the MCP protocol and RAP, so the runtime treats it like any other tool server. Supports optional OAuth for servers that require user authentication.
+
+```typescript
+import { HTTPMCPToolSet } from './infinity-agents/mcp';
+
+// Simple HTTP MCP server (no auth)
+new HTTPMCPToolSet(this, 'SlackMcp', {
+  name: 'slack',
+  url: 'https://mcp.slack.com/sse',
+  headers: {
+    'Authorization': 'Bearer xoxb-your-bot-token',
+  },
+});
+```
+
+With OAuth support, the construct creates a DynamoDB table for token storage and an API Gateway callback endpoint:
+
+```typescript
+import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import { HTTPMCPToolSet } from './infinity-agents/mcp';
+
+const gateway = new apigateway.RestApi(this, 'WebhookApi');
+
+new HTTPMCPToolSet(this, 'GithubMcp', {
+  name: 'github',
+  url: 'https://api.githubcopilot.com/mcp/',
+  oauth: {
+    callbackGateway: gateway,
+    stageName: 'prod',
+    clientId: process.env.GITHUB_OAUTH_CLIENT_ID,
+    clientSecret: process.env.GITHUB_OAUTH_CLIENT_SECRET,
+  },
+});
+```
+
+### LambdaMCPToolSet
+
+Use `LambdaMCPToolSet` to run an MCP server as a stdio subprocess inside a Lambda proxy. This is useful for MCP servers distributed as CLI tools (e.g., `npx` packages) that don't expose an HTTP endpoint.
+
+```typescript
+import { LambdaMCPToolSet } from './infinity-agents/mcp';
+
+new LambdaMCPToolSet(this, 'FileSystemMcp', {
+  name: 'filesystem',
+  command: ['npx', '-y', '@modelcontextprotocol/server-filesystem', '/tmp'],
+});
+```
+
+You can pass environment variables and custom Lambda configuration:
+
+```typescript
+new LambdaMCPToolSet(this, 'DatabaseMcp', {
+  name: 'database',
+  command: ['npx', '-y', '@modelcontextprotocol/server-postgres'],
+  env: {
+    POSTGRES_CONNECTION_STRING: process.env.POSTGRES_CONNECTION_STRING,
+  },
+  lambdaProps: {
+    memorySize: 1024,
+    timeout: cdk.Duration.seconds(120),
+  },
+});
+```
+
+## What's Next
+
+- **[Architecture](./architecture.md)**: how slices, yielding, and message ordering work
+- **[The Rust API](./rust-api.md)**: embed the runtime directly instead of deploying to Lambda
+- **[Built-in Tools](./built-in-tools.md)**: sleep, threading, and subscription tools
+- **[Build a RAP Tool](/docs/rap/using-rap/building-a-rap-tool)**: create your own tool server
+- **[MCP Compatibility](/docs/rap/about/mcp-compatibility)**: how the MCP proxy layer works

@@ -7,19 +7,21 @@ title: Agent Runtime
 
 The agent runtime is the host process that connects an LLM to RAP tools. It's the equivalent of an MCP client, but designed for a world where tool calls are asynchronous and the runtime doesn't stay alive between them.
 
-The runtime manages the conversation lifecycle: it receives inputs, maintains conversation state, runs LLM completions, dispatches tool calls, and delivers output. Tools never interact with the LLM directly — the runtime mediates everything.
+The runtime manages the conversation lifecycle: it receives inputs, maintains conversation state, runs LLM completions, dispatches tool calls, and delivers output. Tools never interact with the LLM directly; the runtime mediates everything.
 
-The protocol doesn't prescribe how the runtime is built. The reference implementation (the [Infinity Runtime](/docs/infinity-runtime/overview)) is a Rust crate that runs as both a Lambda function and a local CLI, using Amazon Bedrock for completions. But any process that can receive messages, call an LLM, POST HTTP requests, and persist state can serve as a RAP runtime. See [Building a Runtime](/docs/rap/using-rap/building-a-runtime) for implementation guidance.
+The protocol doesn't prescribe how the runtime is built. The reference implementation (the [Infinity Runtime](/docs/infinity-runtime/overview)) is a Rust library that runs on AWS Lambda in production and embeds in the local Infinity Code daemon for development. But any process that can receive messages, call an LLM, POST HTTP requests, and persist state can serve as a RAP runtime. See [Building a Runtime](/docs/rap/using-rap/building-a-runtime) for implementation guidance.
 
 ## Core responsibilities
 
 **Conversation state.** The runtime owns the conversation history. Because the runtime is ephemeral (it exits between tool calls), state must be persisted to durable storage and reloaded on each invocation. The runtime is the single source of truth for what the LLM has seen and said.
 
-**Tool dispatch.** When the LLM produces a tool call, the runtime resolves it to an HTTP endpoint and POSTs the invocation. The tool acknowledges immediately. The runtime does not wait for the result — it persists state and exits. This fire-and-forget dispatch is what enables hibernation.
+**Tool dispatch.** When the LLM produces a tool call, the runtime resolves it to an HTTP endpoint and POSTs the invocation. The tool acknowledges immediately. The runtime does not wait for the result; it persists state and exits. This fire-and-forget dispatch is what enables hibernation.
 
-**Result routing.** Tool results, subscription events, and user messages all arrive through the same input channel. The runtime doesn't distinguish between them at the transport level — it loads state, appends the new message, and runs the LLM again. The `group_id` field routes messages to the correct conversation thread.
+**Result routing.** Tool results, subscription events, and user messages all arrive through the same input channel. The runtime doesn't distinguish between them at the transport level. It loads state, appends the new message, and runs the LLM again. The `group_id` field routes messages to the correct conversation thread.
 
 **Tool definitions.** The runtime maintains the set of available tools and their JSON Schema definitions. These are passed to the LLM on each completion request so it knows what tools it can call. How definitions are stored and loaded is implementation-specific.
+
+**Lifecycle notifications.** The runtime notifies tool servers about lifecycle events they cannot observe on their own: when a thread closes it sends a best-effort [thread closure notification](/docs/rap/spec/basic/thread-closure) (`POST /close_thread`), and when a pending tool call is interrupted or a subscription is cancelled it sends a [cancellation notification](/docs/rap/spec/basic/tool-cancellation) (`POST /cancel_tool_call`). Servers use these to release thread-scoped resources such as sandboxes and subscription registrations. The runtime also tracks each thread's active subscriptions, recorded when a tool result arrives with `"subscription": true`.
 
 ## Capabilities provided to tools
 
@@ -29,9 +31,10 @@ The invocation payload includes context that tools need to operate:
 |---|---|
 | `callback_url` | Where the tool should POST results. The runtime provides this so tools can return results asynchronously without knowing the runtime's internal architecture. |
 | `group_id` | The conversation thread ID. Tools include this when returning results so the runtime routes them to the correct conversation. |
+| `thread_ancestors` | The ordered list of ancestor thread IDs, from root to parent, when the invocation comes from a child thread. Tools can use this to inherit thread-scoped state (a sandbox, a permission grant) from parent threads. |
 | `user_id` | The end user's identity, if available. Tools can use this for authorization, personalization, or audit logging. |
 
-Tools are fully decoupled from the runtime. They don't know what LLM is being used, what the conversation history looks like, or whether the runtime is a Lambda function or a CLI process. They receive a request, do their work, and POST the result to the callback URL.
+Tools are fully decoupled from the runtime. They don't know what LLM is being used, what the conversation history looks like, or whether the runtime is a Lambda function or a local process. They receive a request, do their work, and POST the result to the callback URL.
 
 ## Interruption model
 
@@ -39,4 +42,4 @@ Because the runtime is stateless and message-driven, interruptions are handled n
 
 This means agents are always responsive to users, even while waiting for long-running operations.
 
-Runtimes need to be careful about concurrency within a single conversation thread. If two messages for the same thread arrive close together (e.g. a user message and a tool result), processing them simultaneously could corrupt conversation state. The Infinity Runtime handles this by using a FIFO queue with message group IDs — messages within a thread are serialized, while different threads process concurrently. Other implementations might use database locks, optimistic concurrency control, or single-threaded processing per thread. The key invariant: within a thread, messages must be processed one at a time.
+Runtimes need to be careful about concurrency within a single conversation thread. If two messages for the same thread arrive close together (e.g. a user message and a tool result), processing them simultaneously could corrupt conversation state. The Infinity Runtime handles this by using a FIFO queue with message group IDs: messages within a thread are serialized, while different threads process concurrently. Other implementations might use database locks, optimistic concurrency control, or single-threaded processing per thread. The key invariant: within a thread, messages must be processed one at a time.

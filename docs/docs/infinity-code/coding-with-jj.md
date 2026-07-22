@@ -5,7 +5,7 @@ title: Coding with Jujutsu
 
 # Coding with Jujutsu
 
-Jujutsu is the recommended way to use Infinity Code. When your repo has a `.jj` directory, the sandbox creates isolated [Jujutsu workspaces](https://jj-vcs.dev) via `jj workspace add`. Each agent thread gets its own workspace with a bookmark named `sandbox-{thread_id}`. Your working copy is never touched — you inspect the agent's changes and squash them in when you're ready.
+Jujutsu is the recommended way to use Infinity Code. When your repo has a `.jj` directory, the sandbox creates isolated [Jujutsu workspaces](https://jj-vcs.dev) via `jj workspace add`. Each agent thread gets its own workspace with a bookmark named `sandbox-{thread_id}`. Your working copy is never touched; you inspect the agent's changes and squash them in when you're ready.
 
 Don't have jj yet? You can add it on top of any git repo without affecting your existing workflow:
 
@@ -43,7 +43,7 @@ Added regular file hello.py:
     1: print("hello world")
 ```
 
-Now say you want to step away. Press Ctrl+D. Since the agent is idle, the CLI will immdiately shut down. If it were busy, you'd get a picker to choose "Continue running agent in background" or "Shut down agent". Either way, your sandbox is persistent and you can resume your work later.
+Now say you want to step away. Press Ctrl+D. Since the agent is idle, the CLI will immediately shut down. If it were busy, you'd get a picker to choose "Continue running agent in background" or "Shut down agent". Either way, your sandbox is persistent and you can resume your work later.
 
 Come back later, re-launch, and load your session:
 
@@ -84,7 +84,7 @@ When you're happy, pull the changes into your working copy:
 jj squash --from sandbox-a1b2c3d4
 ```
 
-That's it — the agent's changes are now in your current change. You can also cherry-pick, rebase, or use any other jj operation you prefer.
+That's it: the agent's changes are now in your current change. You can also cherry-pick, rebase, or use any other jj operation you prefer.
 
 ## Child threads
 

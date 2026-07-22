@@ -5,7 +5,7 @@ title: Subscription Events
 
 # Subscription Events
 
-Subscription events allow tools to send multiple results over time for a single tool call. This is how RAP agents react to external events — webhooks, price changes, monitoring alerts — without polling. A subscription persists across runtime hibernations, waking the agent each time a matching event occurs.
+Subscription events allow tools to send multiple results over time for a single tool call. This is how RAP agents react to external events (webhooks, price changes, monitoring alerts) without polling. A subscription persists across runtime hibernations, waking the agent each time a matching event occurs.
 
 ## Lifecycle
 
@@ -96,27 +96,27 @@ When a subscription event arrives, the runtime needs to present it to the LLM in
 Instead, the runtime SHOULD inject a **synthetic tool call** into conversation history:
 
 1. Look up the original subscription tool call using the `tool_call_id`
-2. Create a synthetic assistant message that echoes the original tool call, annotated with `kind: "interrupt"` to signal that this is an event notification
+2. Create a synthetic assistant message that calls a reserved event tool name (the reference implementation uses `receive_event__injected`), with arguments identifying the originating subscription: the original tool name, the original tool call ID, and the original arguments
 3. Append the event content as the tool result for this synthetic call
 
 The LLM sees what appears to be a natural tool call / result pair:
 
 ```
-[assistant tool_call] subscribe_github_events({
-  owner: "acme",
-  repo: "api",
-  kind: "interrupt:call_abc123 (subscription remains active)"
+[assistant tool_call] receive_event__injected({
+  original_tool_name: "subscribe_github_events",
+  original_tool_call_id: "call_abc123",
+  original_args: { owner: "acme", repo: "api" }
 })
 [tool_result] {"event_type": "pull_request", "action": "opened", "number": 42}
 ```
 
-The `kind` annotation tells the LLM that this is an event from an existing subscription, not a new subscription request.
+The reserved tool name tells the LLM that this is an event from an existing subscription, not a new subscription request, and the `original_*` arguments identify which subscription produced it. The reserved name MUST NOT collide with any real tool name, and the runtime MUST reject attempts by the LLM to invoke it directly (the reference implementation responds with an error result explaining that these calls are injected automatically).
 
 ### Processing Strategies
 
 Runtimes MAY use either of two strategies for processing subscription events. The `associative` field on the event controls which strategy the runtime SHOULD use.
 
-**Inline (associative) processing.** When `associative` is `true`, the synthetic call is appended directly to the subscribing thread's history. The LLM sees the event in its main conversation context. This is appropriate for events that are incremental updates to an ongoing operation — for example, streaming command output or build progress — where each event is closely tied to the originating tool call and the agent needs to see the updates in-place.
+**Inline (associative) processing.** When `associative` is `true`, the synthetic call is appended directly to the subscribing thread's history. The LLM sees the event in its main conversation context. This is appropriate for events that are incremental updates to an ongoing operation, such as streaming command output or build progress, where each event is closely tied to the originating tool call and the agent needs to see the updates in-place.
 
 **Threaded processing.** When `associative` is `false` or absent, the runtime spawns a new child thread to process each event. The child gets a clean context: it inherits the parent's history up to the spawn point, plus the event data. This keeps the parent's context focused and gives each event a fresh, minimal context window. This is appropriate for independent events like webhooks, alerts, or price changes that each require their own reasoning and response.
 
@@ -132,17 +132,17 @@ To enable cancellation, tools SHOULD include a subscription identifier in the in
 
 ### Subscription tracking
 
-When a [tool result](/docs/rap/spec/basic/tool-result) includes `"subscription": true`, the runtime MUST record the tool call ID as an active subscription in the **current thread's** metadata. Each thread maintains its own list of active subscriptions — ownership is implicit: a subscription belongs to the thread that recorded it. This per-thread tracking allows the runtime to provide a built-in cancellation mechanism without requiring cross-thread metadata lookups.
+When a [tool result](/docs/rap/spec/basic/tool-result) includes `"subscription": true`, the runtime MUST record the tool call ID as an active subscription in the **current thread's** metadata. Each thread maintains its own list of active subscriptions, and ownership is implicit: a subscription belongs to the thread that recorded it. This per-thread tracking allows the runtime to provide a built-in cancellation mechanism without requiring cross-thread metadata lookups.
 
 ### Built-in `cancel_subscription` tool
 
-The runtime MUST provide a built-in `cancel_subscription` tool that accepts a single `tool_call_id` parameter — the ID of the original tool call that started the subscription. When invoked, the runtime:
+The runtime MUST provide a built-in `cancel_subscription` tool that accepts a single `tool_call_id` parameter: the ID of the original tool call that started the subscription. When invoked, the runtime:
 
 1. **Verifies the subscription exists.** The runtime checks whether the `tool_call_id` is in the current thread's active subscriptions. If not found, the tool MUST return an error. Because subscriptions are tracked per-thread, a thread can only cancel subscriptions it created.
 2. **Sends a cancellation notification.** The runtime sends a [`/cancel_tool_call`](/docs/rap/spec/basic/tool-cancellation) notification to all configured tool servers with the subscription's `tool_call_id` and `thread_id`. This is the same best-effort protocol used for [tool call cancellation](/docs/rap/spec/basic/tool-cancellation). Tool servers SHOULD stop sending further `subscription_event` messages for the cancelled subscription.
 3. **Removes from tracking.** The subscription is removed from the thread's active subscriptions.
 
-The `cancel_subscription` tool executes synchronously — the result is returned immediately within the same completion turn rather than through the asynchronous callback mechanism. This ensures the cancellation cannot be interrupted by a concurrent user message.
+The `cancel_subscription` tool executes synchronously: the result is returned immediately within the same completion turn rather than through the asynchronous callback mechanism. This ensures the cancellation cannot be interrupted by a concurrent user message.
 
 ```mermaid
 sequenceDiagram
@@ -160,7 +160,7 @@ sequenceDiagram
 
 ### Automatic cancellation
 
-The runtime MAY NOT automatically cancel subscriptions when a thread closes. Agents SHOULD cancel subscriptions explicitly before shutting down.
+The runtime is not required to cancel subscriptions automatically when a thread closes. Agents SHOULD cancel subscriptions explicitly before shutting down.
 
 :::warning
 If a subscription is not cancelled and the subscribing thread is closed, events will still arrive at the callback URL but the runtime may not have a valid thread to process them in. Implementations SHOULD handle orphaned subscription events gracefully (e.g., by logging and discarding them).
@@ -168,6 +168,6 @@ If a subscription is not cancelled and the subscribing thread is closed, events 
 
 ## Security Considerations
 
-Tools MUST validate that subscription events originate from the expected external source before forwarding them to the callback URL. Runtimes MUST validate that incoming `subscription_event` messages reference a known, active subscription — events referencing unknown or cancelled subscriptions MUST be discarded.
+Tools MUST validate that subscription events originate from the expected external source before forwarding them to the callback URL. Runtimes MUST validate that incoming `subscription_event` messages reference a known, active subscription; events referencing unknown or cancelled subscriptions MUST be discarded.
 
 Tools SHOULD implement rate limiting on event delivery to prevent flooding the runtime with high-frequency events, and runtimes SHOULD implement limits on the number of active subscriptions per conversation thread to bound resource consumption. Tools MUST NOT send subscription events after a subscription has been cancelled.

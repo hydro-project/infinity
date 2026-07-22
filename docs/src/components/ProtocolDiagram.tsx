@@ -19,7 +19,7 @@ const TIMELINE_START = 130;
 const TIMELINE_END = 750;
 const WEBHOOK_Y = 270; // external event source below tool lane
 
-// Colors — use CSS variables for theme compatibility
+// Colors: use CSS variables for theme compatibility
 const C_PRIMARY = "var(--ifm-color-primary)";
 const C_SUCCESS = "#28c840";
 const C_EVENT = "#d29922";
@@ -266,7 +266,7 @@ export default function ProtocolDiagram({
             fontWeight="500"
             fontFamily="system-ui, sans-serif"
           >
-            LLM
+            Runtime
           </text>
 
           {/* Subscribe arrow (diagonal down-right) */}
@@ -358,7 +358,7 @@ export default function ProtocolDiagram({
             fontWeight="500"
             fontFamily="system-ui, sans-serif"
           >
-            LLM
+            Runtime
           </text>
 
           {/* Runtime idle while tool registers */}
@@ -550,7 +550,7 @@ export default function ProtocolDiagram({
             fontWeight="500"
             fontFamily="system-ui, sans-serif"
           >
-            LLM
+            Runtime
           </text>
         </g>
 

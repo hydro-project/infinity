@@ -5,7 +5,7 @@ title: Migration
 
 # Migration
 
-The Reactive Agent Protocol supports **session migration** — moving an agent session from one host to another while preserving tool server state. Migration is coordinated by the agent runtime, which notifies each tool server that needs to transfer its state to a corresponding server on the destination host.
+The Reactive Agent Protocol supports **session migration**: moving an agent session from one host to another while preserving tool server state. Migration is coordinated by the agent runtime, which notifies each tool server that needs to transfer its state to a corresponding server on the destination host.
 
 Not all tool servers maintain session-specific state that requires migration. Tool servers that do MUST declare this in their [toolset manifest](/docs/rap/spec/basic/toolsets) and MUST implement the migration endpoint described below.
 
@@ -49,11 +49,11 @@ Content-Type: application/json
 | `session_id` | `string` | Yes | The root thread ID of the session being migrated. |
 | `destination_url` | `string` | Yes | The base URL of the destination tool server instance where state should be transferred. |
 
-The `destination_url` points to a running instance of the same tool server on the destination host. The runtime is responsible for ensuring this instance is reachable from the source server — for example, via SSH tunnels when the source and destination are on different hosts.
+The `destination_url` points to a running instance of the same tool server on the destination host. The runtime is responsible for ensuring this instance is reachable from the source server, for example via SSH tunnels when the source and destination are on different hosts.
 
 ### Response
 
-The tool server MUST respond with HTTP 200 only after the migration is fully complete — that is, after all session-specific state has been successfully transferred to the destination server. The runtime will not proceed with the session migration until it receives this response.
+The tool server MUST respond with HTTP 200 only after the migration is fully complete, that is, after all session-specific state has been successfully transferred to the destination server. The runtime will not proceed with the session migration until it receives this response.
 
 ```http
 HTTP/1.1 200 OK
@@ -63,7 +63,7 @@ If migration fails, the tool server MUST respond with an appropriate HTTP error 
 
 ### State Transfer
 
-The protocol does not prescribe how tool servers transfer state between source and destination instances. Tool servers are free to use any mechanism — custom HTTP API endpoints, file transfer, database replication, or any other approach appropriate for their state model.
+The protocol does not prescribe how tool servers transfer state between source and destination instances. Tool servers are free to use any mechanism: custom HTTP API endpoints, file transfer, database replication, or any other approach appropriate for their state model.
 
 The only requirements are:
 
@@ -96,7 +96,7 @@ When migrating a session, the runtime MUST follow this sequence:
 6. **Transfer** the session's conversation data to the destination.
 7. **Clean up** the source session.
 
-If any tool server migration fails, the runtime SHOULD abort the entire session migration and report the error. Partial migrations — where some tool servers have migrated but others have not — SHOULD be avoided.
+If any tool server migration fails, the runtime SHOULD abort the entire session migration and report the error. Partial migrations, where some tool servers have migrated but others have not, SHOULD be avoided.
 
 ## Security Considerations
 

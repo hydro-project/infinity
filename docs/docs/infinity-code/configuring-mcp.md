@@ -5,14 +5,14 @@ title: Configuring MCP Servers
 
 # Configuring MCP Servers
 
-Infinity Code supports [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) servers as tool sources. Any MCP server works through a built-in proxy layer — no changes to the server needed.
+Infinity Code supports [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) servers as tool sources. Any MCP server works through a built-in proxy layer, with no changes to the server needed.
 
 ## Configuration Files
 
 There are two levels of configuration:
 
-- **User-level**: `~/.infinity/rap.json` — applies to all repos
-- **Project-level**: `.infinity/rap.json` in a repo — applies only to that repo
+- **User-level**: `~/.infinity/rap.json`, applies to all repos
+- **Project-level**: `.infinity/rap.json` in a repo, applies only to that repo
 
 Both are merged at startup. Project-level entries are combined with user-level entries.
 

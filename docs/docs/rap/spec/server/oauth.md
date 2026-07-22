@@ -36,7 +36,7 @@ Content-Type: application/json
 
 ## Flow
 
-The OAuth flow in RAP bridges the gap between a tool that needs credentials and a user who can grant them — without the runtime needing to understand the authorization mechanism.
+The OAuth flow in RAP bridges the gap between a tool that needs credentials and a user who can grant them, without the runtime needing to understand the authorization mechanism.
 
 ```mermaid
 sequenceDiagram
@@ -60,19 +60,19 @@ sequenceDiagram
 
 The flow begins when the runtime dispatches a normal [tool invocation](/docs/rap/spec/basic/tool-invocation). The tool acknowledges immediately, then checks whether it holds a valid token for the `user_id` from the invocation. If no valid token exists, the tool sends an `oauth` message containing the authorization URL instead of a `tool_result`.
 
-The runtime surfaces this URL to the user through whatever interface it provides — a clickable link in Slack, a CLI prompt, a web UI. The user visits the URL and completes the authorization flow directly with the OAuth provider. The provider redirects back to the tool's registered callback endpoint with an authorization code.
+The runtime surfaces this URL to the user through whatever interface it provides: a clickable link in Slack, a CLI prompt, a web UI. The user visits the URL and completes the authorization flow directly with the OAuth provider. The provider redirects back to the tool's registered callback endpoint with an authorization code.
 
-The tool exchanges the code for an access token, stores it, and retries the original operation using the new credentials. When the operation completes, the tool delivers a normal [tool result](/docs/rap/spec/basic/tool-result) to the callback URL. From the runtime's perspective, the tool call simply took longer than usual — the OAuth detour is entirely transparent.
+The tool exchanges the code for an access token, stores it, and retries the original operation using the new credentials. When the operation completes, the tool delivers a normal [tool result](/docs/rap/spec/basic/tool-result) to the callback URL. From the runtime's perspective, the tool call simply took longer than usual; the OAuth detour is entirely transparent.
 
 ## Runtime Behavior
 
 The runtime MUST treat the `oauth` message as a special callback that requires user interaction before the tool call can complete. Upon receiving an `oauth` message, the runtime MUST surface the `auth_url` to the user in a way that allows them to visit it.
 
-The runtime MUST keep the original tool call in a pending state until a `tool_result` eventually arrives from the tool. The runtime SHOULD inform the LLM that authorization is in progress, for example by injecting a status message into the conversation. The runtime MUST NOT retry the tool invocation itself — the tool is responsible for retrying the original operation after the user completes authorization.
+The runtime MUST keep the original tool call in a pending state until a `tool_result` eventually arrives from the tool. The runtime SHOULD inform the LLM that authorization is in progress, for example by injecting a status message into the conversation. The runtime MUST NOT retry the tool invocation itself; the tool is responsible for retrying the original operation after the user completes authorization.
 
 ## Tool Requirements
 
-Tools that implement OAuth MUST detect when authorization is required before attempting the operation — typically by checking for a stored token associated with the `user_id` from the invocation. When no valid token exists, the tool MUST construct a valid OAuth authorization URL with appropriate scopes and a redirect URI pointing to the tool's own callback endpoint.
+Tools that implement OAuth MUST detect when authorization is required before attempting the operation, typically by checking for a stored token associated with the `user_id` from the invocation. When no valid token exists, the tool MUST construct a valid OAuth authorization URL with appropriate scopes and a redirect URI pointing to the tool's own callback endpoint.
 
 The tool MUST handle the OAuth callback to receive authorization codes, exchange them securely for access tokens, and store the resulting tokens associated with the `user_id`. After successful authorization, the tool MUST retry the original operation using the new token and MUST send a `tool_result` to the callback URL when the operation completes, whether the retry succeeds or fails.
 
@@ -80,11 +80,11 @@ Tools that require OAuth SHOULD include the OAuth provider identifier in the too
 
 ## Token Management
 
-Token storage and refresh are tool-specific concerns — the protocol does not prescribe how tokens are managed. However, tools SHOULD store tokens durably and associate them with the `user_id` so that subsequent invocations for the same user do not require re-authorization. Tools SHOULD implement token refresh for OAuth providers that support refresh tokens, and SHOULD handle token expiration gracefully by re-initiating the OAuth flow when a stored token is no longer valid. Tools MUST NOT include access tokens, refresh tokens, or authorization codes in `tool_result` or `subscription_event` messages.
+Token storage and refresh are tool-specific concerns; the protocol does not prescribe how tokens are managed. However, tools SHOULD store tokens durably and associate them with the `user_id` so that subsequent invocations for the same user do not require re-authorization. Tools SHOULD implement token refresh for OAuth providers that support refresh tokens, and SHOULD handle token expiration gracefully by re-initiating the OAuth flow when a stored token is no longer valid. Tools MUST NOT include access tokens, refresh tokens, or authorization codes in `tool_result` or `subscription_event` messages.
 
 ## Error Handling
 
-If the OAuth flow fails — the user denies access, the authorization code is invalid, or the token exchange errors — the tool MUST send a `tool_result` with an error description:
+If the OAuth flow fails (the user denies access, the authorization code is invalid, or the token exchange errors), the tool MUST send a `tool_result` with an error description:
 
 ```json
 {

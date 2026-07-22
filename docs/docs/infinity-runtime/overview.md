@@ -5,50 +5,63 @@ title: Overview
 
 # Infinity Runtime
 
-The Infinity Runtime is the reference RAP agent runtime. It implements a time-sliced execution model: agents process work in short bursts (load state, run the LLM, dispatch tool calls) then release resources. In the cloud the process exits entirely; locally the daemon idles at zero CPU. Cost is proportional to work done, not time elapsed.
+The Infinity Runtime is the reference runtime for the [Reactive Agent Protocol](/docs/rap/what-is-rap). It is a Rust library, `infinity-agent-core`, that runs agents as a sequence of short **execution slices**: each slice loads conversation state from durable storage, runs one model completion, dispatches any tool call as a fire-and-forget HTTP request, persists state, and yields. Between slices, nothing runs.
 
-## Time-sliced execution
+This yielding architecture makes Infinity the first agent runtime that runs natively on serverless platforms. A conventional agent runtime holds a process open while it awaits tool results, which rules out platforms like AWS Lambda where invocations are short-lived and billed by the millisecond. Because an Infinity slice never blocks on anything external, every slice fits inside a single serverless invocation, and an agent that is waiting (on a tool result, a webhook, a human, or a three-day CI pipeline) costs exactly nothing.
 
-Every agent invocation follows the same three-phase cycle:
-
-1. **Load** — Restore conversation history and deduplication state from durable storage. Append the new input message (user text, tool result, or subscription event).
-2. **Complete** — Send the conversation to the LLM and stream back the response. If the model produces a tool call, collect it.
-3. **Dispatch & Yield** — POST the tool call to the RAP server (fire-and-forget), persist updated state, and yield. In the cloud the Lambda exits; locally the daemon returns to an idle wait on the message channel.
-
-The cycle repeats when the next message arrives. The runtime doesn't distinguish between tool results, user messages, and subscription events at the execution level — it loads state and processes whatever's in the queue.
-
-```
-┌─────────┐     ┌─────────┐     ┌───────────────┐
-│  Load   │ ──▶ │Complete │ ──▶ │Dispatch/Yield │
-└─────────┘     └─────────┘     └───────────────┘
-     ▲                                    │
-     │    ╌╌╌╌ idle / exited ╌╌╌╌╌╌       │
-     └───────── next message ◀────────────┘
+```mermaid
+flowchart LR
+    Q[Input queue] -->|message| L[Load state]
+    L --> C[Run completion]
+    C -->|tool call| D[Dispatch via HTTP]
+    C -->|no tool call| Y
+    D --> Y[Persist & yield]
+    Y -.->|process exits / idles| Q
 ```
 
-This architecture makes hibernation free. An agent waiting for a 3-day CI pipeline, a human approval, or a GitHub webhook costs exactly zero compute. It wakes instantly when the next message arrives.
+The cycle repeats when the next message arrives. Tool results, user messages, subscription events, thread reports, and timer wake-ups all enter through the same input queue, so at the execution level the runtime has exactly one job: take the next message for a thread, run a slice, yield.
 
-## Resource efficiency
+## Why yielding matters
 
-Because agents are stateless between slices, multiple agents share the same compute. In the cloud (Lambda), each slice is a separate invocation — hundreds of agents share the same function, and idle agents consume nothing. Locally, threads idle on `mpsc` channels at zero CPU. The runtime serializes work within each conversation thread via FIFO message ordering, while different threads execute concurrently.
+Under RAP, a tool call is not a request/response round trip. The runtime POSTs the invocation, the tool server acknowledges immediately, and the result arrives later as a new message on the input queue. The runtime treats the completion of a tool call as the end of its work:
 
-This is fundamentally different from long-lived agent processes that hold connections open and spin idle. A RAP agent monitoring GitHub PRs, reacting to Slack messages, and tracking stock prices can stay alive for months, waking only when something happens.
+1. **Load**: restore conversation history and deduplication state from durable storage, and append the new input message.
+2. **Complete**: stream a model completion. Text and reasoning are buffered; a tool call ends the turn.
+3. **Dispatch and yield**: fire off the tool call over HTTP, persist the updated history, and stop.
 
-## Deployment modes
+Nothing in this cycle waits. The consequences compound:
 
-The runtime ships in two deployment modes that share a single core engine (`infinity-agent-core`). The time-sliced execution model is identical in both — the only differences are where state lives and how messages are delivered.
+- **Hibernation is free.** An agent subscribed to GitHub webhooks can stay "alive" for months while consuming zero compute. Waking up is just processing the next message.
+- **Serverless is the natural deployment target.** Each slice is one Lambda invocation. Hundreds of agents share one function, and scale-to-zero is the default rather than an optimization.
+- **Agents are durable.** All state lives in storage, not process memory, so agents survive restarts, redeploys, and cold starts by construction.
+- **Interruptions are ordinary messages.** If a user sends a message while a tool is still running, the runtime processes it in the next slice. The pending tool result arrives later and is appended to history normally.
 
-| | Cloud (Lambda) | Local (Daemon) |
+The [Architecture](./architecture.md) page walks through the yielding machinery in detail, including how synchronous tools loop back within a slice and how per-thread FIFO ordering keeps concurrent threads safe.
+
+## One core, two ways to run it
+
+`infinity-agent-core` contains the agent loop, history management, tool dispatch, threading, and compaction. It has no dependency on any particular storage, transport, or model backend; those are trait parameters. You run it in one of two ways:
+
+**Deploy it on AWS Lambda.** The `infinity-agent-lambda` crate binds the core to SQS FIFO queues, Aurora DSQL, DynamoDB, and Bedrock, and the included CDK constructs provision the whole stack. This is the production path. See [Deploying on AWS Lambda](./deploying-on-lambda.mdx).
+
+**Embed it through the Rust API.** Implement the core's traits against your own backends (or the in-memory ones) and drive the loop from your own process. The Infinity Code daemon is a full example: it embeds the runtime with in-memory stores, `mpsc` channels instead of SQS, and file-based persistence. See [The Rust API](./rust-api.md).
+
+| | AWS Lambda | Embedded (Rust API) |
 |---|---|---|
-| State | Aurora DSQL + DynamoDB | In-memory + file persistence |
-| Messaging | SQS FIFO | `mpsc` channels |
-| Hibernation | Process exits, SQS/EventBridge restarts | Process idles on channel |
+| Conversation history | Aurora DSQL | Anything implementing `ConversationStore` |
+| Dedup & subscription state | DynamoDB | Anything implementing `StateStore` |
+| Message delivery | SQS FIFO queue | Anything implementing `InputSender` |
+| Yield | Process exits | Task idles on a channel |
+| Timers (`sleep`) | SQS delay / EventBridge Scheduler | `tokio::time::sleep` |
 | Tool auth | SigV4-signed HTTP | Plain HTTP |
 
-See [Deployment Modes](./deployment-modes.md) for the full comparison.
+The execution model is identical in both. Code written against the core (tools, providers, tests) runs unchanged in either environment.
 
-## When to use which
+## What's in these docs
 
-Use the **cloud deployment** for production agents that need to run indefinitely, survive restarts, handle concurrent threads across invocations, and scale to zero between activity.
-
-Use the **local daemon** for developing and testing agent behavior, iterating on conversation flows, debugging tool call sequences, and building RAP tool servers.
+- **[Architecture](./architecture.md)**: the slice lifecycle, the yielding mechanism, turn durability, and message ordering, with diagrams.
+- **[The Rust API](./rust-api.md)**: the crates, the traits, and how to embed the runtime in your own process.
+- **[Deploying on AWS Lambda](./deploying-on-lambda.mdx)**: the CDK constructs and the AWS architecture.
+- **[Model Providers](./model-providers.md)**: the `ModelProvider` trait and how to add model backends.
+- **[Built-in Tools](./built-in-tools.md)**: sleep and threading tools the runtime provides to every agent.
+- **[Threading](./threading.md)**: durable child threads, reports, and subscription event isolation.

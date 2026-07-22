@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
 
 /**
- * RuntimeDiagram — visualizes time-slicing.
+ * RuntimeDiagram: visualizes time-slicing.
  *
  * Phase 1 ("Traditional"): agents hold resources even while idle.
  * Phase 2 ("Infinity"): idle gaps collapse; active blocks bin-pack into minimal rows.
@@ -223,9 +223,9 @@ export default function RuntimeDiagram({
           }}
         >
           {isSliced
-            ? "∞ Infinity — Time-Sliced"
+            ? "∞ Infinity: Time-Sliced"
             : isHighlight
-              ? "Traditional — Wasted Resources"
+              ? "Traditional: Wasted Resources"
               : "Traditional Agent Runtime"}
         </span>
       </div>
@@ -302,7 +302,7 @@ export default function RuntimeDiagram({
           );
         })}
 
-        {/* Active blocks — animate between traditional position and packed position */}
+        {/* Active blocks: animate between traditional position and packed position */}
         {ACTIVE_BLOCKS.map((block, idx) => {
           const x = MARGIN_LEFT + (block.start / 100) * TRACK_W;
           const w = ((block.end - block.start) / 100) * TRACK_W;
