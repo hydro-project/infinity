@@ -67,6 +67,14 @@ struct PostMessageRequest<'a> {
     blocks: Option<&'a serde_json::Value>,
 }
 
+#[derive(Debug, Serialize)]
+struct UpdateMessageRequest<'a> {
+    channel: &'a str,
+    ts: &'a str,
+    text: &'a str,
+    blocks: &'a serde_json::Value,
+}
+
 impl SlackClient {
     pub async fn new(token: &str) -> Result<Self, BoxError> {
         let http = reqwest::Client::new();
@@ -230,5 +238,26 @@ impl SlackClient {
             )
             .await?;
         Ok(resp.ts)
+    }
+
+    /// Update an existing message's text and blocks.
+    pub async fn update_message(
+        &self,
+        channel: &str,
+        ts: &str,
+        text: &str,
+        blocks: &serde_json::Value,
+    ) -> Result<(), BoxError> {
+        self.api_call(
+            "chat.update",
+            &UpdateMessageRequest {
+                channel,
+                ts,
+                text,
+                blocks,
+            },
+        )
+        .await?;
+        Ok(())
     }
 }

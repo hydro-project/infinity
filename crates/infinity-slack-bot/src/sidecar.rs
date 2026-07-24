@@ -18,6 +18,10 @@ pub struct SlackEvent {
     pub is_button_click: bool,
     pub button_value: Option<String>,
     pub action_id: Option<String>,
+    /// The ts of the message that was interacted with (for button clicks).
+    pub message_ts: Option<String>,
+    /// The label text of the clicked button.
+    pub button_text: Option<String>,
     /// True if this is a bot message.
     pub is_bot: bool,
     /// True if user is not authorized.
@@ -39,6 +43,13 @@ pub enum SlackAction {
         fallback_text: String,
         blocks: serde_json::Value,
         thread_ts: Option<String>,
+    },
+    /// Update an existing message's blocks (e.g. to replace buttons with a selection indicator).
+    UpdateMessage {
+        channel: String,
+        ts: String,
+        text: String,
+        blocks: serde_json::Value,
     },
     /// Append text to the active stream for this thread (starts a stream if needed).
     StreamAppend {
@@ -108,6 +119,14 @@ struct InteractiveAction {
     action_id: String,
     #[serde(default)]
     value: String,
+    /// The button label (Slack sends `{ "type": "plain_text", "text": "..." }`).
+    text: Option<InteractiveText>,
+}
+
+#[derive(Deserialize)]
+struct InteractiveText {
+    #[serde(default)]
+    text: String,
 }
 
 #[derive(Deserialize)]
@@ -267,6 +286,16 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
                         .await
                     {
                         tracing::error!("PostBlocks failed: {e}");
+                    }
+                }
+                SlackAction::UpdateMessage {
+                    channel,
+                    ts,
+                    text,
+                    blocks,
+                } => {
+                    if let Err(e) = slack.update_message(&channel, &ts, &text, &blocks).await {
+                        tracing::error!("UpdateMessage failed: {e}");
                     }
                 }
                 SlackAction::StreamAppend {
@@ -507,6 +536,9 @@ fn parse_interactive(payload: serde_json::Value) -> Option<SlackEvent> {
         .cloned()
         .unwrap_or_default();
 
+    let message_ts = p.message.as_ref().and_then(|m| m.ts.clone());
+    let button_text = action.text.as_ref().map(|t| t.text.clone());
+
     Some(SlackEvent {
         user: user.id.clone(),
         text: String::new(),
@@ -515,6 +547,8 @@ fn parse_interactive(payload: serde_json::Value) -> Option<SlackEvent> {
         is_button_click: true,
         button_value: Some(action.value.clone()),
         action_id: Some(action.action_id.clone()),
+        message_ts,
+        button_text,
         is_bot: false,
         is_unauthorized: false, // set later by caller
     })
@@ -546,6 +580,8 @@ fn parse_events_api(payload: serde_json::Value) -> Option<SlackEvent> {
         is_button_click: false,
         button_value: None,
         action_id: None,
+        message_ts: None,
+        button_text: None,
         is_bot,
         is_unauthorized: false, // set later by caller
     })
@@ -639,7 +675,7 @@ mod tests {
     #[test]
     fn parse_interactive_button_click() {
         let payload = serde_json::json!({
-            "actions": [{"value": "1"}],
+            "actions": [{"action_id": "choice_abc_1", "value": "1", "text": {"type": "plain_text", "text": "Allow"}}],
             "channel": {"id": "C456"},
             "message": {"ts": "1234.5678", "thread_ts": "1111.0000"},
             "user": {"id": "U123"}
@@ -650,6 +686,9 @@ mod tests {
         assert_eq!(event.thread_ts, "1111.0000");
         assert!(event.is_button_click);
         assert_eq!(event.button_value.as_deref(), Some("1"));
+        assert_eq!(event.action_id.as_deref(), Some("choice_abc_1"));
+        assert_eq!(event.message_ts.as_deref(), Some("1234.5678"));
+        assert_eq!(event.button_text.as_deref(), Some("Allow"));
     }
 
     #[test]
@@ -718,6 +757,8 @@ mod tests {
             is_button_click: false,
             button_value: None,
             action_id: None,
+            message_ts: None,
+            button_text: None,
             is_bot: true,
             is_unauthorized: false,
         };
@@ -735,6 +776,8 @@ mod tests {
             is_button_click: false,
             button_value: None,
             action_id: None,
+            message_ts: None,
+            button_text: None,
             is_bot: false,
             is_unauthorized: true,
         };
@@ -751,6 +794,8 @@ mod tests {
             is_button_click: false,
             button_value: None,
             action_id: None,
+            message_ts: None,
+            button_text: None,
             is_bot: false,
             is_unauthorized: false,
         };

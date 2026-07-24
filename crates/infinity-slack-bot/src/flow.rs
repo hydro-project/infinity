@@ -38,6 +38,35 @@ pub fn slack_dataflow<'a, P: 'a>(
             }
         }));
 
+    // --- Button clicks → update the button message to show which choice was selected ---
+    let button_update_actions =
+        button_clicks
+            .clone()
+            .filter_map(q!(|event: crate::sidecar::SlackEvent| {
+                let message_ts = event.message_ts?;
+                let selected_label = event.button_text.unwrap_or_else(|| "…".to_owned());
+                // Strip the " ✓" suffix if present (it was the default marker).
+                let selected_label = selected_label
+                    .strip_suffix(" ✓")
+                    .unwrap_or(&selected_label)
+                    .to_owned();
+                let blocks = serde_json::json!([
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": format!("✅ Selected: *{selected_label}*")
+                        }
+                    }
+                ]);
+                Some(crate::sidecar::SlackAction::UpdateMessage {
+                    channel: event.channel,
+                    ts: message_ts,
+                    text: format!("Selected: {selected_label}"),
+                    blocks,
+                })
+            }));
+
     // --- Button clicks → AnswerChoice commands ---
     let button_commands = button_clicks.filter_map(q!(|event: crate::sidecar::SlackEvent| {
         let rt = crate::runtime::get();
@@ -231,6 +260,13 @@ pub fn slack_dataflow<'a, P: 'a>(
             button_stop_actions,
             nondet!(/**
                 button-stop actions have non-deterministic ordering w.r.t. other slack actions
+                because they originate from user interaction events
+            */),
+        )
+        .merge_ordered(
+            button_update_actions,
+            nondet!(/**
+                button-update actions have non-deterministic ordering w.r.t. other slack actions
                 because they originate from user interaction events
             */),
         );
