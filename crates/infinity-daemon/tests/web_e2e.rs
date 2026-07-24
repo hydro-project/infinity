@@ -225,6 +225,19 @@ async fn assert_screenshot(
     name: &str,
     mask_selectors: &[&str],
 ) -> Result<(), BoxError> {
+    assert_screenshot_with_tolerance(page, name, mask_selectors, None).await
+}
+
+/// As [`assert_screenshot`], with an optional `(color threshold, maximum
+/// differing-pixel ratio)` for snapshots containing rendering that varies
+/// slightly across platforms. Keep this scoped to individual snapshots: the
+/// default remains a strict zero-pixel comparison.
+async fn assert_screenshot_with_tolerance(
+    page: &Page,
+    name: &str,
+    mask_selectors: &[&str],
+    tolerance: Option<(f64, f64)>,
+) -> Result<(), BoxError> {
     let path = snapshot_path(name);
     let update = std::env::var("UPDATE_SNAPSHOTS").is_ok_and(|v| v == "1");
     let existed = path.exists();
@@ -234,16 +247,20 @@ async fn assert_screenshot(
         mask.push(page.locator(selector).await);
     }
 
-    let options = ScreenshotAssertionOptions::builder()
-        // Near-strict comparison: reduced motion, deterministic ids,
-        // webfonts (loaded before assertions), and SVG icons make renders
-        // stable — even the UA button font is pinned via per-class
-        // `font-family`. Font rasterization still drifts by a handful of
-        // pixels at glyph edges across hosts/chromium builds (~0.01% of
-        // the frame observed), so allow up to 0.05% of pixels to differ
-        // (with the default 0.2 per-pixel color threshold). Any real UI
-        // regression moves orders of magnitude more pixels than that.
-        .max_diff_pixel_ratio(0.0005)
+    // Near-strict comparison by default: reduced motion, deterministic ids,
+    // webfonts (loaded before assertions), and SVG icons make renders
+    // stable — even the UA button font is pinned via per-class
+    // `font-family`. Font rasterization can still drift slightly across
+    // hosts/chromium builds, so allow up to 0.05% of pixels to differ.
+    // A per-snapshot tolerance can specify both a color threshold and a
+    // tighter cap on the affected image area.
+    let mut options = ScreenshotAssertionOptions::builder();
+    if let Some((threshold, ratio)) = tolerance {
+        options = options.threshold(threshold).max_diff_pixel_ratio(ratio);
+    } else {
+        options = options.max_diff_pixel_ratio(0.0005);
+    }
+    let options = options
         .animations(Animations::Disabled)
         .mask(mask)
         .update_snapshots(update)
@@ -316,9 +333,11 @@ async fn send_chat_message(page: &Page, text: &str) -> Result<(), BoxError> {
     Ok(())
 }
 
-// ── Stub RAP image tool server (shared, see `rap-test-servers`) ──────────────
+// ── Stub RAP tool servers (shared, see `rap-test-servers`) ───────────────────
 
-use rap_test_servers::{STUB_PNG_BASE64, start_stub_image_server, write_rap_config};
+use rap_test_servers::{
+    STUB_PNG_BASE64, start_stub_diff_server, start_stub_image_server, write_rap_config,
+};
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -797,6 +816,94 @@ async fn image_tool_result_renders_inline() -> Result<(), BoxError> {
             assert_eq!(src, format!("data:image/png;base64,{STUB_PNG_BASE64}"));
 
             assert_screenshot(&page, "chat-image-result", &[]).await?;
+
+            harness.close().await?;
+            Ok(())
+        })
+        .await
+}
+
+/// A RAP tool returns a unified diff: the transcript renders the diff
+/// display segment through the Pierre diff viewer (instead of the text
+/// fallback), with the patch's added/removed lines visible. This also
+/// exercises the chat view's diff virtualization end to end — the diff
+/// mounts inside the `Virtualizer`-provided message list.
+#[tokio::test]
+async fn diff_tool_result_renders_diff_view() -> Result<(), BoxError> {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (model, mut ctrl) = mock_model();
+            let daemon = start_daemon(model).await?;
+            let stub_port = start_stub_diff_server().await?;
+
+            // Point sessions created in this cwd at the stub RAP server.
+            write_rap_config(daemon.cwd.path(), stub_port)?;
+
+            let harness = BrowserHarness::launch().await?;
+            let page = harness.open(daemon.port).await?;
+
+            create_session_via_picker(&page, &daemon.cwd.path().to_string_lossy()).await?;
+
+            // The model answers with a call to the stub's edit tool.
+            send_chat_message(&page, "Please greet by name").await?;
+            let _req = next_request(&mut ctrl).await?;
+            ctrl.send_tool_call(
+                "call-diff",
+                "edit_file",
+                serde_json::json!({"path": "src/greet.rs"}),
+            );
+            ctrl.finish();
+
+            // The stub's tool result comes back as a new model round with the
+            // plain-text result (the diff is display-only).
+            let req = next_request(&mut ctrl).await?;
+            assert!(
+                history_json(&req).contains("Replaced text in src/greet.rs."),
+                "follow-up request should contain the tool-result text"
+            );
+            ctrl.send_text("Greeting now takes a name.");
+            ctrl.finish();
+
+            expect(page.get_by_text("Greeting now takes a name.", false).await)
+                .to_be_visible()
+                .await?;
+
+            // The tool call renders with its displayScript-derived label.
+            expect(page.get_by_text("Edit src/greet.rs", false).await)
+                .to_be_visible()
+                .await?;
+
+            // The diff display segment wins over the text fallback: the
+            // patch's added and removed lines render in the diff viewer
+            // (Playwright pierces the diff component's shadow DOM).
+            expect(
+                page.get_by_text(r#"println!("Hello, {name}!");"#, false)
+                    .await,
+            )
+            .to_be_visible()
+            .await?;
+            expect(
+                page.get_by_text(r#"println!("Hello, world!");"#, false)
+                    .await,
+            )
+            .to_be_visible()
+            .await?;
+            // The raw text fallback must not render alongside the diff.
+            expect(
+                page.get_by_text("Replaced text in src/greet.rs.", false)
+                    .await,
+            )
+            .to_be_hidden()
+            .await?;
+
+            // Pierre's Shadow DOM text has small FreeType anti-aliasing
+            // differences between local Chromium and Ubuntu CI. Ignore minor
+            // per-pixel color drift (threshold 0.30) only when it affects at
+            // most 0.25% of the image; the DOM assertions above still verify
+            // the exact added and removed lines.
+            assert_screenshot_with_tolerance(&page, "chat-diff-result", &[], Some((0.30, 0.0025)))
+                .await?;
 
             harness.close().await?;
             Ok(())

@@ -7,6 +7,8 @@ import {
   memo,
   useMemo,
 } from "react";
+import { VirtualizerContext } from "@pierre/diffs/react";
+import { Virtualizer } from "@pierre/diffs";
 import type { MessageItem as MsgItem } from "../types";
 import { MessageItem } from "./MessageItem";
 import css from "./MessageList.module.css";
@@ -31,6 +33,23 @@ export const MessageList = memo(
     fwdRef,
   ) {
     const containerRef = useRef<HTMLDivElement>(null);
+
+    // Virtualizer instance shared (via context) with all Pierre diff
+    // components rendered in the list. Diffs outside the viewport are
+    // replaced by fixed-height placeholders instead of full DOM, keeping
+    // the chat view light even with many large diffs.
+    const virtualizerRef = useRef<Virtualizer | null>(null);
+    if (virtualizerRef.current === null && typeof window !== "undefined") {
+      virtualizerRef.current = new Virtualizer();
+    }
+
+    // Attach the virtualizer to the scroll container (the inner content
+    // element is discovered automatically as its first child).
+    const setContainerRef = useCallback((node: HTMLDivElement | null) => {
+      containerRef.current = node;
+      if (node != null) virtualizerRef.current?.setup(node);
+      else virtualizerRef.current?.cleanUp();
+    }, []);
 
     // Before React commits DOM changes, snapshot whether we're at bottom
     const wasAtBottomRef = useRef(true);
@@ -149,9 +168,15 @@ export const MessageList = memo(
     }, [messages, generation, theme]);
 
     return (
-      <div className={css.container} ref={containerRef} onScroll={onScroll}>
-        <div className={css.inner}>{renderedMessages}</div>
-      </div>
+      <VirtualizerContext.Provider value={virtualizerRef.current ?? undefined}>
+        <div
+          className={css.container}
+          ref={setContainerRef}
+          onScroll={onScroll}
+        >
+          <div className={css.inner}>{renderedMessages}</div>
+        </div>
+      </VirtualizerContext.Provider>
     );
   }),
 );

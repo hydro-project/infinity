@@ -3518,6 +3518,7 @@ dependencies = [
  "rap-protocol",
  "reqwest",
  "serde_json",
+ "similar",
  "tokio",
 ]
 

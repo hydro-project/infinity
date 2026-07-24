@@ -15,7 +15,8 @@ use std::path::Path;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use rap_protocol::{
-    DisplaySegment, ImageContent, RapCallback, RapInvocation, RapToolResult, RapToolResultContent,
+    DiffContent, DisplaySegment, ImageContent, RapCallback, RapInvocation, RapToolResult,
+    RapToolResultContent,
 };
 
 /// A 96×64 solid-indigo PNG used as the stub image tool's "image file".
@@ -102,6 +103,123 @@ pub async fn start_stub_image_server() -> std::io::Result<u16> {
                             }),
                             DisplaySegment::Text(format!("Read image {path} (image/png)")),
                         ]),
+                        subscription: None,
+                    });
+                    let body = serde_json::to_string(&callback).expect("serialize callback");
+                    if let Err(e) = reqwest::Client::new()
+                        .post(&inv.callback_url)
+                        .header("content-type", "application/json")
+                        .body(body)
+                        .send()
+                        .await
+                    {
+                        panic!("stub failed to deliver tool result: {e}");
+                    }
+                });
+                axum::http::StatusCode::OK
+            }),
+        );
+
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve stub RAP server");
+    });
+    Ok(port)
+}
+
+/// The "before" contents of the file the stub diff tool pretends to edit.
+pub const STUB_DIFF_OLD: &str = "/// Greeting helpers.\n\
+fn greet() {\n\
+    println!(\"Hello, world!\");\n\
+}\n\
+\n\
+fn main() {\n\
+    greet();\n\
+}\n";
+
+/// The "after" contents of the file the stub diff tool pretends to edit.
+pub const STUB_DIFF_NEW: &str = "/// Greeting helpers.\n\
+fn greet(name: &str) {\n\
+    println!(\"Hello, {name}!\");\n\
+}\n\
+\n\
+fn main() {\n\
+    let name = std::env::args().nth(1).unwrap_or_else(|| \"world\".into());\n\
+    greet(&name);\n\
+}\n";
+
+/// Build the unified diff patch for `path`, exactly like sandbox-core's
+/// `build_edit_diff` (similar's unified diff, context radius 3, the path as
+/// both headers, trailing whitespace trimmed).
+pub fn stub_diff_patch(path: &str) -> String {
+    let diff = similar::TextDiff::from_lines(STUB_DIFF_OLD, STUB_DIFF_NEW);
+    let mut patch = diff
+        .unified_diff()
+        .context_radius(3)
+        .header(path, path)
+        .to_string();
+    patch.truncate(patch.trim_end().len());
+    patch
+}
+
+/// Start a minimal RAP tool server exposing a single `edit_file` tool.
+///
+/// Invocations are answered (via the invocation's callback URL) with a
+/// `Diff` display segment carrying [`stub_diff_patch`] for the requested
+/// `path` — the same shape the sandbox's real `edit_file` tool produces —
+/// so clients exercise their diff rendering end to end. Returns the
+/// server's port.
+///
+/// Must be called from within a tokio runtime; the server task runs until
+/// the runtime shuts down.
+pub async fn start_stub_diff_server() -> std::io::Result<u16> {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let port = listener.local_addr()?.port();
+
+    let manifest = serde_json::json!({
+        "name": "stub-diffs",
+        "endpoint": format!("http://127.0.0.1:{port}/invoke"),
+        "tools": [{
+            "name": "edit_file",
+            "description": "Replace text in a file.",
+            "displayScript": r#""Edit " + args.path"#,
+            "inputSchema": {
+                "type": "object",
+                "properties": { "path": { "type": "string" } },
+                "required": ["path"]
+            }
+        }]
+    });
+
+    let app = Router::new()
+        .route(
+            "/.well-known/rap-toolset",
+            get(move || {
+                let manifest = manifest.clone();
+                async move { Json(manifest) }
+            }),
+        )
+        .route(
+            "/invoke",
+            post(|Json(inv): Json<RapInvocation>| async move {
+                tokio::spawn(async move {
+                    let path = inv
+                        .arguments
+                        .get("path")
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("?")
+                        .to_owned();
+                    let callback = RapCallback::ToolResult(RapToolResult {
+                        group_id: inv.group_id,
+                        id: inv.id,
+                        call_id: inv.call_id,
+                        text: Some(format!("Replaced text in {path}.")),
+                        content: None,
+                        display_as: Some(vec![DisplaySegment::Diff(DiffContent {
+                            path: path.clone(),
+                            patch: stub_diff_patch(&path),
+                        })]),
                         subscription: None,
                     });
                     let body = serde_json::to_string(&callback).expect("serialize callback");
