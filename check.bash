@@ -30,7 +30,7 @@ if [ -f docs/node_modules/.bin/prettier ]; then
     (cd docs && npm run format:check) || fail "docs formatting issues found (run 'cd docs && npm run format' to fix)"
     pass "All docs code is formatted"
 else
-    echo "  (skipped: docs node_modules not installed)"
+    echo '  (skipped: run `npm ci --prefix docs` to initialize `node_modules`)'
 fi
 
 step "infinity-ui formatting"
@@ -38,7 +38,7 @@ if [ -f infinity-ui/node_modules/.bin/prettier ]; then
     (cd infinity-ui && npm run format:check) || fail "infinity-ui formatting issues found (run 'cd infinity-ui && npm run format' to fix)"
     pass "All infinity-ui code is formatted"
 else
-    echo "  (skipped: infinity-ui node_modules not installed)"
+    echo '  (skipped: run `npm ci --prefix infinity-ui` to initialize `node_modules`)'
 fi
 
 step "Clippy (warnings denied)"
@@ -57,16 +57,6 @@ step "Web UI e2e (Playwright)"
 # Requires npm (the bundled-web build script runs vite) and the Playwright
 # chromium build matching playwright-rs's bundled driver (1.60 → r1223):
 #   npx playwright@1.60.0 install chromium
-#
-# On hosts where the bundled driver is unusable — its download CDN has
-# been known to 404, and its bundled node binary needs a newer glibc than
-# some hosts have ("Server process exited immediately") — point
-# playwright-rs at an npm-installed driver instead by exporting, before
-# running this script:
-#   export PLAYWRIGHT_SKIP_DRIVER_DOWNLOAD=1   # don't bake in the bundled driver
-#   export PLAYWRIGHT_NODE_EXE="$(command -v node)"
-#   export PLAYWRIGHT_CLI_JS=/path/to/node_modules/playwright/cli.js  # from `npm i playwright@1.60.0`
-# (cargo forwards these to both the build script and the test binary.)
 if command -v npm > /dev/null 2>&1 && ls "${HOME}/.cache/ms-playwright"/chromium*-1223 > /dev/null 2>&1; then
     # npm needs a writable cache; fall back to a temp dir when ~/.npm isn't
     # writable (e.g. sandboxed environments).
@@ -77,7 +67,7 @@ if command -v npm > /dev/null 2>&1 && ls "${HOME}/.cache/ms-playwright"/chromium
     cargo test -p infinity-daemon --features e2e-web --test web_e2e || fail "web e2e tests failed"
     pass "Web UI e2e tests passed"
 else
-    echo "  (skipped: npm or Playwright 1.60 chromium not installed — run 'npx playwright@1.60.0 install chromium')"
+    echo '  (skipped: run `npx playwright@1.60.0 install chromium` to install Playwright 1.60 chromium)'
 fi
 
 step "THIRD-PARTY file"
@@ -94,7 +84,7 @@ if command -v cargo-about > /dev/null 2>&1; then
     fi
     rm -f "$EXPECTED"
 else
-    echo "  (skipped: cargo-about not installed)"
+    echo '  (skipped: run `cargo install cargo-about --features cli` to install `cargo-about`)'
 fi
 
 echo -e "\n${GREEN}${BOLD}All checks passed.${RESET}"
