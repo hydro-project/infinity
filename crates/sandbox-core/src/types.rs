@@ -7,13 +7,21 @@ use serde::{Deserialize, Serialize};
 pub enum SandboxMode {
     /// Jujutsu workspace (the default for repos with `.jj`).
     Jj {
-        /// Absolute jj change_id the workspace is based on.
-        base_revision: String,
+        /// Immutable absolute jj change ID from which the sandbox was created.
+        ///
+        /// This is creation provenance only. Resume logic must use
+        /// [`RepoState::resume_revision`], not this value.
+        #[serde(alias = "base_revision")]
+        starting_revision: String,
     },
     /// Plain git worktree.
     Git {
-        /// Absolute git commit hash the worktree is based on.
-        base_revision: String,
+        /// Immutable absolute git commit hash from which the sandbox was created.
+        ///
+        /// This is creation provenance only. Resume logic must use
+        /// [`RepoState::resume_revision`], not this value.
+        #[serde(alias = "base_revision")]
+        starting_revision: String,
     },
     /// Externally-provided custom mode, keyed by a string id with opaque JSON data.
     ///
@@ -85,6 +93,20 @@ pub struct RepoState {
     pub bookmark: String,
     /// The version-control mode and its associated data.
     pub mode: SandboxMode,
+    /// The current durable sandbox WIP revision.
+    ///
+    /// In Jujutsu mode this will eventually be the WIP change ID; in Git mode
+    /// it is the WIP commit ID. It is intentionally distinct from the
+    /// mode-specific `starting_revision` so a suspended sandbox can resume
+    /// where its history was last moved instead of being recreated at its
+    /// original base.
+    #[serde(default)]
+    pub resume_revision: Option<String>,
+    /// Provider-managed retention reference that keeps `resume_revision`
+    /// reachable when the visible sandbox bookmark or branch is removed during
+    /// suspension. Its storage and format are mode-specific.
+    #[serde(default)]
+    pub retention_ref: Option<String>,
     /// Path to the created sandbox workspace.
     #[serde(default)]
     pub sandbox_path: Option<String>,
@@ -186,4 +208,47 @@ pub struct GrepArgs {
     /// Whether the search should be case sensitive. Defaults to false.
     #[serde(rename = "caseSensitive")]
     pub case_sensitive: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RepoState, SandboxMode};
+
+    #[test]
+    fn legacy_base_revision_state_deserializes_as_starting_revision() {
+        let state: RepoState = serde_json::from_value(serde_json::json!({
+            "group_id": "legacy-thread",
+            "remote_uri": "/repo",
+            "bookmark": "sandbox-legacy-thread",
+            "mode": { "Jj": { "base_revision": "qzvkmq" }
+            }
+        }))
+        .expect("legacy state should deserialize");
+
+        assert!(matches!(
+            state.mode,
+            SandboxMode::Jj { starting_revision } if starting_revision == "qzvkmq"
+        ));
+        assert_eq!(state.resume_revision, None);
+        assert_eq!(state.retention_ref, None);
+    }
+
+    #[test]
+    fn new_history_state_round_trips() {
+        let state: RepoState = serde_json::from_value(serde_json::json!({
+            "group_id": "thread",
+            "remote_uri": "/repo",
+            "bookmark": "sandbox-thread",
+            "mode": { "Git": { "starting_revision": "abc123" } },
+            "resume_revision": "def456",
+            "retention_ref": "refs/infinity/sandboxes/thread"
+        }))
+        .expect("new state should deserialize");
+
+        let json = serde_json::to_value(&state).expect("state should serialize");
+        assert_eq!(json["mode"]["Git"]["starting_revision"], "abc123");
+        assert!(json["mode"]["Git"].get("base_revision").is_none());
+        assert_eq!(json["resume_revision"], "def456");
+        assert_eq!(json["retention_ref"], "refs/infinity/sandboxes/thread");
+    }
 }
