@@ -109,13 +109,14 @@ pub trait ModeProvider: Send + Sync {
         None
     }
 
-    /// Push the sandbox working copy back to its source.
+    /// Push the sandbox working copy back to its source. Returns the provider's
+    /// durable WIP revision when one can be recorded for later resumption.
     async fn push_sandbox(
         &self,
         sandbox_dir: &Path,
         state: &RepoState,
         description: Option<&str>,
-    ) -> Result<(), SandboxError>;
+    ) -> Result<Option<String>, SandboxError>;
 
     /// Squash the changes from `from_bookmark` into the sandbox, including
     /// any push needed to make the result visible at the sandbox's bookmark.
@@ -176,14 +177,15 @@ pub trait SandboxBackend: Send + Sync {
     ) -> Result<SpawnedCommand, SandboxError>;
 
     /// Push the updated working copy from the sandbox back to the remote.
-    /// `description` is an optional commit message; when `None` the backend
-    /// uses a default like `sandbox-{group_id}`.
+    ///
+    /// Returns the provider's durable WIP revision when one can be recorded
+    /// for resuming a later sandbox instance.
     async fn push_sandbox(
         &self,
         sandbox_dir: &Path,
         group_id: &str,
         description: Option<&str>,
-    ) -> Result<(), SandboxError>;
+    ) -> Result<Option<String>, SandboxError>;
 
     /// Clean up the sandbox temp dir.
     async fn cleanup_sandbox(&self, sandbox_dir: &Path) -> Result<(), SandboxError>;

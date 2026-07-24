@@ -490,6 +490,8 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
         remote_uri: remote_uri.clone(),
         bookmark: bookmark.clone(),
         mode: init.mode,
+        resume_revision: None,
+        retention_ref: None,
         sandbox_path: None,
         write_orig_granted: false,
         write_path_grants: Default::default(),
@@ -548,6 +550,8 @@ async fn handle_open_sandbox_direct<B: SandboxBackend, M: MetadataStore, C: Call
         remote_uri: remote_uri.clone(),
         bookmark: format!("sandbox-{}", invocation.group_id),
         mode: SandboxMode::Direct,
+        resume_revision: None,
+        retention_ref: None,
         sandbox_path: None,
         write_orig_granted: false,
         write_path_grants: Default::default(),
@@ -580,6 +584,21 @@ use crate::{DEFAULT_SANDBOX_EMAIL, DEFAULT_SANDBOX_NAME};
 /// Append a `Co-authored-by` trailer for the default sandbox identity.
 fn append_co_author_trailer(description: &str) -> String {
     format!("{description}\n\nCo-authored-by: {DEFAULT_SANDBOX_NAME} <{DEFAULT_SANDBOX_EMAIL}>")
+}
+
+async fn record_resume_revision<M: MetadataStore>(
+    metadata: &M,
+    group_id: &str,
+    resume_revision: Option<String>,
+) -> Result<(), SandboxError> {
+    let Some(resume_revision) = resume_revision else {
+        return Ok(());
+    };
+    let Some(mut repo_state) = metadata.get(group_id).await? else {
+        return Ok(());
+    };
+    repo_state.resume_revision = Some(resume_revision);
+    metadata.put(&repo_state).await
 }
 
 /// Run an action inside a sandbox: create → action → push → cleanup.
@@ -633,10 +652,11 @@ where
     };
 
     if modifies {
-        state
+        let resume_revision = state
             .backend
             .push_sandbox(&sandbox_dir, group_id, description_ref)
             .await?;
+        record_resume_revision(&state.metadata, group_id, resume_revision).await?;
     }
 
     if modifies {
@@ -1061,10 +1081,11 @@ async fn handle_execute_command_streaming_inner<
         // Process finished within 5 seconds — return a normal tool_result.
         state.in_flight.lock().await.remove(&invocation.id);
         let text = format_exec_output(&stdout_buf, &stderr_buf, code);
-        let _ = state
+        let resume_revision = state
             .backend
             .push_sandbox(&sandbox_dir, &invocation.group_id, None)
-            .await;
+            .await?;
+        record_resume_revision(&state.metadata, &invocation.group_id, resume_revision).await?;
         send_tool_result(&state.callback_client, invocation, &text, None, false).await;
         push_diff_view(state, invocation, &sandbox_dir).await;
         if let Err(e) = state.backend.cleanup_sandbox(&sandbox_dir).await {

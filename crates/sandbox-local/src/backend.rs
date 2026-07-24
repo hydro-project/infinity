@@ -447,18 +447,20 @@ impl SandboxBackend for LocalBackend {
         sandbox_dir: &Path,
         group_id: &str,
         description: Option<&str>,
-    ) -> Result<(), SandboxError> {
+    ) -> Result<Option<String>, SandboxError> {
         let state = {
             let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             cache.get(group_id).map(|e| e.state.clone())
         };
         match state {
             Some(state) => match &state.mode {
-                SandboxMode::Direct => Ok(()),
+                SandboxMode::Direct => Ok(None),
                 mode => {
-                    self.require_provider(mode)?
+                    let resume_revision = self
+                        .require_provider(mode)?
                         .push_sandbox(sandbox_dir, &state, description)
-                        .await
+                        .await?;
+                    Ok(resume_revision)
                 }
             },
             None => Err(SandboxError::Other(format!(

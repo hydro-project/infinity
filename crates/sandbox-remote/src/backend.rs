@@ -116,8 +116,8 @@ impl SandboxBackend for EfsBackend {
     /// Create a temp dir and jj git clone from the EFS bare repo.
     /// If we have a previous bookmark, fetch and create a new working copy on top of it.
     async fn create_sandbox(&self, state: &RepoState) -> Result<PathBuf, SandboxError> {
-        let base_revision = match &state.mode {
-            SandboxMode::Jj { base_revision } => base_revision.as_str(),
+        let starting_revision = match &state.mode {
+            SandboxMode::Jj { starting_revision } => starting_revision.as_str(),
             _ => {
                 return Err(SandboxError::Other(
                     "EFS backend only supports Jj mode".to_owned(),
@@ -132,7 +132,8 @@ impl SandboxBackend for EfsBackend {
             &state.remote_uri,
             &sandbox_dir,
             &state.bookmark,
-            base_revision,
+            starting_revision,
+            state.resume_revision.as_deref(),
         )
         .await?;
 
@@ -167,9 +168,11 @@ impl SandboxBackend for EfsBackend {
         sandbox_dir: &Path,
         group_id: &str,
         _description: Option<&str>,
-    ) -> Result<(), SandboxError> {
+    ) -> Result<Option<String>, SandboxError> {
         let bookmark = format!("sandbox-{group_id}");
-        jj::jj_push_working_copy(sandbox_dir, &bookmark).await
+        Ok(Some(
+            jj::jj_push_working_copy(sandbox_dir, &bookmark).await?,
+        ))
     }
 
     /// Remove the temp sandbox directory.
@@ -212,7 +215,8 @@ impl SandboxBackend for EfsBackend {
         from_bookmark: &str,
     ) -> Result<(), SandboxError> {
         jj::squash_from(sandbox_dir, from_bookmark).await?;
-        jj::jj_push_working_copy(sandbox_dir, &state.bookmark).await
+        jj::jj_push_working_copy(sandbox_dir, &state.bookmark).await?;
+        Ok(())
     }
 
     async fn diff_files(

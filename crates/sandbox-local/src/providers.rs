@@ -80,7 +80,7 @@ impl ModeProvider for LocalJjProvider {
     }
 
     async fn create_sandbox(&self, state: &RepoState) -> Result<PathBuf, SandboxError> {
-        let SandboxMode::Jj { base_revision } = &state.mode else {
+        let SandboxMode::Jj { starting_revision } = &state.mode else {
             return Err(SandboxError::Other(
                 "bug: jj provider invoked with a non-jj mode".to_owned(),
             ));
@@ -91,7 +91,8 @@ impl ModeProvider for LocalJjProvider {
             &state.remote_uri,
             &sandbox_dir,
             &state.bookmark,
-            base_revision,
+            starting_revision,
+            state.resume_revision.as_deref(),
         )
         .await?;
         Ok(sandbox_dir)
@@ -128,8 +129,8 @@ impl ModeProvider for LocalJjProvider {
         sandbox_dir: &Path,
         state: &RepoState,
         _description: Option<&str>,
-    ) -> Result<(), SandboxError> {
-        jj::jj_push_working_copy(sandbox_dir, &state.bookmark).await?;
+    ) -> Result<Option<String>, SandboxError> {
+        let wip_revision = jj::jj_push_working_copy(sandbox_dir, &state.bookmark).await?;
         // Keep colocated git refs in sync so git commands via
         // write-orig see the latest jj state.
         let orig = PathBuf::from(&state.remote_uri);
@@ -138,7 +139,7 @@ impl ModeProvider for LocalJjProvider {
         {
             tracing::warn!(error = %e, "jj git export failed");
         }
-        Ok(())
+        Ok(Some(wip_revision))
     }
 
     async fn squash(
@@ -148,7 +149,8 @@ impl ModeProvider for LocalJjProvider {
         from_bookmark: &str,
     ) -> Result<(), SandboxError> {
         jj::squash_from(sandbox_dir, from_bookmark).await?;
-        self.push_sandbox(sandbox_dir, state, None).await
+        self.push_sandbox(sandbox_dir, state, None).await?;
+        Ok(())
     }
 
     async fn diff_files(
@@ -215,7 +217,7 @@ impl ModeProvider for LocalGitProvider {
     }
 
     async fn create_sandbox(&self, state: &RepoState) -> Result<PathBuf, SandboxError> {
-        let SandboxMode::Git { base_revision } = &state.mode else {
+        let SandboxMode::Git { starting_revision } = &state.mode else {
             return Err(SandboxError::Other(
                 "bug: git provider invoked with a non-git mode".to_owned(),
             ));
@@ -226,7 +228,7 @@ impl ModeProvider for LocalGitProvider {
             &PathBuf::from(&state.remote_uri),
             &sandbox_dir,
             &state.bookmark,
-            Some(base_revision),
+            Some(starting_revision),
         )
         .await?;
         Ok(sandbox_dir)
@@ -237,8 +239,9 @@ impl ModeProvider for LocalGitProvider {
         sandbox_dir: &Path,
         _state: &RepoState,
         description: Option<&str>,
-    ) -> Result<(), SandboxError> {
-        git::git_amend_all(sandbox_dir, description).await
+    ) -> Result<Option<String>, SandboxError> {
+        git::git_amend_all(sandbox_dir, description).await?;
+        Ok(None)
     }
 
     async fn squash(
