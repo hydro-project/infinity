@@ -28,6 +28,16 @@ pub fn slack_dataflow<'a, P: 'a>(
     let (non_buttons, button_clicks) =
         filtered.partition(q!(|event: &SlackEvent| !event.is_button_click));
 
+    // --- Button clicks → stop any active stream so the response appears in a new message ---
+    let button_stop_actions = button_clicks
+        .clone()
+        .map(q!(|event: crate::sidecar::SlackEvent| {
+            crate::sidecar::SlackAction::StreamStop {
+                channel: event.channel,
+                thread_ts: event.thread_ts,
+            }
+        }));
+
     // --- Button clicks → AnswerChoice commands ---
     let button_commands = button_clicks.filter_map(q!(|event: crate::sidecar::SlackEvent| {
         let rt = crate::runtime::get();
@@ -208,14 +218,22 @@ pub fn slack_dataflow<'a, P: 'a>(
         }));
 
     // Merge all slack action streams.
-    let slack_actions = daemon_slack_actions.merge_ordered(
-        status_actions,
-        nondet!(/**
-            daemon-sourced actions (streaming text, tool calls) have non-deterministic
-            ordering w.r.t. status actions ("Thinking...") because they originate from
-            independent event sources
-        */),
-    );
+    let slack_actions = daemon_slack_actions
+        .merge_ordered(
+            status_actions,
+            nondet!(/**
+                daemon-sourced actions (streaming text, tool calls) have non-deterministic
+                ordering w.r.t. status actions ("Thinking...") because they originate from
+                independent event sources
+            */),
+        )
+        .merge_ordered(
+            button_stop_actions,
+            nondet!(/**
+                button-stop actions have non-deterministic ordering w.r.t. other slack actions
+                because they originate from user interaction events
+            */),
+        );
 
     (slack_actions, daemon_commands)
 }
