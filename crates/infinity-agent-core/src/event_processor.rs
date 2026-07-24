@@ -1291,123 +1291,134 @@ where
                 let completion_id = format!("{}-{}-completion-{}", group_id, message_id, completion_counter);
                 completion_counter += 1;
 
-                  if let StreamedAssistantContent::ToolCall { .. } = chunk && has_emitted_tool_call {
+                // After the turn's first tool call, the model may keep
+                // streaming: Bedrock emits *concurrent* tool calls in one
+                // assistant message (each closed content block yields
+                // another `ToolCall`), with interleaved reasoning between
+                // them. Only the first call is executed — its result
+                // arrives in a later round — so everything streamed after
+                // it must be dropped here. Forwarding it would surface the
+                // ignored calls' argument deltas and reasoning as
+                // "thinking" that reaches clients *before* the executed
+                // call's result, and committing trailing reasoning/text to
+                // history after the tool call would break the
+                // `history.last()` match when the result arrives (dropping
+                // the result and stranding the call as unanswered). `Final`
+                // still flows through below to flush the turn and finish
+                // the round.
+                if has_emitted_tool_call && !matches!(chunk, StreamedAssistantContent::Final(_)) {
+                    tracing::info!("Ignoring post-tool-call stream content: {:?}", chunk);
+                } else {
+                    // Compute display_as for tool calls before inserting into history.
+                    let tool_display_as = if let StreamedAssistantContent::ToolCall { tool_call: ref call, .. } = chunk {
+                        let ds = tool_registry
+                            .get(call.function.name.as_str())
+                            .and_then(|t| t.display_script().map(String::from));
+                        crate::tools::eval_display_script(ds.as_deref(), &call.function.arguments)
+                    } else {
+                        None
+                    };
+                    history.handle_completion(&chunk, completion_id, tool_display_as.clone());
+                    match chunk {
+                        StreamedAssistantContent::Text(text) => {
+                            if is_thinking {
+                                is_thinking = false;
+                                yield CompletionEvent::ThinkingEnd;
+                            }
+                            tracing::info!("[Text] {}", &text.text);
+                            yield CompletionEvent::TextChunk(text.text);
+                        }
+                        StreamedAssistantContent::ToolCall { tool_call: call, .. } => {
+                            if is_thinking {
+                                is_thinking = false;
+                                yield CompletionEvent::ThinkingEnd;
+                            }
+                            tracing::info!("[Tool Call: {} with arguments {}]", &call.function.name, &call.function.arguments);
 
-                  } else {
-                      // Compute display_as for tool calls before inserting into history.
-                      let tool_display_as = if let StreamedAssistantContent::ToolCall { tool_call: ref call, .. } = chunk {
-                          let ds = tool_registry
-                              .get(call.function.name.as_str())
-                              .and_then(|t| t.display_script().map(String::from));
-                          crate::tools::eval_display_script(ds.as_deref(), &call.function.arguments)
-                      } else {
-                          None
-                      };
-                      history.handle_completion(&chunk, completion_id, tool_display_as.clone());
-                      match chunk {
-                          StreamedAssistantContent::Text(text) => {
-                              if is_thinking {
-                                  is_thinking = false;
-                                  yield CompletionEvent::ThinkingEnd;
-                              }
-                              tracing::info!("[Text] {}", &text.text);
-                              yield CompletionEvent::TextChunk(text.text);
-                          }
-                          StreamedAssistantContent::ToolCall { tool_call: call, .. } => {
-                              if is_thinking {
-                                  is_thinking = false;
-                                  yield CompletionEvent::ThinkingEnd;
-                              }
-                              tracing::info!("[Tool Call: {} with arguments {}]", &call.function.name, &call.function.arguments);
+                            has_emitted_tool_call = true;
+                            // A tool call ends the turn: commit the buffered
+                            // assistant content (any preceding text/reasoning
+                            // plus this tool call) so it is in `history` before
+                            // the tool-result `handle_content` calls below match
+                            // on `history.last()`, and so an async tool call is
+                            // persisted by the caller's `sync()` before its
+                            // result arrives on a later turn.
+                            history.flush_turn();
+                            if call.function.name == "receive_event__injected" {
+                                let tool_result = InfinityMessage::ToolResult {
+                                    result: ToolResult {
+                                        id: call.id.clone(),
+                                        call_id: call.call_id.clone(),
+                                        content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                                            text: format!("Error: you cannot directly invoke {}, invocations will automatically be injected when events arrive.", call.function.name),
+                                        })),
+                                    },
+                                    display_segments: None,
+                                };
+                                history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
+                                should_loop_back = true;
+                                continue;
+                            } else if !tool_names.contains(call.function.name.as_str()) {
+                                // Unknown tool — inject error and retry the whole completion
+                                tracing::warn!("Unknown tool '{}' called, injecting error and retrying", call.function.name);
+                                let tool_result = InfinityMessage::ToolResult {
+                                    result: ToolResult {
+                                        id: call.id.clone(),
+                                        call_id: call.call_id.clone(),
+                                        content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                                            text: format!("Error: tool '{}' does not exist", call.function.name),
+                                        })),
+                                    },
+                                    display_segments: None,
+                                };
+                                history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
+                                should_loop_back = true;
+                                continue;
+                            }
 
-                              if has_emitted_tool_call {
-                                  tracing::info!("Ignoring batched tool call");
-                              } else {
-                                  has_emitted_tool_call = true;
-                                  // A tool call ends the turn: commit the buffered
-                                  // assistant content (any preceding text/reasoning
-                                  // plus this tool call) so it is in `history` before
-                                  // the tool-result `handle_content` calls below match
-                                  // on `history.last()`, and so an async tool call is
-                                  // persisted by the caller's `sync()` before its
-                                  // result arrives on a later turn.
-                                  history.flush_turn();
-                                  if call.function.name == "receive_event__injected" {
-                                      let tool_result = InfinityMessage::ToolResult {
-                                          result: ToolResult {
-                                              id: call.id.clone(),
-                                              call_id: call.call_id.clone(),
-                                              content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                                                  text: format!("Error: you cannot directly invoke {}, invocations will automatically be injected when events arrive.", call.function.name),
-                                              })),
-                                          },
-                                          display_segments: None,
-                                      };
-                                      history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
-                                      should_loop_back = true;
-                                      continue;
-                                  } else if !tool_names.contains(call.function.name.as_str()) {
-                                      // Unknown tool — inject error and retry the whole completion
-                                      tracing::warn!("Unknown tool '{}' called, injecting error and retrying", call.function.name);
-                                      let tool_result = InfinityMessage::ToolResult {
-                                          result: ToolResult {
-                                              id: call.id.clone(),
-                                              call_id: call.call_id.clone(),
-                                              content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                                                  text: format!("Error: tool '{}' does not exist", call.function.name),
-                                              })),
-                                          },
-                                          display_segments: None,
-                                      };
-                                      history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
-                                      should_loop_back = true;
-                                      continue;
-                                  }
+                            // Check for synchronous execution — if the tool provides
+                            // synchronous results, inject into history immediately and
+                            // continue the completion loop instead of returning. This
+                            // prevents race conditions where a concurrent event makes
+                            // the tool call appear cancelled.
+                            let tool = tool_registry.get(call.function.name.as_str()).expect("bug: tool not found in registry after call");
+                            if tool.supports_sync() {
+                                history.sync().await?; // we must sync the history so that thread spawning uses the correct state
 
-                                  // Check for synchronous execution — if the tool provides
-                                  // synchronous results, inject into history immediately and
-                                  // continue the completion loop instead of returning. This
-                                  // prevents race conditions where a concurrent event makes
-                                  // the tool call appear cancelled.
-                                  let tool = tool_registry.get(call.function.name.as_str()).expect("bug: tool not found in registry after call");
-                                  if tool.supports_sync() {
-                                      history.sync().await?; // we must sync the history so that thread spawning uses the correct state
+                                let res = tool.execute_synchronous(
+                                    &call.function.arguments,
+                                    &call.id,
+                                    call.call_id.as_deref(),
+                                    tool_context,
+                                ).await.expect("bug: synchronous tool execution failed");
 
-                                      let res = tool.execute_synchronous(
-                                          &call.function.arguments,
-                                          &call.id,
-                                          call.call_id.as_deref(),
-                                          tool_context,
-                                      ).await.expect("bug: synchronous tool execution failed");
+                                yield CompletionEvent::SyncToolCall {
+                                    tool_name: call.function.name.clone(),
+                                    tool_args: call.function.arguments.clone(),
+                                    display_as: tool_display_as,
+                                };
+                                yield CompletionEvent::SyncToolResult(res.clone());
 
-                                      yield CompletionEvent::SyncToolCall {
-                                          tool_name: call.function.name.clone(),
-                                          tool_args: call.function.arguments.clone(),
-                                          display_as: tool_display_as,
-                                      };
-                                      yield CompletionEvent::SyncToolResult(res.clone());
-
-                                      let sync_id = format!("{}-sync-result-{}", call.id, completion_counter);
-                                      completion_counter += 1;
-                                      history.handle_content(
-                                          InfinityMessage::ToolResult {
-                                              result: res,
-                                              display_segments: None,
-                                          },
-                                          sync_id,
-                                      ).await?;
-                                      should_loop_back = true;
-                                  } else {
-                                      yield CompletionEvent::Action(CompletionAction::ExecuteToolCall {
-                                          tool_name: call.function.name.clone(),
-                                          tool_args: call.function.arguments.clone(),
-                                          tool_call_id: call.id.clone(),
-                                          call_id: call.call_id.clone(),
-                                          display_as: tool_display_as,
-                                      });
-                                  }
-                              }
-                          }
+                                let sync_id = format!("{}-sync-result-{}", call.id, completion_counter);
+                                completion_counter += 1;
+                                history.handle_content(
+                                    InfinityMessage::ToolResult {
+                                        result: res,
+                                        display_segments: None,
+                                    },
+                                    sync_id,
+                                ).await?;
+                                should_loop_back = true;
+                            } else {
+                                yield CompletionEvent::Action(CompletionAction::ExecuteToolCall {
+                                    tool_name: call.function.name.clone(),
+                                    tool_args: call.function.arguments.clone(),
+                                    tool_call_id: call.id.clone(),
+                                    call_id: call.call_id.clone(),
+                                    display_as: tool_display_as,
+                                });
+                            }
+                        }
                         StreamedAssistantContent::ToolCallDelta { content, .. } => {
                             match content {
                                 ToolCallDeltaContent::Name(n) => {
@@ -3037,6 +3048,181 @@ mod tests {
 
                 let name = handle.await.expect("await task handle");
                 assert_eq!(name, Some("async_tool".to_owned()));
+            })
+            .await;
+    }
+
+    /// Regression test: Bedrock streams *concurrent* tool calls in a single
+    /// assistant message (each closed content block yields another
+    /// `ToolCall`), with interleaved reasoning between them. Only the first
+    /// call is executed — its result arrives in a later round — so everything
+    /// streamed after it must be suppressed. Previously the ignored second
+    /// call's name/argument deltas and the interleaved reasoning were
+    /// forwarded as `ThinkingChunk`s, so clients saw "thinking" streaming
+    /// *before* the executed call's `ToolResult`. Worse, the trailing
+    /// reasoning block was committed to history after the tool call, which
+    /// broke the `history.last()` match when the result arrived (the result
+    /// was dropped and the call stranded as unanswered).
+    #[tokio::test(flavor = "current_thread")]
+    async fn concurrent_tool_calls_suppress_trailing_stream_content() {
+        use rig::streaming::RawStreamingChoice;
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (provider, mut ctrl) = mock_provider();
+                let convo_store = StubConversationStore::new();
+                let hm = make_history(
+                    &convo_store,
+                    vec![Message::User {
+                        content: OneOrMany::one(UserContent::text("run tools")),
+                    }],
+                )
+                .await;
+
+                struct AsyncTool;
+                #[async_trait]
+                impl Tool<StubSender> for AsyncTool {
+                    fn name(&self) -> &str {
+                        "async_tool"
+                    }
+                    fn description(&self) -> &str {
+                        "async"
+                    }
+                    fn parameters(&self) -> serde_json::Value {
+                        serde_json::json!({"type": "object", "properties": {}})
+                    }
+                    async fn execute(
+                        &self,
+                        _: serde_json::Value,
+                        _: String,
+                        _: Option<String>,
+                        _: &ToolContext<StubSender>,
+                    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                        Ok(())
+                    }
+                }
+                static ASYNC_TOOL2: AsyncTool = AsyncTool;
+
+                let mut tool_names = HashSet::new();
+                tool_names.insert("async_tool".to_owned());
+                let tool_defs = vec![ToolDefinition {
+                    name: "async_tool".into(),
+                    description: "async".into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                }];
+                let mut tool_registry: HashMap<String, &dyn Tool<StubSender>> = HashMap::new();
+                tool_registry.insert("async_tool".into(), &ASYNC_TOOL2);
+                let ctx = tool_context();
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let handle = tokio::task::spawn_local(async move {
+                    let stream = run_completion(
+                        &provider,
+                        "mock",
+                        &hm,
+                        &tool_names,
+                        &tool_defs,
+                        &tool_registry,
+                        &ctx,
+                        "thread-1",
+                        "msg-1",
+                        None,
+                        cancel_rx,
+                    );
+                    tokio::pin!(stream);
+                    let mut tags: Vec<&'static str> = Vec::new();
+                    while let Some(ev) = stream.next().await {
+                        tags.push(match ev.expect("receive stream event") {
+                            CompletionEvent::Info(_) => "Info",
+                            CompletionEvent::TextChunk(_) => "Text",
+                            CompletionEvent::ThinkingStart => "ThinkingStart",
+                            CompletionEvent::ThinkingEnd => "ThinkingEnd",
+                            CompletionEvent::ThinkingChunk(_) => "ThinkingChunk",
+                            CompletionEvent::SyncToolCall { .. } => "SyncToolCall",
+                            CompletionEvent::SyncToolResult(_) => "SyncToolResult",
+                            CompletionEvent::Action(CompletionAction::ExecuteToolCall {
+                                ..
+                            }) => "ExecuteToolCall",
+                            CompletionEvent::Action(CompletionAction::Done(_)) => "Done",
+                        });
+                    }
+                    // Return the final history so the test can check that the
+                    // executed tool call stayed the last committed entry.
+                    let last = hm.history.borrow().last().cloned();
+                    (tags, last)
+                });
+
+                let _req = ctrl.next_request().await;
+                // Bedrock-style single assistant message with two concurrent
+                // tool calls and interleaved reasoning between them.
+                ctrl.send_chunk(RawStreamingChoice::ReasoningDelta {
+                    id: None,
+                    reasoning: "planning the calls".into(),
+                });
+                ctrl.send_chunk(RawStreamingChoice::Reasoning {
+                    id: None,
+                    content: rig::message::ReasoningContent::Text {
+                        text: "planning the calls".into(),
+                        signature: Some("sig-1".into()),
+                    },
+                });
+                ctrl.send_chunk(RawStreamingChoice::ToolCallDelta {
+                    id: "tc-1".into(),
+                    internal_call_id: "int-1".into(),
+                    content: ToolCallDeltaContent::Name("async_tool".into()),
+                });
+                ctrl.send_tool_call("tc-1", "async_tool", serde_json::json!({"x": 1}));
+                // Second concurrent call: its deltas must not leak out as
+                // thinking, and it must not be executed.
+                ctrl.send_chunk(RawStreamingChoice::ToolCallDelta {
+                    id: "tc-2".into(),
+                    internal_call_id: "int-2".into(),
+                    content: ToolCallDeltaContent::Name("async_tool".into()),
+                });
+                ctrl.send_chunk(RawStreamingChoice::ToolCallDelta {
+                    id: "tc-2".into(),
+                    internal_call_id: "int-2".into(),
+                    content: ToolCallDeltaContent::Delta("{\"x\":2}".into()),
+                });
+                // Interleaved reasoning after the first call.
+                ctrl.send_chunk(RawStreamingChoice::ReasoningDelta {
+                    id: None,
+                    reasoning: "now the second call".into(),
+                });
+                ctrl.send_chunk(RawStreamingChoice::Reasoning {
+                    id: None,
+                    content: rig::message::ReasoningContent::Text {
+                        text: "now the second call".into(),
+                        signature: Some("sig-2".into()),
+                    },
+                });
+                ctrl.send_tool_call("tc-2", "async_tool", serde_json::json!({"x": 2}));
+                ctrl.finish();
+
+                let (tags, last_history) = handle.await.expect("await task handle");
+
+                let action_idx = tags
+                    .iter()
+                    .position(|t| *t == "ExecuteToolCall")
+                    .expect("first tool call should be executed");
+                assert_eq!(
+                    tags[action_idx + 1..]
+                        .iter()
+                        .filter(|t| **t != "Done")
+                        .count(),
+                    0,
+                    "no display events may be emitted after the executed tool call \
+                     (they would stream as thinking before the tool result); got {tags:?}"
+                );
+
+                // The executed call must remain the last committed history
+                // entry so its result matches when it arrives.
+                match last_history {
+                    Some(InfinityMessage::ToolCall { call, .. }) => {
+                        assert_eq!(call.id, "tc-1");
+                    }
+                    other => panic!("history must end with the executed tool call, got {other:?}"),
+                }
             })
             .await;
     }
