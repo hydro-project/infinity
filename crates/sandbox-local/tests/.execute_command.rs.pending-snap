@@ -1,1 +1,4 @@
 {"run_id":"1784755023-230844000","line":230,"new":{"module_name":"execute_command","snapshot_name":"sandboxed_command_can_write_sccache_cache_dir","metadata":{"source":"crates/sandbox-local/tests/execute_command.rs","assertion_line":230,"expression":"text"},"snapshot":"[stderr]\nsandbox-exec: sandbox_apply: Operation not permitted\n\n[exit code: 71]"},"old":{"module_name":"execute_command","metadata":{},"snapshot":"Command completed with exit code 0"}}
+{"run_id":"1784930887-726266506","line":230,"new":null,"old":null}
+{"run_id":"1784931203-616193273","line":230,"new":null,"old":null}
+{"run_id":"1784931228-823229059","line":230,"new":null,"old":null}

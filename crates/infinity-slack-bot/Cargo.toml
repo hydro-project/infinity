@@ -12,7 +12,7 @@ path = "src/lib.rs"
 infinity-protocol = { path = "../infinity-protocol" }
 
 hydro_lang = "0.17.0-alpha.2"
-stageleft = "0.14.0"
+stageleft = "0.15.0"
 ctor = "0.2"
 
 tokio = { workspace = true, features = ["full"] }
@@ -33,7 +33,7 @@ hydro_deploy = "0.17.0-alpha.1"
 futures = "0.3"
 
 [build-dependencies]
-stageleft_tool = "0.14.0"
+stageleft_tool = "0.15.0"
 
 [lints]
 workspace = true

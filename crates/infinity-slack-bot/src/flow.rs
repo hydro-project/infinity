@@ -4,7 +4,6 @@
 //! - Slack sidecar: `Stream<SlackEvent>` in, `Stream<SlackAction>` out
 //! - Daemon sidecar: `Stream<DaemonEvent>` in, `Stream<DaemonCommand>` out
 
-use hydro_lang::live_collections::stream::NoOrder;
 use hydro_lang::prelude::*;
 
 use crate::daemon_sidecar::{DaemonCommand, DaemonEvent};
@@ -16,7 +15,7 @@ pub fn slack_dataflow<'a, P: 'a>(
     slack_events: Stream<SlackEvent, Process<'a, P>, Unbounded>,
     daemon_events: Stream<DaemonEvent, Process<'a, P>, Unbounded>,
 ) -> (
-    Stream<SlackAction, Process<'a, P>, Unbounded, NoOrder>,
+    Stream<SlackAction, Process<'a, P>, Unbounded>,
     Stream<DaemonCommand, Process<'a, P>, Unbounded>,
 ) {
     // Filter: drop bot messages and unauthorized users.
@@ -24,66 +23,81 @@ pub fn slack_dataflow<'a, P: 'a>(
         !event.is_bot && !event.is_unauthorized
     }));
 
-    // --- Slack events → Daemon commands ---
-    let daemon_commands = filtered
-        .clone()
-        .filter_map(q!(|event: crate::sidecar::SlackEvent| {
-            let rt = crate::runtime::get();
-            // Remember which channel this thread belongs to.
-            rt.channels
-                .lock()
-                .expect("bug: lock poisoned")
-                .insert(event.thread_ts.clone(), event.channel.clone());
+    // Partition into non-button messages vs button clicks to avoid cloning the
+    // full stream and eliminate redundant `if is_button_click` checks.
+    let (non_buttons, button_clicks) =
+        filtered.partition(q!(|event: &SlackEvent| !event.is_button_click));
 
-            if event.is_button_click {
-                // Parse action_id: "choice_{choice_id}_{selected_index}"
-                let action_id = event.action_id.unwrap_or_default();
-                let selected: usize =
-                    event.button_value.and_then(|v| v.parse().ok()).unwrap_or(0);
-                // Strip "choice_" prefix, then split off the trailing "_{index}"
-                let rest = action_id.strip_prefix("choice_").unwrap_or(&action_id);
-                let choice_id = match rest.rsplit_once('_') {
-                    Some((id, _)) => id.to_owned(),
-                    None => rest.to_owned(),
+    // --- Button clicks → AnswerChoice commands ---
+    let button_commands = button_clicks.filter_map(q!(|event: crate::sidecar::SlackEvent| {
+        let rt = crate::runtime::get();
+        rt.channels
+            .lock()
+            .expect("bug: lock poisoned")
+            .insert(event.thread_ts.clone(), event.channel.clone());
+
+        // Parse action_id: "choice_{choice_id}_{selected_index}"
+        let action_id = event.action_id.unwrap_or_default();
+        let selected: usize = event.button_value.and_then(|v| v.parse().ok()).unwrap_or(0);
+        // Strip "choice_" prefix, then split off the trailing "_{index}"
+        let rest = action_id.strip_prefix("choice_").unwrap_or(&action_id);
+        let choice_id = match rest.rsplit_once('_') {
+            Some((id, _)) => id.to_owned(),
+            None => rest.to_owned(),
+        };
+        Some(crate::daemon_sidecar::DaemonCommand::AnswerChoice {
+            thread_ts: event.thread_ts,
+            choice_id,
+            selected,
+        })
+    }));
+
+    // --- Non-button messages → CreateSession / SendInput commands ---
+    let message_commands =
+        non_buttons
+            .clone()
+            .filter_map(q!(|event: crate::sidecar::SlackEvent| {
+                let rt = crate::runtime::get();
+                rt.channels
+                    .lock()
+                    .expect("bug: lock poisoned")
+                    .insert(event.thread_ts.clone(), event.channel.clone());
+
+                let existing = {
+                    let sessions = rt.sessions.lock().expect("bug: lock poisoned");
+                    sessions.get(&event.thread_ts).cloned()
                 };
-                return Some(crate::daemon_sidecar::DaemonCommand::AnswerChoice {
-                    thread_ts: event.thread_ts,
-                    choice_id,
-                    selected,
-                });
-            }
+                if let Some(session_id) = existing {
+                    Some(crate::daemon_sidecar::DaemonCommand::SendInput {
+                        thread_ts: event.thread_ts,
+                        session_id,
+                        text: event.text.trim().to_owned(),
+                    })
+                } else {
+                    // Stash the text to send after Connected arrives.
+                    let mut pending = rt.pending_input.lock().expect("bug: lock poisoned");
+                    pending.insert(event.thread_ts.clone(), event.text.trim().to_owned());
+                    Some(crate::daemon_sidecar::DaemonCommand::CreateSession {
+                        thread_ts: event.thread_ts,
+                        cwd: rt.config.default_cwd.clone(),
+                    })
+                }
+            }));
 
-            let existing = {
-                let sessions = rt.sessions.lock().expect("bug: lock poisoned");
-                sessions.get(&event.thread_ts).cloned()
-            };
-            if let Some(session_id) = existing {
-                Some(crate::daemon_sidecar::DaemonCommand::SendInput {
-                    thread_ts: event.thread_ts,
-                    session_id,
-                    text: event.text.trim().to_owned(),
-                })
-            } else {
-                // Stash the text to send after Connected arrives.
-                let mut pending = rt.pending_input.lock().expect("bug: lock poisoned");
-                pending.insert(event.thread_ts.clone(), event.text.trim().to_owned());
-                Some(crate::daemon_sidecar::DaemonCommand::CreateSession {
-                    thread_ts: event.thread_ts,
-                    cwd: rt.config.default_cwd.clone(),
-                })
-            }
-        }));
+    let daemon_commands = button_commands.merge_ordered(
+        message_commands,
+        nondet!(/**
+            a button command has non-deterministic ordering w.r.t. message commands
+            because batching may interleave them arbitrarily
+        */),
+    );
 
     // Set "Thinking..." status when a non-button user message arrives.
-    let status_actions = filtered.filter_map(q!(|event: crate::sidecar::SlackEvent| {
-        if event.is_button_click {
-            None
-        } else {
-            Some(crate::sidecar::SlackAction::SetStatus {
-                channel: event.channel,
-                thread_ts: event.thread_ts,
-                status: "Thinking...".to_owned(),
-            })
+    let status_actions = non_buttons.map(q!(|event: crate::sidecar::SlackEvent| {
+        crate::sidecar::SlackAction::SetStatus {
+            channel: event.channel,
+            thread_ts: event.thread_ts,
+            status: "Thinking...".to_owned(),
         }
     }));
 
@@ -194,7 +208,14 @@ pub fn slack_dataflow<'a, P: 'a>(
         }));
 
     // Merge all slack action streams.
-    let slack_actions = daemon_slack_actions.merge_unordered(status_actions);
+    let slack_actions = daemon_slack_actions.merge_ordered(
+        status_actions,
+        nondet!(/**
+            daemon-sourced actions (streaming text, tool calls) have non-deterministic
+            ordering w.r.t. status actions ("Thinking...") because they originate from
+            independent event sources
+        */),
+    );
 
     (slack_actions, daemon_commands)
 }
