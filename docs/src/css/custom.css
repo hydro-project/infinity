@@ -163,7 +163,10 @@ html {
   text-align: left;
 }
 
-.layer-inner h2 {
+/* Scope element selectors to the section's own content (direct children /
+   .layer-paragraphs) so they never reach into embedded Infinity UI demos
+   rendered inside .layer-visual. */
+.layer-inner > h2 {
   font-size: 2.75rem;
   font-weight: 700;
   letter-spacing: -0.02em;
@@ -173,16 +176,9 @@ html {
 .layer-inner .layer-subtitle {
   font-size: 1.2rem;
   font-weight: 600;
-  color: var(--ifm-color-primary);
-  margin-bottom: 2rem;
-}
-
-.layer-inner p {
-  font-size: 1.05rem;
   line-height: 1.6;
-  color: var(--ifm-color-emphasis-700);
-  margin: 0 0 1rem;
-  max-width: 710px;
+  color: var(--ifm-color-primary);
+  margin: 0 0 2rem;
 }
 
 .layer-paragraphs {
@@ -192,8 +188,10 @@ html {
 }
 
 .layer-paragraphs p {
+  font-size: 1.05rem;
+  line-height: 1.6;
+  color: var(--ifm-color-emphasis-700);
   margin: 0 0 1rem;
-  max-width: none;
   text-align: center;
 }
 
@@ -201,7 +199,7 @@ html {
   margin-top: 0.25rem;
 }
 
-.layer-inner code {
+.layer-paragraphs code {
   background: none;
   border: none;
   border-radius: 0;

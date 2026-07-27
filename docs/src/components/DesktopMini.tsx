@@ -1,7 +1,9 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
+/* theme.css must be imported before any component modules so that component
+   styles win order ties against the `.infinity-ui-root` resets it contains. */
+import "infinity-ui/theme.css";
 import { SessionSidebar, ChatView, DiffView } from "infinity-ui";
 import type { SessionInfo, MessageItemType, SpinnerState } from "infinity-ui";
-import "infinity-ui/theme.css";
 import chatCss from "infinity-ui/components/ChatPanel.module.css";
 
 /* ── Stub file contents (before edits) ── */
@@ -160,10 +162,13 @@ const session = await validateSession(sessionToken);
   },
 ];
 
-/* ── Diff patches for history tool results ── */
+/* ── Diff patches for history tool results ──
+   Header format matches the daemon's `build_edit_diff` (same bare path on
+   both sides, no git-style `a/`/`b/` prefixes), which pierre renders as a
+   single filename instead of a rename. */
 
-const TOKEN_PATCH = `--- a/src/auth/token.ts
-+++ b/src/auth/token.ts
+const TOKEN_PATCH = `--- src/auth/token.ts
++++ src/auth/token.ts
 @@ -1,2 +1,9 @@
 -// TODO: implement token generation
 -export {}
@@ -177,8 +182,8 @@ const TOKEN_PATCH = `--- a/src/auth/token.ts
 +  });
 +}`;
 
-const LOGIN_PATCH = `--- a/src/auth/login.ts
-+++ b/src/auth/login.ts
+const LOGIN_PATCH = `--- src/auth/login.ts
++++ src/auth/login.ts
 @@ -1,2 +1,19 @@
 -// TODO: implement login
 -export {}
@@ -201,8 +206,8 @@ const LOGIN_PATCH = `--- a/src/auth/login.ts
 +  return db.query("SELECT * FROM users WHERE id = $1", [id]);
 +}`;
 
-const SESSION_PATCH = `--- a/src/auth/session.ts
-+++ b/src/auth/session.ts
+const SESSION_PATCH = `--- src/auth/session.ts
++++ src/auth/session.ts
 @@ -1,2 +1,17 @@
 -// TODO: implement sessions
 -export {}
@@ -709,9 +714,14 @@ export default function DesktopMini({
    * block. This makes `position: fixed` children (SessionSidebar, chat panel)
    * position relative to this container instead of the viewport, so the real
    * components work exactly as in the app with zero overrides.
+   *
+   * The `infinity-ui-root` class provides the theme variables and baseline
+   * typography (and shields the components from Docusaurus' global element
+   * styles), exactly like it does for <html> in infinity-web.
    */
   return (
     <div
+      className="infinity-ui-root"
       style={{
         position: "relative",
         width: "100%",
@@ -719,12 +729,8 @@ export default function DesktopMini({
         borderRadius: 12,
         overflow: "hidden",
         border: "1px solid var(--border)",
-        background: "var(--bg)",
         transform: "scale(1)",
-        fontSize: 13,
-        fontFamily: "var(--font-sans)",
         boxShadow: "0 25px 50px -12px rgba(0,0,0,0.3)",
-        color: "var(--text)",
       }}
     >
       {/* Sidebar: uses position:fixed, contained by transform */}
