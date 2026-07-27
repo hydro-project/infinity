@@ -43,7 +43,15 @@ pub enum SlackAction {
         fallback_text: String,
         blocks: serde_json::Value,
         thread_ts: Option<String>,
+        /// If set, the sidecar will store the resulting message_ts under this
+        /// choice_id so that a later `DismissChoiceButtons` can update it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        choice_id: Option<String>,
     },
+    /// Dismiss interactive buttons for a completed choice (replace with a
+    /// "resolved" indicator). The sidecar looks up the stored message_ts
+    /// from the choice_id.
+    DismissChoiceButtons { choice_id: String },
     /// Update an existing message's blocks (e.g. to replace buttons with a selection indicator).
     UpdateMessage {
         channel: String,
@@ -214,7 +222,15 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
             ts: String,
             char_count: usize,
             in_code_block: bool,
+            /// When this stream message was started. Streams older than
+            /// `MAX_STREAM_AGE` are split at the next clean breaking point so
+            /// long-running responses don't pile into one giant message.
+            started_at: std::time::Instant,
         }
+
+        /// Maximum age of a stream message before it is split at the next
+        /// clean breaking point.
+        const MAX_STREAM_AGE: std::time::Duration = std::time::Duration::from_secs(3 * 60);
 
         // Active streams: thread_ts → state
         let mut active_streams: std::collections::HashMap<String, StreamState> =
@@ -235,6 +251,7 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
                             ts: ts.clone(),
                             char_count: 0,
                             in_code_block: false,
+                            started_at: std::time::Instant::now(),
                         },
                     );
                     Some(ts)
@@ -280,12 +297,30 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
                     fallback_text,
                     blocks,
                     thread_ts,
+                    choice_id,
                 } => {
-                    if let Err(e) = slack
+                    match slack
                         .post_blocks(&channel, &fallback_text, &blocks, thread_ts.as_deref())
                         .await
                     {
-                        tracing::error!("PostBlocks failed: {e}");
+                        Ok(Some(msg_ts)) => {
+                            // If this is a choice-button message, store the ts so we
+                            // can dismiss it later when the choice is resolved without
+                            // a Slack button click.
+                            if let Some(cid) = choice_id {
+                                let rt = crate::runtime::get();
+                                rt.choice_messages
+                                    .lock()
+                                    .expect("bug: lock poisoned")
+                                    .insert(cid, (channel, msg_ts));
+                            }
+                        }
+                        Ok(None) => {
+                            tracing::warn!("PostBlocks succeeded but returned no ts");
+                        }
+                        Err(e) => {
+                            tracing::error!("PostBlocks failed: {e}");
+                        }
                     }
                 }
                 SlackAction::UpdateMessage {
@@ -312,11 +347,16 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
                         continue;
                     }
 
-                    // Check if we should split: length > 20k, text has a newline,
-                    // and we're not inside a code block.
+                    // Split at a clean breaking point (text has a newline and
+                    // we're not inside a code block) when either:
+                    // - the message has grown past 20k chars, or
+                    // - the stream has been open longer than MAX_STREAM_AGE.
                     let should_split = {
                         let state = active_streams.get(&thread_ts).expect("bug: just inserted");
-                        state.char_count > 20_000 && text.contains('\n') && !state.in_code_block
+                        let clean_break = text.contains('\n') && !state.in_code_block;
+                        let too_long = state.char_count > 20_000;
+                        let too_old = state.started_at.elapsed() > MAX_STREAM_AGE;
+                        clean_break && (too_long || too_old)
                     };
 
                     if should_split {
@@ -404,6 +444,37 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
                 } => {
                     if let Err(e) = slack.set_thread_status(&channel, &thread_ts, &status).await {
                         tracing::error!("set_thread_status failed: {e}");
+                    }
+                }
+                SlackAction::DismissChoiceButtons { choice_id } => {
+                    let info = {
+                        let rt = crate::runtime::get();
+                        rt.choice_messages
+                            .lock()
+                            .expect("bug: lock poisoned")
+                            .remove(&choice_id)
+                    };
+                    if let Some((channel, msg_ts)) = info {
+                        let blocks = serde_json::json!([
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": "⏭️ Choice resolved automatically"
+                                }
+                            }
+                        ]);
+                        if let Err(e) = slack
+                            .update_message(
+                                &channel,
+                                &msg_ts,
+                                "Choice resolved automatically",
+                                &blocks,
+                            )
+                            .await
+                        {
+                            tracing::error!("DismissChoiceButtons update failed: {e}");
+                        }
                     }
                 }
             }

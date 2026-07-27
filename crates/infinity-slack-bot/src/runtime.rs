@@ -18,6 +18,11 @@ pub struct Runtime {
     pub channels: Arc<Mutex<HashMap<String, String>>>,
     /// Per-thread flag: true if a tool call happened in the current response turn.
     pub had_tool_call: Arc<Mutex<HashMap<String, bool>>>,
+    /// Tracks posted choice-button messages so they can be dismissed when the
+    /// choice is resolved without a Slack button click (e.g. timeout/auto-select,
+    /// another client answering, or interruption).
+    /// Key: choice_id, Value: (channel, message_ts).
+    pub choice_messages: Arc<Mutex<HashMap<String, (String, String)>>>,
 }
 
 static RUNTIME: std::sync::OnceLock<Runtime> = std::sync::OnceLock::new();
@@ -30,6 +35,7 @@ pub fn init(config: &'static Config, sessions: Arc<Mutex<SessionStore>>) {
         pending_input: Arc::new(Mutex::new(HashMap::new())),
         channels: Arc::new(Mutex::new(HashMap::new())),
         had_tool_call: Arc::new(Mutex::new(HashMap::new())),
+        choice_messages: Arc::new(Mutex::new(HashMap::new())),
     });
 }
 
@@ -48,6 +54,7 @@ pub fn ensure_test_init() {
             pending_input: Arc::new(Mutex::new(HashMap::new())),
             channels: Arc::new(Mutex::new(HashMap::new())),
             had_tool_call: Arc::new(Mutex::new(HashMap::new())),
+            choice_messages: Arc::new(Mutex::new(HashMap::new())),
         }
     });
 }
