@@ -84,6 +84,15 @@ pub fn slack_dataflow<'a, P: 'a>(
             Some((id, _)) => id.to_owned(),
             None => rest.to_owned(),
         };
+
+        // Remove from choice_messages so that the subsequent UserChoiceComplete
+        // from the daemon doesn't redundantly try to dismiss the buttons (we
+        // already update them in button_update_actions).
+        rt.choice_messages
+            .lock()
+            .expect("bug: lock poisoned")
+            .remove(&choice_id);
+
         Some(crate::daemon_sidecar::DaemonCommand::AnswerChoice {
             thread_ts: event.thread_ts,
             choice_id,
@@ -170,10 +179,13 @@ pub fn slack_dataflow<'a, P: 'a>(
                         .lock()
                         .expect("bug: lock poisoned")
                         .insert(de.thread_ts.clone(), true);
+                    // Use double newline to break out of any list context in Slack
+                    // mrkdwn — a single \n would be treated as a continuation of the
+                    // preceding list item, causing the tool indicator to be indented.
                     Some(crate::sidecar::SlackAction::StreamAppend {
                         channel: channel.clone(),
                         thread_ts: de.thread_ts,
-                        text: format!("\n🔧 `{name}(…)`\n"),
+                        text: format!("\n\n🔧 `{name}(…)`\n"),
                     })
                 }
                 infinity_protocol::DaemonMessage::ResponseDone { .. } => {
@@ -240,6 +252,14 @@ pub fn slack_dataflow<'a, P: 'a>(
                         fallback_text: prompt.clone(),
                         blocks,
                         thread_ts: Some(de.thread_ts),
+                        choice_id: Some(id.clone()),
+                    })
+                }
+                infinity_protocol::DaemonMessage::UserChoiceComplete { choice_id } => {
+                    // The choice was resolved (by another client, timeout, or
+                    // interruption). Dismiss the button message if we posted one.
+                    Some(crate::sidecar::SlackAction::DismissChoiceButtons {
+                        choice_id: choice_id.clone(),
                     })
                 }
                 _ => None,
