@@ -67,6 +67,7 @@ impl DaemonClient {
                 cwd,
                 location: None,
                 model: None,
+                keeps_session_alive: false,
             })
             .await?;
         Ok(())
@@ -91,6 +92,7 @@ impl DaemonClient {
             .send(ClientMessage::Connect {
                 session_id: session_id.to_owned(),
                 thread_id,
+                keeps_session_alive: false,
             })
             .await?;
         Ok(())
