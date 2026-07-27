@@ -11,7 +11,7 @@ use tokio::net::UnixStream;
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::codec::Framed;
 
-use crate::session::SessionManager;
+use crate::session::{SessionManager, Subscriber};
 
 /// List directory entries matching a partial path for tab-completion.
 /// Given "/home/user/fo", lists entries in "/home/user/" that start with "fo".
@@ -308,6 +308,9 @@ pub async fn handle_client_channels(
     let mut remote_proxy_rx: Option<mpsc::UnboundedReceiver<DaemonMessage>> = None;
     let mut active_remote_name: Option<String> = None;
     let mut _booted_rap_servers: Vec<tokio::process::Child> = Vec::new(); // prevents shutdown until close
+    // Whether this connection's subscription keeps the session alive.
+    // Set by CreateSession/Connect and used when re-attaching on UserInput restart.
+    let mut connection_keeps_alive: bool = true;
 
     // Send Welcome immediately
     {
@@ -413,7 +416,8 @@ pub async fn handle_client_channels(
                 }
 
                     match msg {
-                        ClientMessage::CreateSession { cwd, location, model } => {
+                        ClientMessage::CreateSession { cwd, location, model, keeps_session_alive } => {
+                            connection_keeps_alive = keeps_session_alive;
                             if let Some(rname) = location {
                                 let rd = {
                                     let mgr = session_manager.lock().await;
@@ -422,7 +426,7 @@ pub async fn handle_client_channels(
                                 if let Some(rd) = rd {
                                     match rd.open_raw_connection(&rname).await {
                                         Ok((tx, rx)) => {
-                                            let _ = tx.send(ClientMessage::CreateSession { cwd, location: None, model });
+                                            let _ = tx.send(ClientMessage::CreateSession { cwd, location: None, model, keeps_session_alive });
                                             remote_proxy_tx = Some(tx);
                                             remote_proxy_rx = Some(rx);
                                             active_remote_name = Some(rname);
@@ -449,14 +453,15 @@ pub async fn handle_client_channels(
                                 let model = model.unwrap_or_else(|| mgr.catalog.default_ref().clone());
                                 match mgr.create_session(&cwd, model, &mut emit).await {
                                     Ok(sid) => {
-                                        mgr.attach_client(&sid, client_tx.clone(), false).await;
+                                        mgr.attach_client(&sid, client_tx.clone(), false, keeps_session_alive).await;
                                         attached_session_id = Some(sid);
                                     }
                                     Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error { thread_id: None, text: format!("failed to create session: {e}") }); }
                                 }
                             }
                         }
-                    ClientMessage::Connect { session_id, thread_id } => {
+                    ClientMessage::Connect { session_id, thread_id, keeps_session_alive } => {
+                        connection_keeps_alive = keeps_session_alive;
                         if let Some((rname, real_session_id)) = is_remote_session(&session_id) {
                             let real_thread_id = thread_id.as_deref().map(|t| strip_id(t, rname));
                             let rname = rname.to_owned();
@@ -493,7 +498,7 @@ pub async fn handle_client_channels(
                             let target = thread_id.as_deref().unwrap_or(&session_id);
                             match mgr.resume_session(&session_id, target, &mut emit).await {
                                 Ok(()) => {
-                                    mgr.attach_client(target, client_tx.clone(), true).await;
+                                    mgr.attach_client(target, client_tx.clone(), true, keeps_session_alive).await;
                                     attached_session_id = Some(session_id);
                                 }
                                 Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error { thread_id: Some(session_id), text: format!("failed to resume session: {e}") }); }
@@ -516,7 +521,7 @@ pub async fn handle_client_channels(
                             synthetic: None,
                             display_as: None,
                             subscription: false,
-                        }, None), Some(client_tx.clone()), &mut emit).await {
+                        }, None), Some(Subscriber { tx: client_tx.clone(), keeps_session_alive: connection_keeps_alive }), &mut emit).await {
                             let _ = daemon_tx.send(DaemonMessage::Error { thread_id: Some(thread_id), text: "session not found".into() });
                         }
                     }
@@ -572,7 +577,7 @@ pub async fn handle_client_channels(
                             synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::Compaction)),
                             display_as: None,
                             subscription: false,
-                        }, None), Some(client_tx.clone()), &mut emit).await;
+                        }, None), Some(Subscriber { tx: client_tx.clone(), keeps_session_alive: connection_keeps_alive }), &mut emit).await;
                     }
                     ClientMessage::SwitchModel { session_id: thread_id, model } => {
                         let mgr = session_manager.lock().await;

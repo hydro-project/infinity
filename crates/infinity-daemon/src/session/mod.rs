@@ -34,7 +34,7 @@ pub use thread_worker::thread_worker;
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Re-export from thread_worker.
-pub use thread_worker::{SubscribeRequest, ThreadSubscribers};
+pub use thread_worker::{SubscribeRequest, Subscriber, ThreadSubscribers};
 
 /// Message sent to the agent loop — either user input, a subscribe request,
 /// or a model switch for a specific thread.
@@ -274,8 +274,8 @@ impl SessionManager {
             let smap = session.subscriber_map.lock().expect("bug: mutex poisoned");
             if let Some(subs) = smap.get(group_id) {
                 let subs = subs.lock().expect("bug: mutex poisoned");
-                for tx in subs.iter() {
-                    let _ = tx.send(msg.clone());
+                for sub in subs.iter() {
+                    let _ = sub.tx.send(msg.clone());
                 }
             }
         }
@@ -471,11 +471,15 @@ impl SessionManager {
     /// If the session is alive, sends a subscribe request through the agent loop.
     /// Otherwise, loads history directly from the conversation store and sends
     /// a Replay message to the client.
+    ///
+    /// `keeps_session_alive`: when `false`, this subscriber will not prevent the
+    /// session from going idle and being shut down by the daemon.
     pub async fn attach_client(
         &mut self,
         thread_id: &str,
         tx: mpsc::UnboundedSender<DaemonMessage>,
         wants_replay: bool,
+        keeps_session_alive: bool,
     ) {
         let session_id = self.conversation_store.get_root_thread_id(thread_id);
 
@@ -493,7 +497,11 @@ impl SessionManager {
                 .clone();
             let _ = agent_tx.send(AgentMessage::Subscribe {
                 thread_id: thread_id.to_owned(),
-                request: (tx.clone(), wants_replay),
+                request: SubscribeRequest {
+                    tx: tx.clone(),
+                    wants_replay,
+                    keeps_session_alive,
+                },
             });
         } else if wants_replay {
             // Session not alive — load history from the conversation store directly.
@@ -525,11 +533,14 @@ impl SessionManager {
     /// Send user input text to a session's agent loop.
     /// If the session was shut down and no agent loop is running, this
     /// clears the shut_down flag and starts a new agent loop first.
+    ///
+    /// `subscriber` is the client to re-attach after a session restart.
+    /// Pass `None` for RAP callbacks (which should not trigger a restart).
     pub async fn send_input(
         &mut self,
         thread_id: &str,
         msg: (InputMessage, Option<String>),
-        client_tx: Option<mpsc::UnboundedSender<DaemonMessage>>,
+        subscriber: Option<Subscriber>,
         emit: &mut impl AsyncFnMut(DaemonMessage),
     ) -> bool {
         // Resolve thread ID to root session ID in case a child thread ID was provided.
@@ -547,9 +558,9 @@ impl SessionManager {
             store.sessions.contains_key(session_id)
         };
 
-        // if client_tx is None, that means this is for a RAP callback, but if the agent was shut down,
+        // if subscriber is None, that means this is for a RAP callback, but if the agent was shut down,
         // we should ignore the callback (the agent will not idle if any tool calls or subscriptions are active)
-        if needs_restart && client_tx.is_some() {
+        if needs_restart && subscriber.is_some() {
             // Remove stale session if present.
             self.sessions.remove(session_id);
             {
@@ -564,8 +575,9 @@ impl SessionManager {
                 return false;
             }
             // Re-attach client to the new session.
-            if let Some(tx) = client_tx {
-                self.attach_client(session_id, tx, false).await;
+            if let Some(sub) = subscriber {
+                self.attach_client(session_id, sub.tx, false, sub.keeps_session_alive)
+                    .await;
             }
         }
 
@@ -904,7 +916,7 @@ async fn session_wrapper(
                 // workers before returning, so nothing is left running.
                 idle_exited = {
                     let smap = subscriber_map.lock().expect("bug: mutex poisoned");
-                    smap.values().all(|subs| subs.lock().expect("bug: mutex poisoned").iter().all(|tx| tx.is_closed()))
+                    smap.values().all(|subs| subs.lock().expect("bug: mutex poisoned").iter().all(|sub| sub.tx.is_closed() || !sub.keeps_session_alive))
                 };
                 break;
             }
@@ -932,10 +944,10 @@ async fn session_wrapper(
                     let _ = store.save();
                 }
 
-                // If no client attached, exit the loop entirely.
+                // If no keep-alive client is attached, exit the loop entirely.
                 let has_clients = {
                     let smap = subscriber_map.lock().expect("bug: mutex poisoned");
-                    smap.values().any(|subs| subs.lock().expect("bug: mutex poisoned").iter().any(|tx| !tx.is_closed()))
+                    smap.values().any(|subs| subs.lock().expect("bug: mutex poisoned").iter().any(|sub| !sub.tx.is_closed() && sub.keeps_session_alive))
                 };
                 if !has_clients {
                     tracing::info!("Exiting agent {} due to idle", session_id);

@@ -53,6 +53,10 @@ pub fn remotes_config_path() -> PathBuf {
 
 // ── Client → Daemon ─────────────────────────────────────────────────────────
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
     /// Create a new session with the given working directory.
@@ -66,11 +70,21 @@ pub enum ClientMessage {
         /// daemon's default model.
         #[serde(default)]
         model: Option<ModelRef>,
+        /// When `false`, this connection will not prevent the session from
+        /// going idle and being shut down by the daemon. Defaults to `true`
+        /// so that normal interactive clients keep sessions alive.
+        #[serde(default = "default_true")]
+        keeps_session_alive: bool,
     },
     /// Connect to an existing session (optionally a specific thread).
     Connect {
         session_id: String,
         thread_id: Option<String>,
+        /// When `false`, this connection will not prevent the session from
+        /// going idle and being shut down by the daemon. Defaults to `true`
+        /// so that normal interactive clients keep sessions alive.
+        #[serde(default = "default_true")]
+        keeps_session_alive: bool,
     },
     UserInput {
         session_id: String,
