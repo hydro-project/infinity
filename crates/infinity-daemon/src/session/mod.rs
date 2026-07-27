@@ -73,6 +73,12 @@ pub struct Session {
     pub idle_tx: mpsc::UnboundedSender<()>,
     /// Per-thread subscriber lists for broadcasting display events.
     pub subscriber_map: SubscriberMap,
+    /// Cancelled when the agent loop has been told to wind down (idle exit
+    /// or shutdown). Once cancelled, inputs sent to `agent_tx` are no longer
+    /// processed even though `agent_task` may not have finished yet (RAP
+    /// server cleanup takes time), so senders must treat the session as
+    /// needing a restart.
+    pub worker_shutdown: tokio_util::sync::CancellationToken,
 }
 
 pub type SessionStoreHandle = Arc<tokio::sync::Mutex<session_store::SessionStore>>;
@@ -274,8 +280,8 @@ impl SessionManager {
             let smap = session.subscriber_map.lock().expect("bug: mutex poisoned");
             if let Some(subs) = smap.get(group_id) {
                 let subs = subs.lock().expect("bug: mutex poisoned");
-                for tx in subs.iter() {
-                    let _ = tx.send(msg.clone());
+                for sub in subs.iter() {
+                    let _ = sub.tx.send(msg.clone());
                 }
             }
         }
@@ -438,7 +444,7 @@ impl SessionManager {
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
-        let (idle_tx, agent_handle, subscriber_map) = self.start_agent_loop(
+        let (idle_tx, agent_handle, subscriber_map, worker_shutdown) = self.start_agent_loop(
             session_id.clone(),
             agent_rx,
             self.conversation_store.clone(),
@@ -462,6 +468,7 @@ impl SessionManager {
             shutdown_tx: Some(shutdown_tx),
             idle_tx,
             subscriber_map,
+            worker_shutdown,
         };
         self.sessions.insert(session_id.clone(), session);
         Ok(())
@@ -471,11 +478,15 @@ impl SessionManager {
     /// If the session is alive, sends a subscribe request through the agent loop.
     /// Otherwise, loads history directly from the conversation store and sends
     /// a Replay message to the client.
+    ///
+    /// `keeps_session_alive`: when `false`, this subscriber will not prevent the
+    /// session from going idle and being shut down by the daemon.
     pub async fn attach_client(
         &mut self,
         thread_id: &str,
         tx: mpsc::UnboundedSender<DaemonMessage>,
         wants_replay: bool,
+        keeps_session_alive: bool,
     ) {
         let session_id = self.conversation_store.get_root_thread_id(thread_id);
 
@@ -493,7 +504,7 @@ impl SessionManager {
                 .clone();
             let _ = agent_tx.send(AgentMessage::Subscribe {
                 thread_id: thread_id.to_owned(),
-                request: (tx.clone(), wants_replay),
+                request: (tx.clone(), wants_replay, keeps_session_alive),
             });
         } else if wants_replay {
             // Session not alive — load history from the conversation store directly.
@@ -525,67 +536,92 @@ impl SessionManager {
     /// Send user input text to a session's agent loop.
     /// If the session was shut down and no agent loop is running, this
     /// clears the shut_down flag and starts a new agent loop first.
+    ///
+    /// `client_tx` pairs the client's sender with its `keeps_session_alive`
+    /// flag, used when re-attaching the client after a session restart.
     pub async fn send_input(
         &mut self,
         thread_id: &str,
         msg: (InputMessage, Option<String>),
-        client_tx: Option<mpsc::UnboundedSender<DaemonMessage>>,
+        client_tx: Option<(mpsc::UnboundedSender<DaemonMessage>, bool)>,
         emit: &mut impl AsyncFnMut(DaemonMessage),
     ) -> bool {
         // Resolve thread ID to root session ID in case a child thread ID was provided.
         let session_id = self.conversation_store.get_root_thread_id(thread_id);
         let session_id = session_id.as_str();
 
-        // If session task finished or was never started, check if we need to restart.
-        let needs_restart = if let Some(session) = self.sessions.get(session_id) {
-            session.agent_task.is_finished()
-        } else {
-            // Session isn't running in memory. It needs a restart if it exists in the
-            // store at all — either it was shut down cleanly, or the daemon restarted
-            // while it was still running (in which case shut_down may be false).
-            let store = self.session_store.lock().await;
-            store.sessions.contains_key(session_id)
-        };
+        // Attempted at most twice: the second pass covers the race where the
+        // agent loop decides to wind down (worker_shutdown cancelled) between
+        // the first restart check and the send below — inputs sent to a
+        // winding-down loop would be dropped, so retry with a fresh session.
+        for _ in 0..2 {
+            // If the session task finished, was told to wind down, or was
+            // never started, check if we need to restart.
+            let needs_restart = if let Some(session) = self.sessions.get(session_id) {
+                session.agent_task.is_finished() || session.worker_shutdown.is_cancelled()
+            } else {
+                // Session isn't running in memory. It needs a restart if it exists in the
+                // store at all — either it was shut down cleanly, or the daemon restarted
+                // while it was still running (in which case shut_down may be false).
+                let store = self.session_store.lock().await;
+                store.sessions.contains_key(session_id)
+            };
 
-        // if client_tx is None, that means this is for a RAP callback, but if the agent was shut down,
-        // we should ignore the callback (the agent will not idle if any tool calls or subscriptions are active)
-        if needs_restart && client_tx.is_some() {
-            // Remove stale session if present.
-            self.sessions.remove(session_id);
-            {
-                let mut store = self.session_store.lock().await;
-                store.clear_shut_down(session_id);
-                store.clear_idle(session_id);
-                let _ = store.save();
+            // if client_tx is None, that means this is for a RAP callback, but if the agent was shut down,
+            // we should ignore the callback (the agent will not idle if any tool calls or subscriptions are active)
+            if needs_restart && client_tx.is_some() {
+                // Remove stale session if present.
+                self.sessions.remove(session_id);
+                {
+                    let mut store = self.session_store.lock().await;
+                    store.clear_shut_down(session_id);
+                    store.clear_idle(session_id);
+                    let _ = store.save();
+                }
+                let cwd = self.session_store.lock().await.get_cwd(session_id).clone();
+                if let Err(e) = self.start_session(session_id.to_owned(), &cwd, emit).await {
+                    tracing::error!("failed to restart session: {e}");
+                    return false;
+                }
+                // Re-attach client to the new session.
+                if let Some((tx, keeps_alive)) = client_tx.clone() {
+                    self.attach_client(session_id, tx, false, keeps_alive).await;
+                }
             }
-            let cwd = self.session_store.lock().await.get_cwd(session_id).clone();
-            if let Err(e) = self.start_session(session_id.to_owned(), &cwd, emit).await {
-                tracing::error!("failed to restart session: {e}");
+
+            if !self.sessions.contains_key(session_id) {
                 return false;
             }
-            // Re-attach client to the new session.
-            if let Some(tx) = client_tx {
-                self.attach_client(session_id, tx, false).await;
-            }
-        }
-
-        if let Some(session) = self.sessions.get(session_id) {
             // Clear idle since the agent is about to do work.
             {
                 let mut store = self.session_store.lock().await;
                 store.clear_idle(session_id);
                 let _ = store.save();
             }
-            session
+            // Re-check after the awaits above: the agent loop may have
+            // decided to wind down in the meantime, in which case the input
+            // would be silently dropped. No `.await` between this check and
+            // the send — the wind-down decision happens synchronously on the
+            // same LocalSet thread, so it cannot interleave here.
+            let session = self
+                .sessions
+                .get(session_id)
+                .expect("bug: session missing after check above");
+            if session.worker_shutdown.is_cancelled() || session.agent_task.is_finished() {
+                continue;
+            }
+            return session
                 .agent_tx
                 .send(AgentMessage::Input(
                     Box::new(msg.0),
                     msg.1.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                 ))
-                .is_ok()
-        } else {
-            false
+                .is_ok();
         }
+        tracing::error!(
+            "failed to deliver input to session {session_id}: agent loop kept winding down"
+        );
+        false
     }
 
     /// Switch the model used for future requests on a specific thread. The
@@ -747,7 +783,12 @@ impl SessionManager {
         active_threads: ActiveThreads,
         shutdown_rx: oneshot::Receiver<()>,
         spawned_servers: Vec<tokio::process::Child>,
-    ) -> (mpsc::UnboundedSender<()>, JoinHandle<()>, SubscriberMap) {
+    ) -> (
+        mpsc::UnboundedSender<()>,
+        JoinHandle<()>,
+        SubscriberMap,
+        tokio_util::sync::CancellationToken,
+    ) {
         spawn_agent_loop(
             session_id,
             self.session_store.clone(),
@@ -788,7 +829,12 @@ fn spawn_agent_loop(
     active_threads: ActiveThreads,
     shutdown_rx: oneshot::Receiver<()>,
     spawned_servers: Vec<tokio::process::Child>,
-) -> (mpsc::UnboundedSender<()>, JoinHandle<()>, SubscriberMap) {
+) -> (
+    mpsc::UnboundedSender<()>,
+    JoinHandle<()>,
+    SubscriberMap,
+    tokio_util::sync::CancellationToken,
+) {
     let rap_notifier = if tool_server_urls.is_empty() {
         None
     } else {
@@ -864,10 +910,10 @@ fn spawn_agent_loop(
         active_threads,
         idle_rx,
         shutdown_rx,
-        worker_shutdown,
+        worker_shutdown.clone(),
         spawned_servers,
     ));
-    (idle_tx, handle, subscriber_map)
+    (idle_tx, handle, subscriber_map, worker_shutdown)
 }
 
 /// Wrapper that owns the RAP servers and handles cleanup.
@@ -904,7 +950,7 @@ async fn session_wrapper(
                 // workers before returning, so nothing is left running.
                 idle_exited = {
                     let smap = subscriber_map.lock().expect("bug: mutex poisoned");
-                    smap.values().all(|subs| subs.lock().expect("bug: mutex poisoned").iter().all(|tx| tx.is_closed()))
+                    smap.values().all(|subs| subs.lock().expect("bug: mutex poisoned").iter().all(|sub| sub.tx.is_closed() || !sub.keeps_session_alive))
                 };
                 break;
             }
@@ -932,10 +978,10 @@ async fn session_wrapper(
                     let _ = store.save();
                 }
 
-                // If no client attached, exit the loop entirely.
+                // If no keep-alive client is attached, exit the loop entirely.
                 let has_clients = {
                     let smap = subscriber_map.lock().expect("bug: mutex poisoned");
-                    smap.values().any(|subs| subs.lock().expect("bug: mutex poisoned").iter().any(|tx| !tx.is_closed()))
+                    smap.values().any(|subs| subs.lock().expect("bug: mutex poisoned").iter().any(|sub| !sub.tx.is_closed() && sub.keeps_session_alive))
                 };
                 if !has_clients {
                     tracing::info!("Exiting agent {} due to idle", session_id);

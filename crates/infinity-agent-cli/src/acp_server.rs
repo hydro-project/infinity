@@ -464,6 +464,7 @@ async fn run_session_connection(
             let msg = ClientMessage::Connect {
                 session_id: daemon_id.clone(),
                 thread_id: None,
+                keeps_session_alive: true,
             };
             send(&mut framed, &msg).await?;
             conn.daemon_id = Some(daemon_id);
@@ -509,6 +510,7 @@ async fn run_session_connection(
                 cwd,
                 location: None,
                 model: None,
+                keeps_session_alive: true,
             };
             send(&mut framed, &msg).await?;
             // Wait for Connected to get daemon ID, then send input.
@@ -559,6 +561,7 @@ async fn run_session_connection(
             let msg = ClientMessage::Connect {
                 session_id: daemon_id.clone(),
                 thread_id: None,
+                keeps_session_alive: true,
             };
             send(&mut framed, &msg).await?;
             conn.daemon_id = Some(daemon_id.clone());

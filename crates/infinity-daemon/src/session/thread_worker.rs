@@ -17,11 +17,20 @@ use crate::session::ActiveThreads;
 use crate::session_store;
 use infinity_agent_core::traits::StateStore;
 
-/// Shared subscriber list for a thread worker.
-pub type ThreadSubscribers = Arc<std::sync::Mutex<Vec<mpsc::UnboundedSender<DaemonMessage>>>>;
+/// A subscriber attached to a thread worker's display events.
+#[derive(Clone)]
+pub struct Subscriber {
+    pub tx: mpsc::UnboundedSender<DaemonMessage>,
+    /// When `false`, this subscriber does not prevent the session from
+    /// idling out (e.g. the Slack bot's persistent connections).
+    pub keeps_session_alive: bool,
+}
 
-/// Subscribe request: (client_tx, want_replay).
-pub type SubscribeRequest = (mpsc::UnboundedSender<DaemonMessage>, bool);
+/// Shared subscriber list for a thread worker.
+pub type ThreadSubscribers = Arc<std::sync::Mutex<Vec<Subscriber>>>;
+
+/// Subscribe request: (client_tx, want_replay, keeps_session_alive).
+pub type SubscribeRequest = (mpsc::UnboundedSender<DaemonMessage>, bool, bool);
 
 pub fn is_user_text_input(msg: &InputMessage) -> bool {
     msg.synthetic.is_none()
@@ -86,7 +95,7 @@ fn apply_model_switch(
     subscribers
         .lock()
         .expect("bug: mutex poisoned")
-        .retain(|tx| tx.send(msg.clone()).is_ok());
+        .retain(|sub| sub.tx.send(msg.clone()).is_ok());
     let provider = catalog
         .provider(&selected.provider_id)
         .expect("bug: cataloged model's provider missing from catalog")
@@ -274,7 +283,7 @@ pub async fn thread_worker(
 
                 if let Some(dm) = display_event_to_daemon(&fwd_group_id, evt) {
                     let mut subs = fwd_subscribers.lock().expect("bug: mutex poisoned");
-                    subs.retain(|tx| tx.send(dm.clone()).is_ok());
+                    subs.retain(|sub| sub.tx.send(dm.clone()).is_ok());
                 }
             }
         },
@@ -361,6 +370,7 @@ pub async fn thread_worker(
     // `subscribers` — see the exactly-once invariant on `current_thinking`.
     let handle_subscribe = async |tx: mpsc::UnboundedSender<DaemonMessage>,
                                   want_replay: bool,
+                                  keeps_session_alive: bool,
                                   completion_in_flight: bool| {
         if want_replay {
             let mut history: Vec<DaemonMessage> = {
@@ -399,7 +409,13 @@ pub async fn thread_worker(
                 });
             }
         }
-        subscribers.lock().expect("bug: mutex poisoned").push(tx);
+        subscribers
+            .lock()
+            .expect("bug: mutex poisoned")
+            .push(Subscriber {
+                tx,
+                keeps_session_alive,
+            });
     };
 
     loop {
@@ -503,8 +519,8 @@ pub async fn thread_worker(
                     }
                 },
                 req = subscribe_rx.recv() => {
-                    if let Some((tx, want_replay)) = req {
-                        handle_subscribe(tx, want_replay, true).await;
+                    if let Some((tx, want_replay, keeps_alive)) = req {
+                        handle_subscribe(tx, want_replay, keeps_alive, true).await;
                     }
                     continue;
                 }
@@ -547,9 +563,9 @@ pub async fn thread_worker(
                         .map(|s| !s.is_empty())
                         .unwrap_or(false);
 
-                    while let Ok((tx, want_replay)) = subscribe_rx.try_recv() {
+                    while let Ok((tx, want_replay, keeps_alive)) = subscribe_rx.try_recv() {
                         // handle replays before idling
-                        handle_subscribe(tx, want_replay, false).await;
+                        handle_subscribe(tx, want_replay, keeps_alive, false).await;
                     }
 
                     if !last_is_tool_call && !has_subs {
@@ -583,8 +599,8 @@ pub async fn thread_worker(
                                 break;
                             }
                             req = subscribe_rx.recv() => {
-                                if let Some((tx, want_replay)) = req {
-                                    handle_subscribe(tx, want_replay, false).await;
+                                if let Some((tx, want_replay, keeps_alive)) = req {
+                                    handle_subscribe(tx, want_replay, keeps_alive, false).await;
                                 }
                             }
                         }
@@ -933,7 +949,10 @@ mod tests {
         let active_threads: ActiveThreads =
             Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         let sender = InMemoryMessageSender::new(input_tx.clone());
-        let subscribers: ThreadSubscribers = Arc::new(std::sync::Mutex::new(vec![client_tx]));
+        let subscribers: ThreadSubscribers = Arc::new(std::sync::Mutex::new(vec![Subscriber {
+            tx: client_tx,
+            keeps_session_alive: true,
+        }]));
 
         // Thread metadata (including the selected model) must exist before a
         // worker starts.
@@ -1072,7 +1091,9 @@ mod tests {
                 // trailing unresolved ToolCall in the history is what tells
                 // the client to show its "waiting for tool result" state.
                 let (tx2, mut rx2) = mpsc::unbounded_channel();
-                subscribe_tx.send((tx2, true)).expect("send subscribe");
+                subscribe_tx
+                    .send((tx2, true, true))
+                    .expect("send subscribe");
                 match tokio::time::timeout(std::time::Duration::from_secs(2), rx2.recv()).await {
                     Ok(Some(DaemonMessage::Replay {
                         history,
@@ -1738,7 +1759,9 @@ mod tests {
                 // end with the in-progress thinking and be marked in-progress
                 // (so the client keeps a live spinner instead of showing idle).
                 let (tx2, mut rx2) = mpsc::unbounded_channel();
-                subscribe_tx.send((tx2, true)).expect("send subscribe");
+                subscribe_tx
+                    .send((tx2, true, true))
+                    .expect("send subscribe");
                 match tokio::time::timeout(std::time::Duration::from_secs(2), rx2.recv()).await {
                     Ok(Some(DaemonMessage::Replay {
                         history,
@@ -1781,7 +1804,9 @@ mod tests {
                 }
 
                 let (tx3, mut rx3) = mpsc::unbounded_channel();
-                subscribe_tx.send((tx3, true)).expect("send subscribe");
+                subscribe_tx
+                    .send((tx3, true, true))
+                    .expect("send subscribe");
                 match tokio::time::timeout(std::time::Duration::from_secs(2), rx3.recv()).await {
                     Ok(Some(DaemonMessage::Replay {
                         history,
