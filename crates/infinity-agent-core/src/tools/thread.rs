@@ -6,7 +6,7 @@ use rig::{
 };
 use tracing;
 
-use super::{Tool, ToolContext};
+use super::{Tool, ToolContext, send_tool_error};
 use crate::message::{InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind};
 use crate::traits::{ConversationStore, InputSender};
 use rap_client::http::HttpClient;
@@ -190,14 +190,24 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Repor
         call_id: Option<String>,
         context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let report_text = args["report"].as_str().ok_or("report is required")?;
+        let Some(report_text) = args["report"].as_str() else {
+            return send_tool_error(context, &id, call_id, "report is required").await;
+        };
 
-        let (parent_id, spawn_tool_call_id) = self
+        let Some((parent_id, spawn_tool_call_id)) = self
             .conversation_store
             .get_thread_parent_info(&context.group_id)
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
-            .ok_or("No parent thread found — this is a root thread")?;
+        else {
+            return send_tool_error(
+                context,
+                &id,
+                call_id,
+                "No parent thread found — this is a root thread",
+            )
+            .await;
+        };
 
         let is_subscription = self
             .conversation_store
@@ -313,33 +323,21 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
         call_id: Option<String>,
         context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let thread_id = args["thread_id"].as_str().ok_or("thread_id is required")?;
+        let Some(thread_id) = args["thread_id"].as_str() else {
+            return send_tool_error(context, &id, call_id, "thread_id is required").await;
+        };
 
         if thread_id != context.group_id {
-            let tool_result = InputMessage {
-                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                    id: id.clone(),
-                    call_id,
-                    content: OneOrMany::one(ToolResultContent::Text(Text {
-                        text: format!(
-                            "Error: the provided thread ID to close {} does not match the current thread ID {}",
-                            thread_id, context.group_id
-                        ),
-                    })),
-                })),
-                group_id: context.group_id.clone(),
-                metadata: None,
-                synthetic: None,
-                display_as: None,
-                subscription: false,
-            };
-
-            context
-                .message_sender
-                .send_to_input_queue(tool_result, &context.group_id, &id)
-                .await?;
-
-            return Ok(());
+            return send_tool_error(
+                context,
+                &id,
+                call_id,
+                format!(
+                    "the provided thread ID to close {} does not match the current thread ID {}",
+                    thread_id, context.group_id
+                ),
+            )
+            .await;
         }
 
         // Prevent closing the root thread
@@ -349,29 +347,13 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
         else {
-            let tool_result = InputMessage {
-                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                    id: id.clone(),
-                    call_id,
-                    content: OneOrMany::one(ToolResultContent::Text(Text {
-                        text:
-                            "Error: cannot close the root thread. Only child threads can be closed."
-                                .to_owned(),
-                    })),
-                })),
-                group_id: context.group_id.clone(),
-                metadata: None,
-                synthetic: None,
-                display_as: None,
-                subscription: false,
-            };
-
-            context
-                .message_sender
-                .send_to_input_queue(tool_result, &context.group_id, &id)
-                .await?;
-
-            return Ok(());
+            return send_tool_error(
+                context,
+                &id,
+                call_id,
+                "cannot close the root thread. Only child threads can be closed.",
+            )
+            .await;
         };
 
         let report = args.get("report_to_parent").and_then(|v| v.as_str());
@@ -539,39 +521,39 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M>
         call_id: Option<String>,
         context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let child_thread_id = args["thread_id"].as_str().ok_or("thread_id is required")?;
-        let message_text = args["message"].as_str().ok_or("message is required")?;
+        let Some(child_thread_id) = args["thread_id"].as_str() else {
+            return send_tool_error(context, &id, call_id, "thread_id is required").await;
+        };
+        let Some(message_text) = args["message"].as_str() else {
+            return send_tool_error(context, &id, call_id, "message is required").await;
+        };
 
-        let (parent_id, spawn_tool_call_id) = self
+        let Some((parent_id, spawn_tool_call_id)) = self
             .conversation_store
             .get_thread_parent_info(child_thread_id)
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
-            .ok_or("Child thread not found or has no parent")?;
+        else {
+            return send_tool_error(
+                context,
+                &id,
+                call_id,
+                "Child thread not found or has no parent",
+            )
+            .await;
+        };
 
         if parent_id != context.group_id {
-            let tool_result = InputMessage {
-                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                    id: id.clone(),
-                    call_id,
-                    content: OneOrMany::one(ToolResultContent::Text(Text {
-                        text: format!(
-                            "Error: thread {} is not a child of the current thread {}",
-                            child_thread_id, context.group_id
-                        ),
-                    })),
-                })),
-                group_id: context.group_id.clone(),
-                metadata: None,
-                synthetic: None,
-                display_as: None,
-                subscription: false,
-            };
-            context
-                .message_sender
-                .send_to_input_queue(tool_result, &context.group_id, &id)
-                .await?;
-            return Ok(());
+            return send_tool_error(
+                context,
+                &id,
+                call_id,
+                format!(
+                    "thread {} is not a child of the current thread {}",
+                    child_thread_id, context.group_id
+                ),
+            )
+            .await;
         }
 
         tracing::info!(
