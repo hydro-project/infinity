@@ -12,6 +12,10 @@ pub struct Config {
     /// Allowed Slack user IDs
     #[serde(default)]
     pub allowed_users: Vec<String>,
+    /// Optional default model to use for new sessions. When set, overrides
+    /// the daemon's default. Format: `{ "provider_id": "...", "model_id": "..." }`.
+    #[serde(default)]
+    pub default_model: Option<infinity_protocol::ModelRef>,
 }
 
 impl Config {

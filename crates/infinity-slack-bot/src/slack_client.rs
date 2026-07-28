@@ -260,4 +260,125 @@ impl SlackClient {
         .await?;
         Ok(())
     }
+
+    /// Respond to a slash command by POSTing to its `response_url`.
+    /// No bearer token is needed — the URL itself carries the authorization.
+    pub async fn respond_to_command(&self, response_url: &str, text: &str) -> Result<(), BoxError> {
+        let resp = self
+            .http
+            .post(response_url)
+            .json(&serde_json::json!({
+                "response_type": "ephemeral",
+                "text": text,
+            }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(format!("response_url POST failed with status {}", resp.status()).into());
+        }
+        Ok(())
+    }
+
+    /// Set the title of an agent thread (shows in the reply bar and thread header).
+    pub async fn set_thread_title(
+        &self,
+        channel: &str,
+        thread_ts: &str,
+        title: &str,
+    ) -> Result<(), BoxError> {
+        self.api_call(
+            "assistant.threads.setTitle",
+            &serde_json::json!({
+                "channel_id": channel,
+                "thread_ts": thread_ts,
+                "title": title,
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Pin suggested prompts to the top of the app's Messages tab. In the
+    /// Agent messaging experience no `thread_ts` is needed.
+    pub async fn set_suggested_prompts(
+        &self,
+        channel: &str,
+        title: &str,
+        prompts: &serde_json::Value,
+    ) -> Result<(), BoxError> {
+        self.api_call(
+            "assistant.threads.setSuggestedPrompts",
+            &serde_json::json!({
+                "channel_id": channel,
+                "title": title,
+                "prompts": prompts,
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Append a task-update chunk (tool call progress) to an active stream.
+    /// `status` is one of `in_progress`, `complete`, or `error`.
+    /// Returns the Slack error code if the API reports failure.
+    pub async fn append_stream_task(
+        &self,
+        channel: &str,
+        ts: &str,
+        task_id: &str,
+        title: &str,
+        status: &str,
+    ) -> Result<Option<String>, BoxError> {
+        let resp = self
+            .api_call(
+                "chat.appendStream",
+                &serde_json::json!({
+                    "channel": channel,
+                    "ts": ts,
+                    "chunks": [{
+                        "type": "task_update",
+                        "task": {
+                            "task_id": task_id,
+                            "title": title,
+                            "status": status,
+                        }
+                    }]
+                }),
+            )
+            .await?;
+        if resp.ok {
+            Ok(None)
+        } else {
+            Ok(resp.error)
+        }
+    }
+
+    /// Stop/finalize a streaming message with trailing blocks (e.g. an
+    /// AI-content disclaimer). Falls back to a plain stop if the blocks
+    /// variant is rejected, so the stream is never left open.
+    pub async fn stop_stream_with_blocks(
+        &self,
+        channel: &str,
+        ts: &str,
+        blocks: &serde_json::Value,
+    ) -> Result<(), BoxError> {
+        let resp = self
+            .api_call(
+                "chat.stopStream",
+                &serde_json::json!({
+                    "channel": channel,
+                    "ts": ts,
+                    "blocks": blocks,
+                }),
+            )
+            .await?;
+        if resp.ok {
+            return Ok(());
+        }
+        tracing::warn!(
+            "chat.stopStream with blocks failed ({}), retrying without blocks",
+            resp.error.as_deref().unwrap_or("unknown")
+        );
+        self.stop_stream(channel, ts).await
+    }
 }

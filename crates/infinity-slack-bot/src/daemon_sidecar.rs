@@ -17,7 +17,11 @@ use crate::daemon_client::DaemonClient;
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum DaemonCommand {
     /// Create a new session for this thread.
-    CreateSession { thread_ts: String, cwd: PathBuf },
+    CreateSession {
+        thread_ts: String,
+        cwd: PathBuf,
+        model: Option<infinity_protocol::ModelRef>,
+    },
     /// Connect to an existing session.
     ConnectSession {
         thread_ts: String,
@@ -60,20 +64,22 @@ pub fn create() -> (ReceiverStream<DaemonEvent>, PollSender<DaemonCommand>) {
         while let Some(cmd) = from_df_rx.recv().await {
             tracing::info!("daemon sidecar received command: {cmd:?}");
             match cmd {
-                DaemonCommand::CreateSession { thread_ts, cwd } => {
-                    match DaemonClient::connect().await {
-                        Ok(daemon) => {
-                            if let Err(e) = daemon.create_session(cwd).await {
-                                tracing::error!("CreateSession failed for {thread_ts}: {e}");
-                                continue;
-                            }
-                            spawn_receiver(thread_ts.clone(), &mut connections, daemon, &to_df_tx);
+                DaemonCommand::CreateSession {
+                    thread_ts,
+                    cwd,
+                    model,
+                } => match DaemonClient::connect().await {
+                    Ok(daemon) => {
+                        if let Err(e) = daemon.create_session(cwd, model).await {
+                            tracing::error!("CreateSession failed for {thread_ts}: {e}");
+                            continue;
                         }
-                        Err(e) => {
-                            tracing::error!("daemon connect failed for {thread_ts}: {e}");
-                        }
+                        spawn_receiver(thread_ts.clone(), &mut connections, daemon, &to_df_tx);
                     }
-                }
+                    Err(e) => {
+                        tracing::error!("daemon connect failed for {thread_ts}: {e}");
+                    }
+                },
                 DaemonCommand::ConnectSession {
                     thread_ts,
                     session_id,
@@ -174,6 +180,7 @@ pub fn create() -> (ReceiverStream<DaemonEvent>, PollSender<DaemonCommand>) {
 
 /// Spawn a task that forwards DaemonMessages from a connection into the dataflow.
 /// On `Connected`, automatically sends any pending input text for this thread.
+/// Intercepts the initial `Welcome` message to update available models in the runtime.
 fn spawn_receiver(
     thread_ts: String,
     connections: &mut HashMap<String, DaemonClient>,
@@ -188,6 +195,52 @@ fn spawn_receiver(
     let tx_for_input = tx_half.tx.clone();
     tokio::spawn(async move {
         let mut rx = rx;
+
+        // The daemon sends a Welcome message as the first message on every
+        // connection. Intercept it to capture the available models list.
+        if let Some(first_msg) = rx.recv().await {
+            if let DaemonMessage::Welcome {
+                available_models, ..
+            } = &first_msg
+            {
+                let rt = crate::runtime::get();
+                let mut models = rt.available_models.lock().expect("bug: lock poisoned");
+                *models = available_models.clone();
+                tracing::info!(
+                    "updated available models from daemon Welcome ({} models)",
+                    models.len()
+                );
+            } else {
+                // Not a Welcome — forward it normally.
+                if let DaemonMessage::Connected { ref session_id, .. } = first_msg {
+                    let rt = crate::runtime::get();
+                    let pending_text = {
+                        let mut pending = rt.pending_input.lock().expect("bug: lock poisoned");
+                        pending.remove(&ts)
+                    };
+                    if let Some(text) = pending_text {
+                        let _ = tx_for_input
+                            .send(infinity_protocol::ClientMessage::UserInput {
+                                session_id: session_id.clone(),
+                                text,
+                            })
+                            .await;
+                    }
+                }
+
+                if to_df
+                    .send(DaemonEvent {
+                        thread_ts: ts.clone(),
+                        message: first_msg,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        }
+
         while let Some(msg) = rx.recv().await {
             // On Connected, send pending input automatically.
             if let DaemonMessage::Connected { ref session_id, .. } = msg {
@@ -204,6 +257,11 @@ fn spawn_receiver(
                         })
                         .await;
                 }
+            }
+
+            // Skip Welcome messages that arrive later (e.g. after reconnect).
+            if matches!(msg, DaemonMessage::Welcome { .. }) {
+                continue;
             }
 
             if to_df
