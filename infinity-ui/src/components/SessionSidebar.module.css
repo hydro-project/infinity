@@ -109,7 +109,8 @@
   background: none;
   border: none;
   color: var(--text);
-  padding: 10px 12px;
+  padding: 8px 12px;
+  margin-bottom: 4px;
   border-radius: 8px;
   cursor: pointer;
   transition: background 0.15s;
@@ -172,7 +173,15 @@
   background: var(--accent-red);
 }
 .statusDot[data-status="WaitingForChoice"] {
-  background: var(--accent-orange);
+  background: var(--accent-yellow);
+}
+
+.item[data-status="WaitingForChoice"] {
+  border-left: 3px solid var(--accent-orange);
+  background: rgba(255, 160, 0, 0.06);
+}
+.item[data-status="WaitingForChoice"]:hover {
+  background: rgba(255, 160, 0, 0.1);
 }
 
 .empty {

@@ -126,6 +126,7 @@ const SessionItem = memo(function SessionItem({
         role="button"
         tabIndex={0}
         className={`${css.item} ${id === activeSessionId && !activeThreadId ? css.active : ""}`}
+        data-status={info.status}
         onClick={() => onSelect(id, null)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
@@ -228,7 +229,13 @@ export const SessionSidebar = memo(function SessionSidebar({
     () =>
       Object.entries(sessions)
         .filter(([, info]) => info.status !== "Archived")
-        .sort(([, a], [, b]) => b.last_updated.localeCompare(a.last_updated)),
+        .sort(([, a], [, b]) => {
+          // Surface sessions waiting for user choice to the top
+          const aWaiting = a.status === "WaitingForChoice" ? 1 : 0;
+          const bWaiting = b.status === "WaitingForChoice" ? 1 : 0;
+          if (aWaiting !== bWaiting) return bWaiting - aWaiting;
+          return b.last_updated.localeCompare(a.last_updated);
+        }),
     [sessions],
   );
 
