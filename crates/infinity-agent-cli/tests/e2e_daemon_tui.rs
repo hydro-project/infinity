@@ -49,8 +49,10 @@ struct E2eHarness {
     client: tokio::task::JoinHandle<Result<(), BoxError>>,
     /// Keeps the daemon state dir alive for the duration of the test.
     _state_dir: tempfile::TempDir,
-    /// The (empty) working directory sessions are created in.
-    _cwd: tempfile::TempDir,
+    /// The working directory sessions are created in. Tests may drop config
+    /// (e.g. `.infinity/rap.json`) into it before the first input creates
+    /// the session.
+    cwd: tempfile::TempDir,
 }
 
 impl E2eHarness {
@@ -63,6 +65,7 @@ impl E2eHarness {
             display_name: "Mock Model".to_owned(),
             context_window: 100_000,
             max_output_tokens: None,
+            supports_image_input: true,
         };
         let harness = Self::spawn_with_providers(
             cols,
@@ -131,7 +134,7 @@ impl E2eHarness {
             event_tx,
             client,
             _state_dir: state_dir,
-            _cwd: cwd,
+            cwd,
         };
         harness.settle().await;
         harness
@@ -400,6 +403,7 @@ async fn spawn_two_provider_harness(
                         display_name: "Mock Model".to_owned(),
                         context_window: 100_000,
                         max_output_tokens: None,
+                        supports_image_input: true,
                     },
                     model1,
                 )) as Arc<dyn ModelProvider>,
@@ -412,6 +416,7 @@ async fn spawn_two_provider_harness(
                         display_name: "Second Model".to_owned(),
                         context_window: 200_000,
                         max_output_tokens: None,
+                        supports_image_input: true,
                     },
                     model2,
                 )) as Arc<dyn ModelProvider>,
@@ -532,6 +537,62 @@ async fn switch_model_while_busy() {
             ctrl2.send_text("model two here");
             ctrl2.finish();
             h.settle().await;
+        })
+        .await;
+}
+
+// ── Stub RAP image tool server (shared, see `rap-test-servers`) ──────────────
+
+use rap_test_servers::{start_stub_image_server, write_rap_config};
+
+/// A RAP tool returns an image display segment. The TUI cannot render images,
+/// so it falls back to the text summary segment. (That the image *content*
+/// reaches an image-capable model is covered by an agent-core unit test.)
+///
+/// Runs with real time (not `start_paused`): the RAP round-trip goes over
+/// loopback TCP, and paused-clock auto-advance would fire timeouts while the
+/// reactor is still waiting on I/O.
+#[tokio::test]
+async fn rap_image_tool_result_renders_text_fallback_in_tui() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let stub_port = start_stub_image_server()
+                .await
+                .expect("start stub RAP server");
+            let (h, mut ctrl) = E2eHarness::spawn(80, 20).await;
+
+            // Point sessions created in this cwd at the stub RAP server. The
+            // session (and its RAP boot) happens lazily on first input.
+            write_rap_config(h.cwd.path(), stub_port).expect("write rap.json");
+
+            h.type_str("read the logo image");
+            h.key(KeyCode::Enter);
+
+            let _req = next_request(&mut ctrl).await;
+            ctrl.send_tool_call(
+                "tc-img",
+                "read_image",
+                serde_json::json!({"path": "logo.png"}),
+            );
+            ctrl.finish();
+
+            // Awaiting the follow-up request is the barrier that the RAP
+            // callback round-tripped and the tool result was appended (and its
+            // display event emitted) before the model was re-invoked.
+            let _req = next_request(&mut ctrl).await;
+            ctrl.send_text("A lovely indigo rectangle.");
+            ctrl.finish();
+            h.settle().await;
+
+            // The TUI shows the text fallback of the display segments (the
+            // image segment itself is skipped by the terminal renderer).
+            let screen = h.screen();
+            assert!(
+                screen.contains("Read image logo.png (image/png)"),
+                "TUI should render the text summary fallback; screen:\n{screen}"
+            );
+            assert_screen!("e2e_image_tool_result", screen);
         })
         .await;
 }

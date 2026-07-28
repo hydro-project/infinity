@@ -8,8 +8,11 @@ use infinity_agent_core::message::{
     InputMessage, InputMessageContent, OAuthRequired, SyntheticKind, TaggedSyntheticKind,
     UserChoiceRequired,
 };
-use rap_protocol::RapCallback;
-use rig::message::{ToolResult, ToolResultContent, UserContent};
+use rap_protocol::{RapCallback, RapToolResultContent};
+use rig::OneOrMany;
+use rig::message::{
+    DocumentSourceKind, Image, ImageMediaType, MimeType, ToolResult, ToolResultContent, UserContent,
+};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -87,9 +90,7 @@ fn convert_callback(cb: RapCallback) -> InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                 id: tr.id,
                 call_id: tr.call_id,
-                content: rig::OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                    text: tr.text,
-                })),
+                content: tool_result_content(tr.content, tr.text),
             })),
             group_id: tr.group_id,
             metadata: None,
@@ -103,7 +104,7 @@ fn convert_callback(cb: RapCallback) -> InputMessage {
                 content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                     id: se.tool_call_id.clone(),
                     call_id: None,
-                    content: rig::OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
                         text: se.text,
                     })),
                 })),
@@ -151,6 +152,118 @@ fn convert_callback(cb: RapCallback) -> InputMessage {
         },
         RapCallback::ViewUpdate(_) => {
             unreachable!("bug: ViewUpdate should be handled before convert_callback")
+        }
+    }
+}
+
+/// Build the rig tool-result content from a RAP tool result. A tool provides
+/// either `text` or `content`: when `content` is present (and non-empty) it is
+/// used (images become image blocks); otherwise the plain `text` becomes a
+/// single text block. An absent/empty result degrades to an empty text block.
+fn tool_result_content(
+    content: Option<Vec<RapToolResultContent>>,
+    text: Option<String>,
+) -> OneOrMany<ToolResultContent> {
+    match content {
+        Some(items) if !items.is_empty() => {
+            let items: Vec<ToolResultContent> = items
+                .into_iter()
+                .map(|item| match item {
+                    RapToolResultContent::Text { text } => {
+                        ToolResultContent::Text(rig::agent::Text { text })
+                    }
+                    RapToolResultContent::Image { data, media_type } => {
+                        ToolResultContent::Image(Image {
+                            data: DocumentSourceKind::Base64(data),
+                            media_type: ImageMediaType::from_mime_type(&media_type),
+                            detail: None,
+                            additional_params: None,
+                        })
+                    }
+                })
+                .collect();
+            OneOrMany::many(items).expect("bug: content checked non-empty above")
+        }
+        _ => OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+            text: text.unwrap_or_default(),
+        })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_result_content_falls_back_to_text() {
+        let content = tool_result_content(None, Some("plain output".to_owned()));
+        assert_eq!(content.len(), 1);
+        match content.first() {
+            ToolResultContent::Text(t) => assert_eq!(t.text, "plain output"),
+            other => panic!("expected text content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_structured_content_falls_back_to_text() {
+        let content = tool_result_content(Some(vec![]), Some("fallback".to_owned()));
+        assert_eq!(content.len(), 1);
+        match content.first() {
+            ToolResultContent::Text(t) => assert_eq!(t.text, "fallback"),
+            other => panic!("expected text content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn neither_content_nor_text_is_empty_text() {
+        let content = tool_result_content(None, None);
+        assert_eq!(content.len(), 1);
+        match content.first() {
+            ToolResultContent::Text(t) => assert_eq!(t.text, ""),
+            other => panic!("expected empty text content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn structured_content_with_image_is_converted() {
+        let content = tool_result_content(
+            Some(vec![
+                RapToolResultContent::Text {
+                    text: "Read image file".to_owned(),
+                },
+                RapToolResultContent::Image {
+                    data: "aGVsbG8=".to_owned(),
+                    media_type: "image/png".to_owned(),
+                },
+            ]),
+            None,
+        );
+        assert_eq!(content.len(), 2);
+        match content.first() {
+            ToolResultContent::Text(t) => assert_eq!(t.text, "Read image file"),
+            other => panic!("expected text content, got {other:?}"),
+        }
+        match content.last() {
+            ToolResultContent::Image(img) => {
+                assert_eq!(img.data, DocumentSourceKind::Base64("aGVsbG8=".to_owned()));
+                assert_eq!(img.media_type, Some(ImageMediaType::PNG));
+            }
+            other => panic!("expected image content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_image_media_type_maps_to_none() {
+        let content = tool_result_content(
+            Some(vec![RapToolResultContent::Image {
+                data: "aGVsbG8=".to_owned(),
+                media_type: "image/whoknows".to_owned(),
+            }]),
+            None,
+        );
+        match content.first() {
+            ToolResultContent::Image(img) => assert_eq!(img.media_type, None),
+            other => panic!("expected image content, got {other:?}"),
         }
     }
 }

@@ -25,6 +25,7 @@ rap-client = { path = "../rap-client" }
 rap-protocol = { path = "../rap-protocol" }
 reqwest = { workspace = true }
 regex = "1"
+base64 = "0.22"
 
 [lints]
 workspace = true

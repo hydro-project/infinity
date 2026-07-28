@@ -67,9 +67,22 @@ export const MessageItem = memo(function MessageItem({
     case "tool_result": {
       // Find the first supported segment type to render
       const seg = item.segments.find(
-        (s): s is DisplaySegment => s.type === "diff" || s.type === "text",
+        (s): s is DisplaySegment =>
+          s.type === "diff" || s.type === "text" || s.type === "image",
       );
       if (!seg) return null;
+
+      if (seg.type === "image") {
+        return (
+          <div className={css.toolResultImage}>
+            <img
+              src={`data:${seg.content.mediaType};base64,${seg.content.data}`}
+              alt="tool result"
+              data-testid="tool-result-image"
+            />
+          </div>
+        );
+      }
 
       if (seg.type === "diff") {
         return (

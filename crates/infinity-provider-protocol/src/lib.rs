@@ -60,6 +60,11 @@ pub struct ModelEntry {
     /// Maximum number of output tokens the model can generate per request.
     /// `None` falls back to the provider's default.
     pub max_output_tokens: Option<u64>,
+    /// Whether the model accepts image content in its input (e.g. image
+    /// tool results). When `false`, the runtime replaces image content with
+    /// a text placeholder before invoking the model.
+    #[serde(default)]
+    pub supports_image_input: bool,
 }
 
 /// A backend that can list and invoke completion models.

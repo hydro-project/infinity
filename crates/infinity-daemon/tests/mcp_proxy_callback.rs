@@ -70,10 +70,10 @@ async fn list_tools_callback_deserializes() {
 
     match cb {
         RapCallback::ToolResult(tr) => {
+            let text = tr.text.as_deref().unwrap_or_default();
             assert!(
-                tr.text.contains("echo"),
-                "tool list should mention 'echo': {}",
-                tr.text
+                text.contains("echo"),
+                "tool list should mention 'echo': {text}"
             );
             let segments = tr.display_as.expect("display_as should be Some");
             assert!(matches!(segments[0], DisplaySegment::Text(_)));

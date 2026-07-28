@@ -52,7 +52,8 @@ export interface TokenUsage {
 
 export type DisplaySegment =
   | { type: "text"; content: string }
-  | { type: "diff"; content: { path: string; patch: string } };
+  | { type: "diff"; content: { path: string; patch: string } }
+  | { type: "image"; content: { data: string; mediaType: string } };
 
 /* ── Daemon → Client messages ── */
 

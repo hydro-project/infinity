@@ -498,7 +498,8 @@ async fn handle(req: Request<Incoming>, state: Arc<ProxyState>) -> Response<Full
             group_id: inv.group_id,
             id: inv.id,
             call_id: inv.call_id,
-            text,
+            text: Some(text),
+            content: None,
             display_as,
             subscription: None,
         }))

@@ -196,6 +196,7 @@ mod tests {
             display_name: "mock".to_owned(),
             context_window,
             max_output_tokens: None,
+            supports_image_input: false,
         };
         Arc::new(
             ModelCatalog::new(vec![(
@@ -221,6 +222,7 @@ mod tests {
                             display_name: "model1".to_owned(),
                             context_window: 0,
                             max_output_tokens: None,
+                            supports_image_input: false,
                         },
                         model1,
                     )) as _,
@@ -233,6 +235,7 @@ mod tests {
                             display_name: "model2".to_owned(),
                             context_window: 0,
                             max_output_tokens: None,
+                            supports_image_input: false,
                         },
                         model2,
                     )) as _,

@@ -52,6 +52,7 @@ rig-mock = { path = "../rig-mock" }
 rap-client = { path = "../rap-client" }
 infinity-provider-protocol = { path = "../infinity-provider-protocol" }
 tempfile = { workspace = true }
+rap-test-servers = { path = "../rap-test-servers" }
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time", "test-util"] }
 
 [target.'cfg(unix)'.dependencies]
