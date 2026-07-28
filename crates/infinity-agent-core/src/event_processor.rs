@@ -3315,6 +3315,7 @@ mod tests {
                     let stream = run_completion(
                         &provider,
                         "mock",
+                        false,
                         &hm,
                         &tool_names,
                         &tool_defs,
