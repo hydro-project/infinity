@@ -61,12 +61,16 @@ impl DaemonClient {
         })
     }
 
-    pub async fn create_session(&self, cwd: PathBuf) -> Result<(), BoxError> {
+    pub async fn create_session(
+        &self,
+        cwd: PathBuf,
+        model: Option<infinity_protocol::ModelRef>,
+    ) -> Result<(), BoxError> {
         self.tx
             .send(ClientMessage::CreateSession {
                 cwd,
                 location: None,
-                model: None,
+                model,
                 keeps_session_alive: false,
             })
             .await?;

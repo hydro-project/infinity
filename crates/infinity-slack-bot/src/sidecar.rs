@@ -8,7 +8,8 @@ use tokio_util::sync::PollSender;
 use crate::config::Config;
 use crate::slack_client::SlackClient;
 
-/// A normalized event from Slack (message or button click) that flows through the dataflow.
+/// A normalized event from Slack (message, button click, or slash command)
+/// that flows through the dataflow.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SlackEvent {
     pub user: String,
@@ -26,6 +27,18 @@ pub struct SlackEvent {
     pub is_bot: bool,
     /// True if user is not authorized.
     pub is_unauthorized: bool,
+    /// The slash command that produced this event (e.g. `/model`), if any.
+    /// For slash commands, `text` holds the arguments after the command.
+    #[serde(default)]
+    pub slash_command: Option<String>,
+    /// Slash-command response URL: POSTing JSON here sends an (ephemeral by
+    /// default) response visible only to the invoking user.
+    #[serde(default)]
+    pub response_url: Option<String>,
+    /// True if the user opened the app's Messages tab (`app_home_opened`
+    /// event with `tab == "messages"`). Used for onboarding, not messaging.
+    #[serde(default)]
+    pub is_app_home_opened: bool,
 }
 
 /// An action the dataflow instructs the sidecar to perform against the Slack API.
@@ -73,6 +86,26 @@ pub enum SlackAction {
         thread_ts: String,
         status: String,
     },
+    /// Respond to a slash command by POSTing to its `response_url`.
+    /// The response is ephemeral (visible only to the invoking user).
+    CommandResponse { response_url: String, text: String },
+    /// Set the title of an agent thread.
+    SetThreadTitle {
+        channel: String,
+        thread_ts: String,
+        title: String,
+    },
+    /// Pin suggested prompts to the top of the app's Messages tab.
+    SetSuggestedPrompts { channel: String },
+    /// Append a task update (tool call progress) to the active stream for
+    /// this thread. `status` is `in_progress`, `complete`, or `error`.
+    StreamTaskUpdate {
+        channel: String,
+        thread_ts: String,
+        task_id: String,
+        title: String,
+        status: String,
+    },
 }
 
 // ── Internal deserialization types ──────────────────────────────────────────
@@ -110,6 +143,9 @@ struct RawSlackEvent {
     thread_ts: Option<String>,
     #[serde(default)]
     bot_id: Option<String>,
+    /// Which App Home tab was opened (for `app_home_opened` events).
+    #[serde(default)]
+    tab: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -151,6 +187,17 @@ struct InteractiveMessage {
 #[derive(Deserialize)]
 struct InteractiveUser {
     id: String,
+}
+
+/// Payload of a `slash_commands` envelope (Socket Mode).
+#[derive(Deserialize)]
+struct SlashCommandPayload {
+    command: String,
+    #[serde(default)]
+    text: String,
+    user_id: String,
+    channel_id: String,
+    response_url: String,
 }
 
 // ── Sidecar constructor ─────────────────────────────────────────────────────
@@ -430,7 +477,43 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
                 }
                 SlackAction::StreamStop { channel, thread_ts } => {
                     if let Some(state) = active_streams.remove(&thread_ts) {
-                        if let Err(e) = slack.stop_stream(&channel, &state.ts).await {
+                        // Complete any tool tasks that never got a result so
+                        // the message doesn't finalize with spinners.
+                        let pending: Vec<(String, String)> = {
+                            let rt = crate::runtime::get();
+                            let mut tasks = rt.tool_tasks.lock().expect("bug: lock poisoned");
+                            tasks
+                                .get_mut(&thread_ts)
+                                .map(|q| q.drain(..).collect())
+                                .unwrap_or_default()
+                        };
+                        for (task_id, title) in pending {
+                            if let Err(e) = slack
+                                .append_stream_task(
+                                    &channel, &state.ts, &task_id, &title, "complete",
+                                )
+                                .await
+                            {
+                                tracing::warn!("completing pending task {task_id} failed: {e}");
+                            }
+                        }
+
+                        // Finalize with an AI-content disclaimer footer.
+                        let disclaimer = serde_json::json!([
+                            {
+                                "type": "context",
+                                "elements": [
+                                    {
+                                        "type": "mrkdwn",
+                                        "text": "AI-generated response — review carefully before acting on it."
+                                    }
+                                ]
+                            }
+                        ]);
+                        if let Err(e) = slack
+                            .stop_stream_with_blocks(&channel, &state.ts, &disclaimer)
+                            .await
+                        {
                             tracing::error!("stop_stream failed: {e}");
                         }
                     }
@@ -444,6 +527,87 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
                 } => {
                     if let Err(e) = slack.set_thread_status(&channel, &thread_ts, &status).await {
                         tracing::error!("set_thread_status failed: {e}");
+                    }
+                }
+                SlackAction::CommandResponse { response_url, text } => {
+                    if let Err(e) = slack.respond_to_command(&response_url, &text).await {
+                        tracing::error!("CommandResponse failed: {e}");
+                    }
+                }
+                SlackAction::SetThreadTitle {
+                    channel,
+                    thread_ts,
+                    title,
+                } => {
+                    if let Err(e) = slack.set_thread_title(&channel, &thread_ts, &title).await {
+                        tracing::error!("SetThreadTitle failed: {e}");
+                    }
+                }
+                SlackAction::SetSuggestedPrompts { channel } => {
+                    let prompts = serde_json::json!([
+                        {
+                            "title": "Summarize my working copy",
+                            "message": "Summarize the current changes in my working copy."
+                        },
+                        {
+                            "title": "Fix the build",
+                            "message": "Run the build and fix any errors you find."
+                        },
+                        {
+                            "title": "Review recent commits",
+                            "message": "Review the most recent commits and highlight anything concerning."
+                        }
+                    ]);
+                    if let Err(e) = slack
+                        .set_suggested_prompts(&channel, "Try one of these:", &prompts)
+                        .await
+                    {
+                        tracing::error!("SetSuggestedPrompts failed: {e}");
+                    }
+                }
+                SlackAction::StreamTaskUpdate {
+                    channel,
+                    thread_ts,
+                    task_id,
+                    title,
+                    status,
+                } => {
+                    // Ensure we have an active stream to attach the task to.
+                    if !active_streams.contains_key(&thread_ts)
+                        && start_fresh(&slack, &channel, &thread_ts, &mut active_streams)
+                            .await
+                            .is_none()
+                    {
+                        continue;
+                    }
+                    let stream_ts = active_streams
+                        .get(&thread_ts)
+                        .expect("bug: just ensured stream exists")
+                        .ts
+                        .clone();
+                    match slack
+                        .append_stream_task(&channel, &stream_ts, &task_id, &title, &status)
+                        .await
+                    {
+                        Ok(None) => {}
+                        Ok(Some(err)) => {
+                            // Workspace may not support task chunks yet — fall
+                            // back to the plain-text tool indicator (only for
+                            // the start, to avoid duplicate lines).
+                            tracing::warn!("append_stream_task got {err}, falling back to text");
+                            if status == "in_progress" {
+                                let _ = slack
+                                    .append_stream(
+                                        &channel,
+                                        &stream_ts,
+                                        &format!("\n\n🔧 `{title}(…)`\n"),
+                                    )
+                                    .await;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("append_stream_task failed: {e}");
+                        }
                     }
                 }
                 SlackAction::DismissChoiceButtons { choice_id } => {
@@ -587,11 +751,34 @@ fn parse_envelope(envelope: SocketEnvelope) -> Option<SlackEvent> {
     match envelope.envelope_type.as_str() {
         "interactive" => parse_interactive(envelope.payload),
         "events_api" => parse_events_api(envelope.payload),
+        "slash_commands" => parse_slash_command(envelope.payload),
         _ => {
             tracing::debug!("ignoring envelope type: {}", envelope.envelope_type);
             None
         }
     }
+}
+
+fn parse_slash_command(payload: serde_json::Value) -> Option<SlackEvent> {
+    let p: SlashCommandPayload = serde_json::from_value(payload).ok()?;
+
+    Some(SlackEvent {
+        user: p.user_id,
+        text: p.text.trim().to_owned(),
+        channel: p.channel_id,
+        // Slash commands are not tied to a thread.
+        thread_ts: String::new(),
+        is_button_click: false,
+        button_value: None,
+        action_id: None,
+        message_ts: None,
+        button_text: None,
+        is_bot: false,
+        is_unauthorized: false, // set later by caller
+        slash_command: Some(p.command),
+        response_url: Some(p.response_url),
+        is_app_home_opened: false,
+    })
 }
 
 fn parse_interactive(payload: serde_json::Value) -> Option<SlackEvent> {
@@ -622,12 +809,39 @@ fn parse_interactive(payload: serde_json::Value) -> Option<SlackEvent> {
         button_text,
         is_bot: false,
         is_unauthorized: false, // set later by caller
+        slash_command: None,
+        response_url: None,
+        is_app_home_opened: false,
     })
 }
 
 fn parse_events_api(payload: serde_json::Value) -> Option<SlackEvent> {
     let p: EventPayload = serde_json::from_value(payload).ok()?;
     let event = p.event?;
+
+    // A user opened the app's Messages tab — signal for onboarding
+    // (suggested prompts), not a message.
+    if event.event_type == "app_home_opened" {
+        if event.tab.as_deref() != Some("messages") {
+            return None;
+        }
+        return Some(SlackEvent {
+            user: event.user.unwrap_or_default(),
+            text: String::new(),
+            channel: event.channel?,
+            thread_ts: String::new(),
+            is_button_click: false,
+            button_value: None,
+            action_id: None,
+            message_ts: None,
+            button_text: None,
+            is_bot: false,
+            is_unauthorized: false, // set later by caller
+            slash_command: None,
+            response_url: None,
+            is_app_home_opened: true,
+        });
+    }
 
     // Skip subtypes (message_changed, etc.)
     if event.subtype.is_some() {
@@ -655,6 +869,9 @@ fn parse_events_api(payload: serde_json::Value) -> Option<SlackEvent> {
         button_text: None,
         is_bot,
         is_unauthorized: false, // set later by caller
+        slash_command: None,
+        response_url: None,
+        is_app_home_opened: false,
     })
 }
 
@@ -775,10 +992,89 @@ mod tests {
     fn parse_envelope_unknown_type_returns_none() {
         let envelope = SocketEnvelope {
             envelope_id: "e1".into(),
-            envelope_type: "slash_commands".into(),
+            envelope_type: "app_rate_limited".into(),
             payload: serde_json::json!({}),
         };
         assert!(parse_envelope(envelope).is_none());
+    }
+
+    #[test]
+    fn parse_envelope_routes_slash_commands() {
+        let envelope = SocketEnvelope {
+            envelope_id: "e3".into(),
+            envelope_type: "slash_commands".into(),
+            payload: serde_json::json!({
+                "command": "/model",
+                "text": "  bedrock/claude-sonnet-4  ",
+                "user_id": "U123",
+                "channel_id": "C456",
+                "response_url": "https://hooks.slack.com/commands/T1/123/abc"
+            }),
+        };
+        let event = parse_envelope(envelope).expect("should parse");
+        assert_eq!(event.slash_command.as_deref(), Some("/model"));
+        assert_eq!(event.text, "bedrock/claude-sonnet-4");
+        assert_eq!(event.user, "U123");
+        assert_eq!(event.channel, "C456");
+        assert_eq!(
+            event.response_url.as_deref(),
+            Some("https://hooks.slack.com/commands/T1/123/abc")
+        );
+        assert!(!event.is_button_click);
+        assert!(!event.is_bot);
+    }
+
+    #[test]
+    fn parse_slash_command_empty_text_defaults() {
+        let payload = serde_json::json!({
+            "command": "/model",
+            "user_id": "U123",
+            "channel_id": "C456",
+            "response_url": "https://hooks.slack.com/commands/T1/123/abc"
+        });
+        let event = parse_slash_command(payload).expect("should parse");
+        assert_eq!(event.text, "");
+        assert_eq!(event.slash_command.as_deref(), Some("/model"));
+    }
+
+    #[test]
+    fn parse_slash_command_missing_response_url_returns_none() {
+        let payload = serde_json::json!({
+            "command": "/model",
+            "user_id": "U123",
+            "channel_id": "C456"
+        });
+        assert!(parse_slash_command(payload).is_none());
+    }
+
+    #[test]
+    fn parse_events_api_app_home_opened_messages_tab() {
+        let payload = serde_json::json!({
+            "event": {
+                "type": "app_home_opened",
+                "user": "U123",
+                "channel": "D456",
+                "tab": "messages"
+            }
+        });
+        let event = parse_events_api(payload).expect("should parse");
+        assert!(event.is_app_home_opened);
+        assert_eq!(event.user, "U123");
+        assert_eq!(event.channel, "D456");
+        assert!(event.text.is_empty());
+    }
+
+    #[test]
+    fn parse_events_api_app_home_opened_other_tab_skipped() {
+        let payload = serde_json::json!({
+            "event": {
+                "type": "app_home_opened",
+                "user": "U123",
+                "channel": "D456",
+                "tab": "home"
+            }
+        });
+        assert!(parse_events_api(payload).is_none());
     }
 
     #[test]
@@ -832,6 +1128,9 @@ mod tests {
             button_text: None,
             is_bot: true,
             is_unauthorized: false,
+            slash_command: None,
+            response_url: None,
+            is_app_home_opened: false,
         };
         // Same filter as the dataflow
         assert!(!(!event.is_bot && !event.is_unauthorized));
@@ -851,6 +1150,9 @@ mod tests {
             button_text: None,
             is_bot: false,
             is_unauthorized: true,
+            slash_command: None,
+            response_url: None,
+            is_app_home_opened: false,
         };
         assert!(!(!event.is_bot && !event.is_unauthorized));
     }
@@ -869,6 +1171,9 @@ mod tests {
             button_text: None,
             is_bot: false,
             is_unauthorized: false,
+            slash_command: None,
+            response_url: None,
+            is_app_home_opened: false,
         };
         assert!(!event.is_bot && !event.is_unauthorized);
     }

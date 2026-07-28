@@ -24,6 +24,9 @@ async fn filter_drops_bot_and_unauthorized() {
                         button_text: None,
                         is_bot: true,
                         is_unauthorized: false,
+                        slash_command: None,
+                        response_url: None,
+                        is_app_home_opened: false,
                     },
                     // Unauthorized message — should be dropped.
                     infinity_slack_bot::sidecar::SlackEvent {
@@ -38,6 +41,9 @@ async fn filter_drops_bot_and_unauthorized() {
                         button_text: None,
                         is_bot: false,
                         is_unauthorized: true,
+                        slash_command: None,
+                        response_url: None,
+                        is_app_home_opened: false,
                     },
                     // Valid message — should produce a CreateSession command.
                     infinity_slack_bot::sidecar::SlackEvent {
@@ -52,6 +58,9 @@ async fn filter_drops_bot_and_unauthorized() {
                         button_text: None,
                         is_bot: false,
                         is_unauthorized: false,
+                        slash_command: None,
+                        response_url: None,
+                        is_app_home_opened: false,
                     },
                 ])
             }));
@@ -91,6 +100,9 @@ async fn normal_message_produces_create_session() {
                     button_text: None,
                     is_bot: false,
                     is_unauthorized: false,
+                    slash_command: None,
+                    response_url: None,
+                    is_app_home_opened: false,
                 }])
             }));
             let daemon_events = process.source_stream(q!(futures_util::stream::pending::<
@@ -140,6 +152,9 @@ async fn existing_session_produces_send_input() {
                     button_text: None,
                     is_bot: false,
                     is_unauthorized: false,
+                    slash_command: None,
+                    response_url: None,
+                    is_app_home_opened: false,
                 }])
             }));
             let daemon_events = process.source_stream(q!(futures_util::stream::pending::<
@@ -242,13 +257,18 @@ async fn tool_call_keeps_stream_open_across_response_done() {
                 other => panic!("expected StreamAppend('Let me check...'), got {other:?}"),
             }
 
-            // 2. StreamAppend for the tool call indicator
+            // 2. StreamTaskUpdate (in_progress) for the tool call
             let action = stream.next().await.unwrap();
             match &action {
-                infinity_slack_bot::sidecar::SlackAction::StreamAppend { text, .. } => {
-                    assert!(text.contains("read_file"), "expected tool name, got {text}");
+                infinity_slack_bot::sidecar::SlackAction::StreamTaskUpdate {
+                    title,
+                    status,
+                    ..
+                } => {
+                    assert_eq!(title, "read_file");
+                    assert_eq!(status, "in_progress");
                 }
-                other => panic!("expected StreamAppend(tool), got {other:?}"),
+                other => panic!("expected StreamTaskUpdate(read_file), got {other:?}"),
             }
 
             // 3. The intermediate ResponseDone produces NOTHING (no StreamStop).
@@ -343,18 +363,18 @@ async fn multiple_tool_calls_keep_stream_open() {
             slack_actions
         },
         |mut stream| async move {
-            // 1. StreamAppend for grep tool indicator
+            // 1. StreamTaskUpdate (in_progress) for grep
             let action = stream.next().await.unwrap();
             assert!(
-                matches!(&action, infinity_slack_bot::sidecar::SlackAction::StreamAppend { text, .. } if text.contains("grep")),
-                "expected grep tool append, got {action:?}"
+                matches!(&action, infinity_slack_bot::sidecar::SlackAction::StreamTaskUpdate { title, status, .. } if title == "grep" && status == "in_progress"),
+                "expected grep task update, got {action:?}"
             );
 
-            // 2. StreamAppend for read_file tool indicator
+            // 2. StreamTaskUpdate (in_progress) for read_file
             let action = stream.next().await.unwrap();
             assert!(
-                matches!(&action, infinity_slack_bot::sidecar::SlackAction::StreamAppend { text, .. } if text.contains("read_file")),
-                "expected read_file tool append, got {action:?}"
+                matches!(&action, infinity_slack_bot::sidecar::SlackAction::StreamTaskUpdate { title, status, .. } if title == "read_file" && status == "in_progress"),
+                "expected read_file task update, got {action:?}"
             );
 
             // 3. No StreamStop here — next should be StreamAppend("Done!")
