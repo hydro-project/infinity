@@ -26,6 +26,7 @@ async fn filter_drops_bot_and_unauthorized() {
                         is_unauthorized: false,
                         slash_command: None,
                         response_url: None,
+                        trigger_id: None,
                         is_app_home_opened: false,
                     },
                     // Unauthorized message — should be dropped.
@@ -43,6 +44,7 @@ async fn filter_drops_bot_and_unauthorized() {
                         is_unauthorized: true,
                         slash_command: None,
                         response_url: None,
+                        trigger_id: None,
                         is_app_home_opened: false,
                     },
                     // Valid message — should produce a CreateSession command.
@@ -60,6 +62,7 @@ async fn filter_drops_bot_and_unauthorized() {
                         is_unauthorized: false,
                         slash_command: None,
                         response_url: None,
+                        trigger_id: None,
                         is_app_home_opened: false,
                     },
                 ])
@@ -102,6 +105,7 @@ async fn normal_message_produces_create_session() {
                     is_unauthorized: false,
                     slash_command: None,
                     response_url: None,
+                    trigger_id: None,
                     is_app_home_opened: false,
                 }])
             }));
@@ -154,6 +158,7 @@ async fn existing_session_produces_send_input() {
                     is_unauthorized: false,
                     slash_command: None,
                     response_url: None,
+                    trigger_id: None,
                     is_app_home_opened: false,
                 }])
             }));
@@ -248,7 +253,14 @@ async fn tool_call_keeps_stream_open_across_response_done() {
             slack_actions
         },
         |mut stream| async move {
-            // 1. StreamAppend for "Let me check..."
+            // 1. SetStatus "is thinking" then StreamAppend for "Let me check..."
+            let action = stream.next().await.unwrap();
+            match &action {
+                infinity_slack_bot::sidecar::SlackAction::SetStatus { status, .. } => {
+                    assert_eq!(status, "is thinking");
+                }
+                other => panic!("expected SetStatus('is thinking'), got {other:?}"),
+            }
             let action = stream.next().await.unwrap();
             match &action {
                 infinity_slack_bot::sidecar::SlackAction::StreamAppend { text, .. } => {
@@ -257,22 +269,39 @@ async fn tool_call_keeps_stream_open_across_response_done() {
                 other => panic!("expected StreamAppend('Let me check...'), got {other:?}"),
             }
 
-            // 2. StreamTaskUpdate (in_progress) for the tool call
+            // 2. SetStatus naming the tool, then StreamTaskUpdate (in_progress).
+            let action = stream.next().await.unwrap();
+            match &action {
+                infinity_slack_bot::sidecar::SlackAction::SetStatus { status, .. } => {
+                    assert_eq!(status, "is running read_file");
+                }
+                other => panic!("expected SetStatus('is running read_file'), got {other:?}"),
+            }
             let action = stream.next().await.unwrap();
             match &action {
                 infinity_slack_bot::sidecar::SlackAction::StreamTaskUpdate {
                     title,
                     status,
+                    details,
                     ..
                 } => {
                     assert_eq!(title, "read_file");
                     assert_eq!(status, "in_progress");
+                    // The tool arguments are carried through as details.
+                    assert_eq!(details, "{}");
                 }
                 other => panic!("expected StreamTaskUpdate(read_file), got {other:?}"),
             }
 
             // 3. The intermediate ResponseDone produces NOTHING (no StreamStop).
-            //    Next action should be StreamAppend for "Here's the result."
+            //    Next actions: SetStatus back to thinking, then StreamAppend.
+            let action = stream.next().await.unwrap();
+            match &action {
+                infinity_slack_bot::sidecar::SlackAction::SetStatus { status, .. } => {
+                    assert_eq!(status, "is thinking");
+                }
+                other => panic!("expected SetStatus('is thinking'), got {other:?}"),
+            }
             let action = stream.next().await.unwrap();
             match &action {
                 infinity_slack_bot::sidecar::SlackAction::StreamAppend { text, .. } => {
@@ -363,21 +392,36 @@ async fn multiple_tool_calls_keep_stream_open() {
             slack_actions
         },
         |mut stream| async move {
-            // 1. StreamTaskUpdate (in_progress) for grep
+            // 1. SetStatus naming grep, then StreamTaskUpdate (in_progress) for grep
+            let action = stream.next().await.unwrap();
+            assert!(
+                matches!(&action, infinity_slack_bot::sidecar::SlackAction::SetStatus { status, .. } if status == "is running grep"),
+                "expected SetStatus('is running grep'), got {action:?}"
+            );
             let action = stream.next().await.unwrap();
             assert!(
                 matches!(&action, infinity_slack_bot::sidecar::SlackAction::StreamTaskUpdate { title, status, .. } if title == "grep" && status == "in_progress"),
                 "expected grep task update, got {action:?}"
             );
 
-            // 2. StreamTaskUpdate (in_progress) for read_file
+            // 2. SetStatus naming read_file, then StreamTaskUpdate (in_progress)
+            let action = stream.next().await.unwrap();
+            assert!(
+                matches!(&action, infinity_slack_bot::sidecar::SlackAction::SetStatus { status, .. } if status == "is running read_file"),
+                "expected SetStatus('is running read_file'), got {action:?}"
+            );
             let action = stream.next().await.unwrap();
             assert!(
                 matches!(&action, infinity_slack_bot::sidecar::SlackAction::StreamTaskUpdate { title, status, .. } if title == "read_file" && status == "in_progress"),
                 "expected read_file task update, got {action:?}"
             );
 
-            // 3. No StreamStop here — next should be StreamAppend("Done!")
+            // 3. No StreamStop here — SetStatus back to thinking, then StreamAppend("Done!")
+            let action = stream.next().await.unwrap();
+            assert!(
+                matches!(&action, infinity_slack_bot::sidecar::SlackAction::SetStatus { status, .. } if status == "is thinking"),
+                "expected SetStatus('is thinking'), got {action:?}"
+            );
             let action = stream.next().await.unwrap();
             match &action {
                 infinity_slack_bot::sidecar::SlackAction::StreamAppend { text, .. } => {
@@ -434,6 +478,20 @@ async fn daemon_text_chunk_produces_stream_append() {
             slack_actions
         },
         |mut stream| async move {
+            // TextChunk first emits an "is thinking" status update.
+            let action = stream.next().await.unwrap();
+            match action {
+                infinity_slack_bot::sidecar::SlackAction::SetStatus {
+                    channel,
+                    thread_ts,
+                    status,
+                } => {
+                    assert_eq!(channel, "C1");
+                    assert_eq!(thread_ts, "resp.1");
+                    assert_eq!(status, "is thinking");
+                }
+                other => panic!("expected SetStatus, got {other:?}"),
+            }
             let action = stream.next().await.unwrap();
             match action {
                 infinity_slack_bot::sidecar::SlackAction::StreamAppend {

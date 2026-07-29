@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use serde::{Deserialize, Serialize};
 
 use crate::BoxError;
@@ -7,6 +9,11 @@ pub struct SlackClient {
     token: String,
     pub team_id: String,
     pub bot_user_id: String,
+    /// Set once `assistant.threads.setTitle` reports `no_permission` so we
+    /// stop re-attempting it (and spamming warnings) for the process lifetime.
+    /// Setting the title requires the `assistant:write` scope and the app's
+    /// Agents/AI-Apps feature to be enabled; without it the call always fails.
+    title_unsupported: AtomicBool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -16,6 +23,16 @@ struct SlackResponse {
     error: Option<String>,
     #[serde(default)]
     ts: Option<String>,
+    #[serde(default)]
+    response_metadata: Option<ResponseMetadata>,
+}
+
+/// Detailed per-field validation messages Slack returns on some errors
+/// (e.g. `invalid_arguments` from `views.open`).
+#[derive(Debug, Deserialize)]
+struct ResponseMetadata {
+    #[serde(default)]
+    messages: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,13 +52,6 @@ struct StartStreamRequest<'a> {
     thread_ts: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     recipient_team_id: Option<&'a str>,
-}
-
-#[derive(Debug, Serialize)]
-struct AppendStreamRequest<'a> {
-    channel: &'a str,
-    ts: &'a str,
-    markdown_text: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -99,6 +109,7 @@ impl SlackClient {
             token: token.to_owned(),
             team_id,
             bot_user_id,
+            title_unsupported: AtomicBool::new(false),
         })
     }
 
@@ -118,8 +129,14 @@ impl SlackClient {
             .await?;
 
         if !resp.ok {
+            let detail = resp
+                .response_metadata
+                .as_ref()
+                .filter(|m| !m.messages.is_empty())
+                .map(|m| format!(" ({})", m.messages.join("; ")))
+                .unwrap_or_default();
             tracing::warn!(
-                "Slack API {method} failed: {}",
+                "Slack API {method} failed: {}{detail}",
                 resp.error.as_deref().unwrap_or("unknown")
             );
         }
@@ -127,19 +144,27 @@ impl SlackClient {
     }
 
     /// Start a streaming message in a thread. Returns the message ts.
+    ///
+    /// `chat.startStream` requires a `recipient_team_id` when streaming into a
+    /// DM / assistant thread; when the caller doesn't supply one we fall back
+    /// to the bot's own workspace team id (captured at `auth.test`), which is
+    /// correct for single-workspace installs.
     pub async fn start_stream(
         &self,
         channel: &str,
         thread_ts: &str,
         team_id: Option<&str>,
     ) -> Result<Option<String>, BoxError> {
+        let recipient_team_id = team_id
+            .filter(|t| !t.is_empty())
+            .or_else(|| (!self.team_id.is_empty()).then_some(self.team_id.as_str()));
         let resp = self
             .api_call(
                 "chat.startStream",
                 &StartStreamRequest {
                     channel,
                     thread_ts,
-                    recipient_team_id: team_id,
+                    recipient_team_id,
                 },
             )
             .await?;
@@ -148,6 +173,12 @@ impl SlackClient {
 
     /// Append markdown text to an active stream.
     /// Returns the Slack error code if the API reports failure (e.g. stream expired).
+    ///
+    /// Text is sent as a `markdown_text` *chunk* (not the top-level
+    /// `markdown_text` argument) so the stream stays in "chunk mode". This lets
+    /// `task_update` chunks be interleaved with text; mixing the top-level
+    /// `markdown_text` argument with chunk appends triggers
+    /// `streaming_mode_mismatch`.
     pub async fn append_stream(
         &self,
         channel: &str,
@@ -157,11 +188,14 @@ impl SlackClient {
         let resp = self
             .api_call(
                 "chat.appendStream",
-                &AppendStreamRequest {
-                    channel,
-                    ts,
-                    markdown_text: text,
-                },
+                &serde_json::json!({
+                    "channel": channel,
+                    "ts": ts,
+                    "chunks": [{
+                        "type": "markdown_text",
+                        "text": text,
+                    }],
+                }),
             )
             .await?;
         if resp.ok {
@@ -279,22 +313,54 @@ impl SlackClient {
         Ok(())
     }
 
-    /// Set the title of an agent thread (shows in the reply bar and thread header).
+    /// Open a modal view via `views.open`. Requires a `trigger_id` from a
+    /// recent user interaction (valid for ~3 seconds after the interaction).
+    pub async fn open_view(
+        &self,
+        trigger_id: &str,
+        view: &serde_json::Value,
+    ) -> Result<(), BoxError> {
+        self.api_call(
+            "views.open",
+            &serde_json::json!({
+                "trigger_id": trigger_id,
+                "view": view,
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Set the title of an agent thread (shows in the reply bar and thread
+    /// header). Requires the `assistant:write` scope and the app's Agents/AI
+    /// Apps feature. If Slack reports `no_permission` we mark titling as
+    /// unsupported and skip further attempts for this process.
     pub async fn set_thread_title(
         &self,
         channel: &str,
         thread_ts: &str,
         title: &str,
     ) -> Result<(), BoxError> {
-        self.api_call(
-            "assistant.threads.setTitle",
-            &serde_json::json!({
-                "channel_id": channel,
-                "thread_ts": thread_ts,
-                "title": title,
-            }),
-        )
-        .await?;
+        if self.title_unsupported.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let resp = self
+            .api_call(
+                "assistant.threads.setTitle",
+                &serde_json::json!({
+                    "channel_id": channel,
+                    "thread_ts": thread_ts,
+                    "title": title,
+                }),
+            )
+            .await?;
+        if !resp.ok && resp.error.as_deref() == Some("no_permission") {
+            self.title_unsupported.store(true, Ordering::Relaxed);
+            tracing::warn!(
+                "assistant.threads.setTitle is not permitted (missing `assistant:write` \
+                 scope or Agents feature disabled); disabling thread titling"
+            );
+        }
         Ok(())
     }
 
@@ -319,8 +385,8 @@ impl SlackClient {
     }
 
     /// Append a task-update chunk (tool call progress) to an active stream.
-    /// `status` is one of `in_progress`, `complete`, or `error`.
-    /// Returns the Slack error code if the API reports failure.
+    /// `status` is one of `pending`, `in_progress`, `complete`, or `error`.
+    /// `details` optionally carries the tool call arguments.
     pub async fn append_stream_task(
         &self,
         channel: &str,
@@ -328,29 +394,31 @@ impl SlackClient {
         task_id: &str,
         title: &str,
         status: &str,
-    ) -> Result<Option<String>, BoxError> {
-        let resp = self
-            .api_call(
-                "chat.appendStream",
-                &serde_json::json!({
-                    "channel": channel,
-                    "ts": ts,
-                    "chunks": [{
-                        "type": "task_update",
-                        "task": {
-                            "task_id": task_id,
-                            "title": title,
-                            "status": status,
-                        }
-                    }]
-                }),
-            )
-            .await?;
-        if resp.ok {
-            Ok(None)
-        } else {
-            Ok(resp.error)
+        details: &str,
+    ) -> Result<(), BoxError> {
+        // Per the API, `task_update` chunk fields are flat (not nested under a
+        // `task` object) and the id field is `id`. Fields are capped at 256
+        // chars. `details` (the tool arguments) is included when present.
+        let mut task = serde_json::json!({
+            "type": "task_update",
+            "id": task_id,
+            "title": title,
+            "status": status,
+        });
+        if !details.is_empty() {
+            task["details"] = serde_json::Value::String(details.to_owned());
         }
+        // `api_call` logs a warning if the API reports failure.
+        self.api_call(
+            "chat.appendStream",
+            &serde_json::json!({
+                "channel": channel,
+                "ts": ts,
+                "chunks": [task],
+            }),
+        )
+        .await?;
+        Ok(())
     }
 
     /// Stop/finalize a streaming message with trailing blocks (e.g. an
