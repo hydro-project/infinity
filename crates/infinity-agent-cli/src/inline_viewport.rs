@@ -439,19 +439,38 @@ impl<T: TermOut> InlineViewport<T> {
         Ok(())
     }
 
-    /// Re-derive the anchor after a resize, with a single cursor query.
+    /// Re-derive the anchor after a resize, with a cursor query.
     ///
     /// See the type-level docs for the strategy. Ends with the live cursor
     /// parked on the (re-saved) anchor.
+    ///
+    /// The cursor query is a full terminal round-trip, and during a
+    /// continuous window drag (e.g. resizing a pane in Zed) the terminal
+    /// keeps reflowing while the query is in flight. A reply describing a
+    /// geometry that is already gone must not be acted upon: re-saving the
+    /// anchor and clearing below it at stale coordinates destroys scrollback
+    /// rows that have since moved (a growing reflow pulls content down, so a
+    /// stale anchor sits *above* the true one and the clear eats the tail of
+    /// the output). The size is therefore re-checked after every round-trip
+    /// and the query retried until the geometry is stable.
     fn re_anchor(&mut self) -> io::Result<()> {
-        let (cols, rows) = self.terminal_size;
-        if cols == 0 || rows == 0 {
-            self.anchor_stale = false;
-            return Ok(());
-        }
+        let (live_col, live_row) = loop {
+            let (cols, rows) = self.terminal_size;
+            if cols == 0 || rows == 0 {
+                self.anchor_stale = false;
+                return Ok(());
+            }
 
-        self.term.flush()?;
-        let (live_col, live_row) = self.term.cursor_position()?;
+            self.term.flush()?;
+            let pos = self.term.cursor_position()?;
+            if self.term.size()? == self.terminal_size {
+                break pos;
+            }
+            // The terminal resized again while the query was in flight; the
+            // reply is stale. Absorb the new geometry and re-query.
+            self.handle_resize()?;
+        };
+        let (cols, rows) = self.terminal_size;
         let pre_resize_row_lens = self.pre_resize_row_lens.take();
 
         // Where the live cursor would be if the terminal moved nothing
@@ -606,6 +625,14 @@ impl<T: TermOut> InlineViewport<T> {
     where
         F: FnOnce(&mut ViewportFrame),
     {
+        // A resize since the last draw invalidated the anchor; re-derive it
+        // (the only cursor query in the entire viewport) first. This may
+        // absorb further coalesced/raced resizes, so it must run before any
+        // geometry below is computed from `terminal_size`.
+        if self.anchor_stale {
+            self.re_anchor()?;
+        }
+
         // Keep one row above the viewport free for the anchor, even on tiny
         // terminals.
         let desired_lines = desired_lines
@@ -628,12 +655,6 @@ impl<T: TermOut> InlineViewport<T> {
             };
             render_fn(&mut frame);
             cursor_position = frame.cursor_position;
-        }
-
-        // A resize since the last draw invalidated the anchor; re-derive it
-        // (the only cursor query in the entire viewport) before positioning.
-        if self.anchor_stale {
-            self.re_anchor()?;
         }
 
         let previous = &self.buffers[1 - self.current];
