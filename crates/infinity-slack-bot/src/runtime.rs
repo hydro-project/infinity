@@ -11,8 +11,8 @@ use infinity_protocol::{ModelInfo, ModelRef};
 use crate::config::Config;
 use crate::session_store::SessionStore;
 
-/// Per-thread FIFO of in-flight tool tasks `(task_id, title)`.
-type ToolTaskQueue = VecDeque<(String, String)>;
+/// Per-thread FIFO of in-flight tool tasks `(task_id, title, details)`.
+type ToolTaskQueue = VecDeque<(String, String, String)>;
 
 /// Shared runtime state for the dataflow.
 pub struct Runtime {

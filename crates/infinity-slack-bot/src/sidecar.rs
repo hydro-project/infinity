@@ -8,6 +8,14 @@ use tokio_util::sync::PollSender;
 use crate::config::Config;
 use crate::slack_client::SlackClient;
 
+/// Callback ID for the model-picker modal (set on the view when opening,
+/// echoed back by Slack in the `view_submission` payload).
+pub const MODEL_PICKER_CALLBACK_ID: &str = "model_picker";
+/// Block ID of the model-select input block in the model-picker modal.
+pub const MODEL_PICKER_BLOCK_ID: &str = "model_block";
+/// Action ID of the model-select element in the model-picker modal.
+pub const MODEL_PICKER_ACTION_ID: &str = "model_select";
+
 /// A normalized event from Slack (message, button click, or slash command)
 /// that flows through the dataflow.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -35,6 +43,10 @@ pub struct SlackEvent {
     /// default) response visible only to the invoking user.
     #[serde(default)]
     pub response_url: Option<String>,
+    /// Trigger ID for opening modals (present in slash commands and some
+    /// interactive payloads).
+    #[serde(default)]
+    pub trigger_id: Option<String>,
     /// True if the user opened the app's Messages tab (`app_home_opened`
     /// event with `tab == "messages"`). Used for onboarding, not messaging.
     #[serde(default)]
@@ -89,6 +101,11 @@ pub enum SlackAction {
     /// Respond to a slash command by POSTing to its `response_url`.
     /// The response is ephemeral (visible only to the invoking user).
     CommandResponse { response_url: String, text: String },
+    /// Open a modal view using the Slack `views.open` API.
+    OpenView {
+        trigger_id: String,
+        view: serde_json::Value,
+    },
     /// Set the title of an agent thread.
     SetThreadTitle {
         channel: String,
@@ -99,12 +116,14 @@ pub enum SlackAction {
     SetSuggestedPrompts { channel: String },
     /// Append a task update (tool call progress) to the active stream for
     /// this thread. `status` is `in_progress`, `complete`, or `error`.
+    /// `details` optionally carries the tool call arguments.
     StreamTaskUpdate {
         channel: String,
         thread_ts: String,
         task_id: String,
         title: String,
         status: String,
+        details: String,
     },
 }
 
@@ -150,11 +169,16 @@ struct RawSlackEvent {
 
 #[derive(Deserialize)]
 struct InteractivePayload {
+    /// `block_actions` for button clicks, `view_submission` for modal submits.
+    #[serde(rename = "type", default)]
+    payload_type: String,
     #[serde(default)]
     actions: Vec<InteractiveAction>,
     channel: Option<InteractiveChannel>,
     message: Option<InteractiveMessage>,
     user: Option<InteractiveUser>,
+    /// Present on `view_submission` payloads.
+    view: Option<InteractiveView>,
 }
 
 #[derive(Deserialize)]
@@ -189,6 +213,24 @@ struct InteractiveUser {
     id: String,
 }
 
+/// The modal view echoed back in a `view_submission` payload.
+#[derive(Deserialize)]
+struct InteractiveView {
+    #[serde(default)]
+    callback_id: String,
+    /// Arbitrary state we stashed when opening the modal (the slash command's
+    /// `response_url`, so the confirmation can be sent back to the user).
+    #[serde(default)]
+    private_metadata: String,
+    state: Option<InteractiveViewState>,
+}
+
+#[derive(Deserialize)]
+struct InteractiveViewState {
+    #[serde(default)]
+    values: serde_json::Value,
+}
+
 /// Payload of a `slash_commands` envelope (Socket Mode).
 #[derive(Deserialize)]
 struct SlashCommandPayload {
@@ -198,6 +240,8 @@ struct SlashCommandPayload {
     user_id: String,
     channel_id: String,
     response_url: String,
+    #[serde(default)]
+    trigger_id: Option<String>,
 }
 
 // ── Sidecar constructor ─────────────────────────────────────────────────────
@@ -283,6 +327,11 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
         let mut active_streams: std::collections::HashMap<String, StreamState> =
             std::collections::HashMap::new();
 
+        // Last status text set per thread_ts, to dedup repeated SetStatus calls
+        // (e.g. "is thinking" emitted on every text chunk).
+        let mut last_status: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+
         /// Start a fresh stream, returning the new ts or None on failure.
         async fn start_fresh(
             slack: &SlackClient,
@@ -325,7 +374,145 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
             state
         }
 
-        while let Some(action) = from_df_rx.recv().await {
+        /// Append text to a thread's active stream, starting or splitting the
+        /// stream message as needed. This is the flush path for buffered text.
+        async fn append_text(
+            slack: &SlackClient,
+            channel: &str,
+            thread_ts: &str,
+            text: &str,
+            active_streams: &mut std::collections::HashMap<String, StreamState>,
+        ) {
+            // Ensure we have an active stream.
+            if !active_streams.contains_key(thread_ts)
+                && start_fresh(slack, channel, thread_ts, active_streams)
+                    .await
+                    .is_none()
+            {
+                return;
+            }
+
+            // Split at a clean breaking point (text has a newline and we're
+            // not inside a code block) when either:
+            // - the message has grown past 20k chars, or
+            // - the stream has been open longer than MAX_STREAM_AGE.
+            let should_split = {
+                let state = active_streams.get(thread_ts).expect("bug: just inserted");
+                let clean_break = text.contains('\n') && !state.in_code_block;
+                let too_long = state.char_count > 20_000;
+                let too_old = state.started_at.elapsed() > MAX_STREAM_AGE;
+                clean_break && (too_long || too_old)
+            };
+
+            if should_split {
+                // Stop current stream and start a new one.
+                if let Some(old) = active_streams.remove(thread_ts) {
+                    let _ = slack.stop_stream(channel, &old.ts).await;
+                }
+                if start_fresh(slack, channel, thread_ts, active_streams)
+                    .await
+                    .is_none()
+                {
+                    return;
+                }
+            }
+
+            let stream_ts = active_streams
+                .get(thread_ts)
+                .expect("bug: stream must exist")
+                .ts
+                .clone();
+
+            // Append and handle error codes.
+            match slack.append_stream(channel, &stream_ts, text).await {
+                Ok(None) => {
+                    // Success — update state.
+                    let state = active_streams
+                        .get_mut(thread_ts)
+                        .expect("bug: stream must exist");
+                    state.char_count += text.len();
+                    state.in_code_block = update_code_block_state(text, state.in_code_block);
+                }
+                Ok(Some(ref err)) => {
+                    // Recoverable: start a new stream and retry.
+                    tracing::warn!("append_stream got {err}, starting new stream");
+                    active_streams.remove(thread_ts);
+                    if start_fresh(slack, channel, thread_ts, active_streams)
+                        .await
+                        .is_none()
+                    {
+                        return;
+                    }
+                    let new_ts = active_streams
+                        .get(thread_ts)
+                        .expect("bug: just started")
+                        .ts
+                        .clone();
+                    match slack.append_stream(channel, &new_ts, text).await {
+                        Ok(None) => {
+                            let state = active_streams
+                                .get_mut(thread_ts)
+                                .expect("bug: stream must exist");
+                            state.char_count += text.len();
+                            state.in_code_block =
+                                update_code_block_state(text, state.in_code_block);
+                        }
+                        Ok(Some(err)) => {
+                            tracing::error!(
+                                "append_stream retry failed with {err}, dropping chunk"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!("append_stream retry failed: {e}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("append_stream failed: {e}");
+                }
+            }
+        }
+
+        /// Buffered stream text keyed by `thread_ts`, flushed on a fixed
+        /// interval to avoid Slack rate limits (`chat.appendStream` throttles
+        /// on rapid successive updates).
+        struct PendingText {
+            channel: String,
+            text: String,
+        }
+        let mut pending_text: std::collections::HashMap<String, PendingText> =
+            std::collections::HashMap::new();
+
+        /// How often buffered stream text is flushed to Slack.
+        const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+        let mut flush_tick = tokio::time::interval(FLUSH_INTERVAL);
+        flush_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            let action = tokio::select! {
+                maybe_action = from_df_rx.recv() => match maybe_action {
+                    Some(a) => a,
+                    None => break,
+                },
+                _ = flush_tick.tick() => {
+                    // Flush all buffered text (one append per thread).
+                    let ready: Vec<(String, PendingText)> = pending_text.drain().collect();
+                    for (thread_ts, pending) in ready {
+                        if pending.text.is_empty() {
+                            continue;
+                        }
+                        append_text(
+                            &slack,
+                            &pending.channel,
+                            &thread_ts,
+                            &pending.text,
+                            &mut active_streams,
+                        )
+                        .await;
+                    }
+                    continue;
+                }
+            };
             match action {
                 SlackAction::PostMessage {
                     channel,
@@ -385,101 +572,37 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
                     thread_ts,
                     text,
                 } => {
-                    // Ensure we have an active stream.
-                    if !active_streams.contains_key(&thread_ts)
-                        && start_fresh(&slack, &channel, &thread_ts, &mut active_streams)
-                            .await
-                            .is_none()
-                    {
-                        continue;
-                    }
-
-                    // Split at a clean breaking point (text has a newline and
-                    // we're not inside a code block) when either:
-                    // - the message has grown past 20k chars, or
-                    // - the stream has been open longer than MAX_STREAM_AGE.
-                    let should_split = {
-                        let state = active_streams.get(&thread_ts).expect("bug: just inserted");
-                        let clean_break = text.contains('\n') && !state.in_code_block;
-                        let too_long = state.char_count > 20_000;
-                        let too_old = state.started_at.elapsed() > MAX_STREAM_AGE;
-                        clean_break && (too_long || too_old)
-                    };
-
-                    if should_split {
-                        // Stop current stream and start a new one.
-                        if let Some(old) = active_streams.remove(&thread_ts) {
-                            let _ = slack.stop_stream(&channel, &old.ts).await;
-                        }
-                        if start_fresh(&slack, &channel, &thread_ts, &mut active_streams)
-                            .await
-                            .is_none()
-                        {
-                            continue;
-                        }
-                    }
-
-                    let stream_ts = active_streams
-                        .get(&thread_ts)
-                        .expect("bug: stream must exist")
-                        .ts
-                        .clone();
-
-                    // Append and handle error codes.
-                    match slack.append_stream(&channel, &stream_ts, &text).await {
-                        Ok(None) => {
-                            // Success — update state.
-                            let state = active_streams
-                                .get_mut(&thread_ts)
-                                .expect("bug: stream must exist");
-                            state.char_count += text.len();
-                            state.in_code_block =
-                                update_code_block_state(&text, state.in_code_block);
-                        }
-                        Ok(Some(ref err)) => {
-                            // Recoverable: start a new stream and retry.
-                            tracing::warn!("append_stream got {err}, starting new stream");
-                            active_streams.remove(&thread_ts);
-                            if start_fresh(&slack, &channel, &thread_ts, &mut active_streams)
-                                .await
-                                .is_none()
-                            {
-                                continue;
-                            }
-                            let new_ts = active_streams
-                                .get(&thread_ts)
-                                .expect("bug: just started")
-                                .ts
-                                .clone();
-                            match slack.append_stream(&channel, &new_ts, &text).await {
-                                Ok(None) => {
-                                    let state = active_streams
-                                        .get_mut(&thread_ts)
-                                        .expect("bug: stream must exist");
-                                    state.char_count += text.len();
-                                    state.in_code_block =
-                                        update_code_block_state(&text, state.in_code_block);
-                                }
-                                Ok(Some(err)) => {
-                                    tracing::error!(
-                                        "append_stream retry failed with {err}, dropping chunk"
-                                    );
-                                }
-                                Err(e) => {
-                                    tracing::error!("append_stream retry failed: {e}");
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("append_stream failed: {e}");
-                        }
-                    }
+                    // Buffer the text; it is flushed on the next interval tick
+                    // (or immediately on a tool update / stream stop). This
+                    // coalesces rapid chunks into one append to avoid Slack
+                    // throttling.
+                    let entry = pending_text
+                        .entry(thread_ts)
+                        .or_insert_with(|| PendingText {
+                            channel: channel.clone(),
+                            text: String::new(),
+                        });
+                    entry.text.push_str(&text);
                 }
                 SlackAction::StreamStop { channel, thread_ts } => {
+                    // Flush any buffered text before finalizing the stream so
+                    // the closing message contains everything streamed so far.
+                    if let Some(pending) = pending_text.remove(&thread_ts) {
+                        if !pending.text.is_empty() {
+                            append_text(
+                                &slack,
+                                &pending.channel,
+                                &thread_ts,
+                                &pending.text,
+                                &mut active_streams,
+                            )
+                            .await;
+                        }
+                    }
                     if let Some(state) = active_streams.remove(&thread_ts) {
                         // Complete any tool tasks that never got a result so
                         // the message doesn't finalize with spinners.
-                        let pending: Vec<(String, String)> = {
+                        let pending: Vec<(String, String, String)> = {
                             let rt = crate::runtime::get();
                             let mut tasks = rt.tool_tasks.lock().expect("bug: lock poisoned");
                             tasks
@@ -487,10 +610,10 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
                                 .map(|q| q.drain(..).collect())
                                 .unwrap_or_default()
                         };
-                        for (task_id, title) in pending {
+                        for (task_id, title, details) in pending {
                             if let Err(e) = slack
                                 .append_stream_task(
-                                    &channel, &state.ts, &task_id, &title, "complete",
+                                    &channel, &state.ts, &task_id, &title, "complete", &details,
                                 )
                                 .await
                             {
@@ -519,19 +642,35 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
                     }
                     // Clear the thread status indicator.
                     let _ = slack.set_thread_status(&channel, &thread_ts, "").await;
+                    last_status.remove(&thread_ts);
                 }
                 SlackAction::SetStatus {
                     channel,
                     thread_ts,
                     status,
                 } => {
-                    if let Err(e) = slack.set_thread_status(&channel, &thread_ts, &status).await {
-                        tracing::error!("set_thread_status failed: {e}");
+                    // Skip redundant updates (the same status is emitted on
+                    // every text chunk) to avoid spamming the API.
+                    if last_status.get(&thread_ts) == Some(&status) {
+                        continue;
+                    }
+                    match slack.set_thread_status(&channel, &thread_ts, &status).await {
+                        Ok(()) => {
+                            last_status.insert(thread_ts, status);
+                        }
+                        Err(e) => {
+                            tracing::error!("set_thread_status failed: {e}");
+                        }
                     }
                 }
                 SlackAction::CommandResponse { response_url, text } => {
                     if let Err(e) = slack.respond_to_command(&response_url, &text).await {
                         tracing::error!("CommandResponse failed: {e}");
+                    }
+                }
+                SlackAction::OpenView { trigger_id, view } => {
+                    if let Err(e) = slack.open_view(&trigger_id, &view).await {
+                        tracing::error!("OpenView failed: {e}");
                     }
                 }
                 SlackAction::SetThreadTitle {
@@ -571,7 +710,22 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
                     task_id,
                     title,
                     status,
+                    details,
                 } => {
+                    // Flush buffered text first so the tool indicator appears
+                    // after the text that preceded it (preserves ordering).
+                    if let Some(pending) = pending_text.remove(&thread_ts) {
+                        if !pending.text.is_empty() {
+                            append_text(
+                                &slack,
+                                &pending.channel,
+                                &thread_ts,
+                                &pending.text,
+                                &mut active_streams,
+                            )
+                            .await;
+                        }
+                    }
                     // Ensure we have an active stream to attach the task to.
                     if !active_streams.contains_key(&thread_ts)
                         && start_fresh(&slack, &channel, &thread_ts, &mut active_streams)
@@ -585,29 +739,13 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
                         .expect("bug: just ensured stream exists")
                         .ts
                         .clone();
-                    match slack
-                        .append_stream_task(&channel, &stream_ts, &task_id, &title, &status)
+                    if let Err(e) = slack
+                        .append_stream_task(
+                            &channel, &stream_ts, &task_id, &title, &status, &details,
+                        )
                         .await
                     {
-                        Ok(None) => {}
-                        Ok(Some(err)) => {
-                            // Workspace may not support task chunks yet — fall
-                            // back to the plain-text tool indicator (only for
-                            // the start, to avoid duplicate lines).
-                            tracing::warn!("append_stream_task got {err}, falling back to text");
-                            if status == "in_progress" {
-                                let _ = slack
-                                    .append_stream(
-                                        &channel,
-                                        &stream_ts,
-                                        &format!("\n\n🔧 `{title}(…)`\n"),
-                                    )
-                                    .await;
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("append_stream_task failed: {e}");
-                        }
+                        tracing::error!("append_stream_task failed: {e}");
                     }
                 }
                 SlackAction::DismissChoiceButtons { choice_id } => {
@@ -777,12 +915,18 @@ fn parse_slash_command(payload: serde_json::Value) -> Option<SlackEvent> {
         is_unauthorized: false, // set later by caller
         slash_command: Some(p.command),
         response_url: Some(p.response_url),
+        trigger_id: p.trigger_id,
         is_app_home_opened: false,
     })
 }
 
 fn parse_interactive(payload: serde_json::Value) -> Option<SlackEvent> {
     let p: InteractivePayload = serde_json::from_value(payload).ok()?;
+
+    if p.payload_type == "view_submission" {
+        return parse_view_submission(p);
+    }
+
     let action = p.actions.first()?;
     let chan = p.channel.as_ref()?;
     let user = p.user.as_ref()?;
@@ -811,6 +955,50 @@ fn parse_interactive(payload: serde_json::Value) -> Option<SlackEvent> {
         is_unauthorized: false, // set later by caller
         slash_command: None,
         response_url: None,
+        trigger_id: None,
+        is_app_home_opened: false,
+    })
+}
+
+/// Parse a modal `view_submission`. Currently only the model-picker modal is
+/// supported: the submission is normalized into a `/model <selection>` slash
+/// command event so it flows through the existing command handling.
+fn parse_view_submission(p: InteractivePayload) -> Option<SlackEvent> {
+    let view = p.view?;
+    if view.callback_id != MODEL_PICKER_CALLBACK_ID {
+        tracing::debug!(
+            "ignoring view_submission with callback_id: {}",
+            view.callback_id
+        );
+        return None;
+    }
+    let user = p.user?;
+    let selected = view
+        .state?
+        .values
+        .get(MODEL_PICKER_BLOCK_ID)?
+        .get(MODEL_PICKER_ACTION_ID)?
+        .get("selected_option")?
+        .get("value")?
+        .as_str()?
+        .to_owned();
+
+    Some(SlackEvent {
+        user: user.id,
+        text: selected,
+        // Modal submissions are not tied to a channel or thread.
+        channel: String::new(),
+        thread_ts: String::new(),
+        is_button_click: false,
+        button_value: None,
+        action_id: None,
+        message_ts: None,
+        button_text: None,
+        is_bot: false,
+        is_unauthorized: false, // set later by caller
+        slash_command: Some("/model".to_owned()),
+        response_url: (!view.private_metadata.is_empty()).then_some(view.private_metadata),
+        trigger_id: None,
         is_app_home_opened: false,
     })
 }
@@ -839,6 +1027,7 @@ fn parse_events_api(payload: serde_json::Value) -> Option<SlackEvent> {
             is_unauthorized: false, // set later by caller
             slash_command: None,
             response_url: None,
+            trigger_id: None,
             is_app_home_opened: true,
         });
     }
@@ -871,6 +1060,7 @@ fn parse_events_api(payload: serde_json::Value) -> Option<SlackEvent> {
         is_unauthorized: false, // set later by caller
         slash_command: None,
         response_url: None,
+        trigger_id: None,
         is_app_home_opened: false,
     })
 }
@@ -1048,6 +1238,66 @@ mod tests {
     }
 
     #[test]
+    fn parse_slash_command_captures_trigger_id() {
+        let payload = serde_json::json!({
+            "command": "/model",
+            "user_id": "U123",
+            "channel_id": "C456",
+            "response_url": "https://hooks.slack.com/commands/T1/123/abc",
+            "trigger_id": "12345.98765.abcd"
+        });
+        let event = parse_slash_command(payload).expect("should parse");
+        assert_eq!(event.trigger_id.as_deref(), Some("12345.98765.abcd"));
+    }
+
+    #[test]
+    fn parse_view_submission_model_picker_yields_model_command() {
+        let payload = serde_json::json!({
+            "type": "view_submission",
+            "user": {"id": "U123"},
+            "view": {
+                "callback_id": MODEL_PICKER_CALLBACK_ID,
+                "private_metadata": "https://hooks.slack.com/commands/T1/123/abc",
+                "state": {
+                    "values": {
+                        MODEL_PICKER_BLOCK_ID: {
+                            MODEL_PICKER_ACTION_ID: {
+                                "type": "radio_buttons",
+                                "selected_option": {
+                                    "text": {"type": "plain_text", "text": "Sonnet"},
+                                    "value": "bedrock/claude-sonnet-4"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let event = parse_interactive(payload).expect("should parse");
+        assert!(!event.is_button_click);
+        assert_eq!(event.slash_command.as_deref(), Some("/model"));
+        assert_eq!(event.text, "bedrock/claude-sonnet-4");
+        assert_eq!(event.user, "U123");
+        assert_eq!(
+            event.response_url.as_deref(),
+            Some("https://hooks.slack.com/commands/T1/123/abc")
+        );
+    }
+
+    #[test]
+    fn parse_view_submission_unknown_callback_returns_none() {
+        let payload = serde_json::json!({
+            "type": "view_submission",
+            "user": {"id": "U123"},
+            "view": {
+                "callback_id": "some_other_modal",
+                "state": {"values": {}}
+            }
+        });
+        assert!(parse_interactive(payload).is_none());
+    }
+
+    #[test]
     fn parse_events_api_app_home_opened_messages_tab() {
         let payload = serde_json::json!({
             "event": {
@@ -1130,6 +1380,7 @@ mod tests {
             is_unauthorized: false,
             slash_command: None,
             response_url: None,
+            trigger_id: None,
             is_app_home_opened: false,
         };
         // Same filter as the dataflow
@@ -1152,6 +1403,7 @@ mod tests {
             is_unauthorized: true,
             slash_command: None,
             response_url: None,
+            trigger_id: None,
             is_app_home_opened: false,
         };
         assert!(!(!event.is_bot && !event.is_unauthorized));
@@ -1173,6 +1425,7 @@ mod tests {
             is_unauthorized: false,
             slash_command: None,
             response_url: None,
+            trigger_id: None,
             is_app_home_opened: false,
         };
         assert!(!event.is_bot && !event.is_unauthorized);
