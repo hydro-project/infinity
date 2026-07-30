@@ -116,6 +116,7 @@ impl RemoteDaemons {
             .send(ClientMessage::Connect {
                 session_id: session_id.to_owned(),
                 thread_id: thread_id.map(|t| t.to_owned()),
+                keeps_session_alive: true,
             })
             .map_err(|e| format!("send Connect failed: {e}"))?;
 

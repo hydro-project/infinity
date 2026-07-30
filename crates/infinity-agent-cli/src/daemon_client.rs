@@ -373,6 +373,7 @@ pub async fn run_headless(message: String) -> Result<(), BoxError> {
         cwd,
         location: None,
         model: None,
+        keeps_session_alive: true,
     };
     framed.send(Bytes::from(serde_json::to_vec(&msg)?)).await?;
 
@@ -589,6 +590,7 @@ where
         to_daemon.send(ClientMessage::Connect {
             session_id: resolved,
             thread_id: None,
+            keeps_session_alive: true,
         })?;
     }
 
@@ -728,7 +730,7 @@ where
                     }
 
                     if let Some(target) = maybe_target {
-                        let _ = to_daemon.send(ClientMessage::Connect { session_id: target, thread_id: None });
+                        let _ = to_daemon.send(ClientMessage::Connect { session_id: target, thread_id: None, keeps_session_alive: true });
                     } // if none, will be created on next user input
                 }
 
@@ -772,7 +774,7 @@ where
                         }
                     } else {
                         pending_input.push(text);
-                        let _ = to_daemon.send(ClientMessage::CreateSession { cwd: cwd.clone(), location: None, model: selected_model.clone() });
+                        let _ = to_daemon.send(ClientMessage::CreateSession { cwd: cwd.clone(), location: None, model: selected_model.clone(), keeps_session_alive: true });
                     }
                 }
             }
