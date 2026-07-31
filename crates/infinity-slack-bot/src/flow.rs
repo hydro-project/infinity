@@ -645,8 +645,17 @@ pub fn handle_model_command(arg: &str) -> String {
             provider_id,
             model_id,
         };
-        let mut current = rt.default_model.lock().expect("bug: lock poisoned");
-        *current = Some(model_ref);
+        {
+            let mut current = rt.default_model.lock().expect("bug: lock poisoned");
+            *current = Some(model_ref.clone());
+        }
+        // Persist the selection to slack.json so it survives restarts.
+        if let Err(e) = rt.config.save_default_model(&model_ref) {
+            tracing::error!("failed to persist default model to slack.json: {e}");
+            return format!(
+                "✅ Default model switched to *{display}* (`{arg}`).\nNew sessions will use this model.\n⚠️ Failed to save to slack.json — the selection will reset on restart."
+            );
+        }
         format!(
             "✅ Default model switched to *{display}* (`{arg}`).\nNew sessions will use this model."
         )

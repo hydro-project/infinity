@@ -76,6 +76,7 @@ pub fn ensure_test_init() {
             default_cwd: std::path::PathBuf::from("/tmp"),
             allowed_users: vec![],
             default_model: None,
+            path: None,
         }));
         Runtime {
             config,
