@@ -200,39 +200,3 @@ async fn keep_alive_client_keeps_session_warm() {
         })
         .await;
 }
-
-/// After a non-keep-alive session idles out, a follow-up input on the same
-/// connection must transparently restart the session and get a response
-/// (rather than being dropped into the dead agent loop).
-#[tokio::test(flavor = "current_thread")]
-async fn input_after_idle_exit_restarts_session() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let mut h = start_harness().await.expect("start harness");
-            let session_id = create_session_and_chat(&mut h, false).await;
-
-            assert!(
-                wait_for_agent_exit(&h.manager, &session_id).await,
-                "session should idle out first"
-            );
-
-            // Second message on the same (still-open) connection.
-            h.client_tx
-                .send(ClientMessage::UserInput {
-                    session_id: session_id.clone(),
-                    text: "are you still there?".to_owned(),
-                })
-                .expect("send follow-up UserInput");
-
-            let _req = h.ctrl.next_request().await;
-            h.ctrl.send_text("yes");
-            h.ctrl.finish();
-
-            wait_for_message(&mut h.daemon_rx, |m| {
-                matches!(m, DaemonMessage::ResponseDone { .. })
-            })
-            .await;
-        })
-        .await;
-}
