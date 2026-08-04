@@ -2,11 +2,11 @@
 //! RAP callback server without deserialization errors.
 
 use async_trait::async_trait;
-use infinity_daemon::mcp_proxy::{McpClientFactory, McpTransport, start_proxy_server};
+use infinity_daemon::mcp_proxy::start_proxy_server;
+use infinity_mcp_bridge::{BoxError, McpTransport, McpTransportFactory};
 use rap_client::callback_server::start_callback_channel;
 use rap_protocol::{DisplaySegment, RapCallback, RapInvocation};
-
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
+use std::sync::Arc;
 
 struct MockMcpTransport;
 
@@ -28,15 +28,15 @@ impl McpTransport for MockMcpTransport {
     }
 }
 
-fn mock_factory() -> McpClientFactory {
-    Box::new(|| Box::pin(async { Ok(Box::new(MockMcpTransport) as Box<dyn McpTransport>) }))
+fn mock_factory() -> McpTransportFactory {
+    Arc::new(|| Box::pin(async { Ok(Box::new(MockMcpTransport) as Box<dyn McpTransport>) }))
 }
 
 #[tokio::test]
 async fn list_tools_callback_deserializes() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    let port = start_proxy_server("mock".to_owned(), mock_factory())
+    let (port, _task) = start_proxy_server("mock".to_owned(), mock_factory())
         .await
         .expect("start proxy server");
     let proxy_url = format!("http://127.0.0.1:{port}");

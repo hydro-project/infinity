@@ -1,5 +1,6 @@
 ---
-source: crates/infinity-daemon/src/session/agent_loop.rs
+source: crates/infinity-agent-core/src/system/tests.rs
+assertion_line: 1487
 expression: post_compaction_req.chat_history
 ---
 [

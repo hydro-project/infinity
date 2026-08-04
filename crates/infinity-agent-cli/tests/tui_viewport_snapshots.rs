@@ -10,11 +10,10 @@
 mod common;
 
 use common::TuiHarness;
-use infinity_agent_core::batch_processor::DisplayEvent;
+use infinity_agent_cli::display::DisplayEvent;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
-use rig_mock::MockStreamingResponse;
 
-type Evt = DisplayEvent<MockStreamingResponse>;
+type Evt = DisplayEvent;
 
 /// Print `n` numbered lines so eaten/duplicated scrollback is obvious.
 async fn fill_scrollback(h: &TuiHarness, n: usize) {

@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use rig::message::AssistantContent;
 
 use crate::message::{InfinityMessage, InputMessage};
+use crate::system::UserChoice;
 
 /// Persistent conversation history storage (DSQL in Lambda, in-memory for CLI).
 #[async_trait]
@@ -9,6 +10,10 @@ pub trait ConversationStore: Send + Sync + Clone {
     type Error: std::error::Error + Send + Sync + 'static;
 
     async fn ensure_root_thread(&self, thread_id: &str) -> Result<(), Self::Error>;
+
+    /// Return whether an exact root or child thread record exists without
+    /// creating it.
+    async fn thread_exists(&self, thread_id: &str) -> Result<bool, Self::Error>;
 
     /// Load history for a session. `start_from` (exclusive) and `up_to`
     /// (inclusive) are optional bounds on message order. `None` means unbounded.
@@ -205,6 +210,43 @@ pub trait StateStore: Send + Sync + Clone {
         thread_id: &str,
         tool_call_id: &str,
     ) -> Result<(), Self::Error>;
+
+    /// Add or replace a pending user choice for one thread.
+    async fn add_pending_user_choice(
+        &self,
+        thread_id: &str,
+        choice: UserChoice,
+    ) -> Result<(), Self::Error>;
+
+    /// Remove a pending user choice after it is answered or interrupted.
+    async fn remove_pending_user_choice(
+        &self,
+        thread_id: &str,
+        choice_id: &str,
+    ) -> Result<(), Self::Error>;
+
+    /// List choices awaiting a response for one thread.
+    async fn get_pending_user_choices(
+        &self,
+        thread_id: &str,
+    ) -> Result<Vec<UserChoice>, Self::Error>;
+
+    /// Whether an existing thread has been explicitly stopped.
+    ///
+    /// The local router consults this before spawning a driver for input that
+    /// cannot legitimately resume a stopped thread: synthetic subscription
+    /// events and thread reports, tool results, OAuth completions, and user
+    /// choices. Returning `true` drops such input before a driver is spawned.
+    /// Plain user text is never gated by this method because sending new text
+    /// is how a user resumes a stopped thread.
+    ///
+    /// `thread_id` is the target thread itself, not necessarily its root.
+    /// Implementations that track stopped state per conversation may resolve
+    /// the root themselves. Stores without stopped-thread policy inherit the
+    /// default `false` response.
+    async fn is_thread_stopped(&self, _thread_id: &str) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
 }
 
 /// Abstraction over input message delivery (SQS in Lambda, channel/direct in CLI).
@@ -216,7 +258,6 @@ pub trait InputSender: Send + Sync + Clone {
     async fn send_to_input_queue(
         &self,
         message: InputMessage,
-        group_id: &str,
         dedup_id: &str,
     ) -> Result<(), Self::Error>;
 }

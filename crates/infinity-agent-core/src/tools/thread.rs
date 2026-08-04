@@ -144,10 +144,9 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             subscription: false,
         };
 
-        let child_group_id = child_result.group_id.clone();
         context
             .message_sender
-            .send_to_input_queue(child_result, &child_group_id, id)
+            .send_to_input_queue(child_result, id)
             .await
             .expect("failed to send child thread message to input queue");
 
@@ -249,10 +248,9 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Repor
             subscription: false,
         };
 
-        let report_group_id = report_message.group_id.clone();
         context
             .message_sender
-            .send_to_input_queue(report_message, &report_group_id, &id)
+            .send_to_input_queue(report_message, &id)
             .await?;
 
         let tool_result = InputMessage {
@@ -272,7 +270,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Repor
 
         context
             .message_sender
-            .send_to_input_queue(tool_result, &context.group_id, &id)
+            .send_to_input_queue(tool_result, &id)
             .await?;
 
         Ok(())
@@ -408,10 +406,9 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
                 display_as: None,
                 subscription: false,
             };
-            let notify_group_id = notify_msg.group_id.clone();
             context
                 .message_sender
-                .send_to_input_queue(notify_msg, &notify_group_id, &id)
+                .send_to_input_queue(notify_msg, &id)
                 .await?;
             if let Some(ref notifier) = self.rap_notifier {
                 notifier.notify_thread_closed(thread_id).await;
@@ -463,10 +460,9 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
                 subscription: false,
             };
 
-            let report_group_id = report_message.group_id.clone();
             context
                 .message_sender
-                .send_to_input_queue(report_message, &report_group_id, &id)
+                .send_to_input_queue(report_message, &id)
                 .await?;
         }
 
@@ -582,7 +578,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M>
 
         context
             .message_sender
-            .send_to_input_queue(child_message, child_thread_id, &id)
+            .send_to_input_queue(child_message, &id)
             .await?;
 
         let tool_result = InputMessage {
@@ -602,7 +598,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M>
 
         context
             .message_sender
-            .send_to_input_queue(tool_result, &context.group_id, &id)
+            .send_to_input_queue(tool_result, &id)
             .await?;
 
         Ok(())

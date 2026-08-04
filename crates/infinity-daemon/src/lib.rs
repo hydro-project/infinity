@@ -6,12 +6,11 @@ pub mod memory_store;
 pub mod migrate;
 pub mod models;
 pub mod rap_callback;
-pub mod rap_tools;
+pub mod rap_servers;
 pub mod remote;
 pub mod session;
 pub mod session_store;
 pub mod set_title_tool;
-pub mod sleep_tools;
 pub mod web_assets;
 pub mod ws_handler;
 
@@ -25,6 +24,19 @@ use tracing_subscriber::EnvFilter;
 /// against daemon exit to detect startup failures. It must remain the
 /// daemon's only stdout output.
 pub const DAEMON_READY_LINE: &str = "infinity-daemon ready";
+
+/// Launch a fully-initialized session manager: bind the RAP callback
+/// listener, build the [`session::SessionManager`] with the listener's
+/// callback URL, and start serving callbacks into it. This is the shared
+/// startup path for the daemon and the CLI's direct (daemonless) mode.
+pub async fn launch_session_manager(
+    state_dir: std::path::PathBuf,
+) -> Result<session::SharedSessionManager, Box<dyn std::error::Error + Send + Sync>> {
+    let bridge = infinity_rap_bridge::RapCallbackBridge::bind().await?;
+    let session_manager =
+        session::SessionManager::new(state_dir, bridge.callback_url().to_owned()).await?;
+    Ok(rap_callback::serve_callbacks(bridge, session_manager))
+}
 
 /// Run the daemon until it receives a shutdown signal. When `announce_ready`
 /// is true, prints [`DAEMON_READY_LINE`] to stdout after all initialization
@@ -53,9 +65,9 @@ pub async fn run_daemon(
     let pid_path = infinity_protocol::pid_path();
     std::fs::write(&pid_path, std::process::id().to_string())?;
 
-    let session_manager = rap_callback::start_callback_server(infinity_protocol::state_dir())
+    let session_manager = launch_session_manager(infinity_protocol::state_dir())
         .await
-        .map_err(|e| format!("Failed to start callback server: {e}"))?;
+        .map_err(|e| format!("Failed to launch session manager: {e}"))?;
     tracing::info!("shared callback server started");
 
     // Initialize remote daemon connections
@@ -113,11 +125,11 @@ pub async fn run_daemon(
     let _ = std::fs::remove_file(&sock_path);
     let _ = std::fs::remove_file(infinity_protocol::pid_path());
 
-    let mut mgr = session_manager.lock().await;
-    let session_ids: Vec<String> = mgr.sessions.keys().cloned().collect();
-    for sid in session_ids {
-        mgr.cleanup_session(&sid).await;
-    }
+    // Stop every booted RAP server; sessions themselves need no teardown
+    // (their state is already durable, and they resume on the next input
+    // after the daemon restarts).
+    let mgr = session_manager.lock().await;
+    mgr.rap_manager.shutdown_all().await;
 
     tracing::info!("daemon shut down");
     Ok(())

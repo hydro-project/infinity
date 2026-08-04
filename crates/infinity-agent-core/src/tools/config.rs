@@ -93,16 +93,6 @@ impl ToolsConfig {
         }
     }
 
-    pub fn add_command(&mut self, command: String) {
-        self.tool_sets.push(ToolSetConfig::ToolsetCommand {
-            command,
-            id: None,
-            crate_name: None,
-            git: None,
-            path: None,
-        });
-    }
-
     pub fn add_installed_command(
         &mut self,
         command: String,
@@ -145,57 +135,6 @@ impl ToolsConfig {
                 ToolSetConfig::ToolsetServer { server_url, id, .. } => {
                     Some((server_url.clone(), id.clone()))
                 }
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Extract commands from entries that specify a command to launch: (command, id).
-    pub fn toolset_commands(&self) -> Vec<(String, Option<String>)> {
-        self.tool_sets
-            .iter()
-            .filter_map(|ts| match ts {
-                ToolSetConfig::ToolsetCommand { command, id, .. } => {
-                    Some((command.clone(), id.clone()))
-                }
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Extract MCP server configs: (name, command, env, id).
-    #[expect(clippy::type_complexity, reason = "internal // TODO")]
-    pub fn mcp_servers(
-        &self,
-    ) -> Vec<(String, Vec<String>, HashMap<String, String>, Option<String>)> {
-        self.tool_sets
-            .iter()
-            .filter_map(|ts| match ts {
-                ToolSetConfig::McpServer {
-                    name,
-                    command,
-                    env,
-                    id,
-                } => Some((name.clone(), command.clone(), env.clone(), id.clone())),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Extract HTTP MCP server configs: (name, url, headers, id).
-    #[expect(clippy::type_complexity, reason = "internal // TODO")]
-    pub fn http_mcp_servers(
-        &self,
-    ) -> Vec<(String, String, HashMap<String, String>, Option<String>)> {
-        self.tool_sets
-            .iter()
-            .filter_map(|ts| match ts {
-                ToolSetConfig::HttpMcpServer {
-                    name,
-                    url,
-                    headers,
-                    id,
-                } => Some((name.clone(), url.clone(), headers.clone(), id.clone())),
                 _ => None,
             })
             .collect()

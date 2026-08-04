@@ -1,4 +1,3 @@
-use infinity_daemon::rap_callback;
 use tracing_subscriber::EnvFilter;
 
 use clap::Parser;
@@ -300,7 +299,7 @@ async fn run_direct(
 ) -> Result<(), BoxError> {
     let state_dir = std::env::current_dir()?.join(".infinity");
 
-    let mgr = rap_callback::start_callback_server(state_dir)
+    let mgr = infinity_daemon::launch_session_manager(state_dir)
         .await
         .map_err(|e| format!("Failed to start callback server: {e}"))?;
     tracing::info!("Shared callback server started");
@@ -325,11 +324,10 @@ async fn run_direct(
         )
     );
 
-    let mut mgr = mgr.lock().await;
-    let session_ids: Vec<String> = mgr.sessions.keys().cloned().collect();
-    for sid in session_ids {
-        mgr.cleanup_session(&sid).await;
-    }
+    // Stop every booted RAP server; sessions themselves need no teardown
+    // (their state is already durable).
+    let mgr = mgr.lock().await;
+    mgr.rap_manager.shutdown_all().await;
 
     res
 }

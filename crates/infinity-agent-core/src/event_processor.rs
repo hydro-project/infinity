@@ -17,6 +17,7 @@ use tracing;
 use crate::message::{
     InfinityMessage, InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind,
 };
+use crate::system::AgentEvent;
 use crate::tools::{Tool, ToolContext};
 use crate::traits::{ConversationStore, InputSender, StateStore};
 use infinity_provider_protocol::{ModelProvider, ProviderStreamingResponse};
@@ -36,6 +37,25 @@ pub struct OAuthOutputMessage {
     #[serde(rename = "type")]
     pub message_type: String,
     pub auth_url: String,
+    pub metadata: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserChoiceOutputMessage {
+    #[serde(rename = "type")]
+    pub message_type: String,
+    pub id: String,
+    pub prompt: String,
+    pub choices: Vec<String>,
+    pub default: usize,
+    pub metadata: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserChoiceCompleteOutputMessage {
+    #[serde(rename = "type")]
+    pub message_type: String,
+    pub choice_id: String,
     pub metadata: serde_json::Value,
 }
 
@@ -523,8 +543,8 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         .expect("bug: history should never be empty")
     }
 
-    /// Returns the full thread stack: [root, ..ancestors, current_thread].
-    /// For the root thread this is just [root_thread_id].
+    /// Returns the full thread stack: `[root, ..ancestors, current_thread]`.
+    /// For the root thread this is just the root thread ID.
     pub fn get_thread_stack(&self) -> Vec<String> {
         let mut stack = self.ancestor_chain.clone();
         stack.push(self.thread_id.clone());
@@ -533,9 +553,6 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
 
     pub fn conversation_store(&self) -> &C {
         &self.conversation_store
-    }
-    pub fn state_store(&self) -> &S {
-        &self.state_store
     }
 
     /// Apply the latest compaction summary: reload from store, truncate
@@ -636,15 +653,6 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             .await
             .map_err(|e| Box::new(e) as BoxError)
     }
-
-    /// Check if this thread has any active subscriptions.
-    pub async fn has_active_subscriptions(&self) -> bool {
-        self.state_store
-            .get_active_subscriptions(&self.thread_id)
-            .await
-            .map(|s| !s.is_empty())
-            .unwrap_or(false)
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -678,12 +686,11 @@ where
     }
 
     // Handle compaction complete: apply compaction to in-memory history, no LLM needed
-    if input_msg.synthetic.as_ref().is_some_and(|s| {
-        matches!(
-            s,
-            SyntheticKind::Tagged(TaggedSyntheticKind::CompactionComplete)
-        )
-    }) {
+    if input_msg
+        .synthetic
+        .as_ref()
+        .is_some_and(SyntheticKind::is_compaction_complete)
+    {
         tracing::info!("Applying compaction to thread {}", input_msg.group_id);
         current_history.apply_compaction().await?;
         return Ok(PrepareResult::CompactionApplied);
@@ -693,7 +700,7 @@ where
     if input_msg
         .synthetic
         .as_ref()
-        .is_some_and(|s| matches!(s, SyntheticKind::Tagged(TaggedSyntheticKind::Compaction)))
+        .is_some_and(SyntheticKind::is_compaction)
     {
         let spawn_call_id = uuid::Uuid::new_v4().to_string();
 
@@ -766,7 +773,7 @@ where
             subscription: false,
         };
         message_sender
-            .send_to_input_queue(child_msg, &sub_thread_id, &spawn_call_id)
+            .send_to_input_queue(child_msg, &spawn_call_id)
             .await
             .map_err(|e| Box::new(e) as BoxError)?;
 
@@ -999,7 +1006,7 @@ where
                 subscription: false,
             };
             message_sender
-                .send_to_input_queue(child_msg, &sub_thread_id, &event_call_id)
+                .send_to_input_queue(child_msg, &event_call_id)
                 .await
                 .map_err(|e| Box::new(e) as BoxError)?;
 
@@ -1069,6 +1076,69 @@ where
     }
 
     Ok(PrepareResult::Ready)
+}
+
+/// Compute the [`AgentEvent`] for an input that was just accepted into
+/// history. Returns `None` for inputs with no display representation (e.g. a
+/// synthetic event whose originating tool call is no longer in history).
+pub fn input_event<C, S>(
+    current_history: &HistoryManager<C, S>,
+    input_msg: &InputMessage,
+) -> Option<AgentEvent>
+where
+    C: ConversationStore,
+    S: StateStore,
+{
+    if let Some(synth) = input_msg.synthetic.as_ref() {
+        if let InputMessageContent::User(UserContent::ToolResult(res)) = &input_msg.content
+            && let ToolResultContent::Text(text) = res.content.first()
+        {
+            let orig_call = current_history.get_history(true).into_iter().find(|h| {
+                if let Message::Assistant { content, .. } = h
+                    && let AssistantContent::ToolCall(c) = content.first()
+                {
+                    c.id == synth.tool_call_id()
+                } else {
+                    false
+                }
+            });
+
+            if let Some(Message::Assistant { content, .. }) = orig_call
+                && let AssistantContent::ToolCall(c) = content.first()
+            {
+                let name = if let SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
+                    ref child_thread_id,
+                    ..
+                }) = *synth
+                {
+                    format!("Report from child thread {}", child_thread_id)
+                } else {
+                    format!("{}({})", c.function.name, c.function.arguments)
+                };
+                return Some(AgentEvent::SubscriptionEvent {
+                    name,
+                    text: text.text,
+                });
+            }
+        }
+        None
+    } else if let InputMessageContent::User(UserContent::ToolResult(res)) = &input_msg.content
+        && let ToolResultContent::Text(text) = res.content.first()
+    {
+        Some(AgentEvent::ToolResult {
+            segments: rap_protocol::build_display_segments(
+                input_msg.display_as.as_deref(),
+                &text.text,
+            ),
+        })
+    } else if let InputMessageContent::User(UserContent::Text(ref text)) = input_msg.content {
+        let display_text = text.text.strip_prefix("<interrupt>").unwrap_or(&text.text);
+        Some(AgentEvent::UserInput {
+            text: display_text.to_owned(),
+        })
+    } else {
+        None
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1534,6 +1604,47 @@ where
     Ok(())
 }
 
+/// Dispatch `action`; when asynchronous tool execution fails, enqueue a
+/// generic error `ToolResult` (with the original tool/call IDs) so the agent
+/// can recover instead of waiting forever, then surface the original error.
+pub(crate) async fn execute_action_with_error_result<M, R>(
+    action: CompletionAction<R>,
+    tool_registry: &HashMap<String, &dyn Tool<M>>,
+    tool_context: &ToolContext<M>,
+) -> Result<(), crate::tools::ToolError>
+where
+    M: InputSender + 'static,
+{
+    let failed_tool_call = match &action {
+        CompletionAction::ExecuteToolCall {
+            tool_call_id,
+            call_id,
+            ..
+        } => Some((tool_call_id.clone(), call_id.clone())),
+        CompletionAction::Done(_) => None,
+    };
+
+    if let Err(error) = execute_action(action, tool_registry, tool_context).await {
+        if let Some((tool_call_id, call_id)) = failed_tool_call
+            && let Err(send_error) = crate::tools::send_tool_error(
+                tool_context,
+                &tool_call_id,
+                call_id,
+                "Tool call failed",
+            )
+            .await
+        {
+            tracing::error!(
+                "failed to send fallback result after tool execution error: {}",
+                send_error
+            );
+        }
+        return Err(error);
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 #[expect(
     clippy::collapsible_if,
@@ -1545,7 +1656,8 @@ mod tests {
     use crate::message::{
         InputMessage, InputMessageContent, OAuthRequired, SyntheticKind, TaggedSyntheticKind,
     };
-    use crate::traits::{ConversationStore, InputSender, StateStore};
+    use crate::stores::{InMemoryConversationStore, InMemoryStateStore};
+    use crate::traits::{ConversationStore, InputSender};
     use async_trait::async_trait;
     use rig::OneOrMany;
     use rig::message::{
@@ -1554,17 +1666,6 @@ mod tests {
     };
     use std::collections::HashSet;
 
-    // ── Minimal error type ──
-
-    #[derive(Debug)]
-    struct TestError;
-    impl std::fmt::Display for TestError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "test error")
-        }
-    }
-    impl std::error::Error for TestError {}
-
     // ── No-op InputSender ──
 
     #[derive(Clone)]
@@ -1572,170 +1673,12 @@ mod tests {
 
     #[async_trait]
     impl InputSender for StubSender {
-        type Error = TestError;
+        type Error = std::io::Error;
         async fn send_to_input_queue(
             &self,
             _message: crate::message::InputMessage,
-            _group_id: &str,
             _dedup_id: &str,
-        ) -> Result<(), TestError> {
-            Ok(())
-        }
-    }
-
-    // ── No-op ConversationStore ──
-
-    #[derive(Clone)]
-    struct StubConversationStore {
-        closed_threads: HashSet<String>,
-    }
-
-    impl StubConversationStore {
-        fn new() -> Self {
-            Self {
-                closed_threads: HashSet::new(),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl ConversationStore for StubConversationStore {
-        type Error = TestError;
-
-        async fn ensure_root_thread(&self, _thread_id: &str) -> Result<(), TestError> {
-            Ok(())
-        }
-        async fn load_history_up_to(
-            &self,
-            _session_id: &str,
-            _start_from: Option<i64>,
-            _up_to: Option<i64>,
-        ) -> Result<Vec<InfinityMessage>, TestError> {
-            Ok(vec![])
-        }
-        async fn append_messages(
-            &self,
-            _session_id: &str,
-            _messages: Vec<(InfinityMessage, String)>,
-        ) -> Result<(), TestError> {
-            Ok(())
-        }
-        async fn spawn_thread(
-            &self,
-            _parent_thread_id: &str,
-            _spawn_tool_call_id: &str,
-            _is_for_subscription_event: bool,
-            _spawn_order_override: Option<usize>,
-        ) -> Result<String, TestError> {
-            Ok("sub-thread-1".to_owned())
-        }
-        async fn is_thread_closed(&self, thread_id: &str) -> Result<bool, TestError> {
-            Ok(self.closed_threads.contains(thread_id))
-        }
-        async fn close_thread(&self, _thread_id: &str) -> Result<(), TestError> {
-            Ok(())
-        }
-        async fn is_subscription_event_thread(&self, _thread_id: &str) -> Result<bool, TestError> {
-            Ok(false)
-        }
-        async fn get_thread_parent_info(
-            &self,
-            _thread_id: &str,
-        ) -> Result<Option<(String, String)>, TestError> {
-            Ok(None)
-        }
-        async fn get_ancestor_chain(
-            &self,
-            _thread_id: &str,
-        ) -> Result<Vec<(String, i64)>, TestError> {
-            Ok(vec![])
-        }
-        async fn mark_thread_as_compaction(&self, _thread_id: &str) -> Result<(), TestError> {
-            Ok(())
-        }
-        async fn is_compaction_thread(&self, _thread_id: &str) -> Result<bool, TestError> {
-            Ok(false)
-        }
-        async fn get_thread_spawn_order(&self, _thread_id: &str) -> Result<Option<i64>, TestError> {
-            Ok(None)
-        }
-        async fn save_compaction_summary(
-            &self,
-            _thread_id: &str,
-            _summary: &str,
-            _up_to_order: i64,
-        ) -> Result<(), TestError> {
-            Ok(())
-        }
-        async fn load_latest_compaction_summary_up_to(
-            &self,
-            _thread_id: &str,
-            _up_to_order: Option<i64>,
-        ) -> Result<Option<(String, i64)>, TestError> {
-            Ok(None)
-        }
-    }
-
-    // ── No-op StateStore ──
-
-    #[derive(Clone)]
-    struct StubStateStore;
-
-    #[async_trait]
-    impl StateStore for StubStateStore {
-        type Error = TestError;
-
-        async fn get_processed_ids(
-            &self,
-            _thread_id: &str,
-        ) -> Result<(HashSet<String>, HashSet<String>), TestError> {
-            Ok((HashSet::new(), HashSet::new()))
-        }
-        async fn add_processed_message_ids(
-            &self,
-            _thread_id: &str,
-            _message_ids: Vec<String>,
-        ) -> Result<(), TestError> {
-            Ok(())
-        }
-        async fn add_processed_tool_calls(
-            &self,
-            _thread_id: &str,
-            _tool_call_ids: Vec<String>,
-        ) -> Result<(), TestError> {
-            Ok(())
-        }
-        async fn get_metadata(
-            &self,
-            _root_thread_id: &str,
-        ) -> Result<Option<serde_json::Value>, TestError> {
-            Ok(None)
-        }
-        async fn set_metadata(
-            &self,
-            _root_thread_id: &str,
-            _metadata: serde_json::Value,
-        ) -> Result<(), TestError> {
-            Ok(())
-        }
-        async fn get_active_subscriptions(
-            &self,
-            _thread_id: &str,
-        ) -> Result<Vec<String>, TestError> {
-            Ok(vec![])
-        }
-        async fn add_active_subscription(
-            &self,
-            _thread_id: &str,
-            _tool_call_id: &str,
-        ) -> Result<(), TestError> {
-            Ok(())
-        }
-        async fn remove_active_subscription(
-            &self,
-            _thread_id: &str,
-            _tool_call_id: &str,
-        ) -> Result<(), TestError> {
+        ) -> Result<(), std::io::Error> {
             Ok(())
         }
     }
@@ -1743,13 +1686,16 @@ mod tests {
     // ── Helpers ──
 
     async fn make_history(
-        store: &StubConversationStore,
+        store: &InMemoryConversationStore,
         initial_history: Vec<Message>,
-    ) -> HistoryManager<StubConversationStore, StubStateStore> {
-        let hm =
-            HistoryManager::new_with_history(store.clone(), StubStateStore, "thread-1".to_owned())
-                .await
-                .expect("create history manager");
+    ) -> HistoryManager<InMemoryConversationStore, InMemoryStateStore> {
+        let hm = HistoryManager::new_with_history(
+            store.clone(),
+            InMemoryStateStore::new(),
+            "thread-1".to_owned(),
+        )
+        .await
+        .expect("create history manager");
         *hm.history.borrow_mut() = initial_history
             .into_iter()
             .map(InfinityMessage::from_rig_message)
@@ -1810,7 +1756,7 @@ mod tests {
 
     #[tokio::test]
     async fn simple_user_message_on_empty_history() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         let hm = make_history(&store, vec![]).await;
 
         let result = prepare_input(
@@ -1829,7 +1775,7 @@ mod tests {
 
     #[tokio::test]
     async fn consecutive_text_chunks_are_coalesced() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         let hm = make_history(&store, vec![]).await;
 
         let text_chunk = |s: &str| {
@@ -1854,7 +1800,7 @@ mod tests {
 
     #[tokio::test]
     async fn text_chunks_not_coalesced_across_non_text_item() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         let hm = make_history(&store, vec![]).await;
 
         let text_chunk = |s: &str| {
@@ -1889,7 +1835,7 @@ mod tests {
 
     #[tokio::test]
     async fn buffered_turn_is_not_committed_until_flush() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         let hm = make_history(
             &store,
             vec![Message::User {
@@ -1925,7 +1871,7 @@ mod tests {
 
     #[tokio::test]
     async fn discard_turn_drops_buffer_leaving_history_clean() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         let hm = make_history(
             &store,
             vec![Message::User {
@@ -1954,7 +1900,7 @@ mod tests {
 
     #[tokio::test]
     async fn flush_turn_trimming_reasoning_keeps_text_drops_trailing_reasoning() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         let hm = make_history(
             &store,
             vec![Message::User {
@@ -1993,7 +1939,7 @@ mod tests {
 
     #[tokio::test]
     async fn flush_turn_trimming_reasoning_trims_interleaved_empty_text() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         let hm = make_history(
             &store,
             vec![Message::User {
@@ -2028,7 +1974,7 @@ mod tests {
 
     #[tokio::test]
     async fn current_turn_view_appends_buffer_to_history() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         let hm = make_history(
             &store,
             vec![Message::User {
@@ -2058,9 +2004,9 @@ mod tests {
 
     #[tokio::test]
     async fn closed_thread_ignores() {
-        let store = StubConversationStore {
-            closed_threads: HashSet::from(["thread-1".to_owned()]),
-        };
+        let store = InMemoryConversationStore::new();
+        store.ensure_root_thread("thread-1").await.expect("testing");
+        store.close_thread("thread-1").await.expect("testing");
         let hm = make_history(&store, vec![]).await;
 
         let result = prepare_input(
@@ -2079,7 +2025,7 @@ mod tests {
 
     #[tokio::test]
     async fn oauth_required_returns_auth_url() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         let hm = make_history(&store, vec![]).await;
 
         let input = InputMessage {
@@ -2106,7 +2052,7 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_message_returns_handled() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         let hm = make_history(&store, vec![]).await;
 
         // First call succeeds
@@ -2139,7 +2085,7 @@ mod tests {
 
     #[tokio::test]
     async fn user_message_interrupts_pending_tool_call() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         // History has a user msg, then an assistant tool call that hasn't been answered
         let initial = vec![
             Message::User {
@@ -2166,7 +2112,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_result_appended_to_history() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         let initial = vec![
             Message::User {
                 content: OneOrMany::one(UserContent::text("do something")),
@@ -2187,7 +2133,7 @@ mod tests {
 
     #[tokio::test]
     async fn thread_report_synthetic_event() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         // Tool call already completed before the thread report arrives
         let initial = vec![
             Message::User {
@@ -2237,7 +2183,7 @@ mod tests {
 
     #[tokio::test]
     async fn thread_report_tool_interruption() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         // Tool call is still pending when the thread report arrives
         let initial = vec![
             Message::User {
@@ -2274,7 +2220,7 @@ mod tests {
 
     #[tokio::test]
     async fn subscription_event_spawned_thread() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         // Tool call already completed with a result before the event arrives
         let initial = vec![
             Message::User {
@@ -2320,7 +2266,7 @@ mod tests {
 
     #[tokio::test]
     async fn subscription_event_tool_interruption() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         // Tool call is still pending (no result yet) when the event arrives
         let initial = vec![
             Message::User {
@@ -2357,7 +2303,7 @@ mod tests {
 
     #[tokio::test]
     async fn synthetic_with_missing_tool_call_returns_handled() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         // Empty history — no tool call to match
         let hm = make_history(&store, vec![]).await;
 
@@ -2384,7 +2330,7 @@ mod tests {
 
     #[tokio::test]
     async fn metadata_is_updated_before_processing() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         let hm = make_history(&store, vec![]).await;
         assert!(hm.get_metadata().is_none());
 
@@ -2406,7 +2352,7 @@ mod tests {
 
     #[tokio::test]
     async fn associative_subscription_event_inlined() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         // Tool call already completed with a result before the associative event arrives
         let initial = vec![
             Message::User {
@@ -2461,7 +2407,7 @@ mod tests {
 
     #[tokio::test]
     async fn associative_subscription_event_tool_interruption() {
-        let store = StubConversationStore::new();
+        let store = InMemoryConversationStore::new();
         // Tool call is still pending (no result yet) when the associative event arrives
         let initial = vec![
             Message::User {
@@ -2514,7 +2460,6 @@ mod tests {
         ToolContext {
             message_sender: StubSender,
             group_id: "thread-1".into(),
-            input_queue_arn: String::new(),
             callback_url: String::new(),
             user_id: None,
             thread_stack: vec!["thread-1".into()],
@@ -2537,7 +2482,7 @@ mod tests {
         local
             .run_until(async {
                 let (provider, mut ctrl) = mock_provider();
-                let convo_store = StubConversationStore::new();
+                let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
@@ -2599,7 +2544,7 @@ mod tests {
         local
             .run_until(async {
                 let (provider, mut ctrl) = mock_provider();
-                let convo_store = StubConversationStore::new();
+                let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
@@ -2663,7 +2608,7 @@ mod tests {
         local
             .run_until(async {
                 let (provider, mut ctrl) = mock_provider();
-                let convo_store = StubConversationStore::new();
+                let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
@@ -2745,7 +2690,7 @@ mod tests {
         local
             .run_until(async {
                 let (provider, mut ctrl) = mock_provider();
-                let convo_store = StubConversationStore::new();
+                let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
@@ -2851,7 +2796,7 @@ mod tests {
         local
             .run_until(async {
                 let (provider, mut ctrl) = mock_provider();
-                let convo_store = StubConversationStore::new();
+                let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
@@ -2994,7 +2939,7 @@ mod tests {
         local
             .run_until(async {
                 let (provider, mut ctrl) = mock_provider_with_image_support(true);
-                let convo_store = StubConversationStore::new();
+                let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(&convo_store, image_tool_result_history()).await;
                 let (tool_names, tool_defs, tool_registry) = no_tools();
                 let ctx = tool_context();
@@ -3042,7 +2987,7 @@ mod tests {
             .run_until(async {
                 // The default mock provider does not declare image support.
                 let (provider, mut ctrl) = mock_provider();
-                let convo_store = StubConversationStore::new();
+                let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(&convo_store, image_tool_result_history()).await;
                 let (tool_names, tool_defs, tool_registry) = no_tools();
                 let ctx = tool_context();
@@ -3094,7 +3039,7 @@ mod tests {
         local
             .run_until(async {
                 let (provider, mut ctrl) = mock_provider();
-                let convo_store = StubConversationStore::new();
+                let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
@@ -3164,7 +3109,7 @@ mod tests {
         local
             .run_until(async {
                 let (provider, mut ctrl) = mock_provider();
-                let convo_store = StubConversationStore::new();
+                let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
@@ -3266,7 +3211,7 @@ mod tests {
         local
             .run_until(async {
                 let (provider, mut ctrl) = mock_provider();
-                let convo_store = StubConversationStore::new();
+                let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
@@ -3431,7 +3376,7 @@ mod tests {
             .run_until(async {
                 // When the model stream ends unexpectedly (None from next()), the loop retries.
                 let (provider, mut ctrl) = mock_provider();
-                let convo_store = StubConversationStore::new();
+                let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
@@ -3496,7 +3441,7 @@ mod tests {
         local
             .run_until(async {
                 let (provider, mut ctrl) = mock_provider();
-                let convo_store = StubConversationStore::new();
+                let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
@@ -3567,7 +3512,7 @@ mod tests {
         local
             .run_until(async {
                 let (provider, mut ctrl) = mock_provider();
-                let convo_store = StubConversationStore::new();
+                let convo_store = InMemoryConversationStore::new();
                 let hm = std::rc::Rc::new(
                     make_history(
                         &convo_store,
@@ -3647,7 +3592,7 @@ mod tests {
             .run_until(async {
                 // Model calls sync tool twice in sequence (two completion rounds), then responds.
                 let (provider, mut ctrl) = mock_provider();
-                let convo_store = StubConversationStore::new();
+                let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
@@ -3730,7 +3675,7 @@ mod tests {
         local
             .run_until(async {
                 let (provider, mut ctrl) = mock_provider();
-                let convo_store = StubConversationStore::new();
+                let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
@@ -3809,7 +3754,7 @@ mod tests {
         local
             .run_until(async {
                 let (provider, mut ctrl) = mock_provider();
-                let convo_store = StubConversationStore::new();
+                let convo_store = InMemoryConversationStore::new();
                 let hm = std::rc::Rc::new(
                     make_history(
                         &convo_store,
@@ -3923,7 +3868,7 @@ mod tests {
         local
             .run_until(async {
                 let (provider, mut ctrl) = mock_provider();
-                let convo_store = StubConversationStore::new();
+                let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
@@ -3990,5 +3935,196 @@ mod tests {
                 assert!(got_done);
             })
             .await;
+    }
+
+    // ── Tool dispatch failure fallbacks (ported from the removed
+    //    batch_processor, regression coverage for #88) ──
+
+    /// An `InputSender` that hands sent messages to the test.
+    #[derive(Clone)]
+    struct CapturingSender(tokio::sync::mpsc::UnboundedSender<InputMessage>);
+
+    #[async_trait]
+    impl InputSender for CapturingSender {
+        type Error = std::io::Error;
+        async fn send_to_input_queue(
+            &self,
+            message: InputMessage,
+            _dedup_id: &str,
+        ) -> Result<(), std::io::Error> {
+            self.0.send(message).expect("testing");
+            Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct StubHttp;
+
+    #[async_trait]
+    impl rap_client::http::HttpClient for StubHttp {
+        type Error = std::io::Error;
+        async fn post(&self, _: &str, _: &str) -> Result<u16, std::io::Error> {
+            Ok(200)
+        }
+        async fn get(&self, _: &str) -> Result<(u16, Vec<u8>), std::io::Error> {
+            Ok((200, Vec::new()))
+        }
+    }
+
+    /// A tool whose dispatch always fails.
+    struct FailingTool;
+
+    #[async_trait]
+    impl Tool<CapturingSender> for FailingTool {
+        fn name(&self) -> &str {
+            "failing_tool"
+        }
+        fn description(&self) -> &str {
+            "always fails"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type":"object","properties":{}})
+        }
+        async fn execute(
+            &self,
+            _: serde_json::Value,
+            _: String,
+            _: Option<String>,
+            _: &ToolContext<CapturingSender>,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            Err("stub".into())
+        }
+    }
+
+    fn capturing_ctx(
+        group_id: &str,
+        thread_stack: Vec<String>,
+    ) -> (
+        ToolContext<CapturingSender>,
+        tokio::sync::mpsc::UnboundedReceiver<InputMessage>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (
+            ToolContext {
+                message_sender: CapturingSender(tx),
+                group_id: group_id.to_owned(),
+                callback_url: String::new(),
+                user_id: None,
+                thread_stack,
+            },
+            rx,
+        )
+    }
+
+    /// Extract the single text tool-result the context's sender captured.
+    fn captured_tool_result(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<InputMessage>,
+    ) -> (String, Option<String>, String) {
+        let message = rx.try_recv().expect("a tool result should be enqueued");
+        let InputMessageContent::User(UserContent::ToolResult(result)) = message.content else {
+            panic!("expected a tool result");
+        };
+        let ToolResultContent::Text(text) = result.content.first() else {
+            panic!("expected text content");
+        };
+        (result.id, result.call_id, text.text)
+    }
+
+    /// A tool's own argument validation failure comes back to the agent as an
+    /// error tool result (not a propagated error).
+    #[tokio::test]
+    async fn close_thread_missing_id_enqueues_error_result() {
+        let (context, mut rx) = capturing_ctx("child", vec!["root".into(), "child".into()]);
+        let tool = crate::tools::thread::CloseThreadTool::<_, StubHttp> {
+            conversation_store: InMemoryConversationStore::new(),
+            rap_notifier: None,
+        };
+
+        tool.execute(
+            serde_json::json!({}),
+            "tc-close".into(),
+            Some("call-close".into()),
+            &context,
+        )
+        .await
+        .expect("validation error should be returned as a tool result");
+
+        let (id, call_id, text) = captured_tool_result(&mut rx);
+        assert_eq!(id, "tc-close");
+        assert_eq!(call_id.as_deref(), Some("call-close"));
+        assert_eq!(text, "Error: thread_id is required");
+    }
+
+    /// A tool whose dispatch fails still gets a generic error result enqueued
+    /// so the agent can recover, and the original error is surfaced.
+    #[tokio::test]
+    async fn failed_tool_execution_enqueues_fallback_result() {
+        let (context, mut rx) = capturing_ctx("t1", vec!["t1".into()]);
+        let tool = FailingTool;
+        let tools: HashMap<String, &dyn Tool<CapturingSender>> =
+            HashMap::from([("failing_tool".into(), &tool as &dyn Tool<CapturingSender>)]);
+        let action = CompletionAction::<ProviderStreamingResponse>::ExecuteToolCall {
+            tool_name: "failing_tool".into(),
+            tool_args: serde_json::json!({}),
+            tool_call_id: "tc-1".into(),
+            call_id: Some("call-1".into()),
+            display_as: None,
+        };
+
+        let error = execute_action_with_error_result(action, &tools, &context)
+            .await
+            .expect_err("tool execution should fail");
+        assert_eq!(error.to_string(), "stub");
+
+        let (id, call_id, text) = captured_tool_result(&mut rx);
+        assert_eq!(id, "tc-1");
+        assert_eq!(call_id.as_deref(), Some("call-1"));
+        assert_eq!(text, "Error: Tool call failed");
+    }
+
+    /// A user-choice callback is surfaced out-of-band instead of entering
+    /// history.
+    #[tokio::test]
+    async fn user_choice_input_surfaces_prompt() {
+        let store = InMemoryConversationStore::new();
+        let hm = make_history(&store, vec![]).await;
+
+        let input = InputMessage {
+            content: InputMessageContent::UserChoice(crate::message::UserChoiceRequired {
+                content_type: "user_choice_required".to_owned(),
+                id: "choice-1".to_owned(),
+                call_id: None,
+                prompt: "pick one".to_owned(),
+                choices: vec!["a".to_owned(), "b".to_owned()],
+                default: 0,
+                response_url: "https://example.com/choice".to_owned(),
+            }),
+            group_id: "thread-1".to_owned(),
+            metadata: None,
+            synthetic: None,
+            display_as: None,
+            subscription: false,
+        };
+
+        let result = prepare_input(input, "msg-1".to_owned(), &hm, &store, &StubSender)
+            .await
+            .expect("prepare input");
+
+        let PrepareResult::UserChoiceRequired {
+            id,
+            prompt,
+            choices,
+            default,
+            response_url,
+        } = result
+        else {
+            panic!("expected UserChoiceRequired, got {result:?}");
+        };
+        assert_eq!(id, "choice-1");
+        assert_eq!(prompt, "pick one");
+        assert_eq!(choices, vec!["a".to_owned(), "b".to_owned()]);
+        assert_eq!(default, 0);
+        assert_eq!(response_url, "https://example.com/choice");
+        assert!(hm.history.into_inner().is_empty());
     }
 }

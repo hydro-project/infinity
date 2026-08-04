@@ -11,13 +11,12 @@
 mod common;
 
 use common::{HarnessOptions, TuiHarness};
-use infinity_agent_core::batch_processor::DisplayEvent;
+use infinity_agent_cli::display::DisplayEvent;
 use infinity_protocol::{SessionInfo, SessionStatus};
 use ratatui::crossterm::event::KeyCode;
-use rig_mock::MockStreamingResponse;
 use std::collections::HashMap;
 
-type Evt = DisplayEvent<MockStreamingResponse>;
+type Evt = DisplayEvent;
 
 /// Sanity check: the simple startup screen matches between backends
 /// (compare with `tui_snapshots__startup_screen.snap`).

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use infinity_agent_core::message::{
@@ -8,10 +6,10 @@ use infinity_agent_core::message::{
 use infinity_protocol::{ClientMessage, DaemonMessage, length_delimited_codec};
 use rig::message::UserContent;
 use tokio::net::UnixStream;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tokio_util::codec::Framed;
 
-use crate::session::{SessionManager, Subscriber};
+use crate::session::SharedSessionManager;
 
 /// List directory entries matching a partial path for tab-completion.
 /// Given "/home/user/fo", lists entries in "/home/user/" that start with "fo".
@@ -243,7 +241,7 @@ fn strip_client_message(msg: ClientMessage, remote_name: &str) -> ClientMessage 
 }
 
 /// Handle a client over a unix socket (serialized framing).
-pub async fn handle_client(stream: UnixStream, session_manager: Arc<Mutex<SessionManager>>) {
+pub async fn handle_client(stream: UnixStream, session_manager: SharedSessionManager) {
     let mut framed = Framed::new(stream, length_delimited_codec());
     let (client_msg_tx, client_msg_rx) = mpsc::unbounded_channel();
     let (daemon_msg_tx, mut daemon_msg_rx) = mpsc::unbounded_channel();
@@ -300,17 +298,15 @@ pub async fn handle_client(stream: UnixStream, session_manager: Arc<Mutex<Sessio
 pub async fn handle_client_channels(
     mut client_rx: mpsc::UnboundedReceiver<ClientMessage>,
     daemon_tx: mpsc::UnboundedSender<DaemonMessage>,
-    session_manager: Arc<Mutex<SessionManager>>,
+    session_manager: SharedSessionManager,
 ) {
     let (mut client_tx, mut client_tx_rx) = mpsc::unbounded_channel::<DaemonMessage>();
     let mut attached_session_id: Option<String> = None;
+    let mut attached_thread_id: Option<String> = None;
     let mut remote_proxy_tx: Option<mpsc::UnboundedSender<ClientMessage>> = None;
     let mut remote_proxy_rx: Option<mpsc::UnboundedReceiver<DaemonMessage>> = None;
     let mut active_remote_name: Option<String> = None;
-    let mut _booted_rap_servers: Vec<tokio::process::Child> = Vec::new(); // prevents shutdown until close
-    // Whether this connection's subscription keeps the session alive.
-    // Set by CreateSession/Connect and used when re-attaching on UserInput restart.
-    let mut connection_keeps_alive: bool = true;
+    let mut _booted_rap_servers: Vec<crate::rap_servers::MigrationServer> = Vec::new(); // prevents shutdown until close
 
     // Send Welcome immediately
     {
@@ -388,6 +384,7 @@ pub async fn handle_client_channels(
                             remote_proxy_rx = None;
                             active_remote_name = None;
                             attached_session_id = None;
+                            attached_thread_id = None;
                         }
                         ClientMessage::Connect { .. } => {
                             // Switching sessions: tear down current remote proxy first
@@ -417,7 +414,6 @@ pub async fn handle_client_channels(
 
                     match msg {
                         ClientMessage::CreateSession { cwd, location, model, keeps_session_alive } => {
-                            connection_keeps_alive = keeps_session_alive;
                             if let Some(rname) = location {
                                 let rd = {
                                     let mgr = session_manager.lock().await;
@@ -431,6 +427,7 @@ pub async fn handle_client_channels(
                                             remote_proxy_rx = Some(rx);
                                             active_remote_name = Some(rname);
                                             attached_session_id = None;
+                                            attached_thread_id = None;
                                         }
                                         Err(e) => {
                                             let _ = daemon_tx.send(DaemonMessage::Error {
@@ -446,7 +443,7 @@ pub async fn handle_client_channels(
                                     });
                                 }
                             } else {
-                                let mut mgr = session_manager.lock().await;
+                                let mgr = session_manager.lock().await;
                                 let mut emit = async |msg: DaemonMessage| {
                                     let _ = daemon_tx.send(msg);
                                 };
@@ -454,6 +451,7 @@ pub async fn handle_client_channels(
                                 match mgr.create_session(&cwd, model, &mut emit).await {
                                     Ok(sid) => {
                                         mgr.attach_client(&sid, client_tx.clone(), false, keeps_session_alive).await;
+                                        attached_thread_id = Some(sid.clone());
                                         attached_session_id = Some(sid);
                                     }
                                     Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error { thread_id: None, text: format!("failed to create session: {e}") }); }
@@ -461,7 +459,6 @@ pub async fn handle_client_channels(
                             }
                         }
                     ClientMessage::Connect { session_id, thread_id, keeps_session_alive } => {
-                        connection_keeps_alive = keeps_session_alive;
                         if let Some((rname, real_session_id)) = is_remote_session(&session_id) {
                             let real_thread_id = thread_id.as_deref().map(|t| strip_id(t, rname));
                             let rname = rname.to_owned();
@@ -491,7 +488,7 @@ pub async fn handle_client_channels(
                                 });
                             }
                         } else {
-                            let mut mgr = session_manager.lock().await;
+                            let mgr = session_manager.lock().await;
                             let mut emit = async |msg: DaemonMessage| {
                                 let _ = daemon_tx.send(msg);
                             };
@@ -499,6 +496,7 @@ pub async fn handle_client_channels(
                             match mgr.resume_session(&session_id, target, &mut emit).await {
                                 Ok(()) => {
                                     mgr.attach_client(target, client_tx.clone(), true, keeps_session_alive).await;
+                                    attached_thread_id = Some(target.to_owned());
                                     attached_session_id = Some(session_id);
                                 }
                                 Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error { thread_id: Some(session_id), text: format!("failed to resume session: {e}") }); }
@@ -510,19 +508,25 @@ pub async fn handle_client_channels(
                             let _ = daemon_tx.send(DaemonMessage::Error { thread_id: Some(thread_id), text: "remote is not connected".into() });
                             continue;
                         }
-                        let mut mgr = session_manager.lock().await;
-                        let mut emit = async |msg: DaemonMessage| {
-                            let _ = daemon_tx.send(msg);
-                        };
-                        if !mgr.send_input(&thread_id, (InputMessage {
-                            content: InputMessageContent::User(UserContent::text(&text)),
-                            group_id: thread_id.clone(),
-                            metadata: None,
-                            synthetic: None,
-                            display_as: None,
-                            subscription: false,
-                        }, None), Some(Subscriber { tx: client_tx.clone(), keeps_session_alive: connection_keeps_alive }), &mut emit).await {
-                            let _ = daemon_tx.send(DaemonMessage::Error { thread_id: Some(thread_id), text: "session not found".into() });
+                        let mgr = session_manager.lock().await;
+                        if !mgr
+                            .send_input((
+                                InputMessage {
+                                    content: InputMessageContent::User(UserContent::text(&text)),
+                                    group_id: thread_id.clone(),
+                                    metadata: None,
+                                    synthetic: None,
+                                    display_as: None,
+                                    subscription: false,
+                                },
+                                None,
+                            ))
+                            .await
+                        {
+                            let _ = daemon_tx.send(DaemonMessage::Error {
+                                thread_id: Some(thread_id),
+                                text: "failed to send input".into(),
+                            });
                         }
                     }
                     ClientMessage::Disconnect => {
@@ -534,6 +538,7 @@ pub async fn handle_client_channels(
                             mgr.send_idle_ping(sid);
                         }
                         attached_session_id = None;
+                        attached_thread_id = None;
                     }
                     ClientMessage::SoftDetach { session_id } => {
                         let mgr = session_manager.lock().await;
@@ -545,18 +550,20 @@ pub async fn handle_client_channels(
                             client_tx_rx = new_rx;
                             mgr.send_idle_ping(&session_id);
                             attached_session_id = None;
+                            attached_thread_id = None;
                             let _ = daemon_tx.send(DaemonMessage::DetachedIdle);
                         } else {
                             let _ = daemon_tx.send(DaemonMessage::DisconnectNotIdle);
                         }
                     }
                     ClientMessage::ShutdownSession { session_id } => {
-                        let mut mgr = session_manager.lock().await;
+                        let mgr = session_manager.lock().await;
                         mgr.cleanup_session(&session_id).await;
                         attached_session_id = None;
+                        attached_thread_id = None;
                     }
                     ClientMessage::ArchiveSession { session_id } => {
-                        let mut mgr = session_manager.lock().await;
+                        let mgr = session_manager.lock().await;
                         mgr.cleanup_session(&session_id).await;
                         let mut store = mgr.session_store.lock().await;
                         store.mark_archived(&session_id);
@@ -564,39 +571,41 @@ pub async fn handle_client_channels(
                             tracing::error!("Failed to save session store after archiving {session_id}: {e}");
                         }
                         attached_session_id = None;
+                        attached_thread_id = None;
                     }
                     ClientMessage::TriggerCompaction { session_id } => {
-                        let mut mgr = session_manager.lock().await;
-                        let mut emit = async |msg: DaemonMessage| {
-                            let _ = daemon_tx.send(msg);
-                        };
-                        mgr.send_input(&session_id, (InputMessage {
-                            content: InputMessageContent::User(UserContent::text("")),
-                            group_id: session_id.clone(),
-                            metadata: None,
-                            synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::Compaction)),
-                            display_as: None,
-                            subscription: false,
-                        }, None), Some(Subscriber { tx: client_tx.clone(), keeps_session_alive: connection_keeps_alive }), &mut emit).await;
+                        let mgr = session_manager.lock().await;
+                        mgr.send_input((
+                            InputMessage {
+                                content: InputMessageContent::User(UserContent::text("")),
+                                group_id: session_id.clone(),
+                                metadata: None,
+                                synthetic: Some(SyntheticKind::Tagged(
+                                    TaggedSyntheticKind::Compaction,
+                                )),
+                                display_as: None,
+                                subscription: false,
+                            },
+                            None,
+                        ))
+                        .await;
                     }
                     ClientMessage::SwitchModel { session_id: thread_id, model } => {
                         let mgr = session_manager.lock().await;
-                        match mgr.switch_model(&thread_id, model) {
-                            Ok(confirmation) => {
-                                let _ = daemon_tx.send(confirmation);
-                            }
-                            Err(e) => {
-                                let _ = daemon_tx.send(DaemonMessage::Error {
-                                    thread_id: Some(thread_id),
-                                    text: format!("failed to switch model: {e}"),
-                                });
-                            }
+                        // `switch_model` delivers the confirmation to this
+                        // client exactly once: via its subscription when
+                        // attached, directly otherwise.
+                        if let Err(e) = mgr.switch_model(&thread_id, model, Some(&client_tx)) {
+                            let _ = daemon_tx.send(DaemonMessage::Error {
+                                thread_id: Some(thread_id),
+                                text: format!("failed to switch model: {e}"),
+                            });
                         }
                     }
                     ClientMessage::UserChoiceAnswered { choice_id, selected } => {
-                        if let Some(ref sid) = attached_session_id {
+                        if let Some(ref thread_id) = attached_thread_id {
                             let mgr = session_manager.lock().await;
-                            if let Some(pending) = mgr.conversation_store().remove_pending_choice(sid, &choice_id) {
+                            if let Some(pending) = mgr.state_store().pending_choice(thread_id, &choice_id) {
                                 let url = pending.response_url;
                                 let id = pending.id;
                                 tokio::spawn(rap_protocol::log_panic("user_choice_post", async move {
@@ -610,7 +619,6 @@ pub async fn handle_client_channels(
                                         .send()
                                         .await;
                                 }));
-                                mgr.broadcast(DaemonMessage::UserChoiceComplete { choice_id });
                             }
                         }
                     }
@@ -667,20 +675,12 @@ pub async fn handle_client_channels(
                     }
                     ClientMessage::BootRapServers { cwd } => {
                         let user_rap = crate::config::user_config_path().ok();
-                        match crate::session::boot_rap_servers(&cwd, user_rap.as_deref(), &mut |_text| async {}).await {
-                            Ok(booted) => {
-                                match crate::migrate::filter_migration_server_ports(&booted).await {
-                                    Ok(server_ports) => {
-                                        _booted_rap_servers = booted.spawned_servers;
-                                        let _ = daemon_tx.send(DaemonMessage::RapServersBooted { server_ports });
-                                    }
-                                    Err(e) => {
-                                        let _ = daemon_tx.send(DaemonMessage::Error {
-                                            thread_id: None,
-                                            text: format!("failed to identify RAP servers for migration: {e}"),
-                                        });
-                                    }
-                                }
+                        match crate::rap_servers::boot_migration_servers(&cwd, user_rap.as_deref()).await {
+                            Ok(servers) => {
+                                let server_ports = crate::rap_servers::migration_server_ports(&servers);
+                                // Keep the servers alive until this connection closes.
+                                _booted_rap_servers = servers;
+                                let _ = daemon_tx.send(DaemonMessage::RapServersBooted { server_ports });
                             }
                             Err(e) => {
                                 let _ = daemon_tx.send(DaemonMessage::Error {

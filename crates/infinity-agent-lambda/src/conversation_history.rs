@@ -162,6 +162,16 @@ impl ConversationStore for DsqlConversationStore {
         Ok(())
     }
 
+    async fn thread_exists(&self, thread_id: &str) -> Result<bool, DsqlError> {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM thread_hierarchy WHERE thread_id = $1)",
+        )
+        .bind(thread_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DsqlError(format!("Failed to check thread existence: {e}")))
+    }
+
     async fn load_history_up_to(
         &self,
         session_id: &str,

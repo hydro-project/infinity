@@ -89,9 +89,10 @@ impl E2eHarness {
         let state_dir = tempfile::tempdir().expect("create state temp dir");
         let cwd = tempfile::tempdir().expect("create cwd temp dir");
 
-        let (listener, callback_url) = rap_client::callback_server::bind_callback_listener()
+        let bridge = infinity_rap_bridge::RapCallbackBridge::bind()
             .await
             .expect("bind callback listener");
+        let callback_url = bridge.callback_url().to_owned();
         let manager = SessionManager::with_providers(
             SessionManagerConfig {
                 state_dir: state_dir.path().to_path_buf(),
@@ -104,7 +105,7 @@ impl E2eHarness {
         )
         .await
         .expect("build session manager");
-        let mgr = infinity_daemon::rap_callback::serve_callbacks(listener, manager);
+        let mgr = infinity_daemon::rap_callback::serve_callbacks(bridge, manager);
 
         // In-memory transport between client and daemon.
         let (to_daemon_tx, to_daemon_rx) = mpsc::unbounded_channel::<ClientMessage>();

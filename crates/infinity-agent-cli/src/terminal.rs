@@ -1,3 +1,4 @@
+use crate::display::DisplayEvent;
 use crate::{
     choice_picker::{ChoicePicker, ChoicePickerResult, ChoicePickerWidget},
     component::{Component, KeyResult},
@@ -9,7 +10,6 @@ use crate::{
     term_io::{EventSource, TermOut},
     text_input::{TextInput, TextInputWidget},
 };
-use infinity_agent_core::batch_processor::DisplayEvent;
 use ratatui::{
     crossterm::{
         cursor,
@@ -21,7 +21,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders},
 };
-use rig::completion::GetTokenUsage;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::io::Write;
 use tokio::sync::mpsc;
@@ -112,11 +111,11 @@ struct PendingChoice {
 }
 
 #[expect(clippy::too_many_arguments, reason = "complex rendering logic")]
-pub async fn run<R, T, E>(
+pub async fn run<T, E>(
     mut term: T,
     mut events: E,
     input_tx: mpsc::UnboundedSender<String>,
-    mut display_rx: mpsc::UnboundedReceiver<(Option<String>, DisplayEvent<R>)>,
+    mut display_rx: mpsc::UnboundedReceiver<(Option<String>, DisplayEvent)>,
     mut model_name: String,
     mut provider_id: String,
     mut context_window: usize,
@@ -135,7 +134,6 @@ pub async fn run<R, T, E>(
     choice_answered_tx: mpsc::UnboundedSender<(String, usize)>,
 ) -> Result<bool, BoxError>
 where
-    R: GetTokenUsage,
     T: TermOut,
     E: EventSource,
 {
@@ -459,14 +457,14 @@ where
                             thread_buffers.entry(child_tid).or_default().push_str(&strip_ansi(&chunk));
                         }
                     }
-                    DisplayEvent::ResponseDone(r) => {
+                    DisplayEvent::ResponseDone(usage) => {
                         if is_root {
                             // Only update the counter when the response actually
                             // reports usage: a usage-less ResponseDone (e.g. the
                             // marker appended after a session replay, or a provider
                             // that omitted usage metadata) must not reset the
                             // context indicator to zero.
-                            if let Some(u) = r.and_then(|r| r.token_usage()) {
+                            if let Some(u) = usage {
                                 total_tokens_used = u.total_tokens as usize;
                             }
                             if spinner_state != Some(SpinnerState::WaitingToolCall) {
