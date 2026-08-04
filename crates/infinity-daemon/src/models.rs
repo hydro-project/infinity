@@ -371,6 +371,48 @@ impl ModelCatalog {
     }
 }
 
+/// [`ModelSource`] over the daemon's catalog: each completion round resolves
+/// the model persisted for its thread in the conversation store, falling back
+/// to the global default when the selection is no longer available. Model
+/// switching is just persisting a new selection — the next round picks it up,
+/// and an in-flight completion finishes on the model it started with.
+pub struct CatalogModelSource {
+    pub catalog: Arc<ModelCatalog>,
+    pub conversation_store: crate::memory_store::InMemoryConversationStore,
+}
+
+#[async_trait::async_trait(?Send)]
+impl infinity_agent_core::system::ModelSource for CatalogModelSource {
+    async fn resolve(
+        &self,
+        thread_id: &str,
+    ) -> Result<infinity_agent_core::system::ResolvedModel, BoxError> {
+        let selected = self.conversation_store.get_thread_model(thread_id);
+        let (model_ref, entry, fell_back) = self.catalog.resolve(&selected);
+        if fell_back {
+            tracing::warn!(
+                "model {}/{} is not available for thread {}; using default {}/{}",
+                selected.provider_id,
+                selected.model_id,
+                thread_id,
+                model_ref.provider_id,
+                model_ref.model_id
+            );
+        }
+        let provider = self
+            .catalog
+            .provider(&model_ref.provider_id)
+            .expect("bug: cataloged model's provider missing from catalog")
+            .clone();
+        Ok(infinity_agent_core::system::ResolvedModel {
+            provider,
+            model_id: model_ref.model_id,
+            context_window: entry.context_window,
+            supports_image_input: entry.supports_image_input,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

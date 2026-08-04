@@ -5,10 +5,9 @@
 mod common;
 
 use common::{HarnessOptions, TuiHarness};
-use infinity_agent_core::batch_processor::DisplayEvent;
-use rig_mock::MockStreamingResponse;
+use infinity_agent_cli::display::DisplayEvent;
 
-type Evt = DisplayEvent<MockStreamingResponse>;
+type Evt = DisplayEvent;
 
 // ── Wide characters (CJK / emoji) ───────────────────────────────────────────
 

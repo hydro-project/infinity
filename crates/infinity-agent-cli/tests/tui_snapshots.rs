@@ -8,13 +8,12 @@
 mod common;
 
 use common::{TuiHarness, advance_and_redraw};
-use infinity_agent_core::batch_processor::DisplayEvent;
+use infinity_agent_cli::display::DisplayEvent;
 use ratatui::crossterm::event::KeyCode;
-use rig_mock::MockStreamingResponse;
 use std::time::Duration;
 
 /// Shorthand for the root-thread display event type under test.
-type Evt = DisplayEvent<MockStreamingResponse>;
+type Evt = DisplayEvent;
 
 #[tokio::test(start_paused = true)]
 async fn startup_screen() {

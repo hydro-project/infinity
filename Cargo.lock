@@ -3272,6 +3272,7 @@ dependencies = [
  "infinity-daemon",
  "infinity-protocol",
  "infinity-provider-protocol",
+ "infinity-rap-bridge",
  "insta",
  "nix 0.31.2",
  "rap-client",
@@ -3312,6 +3313,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-util",
  "tracing",
  "url",
  "uuid",
@@ -3332,14 +3334,17 @@ dependencies = [
  "aws-smithy-runtime-api",
  "aws-types",
  "aws_lambda_events",
+ "base64",
  "chrono",
  "chrono-tz",
  "futures-util",
  "infinity-agent-core",
  "infinity-provider-bedrock",
  "infinity-provider-protocol",
+ "infinity-rap-bridge",
  "lambda_runtime",
  "rap-client",
+ "rap-protocol",
  "reqwest",
  "rig-core",
  "serde",
@@ -3366,8 +3371,10 @@ dependencies = [
  "hyper-util",
  "include_dir",
  "infinity-agent-core",
+ "infinity-mcp-bridge",
  "infinity-protocol",
  "infinity-provider-protocol",
+ "infinity-rap-bridge",
  "insta",
  "nix 0.31.2",
  "playwright-rs",
@@ -3386,6 +3393,18 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "infinity-mcp-bridge"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "rap-protocol",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -3427,6 +3446,21 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "infinity-rap-bridge"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "infinity-agent-core",
+ "rap-client",
+ "rap-protocol",
+ "rig-core",
+ "serde_json",
+ "tokio",
  "tracing",
  "uuid",
 ]

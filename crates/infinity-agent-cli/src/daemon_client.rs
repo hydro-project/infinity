@@ -5,45 +5,37 @@ use std::collections::HashMap;
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use infinity_agent_core::batch_processor::DisplayEvent;
 use infinity_protocol::{
     ClientMessage, DaemonMessage, ModelRef, SessionInfo, TokenUsage, length_delimited_codec,
 };
-use rig::completion::GetTokenUsage;
 use std::path::PathBuf;
 use tokio::io::AsyncBufReadExt;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
+use crate::display::DisplayEvent;
 use crate::term_io::{EventSource, TermOut};
 use crate::terminal::{DetachResult, SessionChanged};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-#[derive(Clone)]
-pub struct DaemonTokenUsage(pub Option<TokenUsage>);
-
-impl GetTokenUsage for DaemonTokenUsage {
-    fn token_usage(&self) -> Option<rig::completion::Usage> {
-        self.0.as_ref().map(|u| {
-            let input = u.input_tokens.unwrap_or(0);
-            let output = u.output_tokens.unwrap_or(0);
-            rig::completion::Usage {
-                input_tokens: input,
-                output_tokens: output,
-                total_tokens: u.total_tokens.unwrap_or(input + output),
-                cached_input_tokens: 0,
-            }
-        })
+/// Convert the daemon's token-usage report into the rig usage shape the
+/// terminal's context indicator consumes.
+fn convert_token_usage(u: &TokenUsage) -> rig::completion::Usage {
+    let input = u.input_tokens.unwrap_or(0);
+    let output = u.output_tokens.unwrap_or(0);
+    rig::completion::Usage {
+        input_tokens: input,
+        output_tokens: output,
+        total_tokens: u.total_tokens.unwrap_or(input + output),
+        cached_input_tokens: 0,
     }
 }
 
 /// Convert a DaemonMessage into a (thread_id, DisplayEvent) tuple.
 /// Returns None for messages that are handled separately (Connected, Welcome, etc.).
-fn daemon_msg_to_display(
-    msg: DaemonMessage,
-) -> Option<(Option<String>, DisplayEvent<DaemonTokenUsage>)> {
+fn daemon_msg_to_display(msg: DaemonMessage) -> Option<(Option<String>, DisplayEvent)> {
     Some(match msg {
         DaemonMessage::StartOutput { thread_id } => (thread_id, DisplayEvent::StartOutput),
         DaemonMessage::TextChunk { thread_id, chunk } => {
@@ -73,7 +65,7 @@ fn daemon_msg_to_display(
             token_usage,
         } => (
             thread_id,
-            DisplayEvent::ResponseDone(Some(DaemonTokenUsage(token_usage))),
+            DisplayEvent::ResponseDone(token_usage.as_ref().map(convert_token_usage)),
         ),
         DaemonMessage::UserInputEcho { thread_id, text } => {
             (thread_id, DisplayEvent::UserInput(text))
@@ -548,8 +540,7 @@ where
         _ => return Err("expected Welcome from daemon".into()),
     };
 
-    let (display_tx, display_rx) =
-        mpsc::unbounded_channel::<(Option<String>, DisplayEvent<DaemonTokenUsage>)>();
+    let (display_tx, display_rx) = mpsc::unbounded_channel::<(Option<String>, DisplayEvent)>();
     let (input_tx, input_rx) = mpsc::unbounded_channel::<String>();
     let (load_session_tx, load_session_rx) = mpsc::unbounded_channel::<(Option<String>, bool)>();
     let (model_switch_tx, model_switch_rx) = mpsc::unbounded_channel::<usize>();

@@ -14,6 +14,8 @@ path = "src/main.rs"
 
 [dependencies]
 infinity-agent-core = { path = "../infinity-agent-core" }
+infinity-rap-bridge = { path = "../infinity-rap-bridge" }
+infinity-mcp-bridge = { path = "../infinity-mcp-bridge" }
 infinity-protocol = { path = "../infinity-protocol" }
 infinity-provider-protocol = { path = "../infinity-provider-protocol" }
 rap-client = { path = "../rap-client" }

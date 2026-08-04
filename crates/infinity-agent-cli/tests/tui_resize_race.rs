@@ -19,15 +19,14 @@ mod common;
 use common::{
     AlacrittyEmulator, Emulator, HarnessOptions, SharedEmulator, TuiHarness, VirtualTerm,
 };
+use infinity_agent_cli::display::DisplayEvent;
 use infinity_agent_cli::term_io::TermOut;
-use infinity_agent_core::batch_processor::DisplayEvent;
 use ratatui::crossterm::event::Event;
-use rig_mock::MockStreamingResponse;
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
-type Evt = DisplayEvent<MockStreamingResponse>;
+type Evt = DisplayEvent;
 
 /// A [`TermOut`] that resizes the emulator (and queues the matching Resize
 /// event) immediately after answering a cursor-position query, modeling a

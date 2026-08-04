@@ -68,10 +68,7 @@ impl<M: InputSender + 'static> Tool<M> for SetTitleTool {
             subscription: false,
         };
 
-        context
-            .message_sender
-            .send_to_input_queue(msg, &context.group_id, &id)
-            .await?;
+        context.message_sender.send_to_input_queue(msg, &id).await?;
 
         Ok(())
     }

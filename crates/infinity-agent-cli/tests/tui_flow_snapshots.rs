@@ -11,20 +11,17 @@
 mod common;
 
 use common::TuiHarness;
+use infinity_agent_cli::display::DisplayEvent;
 use infinity_agent_cli::terminal::{DetachResult, SessionChanged};
-use infinity_agent_core::batch_processor::DisplayEvent;
 use ratatui::crossterm::event::{Event, KeyCode, KeyModifiers};
 use rig::completion::Usage;
-use rig_mock::MockStreamingResponse;
 
-type Evt = DisplayEvent<MockStreamingResponse>;
+type Evt = DisplayEvent;
 
-fn usage(total: u64) -> MockStreamingResponse {
-    MockStreamingResponse {
-        usage: Some(Usage {
-            total_tokens: total,
-            ..Usage::default()
-        }),
+fn usage(total: u64) -> Usage {
+    Usage {
+        total_tokens: total,
+        ..Usage::default()
     }
 }
 
@@ -128,9 +125,7 @@ async fn replay_keeps_context_usage() {
     // The end-of-replay marker daemon_client appends after the history.
     h.display(Evt::ResponseDone(None));
     // A response whose provider reported no usage must not reset it either.
-    h.display(Evt::ResponseDone(Some(MockStreamingResponse {
-        usage: None,
-    })));
+    h.display(Evt::ResponseDone(None));
     h.settle().await;
     insta::assert_snapshot!("replay_keeps_context_usage", h.screen());
 }

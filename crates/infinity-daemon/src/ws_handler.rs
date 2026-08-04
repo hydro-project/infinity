@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::Full;
@@ -9,20 +7,20 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use infinity_protocol::ClientMessage;
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::Role;
 
 use crate::client_handler::handle_client_channels;
-use crate::session::SessionManager;
+use crate::session::SharedSessionManager;
 use crate::web_assets;
 
 /// Accept loop serving HTTP/WebSocket clients on a pre-bound listener.
 /// Connections are handled via `spawn_local`, so this must run inside a
 /// `LocalSet`. Used by both the daemon and in-process integration tests
 /// (which bind an OS-assigned port).
-pub async fn serve(listener: tokio::net::TcpListener, session_manager: Arc<Mutex<SessionManager>>) {
+pub async fn serve(listener: tokio::net::TcpListener, session_manager: SharedSessionManager) {
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
@@ -40,7 +38,7 @@ pub async fn serve(listener: tokio::net::TcpListener, session_manager: Arc<Mutex
 }
 
 /// Handle a TCP connection that may be an HTTP request or a WebSocket upgrade.
-pub async fn handle_http_client(stream: TcpStream, session_manager: Arc<Mutex<SessionManager>>) {
+pub async fn handle_http_client(stream: TcpStream, session_manager: SharedSessionManager) {
     let io = TokioIo::new(stream);
     let mgr = session_manager.clone();
 
@@ -60,7 +58,7 @@ pub async fn handle_http_client(stream: TcpStream, session_manager: Arc<Mutex<Se
 
 fn handle_request(
     req: Request<Incoming>,
-    session_manager: Arc<Mutex<SessionManager>>,
+    session_manager: SharedSessionManager,
 ) -> Result<Response<Full<Bytes>>, hyper::Error> {
     // Check for WebSocket upgrade
     let is_upgrade = req
@@ -130,7 +128,7 @@ fn handle_request(
 }
 
 /// WebSocket message loop, shared between upgrade-based and direct connections.
-async fn run_ws_loop<S>(ws_stream: WebSocketStream<S>, session_manager: Arc<Mutex<SessionManager>>)
+async fn run_ws_loop<S>(ws_stream: WebSocketStream<S>, session_manager: SharedSessionManager)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {

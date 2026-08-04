@@ -42,9 +42,9 @@ impl InputSender for SqsMessageSender {
     async fn send_to_input_queue(
         &self,
         message: InputMessage,
-        group_id: &str,
         dedup_id: &str,
     ) -> Result<(), SqsError> {
+        let group_id = message.group_id.clone();
         let body = serde_json::to_string(&message)
             .map_err(|e| SqsError(format!("Failed to serialize InputMessage: {}", e)))?;
         let now = std::time::SystemTime::now()

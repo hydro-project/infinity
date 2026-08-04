@@ -40,7 +40,7 @@ where
 
     context
         .message_sender
-        .send_to_input_queue(message, &context.group_id, id)
+        .send_to_input_queue(message, id)
         .await
         .map_err(|error| Box::new(error) as ToolError)
 }
@@ -50,7 +50,6 @@ where
 pub struct ToolContext<M: InputSender> {
     pub message_sender: M,
     pub group_id: String,
-    pub input_queue_arn: String,
     pub callback_url: String,
     pub user_id: Option<String>,
     /// Full thread stack: [root, ..ancestors, current_thread].
@@ -74,6 +73,15 @@ pub trait Tool<M: InputSender>: Send + Sync {
         false
     }
 
+    /// Whether a dispatched call to this tool represents *waiting* rather
+    /// than in-flight work (e.g. the sleep tools). While a thread's last
+    /// history entry is an unanswered call to a non-passive tool, deferrable
+    /// synthetic events are held back so they don't interrupt the running
+    /// call; calls to passive tools may be interrupted freely.
+    fn is_passive(&self) -> bool {
+        false
+    }
+
     /// Optional Rhai script for pretty-printing this tool call.
     fn display_script(&self) -> Option<&str> {
         None
@@ -93,28 +101,6 @@ pub trait Tool<M: InputSender>: Send + Sync {
         _context: &ToolContext<M>,
     ) -> Option<ToolResult> {
         None
-    }
-}
-
-/// Trait for grouped tool sets.
-pub trait ToolSet<M: InputSender> {
-    fn into_tools(self: Box<Self>) -> Vec<Box<dyn Tool<M>>>;
-}
-
-/// Simple ToolSet implementation that wraps a vector of tools.
-pub struct VecToolSet<M: InputSender> {
-    tools: Vec<Box<dyn Tool<M>>>,
-}
-
-impl<M: InputSender> VecToolSet<M> {
-    pub fn new(tools: Vec<Box<dyn Tool<M>>>) -> Self {
-        Self { tools }
-    }
-}
-
-impl<M: InputSender> ToolSet<M> for VecToolSet<M> {
-    fn into_tools(self: Box<Self>) -> Vec<Box<dyn Tool<M>>> {
-        self.tools
     }
 }
 

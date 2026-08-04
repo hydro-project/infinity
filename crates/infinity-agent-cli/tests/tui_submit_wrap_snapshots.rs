@@ -31,11 +31,10 @@
 mod common;
 
 use common::TuiHarness;
-use infinity_agent_core::batch_processor::DisplayEvent;
+use infinity_agent_cli::display::DisplayEvent;
 use ratatui::crossterm::event::KeyCode;
-use rig_mock::MockStreamingResponse;
 
-type Evt = DisplayEvent<MockStreamingResponse>;
+type Evt = DisplayEvent;
 
 /// Long enough to wrap to three rows in the input box (78 inner columns at
 /// width 80) and to three rows in the `> `-prefixed scrollback echo.

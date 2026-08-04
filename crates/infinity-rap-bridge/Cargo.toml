@@ -1,0 +1,23 @@
+[package]
+name = "infinity-rap-bridge"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+infinity-agent-core = { path = "../infinity-agent-core" }
+rap-client = { path = "../rap-client" }
+rap-protocol = { path = "../rap-protocol" }
+rig-core = { workspace = true }
+
+serde_json = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true, features = ["net", "sync", "rt"] }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["macros", "time"] }
+
+[lints]
+workspace = true
