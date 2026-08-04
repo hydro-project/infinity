@@ -1,81 +1,43 @@
-use std::collections::{HashMap, HashSet};
-use std::future::Future;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use infinity_agent_core::message::InputMessage;
-use infinity_agent_core::tools::Tool;
-use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
-use infinity_agent_core::tools::thread::{
-    CloseThreadTool, ReportToParentTool, SendMessageToChildTool, SpawnThreadTool,
-};
-use infinity_agent_core::traits::ConversationStore;
+use infinity_agent_core::system::{AgentSystemBuilder, ChannelSender, SubscribeHandle};
+use infinity_agent_core::traits::{ConversationStore, InputSender};
 use infinity_protocol::{DaemonMessage, ModelRef, SessionInfo};
-use tokio::sync::{mpsc, oneshot};
-use tokio::task::JoinHandle;
+use tokio::sync::mpsc;
 
 use crate::config;
 use crate::ids::IdSource;
 use crate::mcp_proxy;
-use crate::memory_store::{InMemoryConversationStore, InMemoryMessageSender, InMemoryStateStore};
-use crate::models::{self, ModelCatalog};
-use crate::rap_tools;
+use crate::memory_store::{InMemoryConversationStore, InMemoryStateStore};
+use crate::models::{self, CatalogModelSource, ModelCatalog};
+use crate::rap_servers::SessionRapManager;
 use crate::session_store;
-use crate::set_title_tool;
-use crate::sleep_tools::{SleepTool, SleepUntilTool};
 
-pub mod agent_loop;
 pub mod display;
-pub mod thread_worker;
+pub mod observer;
+#[cfg(test)]
+mod tests;
 
-pub use agent_loop::agent_loop;
-pub use thread_worker::thread_worker;
+pub use observer::{
+    DaemonObserver, SubscribeRequest, Subscriber, SubscriberMap, ThreadSubscribers,
+};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// Re-export from thread_worker.
-pub use thread_worker::{SubscribeRequest, Subscriber, ThreadSubscribers};
-
-/// Message sent to the agent loop — either user input, a subscribe request,
-/// or a model switch for a specific thread.
-pub enum AgentMessage {
-    Input(Box<InputMessage>, String),
-    Subscribe {
-        thread_id: String,
-        request: SubscribeRequest,
-    },
-    /// Switch the model a live thread worker uses for future requests. The
-    /// selection is already persisted in the conversation store by the time
-    /// this is sent, so an idle (not running) thread needs no message — it
-    /// picks the new model up when its worker next spawns.
-    SwitchModel {
-        thread_id: String,
-        model: ModelRef,
-    },
-}
-
-/// Maps thread_id → subscriber list (for inheriting to children and idle detection).
-pub type SubscriberMap = Arc<std::sync::Mutex<HashMap<String, ThreadSubscribers>>>;
-
-pub type ActiveThreads = Arc<std::sync::Mutex<HashSet<String>>>;
-
-/// A single agent session managed by the daemon.
-/// The session_id doubles as the root thread_id.
-pub struct Session {
-    pub session_id: String,
-    pub cwd: PathBuf,
-    pub active_threads: ActiveThreads,
-    pub agent_tx: mpsc::UnboundedSender<AgentMessage>,
-    pub agent_task: JoinHandle<()>,
-    /// Send to signal the agent loop to shut down.
-    pub shutdown_tx: Option<oneshot::Sender<()>>,
-    /// Send to ping the agent to attempt to idle.
-    pub idle_tx: mpsc::UnboundedSender<()>,
-    /// Per-thread subscriber lists for broadcasting display events.
-    pub subscriber_map: SubscriberMap,
-}
+/// Set of thread IDs with a live driver, shared with the core runtime.
+pub type ActiveThreads = infinity_agent_core::system::ActiveThreads;
 
 pub type SessionStoreHandle = Arc<tokio::sync::Mutex<session_store::SessionStore>>;
+
+/// Shared handle to the [`SessionManager`]. `Rc` rather than `Arc`: the
+/// manager (and the whole agent system) lives on one tokio [`LocalSet`]
+/// thread, and it holds `!Send` per-session toolsets.
+///
+/// [`LocalSet`]: tokio::task::LocalSet
+pub type SharedSessionManager = std::rc::Rc<tokio::sync::Mutex<SessionManager>>;
 
 /// Configuration for building a [`SessionManager`]. The non-generic
 /// constructor ([`SessionManager::new`]) fills in the home-directory
@@ -98,18 +60,21 @@ pub struct SessionManagerConfig {
     pub id_source: Arc<dyn IdSource>,
 }
 
-/// Manages all active sessions.
+/// Manages all sessions on top of a single, daemon-lifetime agent system.
+///
+/// The agent system itself never shuts down: threads idle out individually
+/// and respawn on demand, so message delivery never races a teardown. What
+/// starts and stops with session activity are the session's RAP tool servers,
+/// managed lazily by [`SessionRapManager`] — "shutting down" a session just
+/// means stopping its servers (they reboot transparently on the next tool
+/// invocation) and flagging it in the session store.
 pub struct SessionManager {
-    pub sessions: HashMap<String, Session>,
     /// Base URL for the RAP callback server.
     pub callback_url: String,
     pub session_store: SessionStoreHandle,
     conversation_store: InMemoryConversationStore,
-    state_store: InMemoryStateStore,
     /// Registered model providers and their available models.
     pub catalog: Arc<ModelCatalog>,
-    /// Path to the user-level RAP config (see [`SessionManagerConfig`]).
-    user_rap_config: Option<PathBuf>,
     /// Source of new session ids (thread ids come from the conversation
     /// store, which shares the same source).
     id_source: Arc<dyn IdSource>,
@@ -120,6 +85,21 @@ pub struct SessionManager {
     broadcast_clients: Arc<std::sync::Mutex<Vec<mpsc::UnboundedSender<DaemonMessage>>>>,
     /// Remote daemon connections.
     pub remote_daemons: Option<crate::remote::RemoteDaemons>,
+
+    // ── Handles into the always-running agent system ──
+    /// Delivers input messages to their threads.
+    sender: ChannelSender,
+    /// Attaches subscribers to threads (resolves once installed).
+    subscribe: SubscribeHandle<SubscribeRequest>,
+    /// Thread IDs with a live driver.
+    active_threads: ActiveThreads,
+    /// Per-thread subscriber lists for broadcasting display events.
+    pub subscriber_map: SubscriberMap,
+    /// Per-session RAP servers and toolsets (lazily booted).
+    pub rap_manager: SessionRapManager,
+    /// Requests an idle re-evaluation for a session (e.g. after a client
+    /// disconnect). Consumed by the same task that watches thread exits.
+    idle_eval_tx: mpsc::UnboundedSender<String>,
 }
 
 impl SessionManager {
@@ -220,18 +200,120 @@ impl SessionManager {
             },
         ));
 
+        // ── The daemon-lifetime agent system ──
+        let subscriber_map: SubscriberMap = Default::default();
+        let rap_manager = SessionRapManager::new(
+            conversation_store.clone(),
+            session_store.clone(),
+            user_rap_config,
+            subscriber_map.clone(),
+        );
+
+        let system = AgentSystemBuilder::new_local(
+            conversation_store.clone(),
+            state_store,
+            CatalogModelSource {
+                catalog: catalog.clone(),
+                conversation_store: conversation_store.clone(),
+            },
+        )
+        .callback_url(callback_url.clone())
+        .thread_config(rap_manager.clone())
+        .with_tokio_sleep_tools()
+        .build_local();
+
+        // Per-thread observer factory: each new thread driver gets a
+        // subscriber list seeded with its parent thread's subscribers (so
+        // clients watching a parent automatically see its children).
+        let make_observer = {
+            let subscriber_map = subscriber_map.clone();
+            let conversation_store = conversation_store.clone();
+            move |thread_id: &str| {
+                let parent_subs = {
+                    let parent_id = conversation_store.get_thread_parent_id(thread_id);
+                    let smap = subscriber_map.lock().expect("bug: mutex poisoned");
+                    let source = parent_id.as_deref().unwrap_or(thread_id);
+                    smap.get(source)
+                        .map(|arc| arc.lock().expect("bug: mutex poisoned").clone())
+                        .unwrap_or_default()
+                };
+                let subscribers = subscriber_map
+                    .lock()
+                    .expect("bug: mutex poisoned")
+                    .entry(thread_id.to_owned())
+                    .or_insert_with(|| Arc::new(std::sync::Mutex::new(parent_subs)))
+                    .clone();
+                DaemonObserver {
+                    root_session_id: conversation_store.get_root_thread_id(thread_id),
+                    subscribers,
+                    conversation_store: conversation_store.clone(),
+                }
+            }
+        };
+        let mut running = system.start(make_observer);
+        let sender = running.sender();
+        let subscribe = running.subscribe_handle();
+        let active_threads = running.active_threads();
+
+        // ── Session idle watcher ──
+        //
+        // Whenever a thread's driver exits (or a client disconnects and pings
+        // for re-evaluation), check whether its session has gone fully idle
+        // and, if no keep-alive client is attached, stop the session's RAP
+        // servers. This is always safe: servers reboot lazily on the next
+        // tool invocation, so there is no teardown/wakeup race to coordinate.
+        let (idle_eval_tx, mut idle_eval_rx) = mpsc::unbounded_channel::<String>();
+        {
+            let conversation_store = conversation_store.clone();
+            let session_store = session_store.clone();
+            let subscriber_map = subscriber_map.clone();
+            let active_threads = active_threads.clone();
+            let rap_manager = rap_manager.clone();
+            tokio::task::spawn_local(rap_protocol::log_panic(
+                "session_idle_watcher",
+                async move {
+                    loop {
+                        let session_id = tokio::select! {
+                            exited = running.thread_exits.recv() => match exited {
+                                Some(thread_id) => {
+                                    conversation_store.get_root_thread_id(&thread_id)
+                                }
+                                None => break,
+                            },
+                            eval = idle_eval_rx.recv() => match eval {
+                                Some(session_id) => session_id,
+                                None => break,
+                            },
+                        };
+                        evaluate_session_idle(
+                            &session_id,
+                            &conversation_store,
+                            &session_store,
+                            &subscriber_map,
+                            &active_threads,
+                            &rap_manager,
+                        )
+                        .await;
+                    }
+                },
+            ));
+        }
+
         Ok(Self {
-            sessions: HashMap::new(),
             callback_url,
             session_store,
             conversation_store,
-            state_store,
             catalog,
-            user_rap_config,
             id_source,
             _provider_processes: provider_processes,
             broadcast_clients,
             remote_daemons: None,
+            sender,
+            subscribe,
+            active_threads,
+            subscriber_map,
+            rap_manager,
+            idle_eval_tx,
         })
     }
 
@@ -263,20 +345,21 @@ impl SessionManager {
         self.conversation_store
             .set_view(group_id, view_type, content.clone());
 
-        let session_id = self.conversation_store.get_root_thread_id(group_id);
         let msg = DaemonMessage::ViewUpdate {
             thread_id: Some(group_id.to_owned()),
             view_type: view_type.to_owned(),
             content,
         };
 
-        if let Some(session) = self.sessions.get(&session_id) {
-            let smap = session.subscriber_map.lock().expect("bug: mutex poisoned");
-            if let Some(subs) = smap.get(group_id) {
-                let subs = subs.lock().expect("bug: mutex poisoned");
-                for sub in subs.iter() {
-                    let _ = sub.tx.send(msg.clone());
-                }
+        if let Some(subs) = self
+            .subscriber_map
+            .lock()
+            .expect("bug: mutex poisoned")
+            .get(group_id)
+        {
+            let subs = subs.lock().expect("bug: mutex poisoned");
+            for sub in subs.iter() {
+                let _ = sub.tx.send(msg.clone());
             }
         }
     }
@@ -308,7 +391,8 @@ impl SessionManager {
         self.conversation_store
             .set_last_updated(&session_id, &chrono::Utc::now().to_rfc3339());
         emit(self.build_connected(&session_id, &session_id)).await;
-        self.start_session(session_id.clone(), cwd, emit).await?;
+        // Nothing to start: the agent system is always running, and the
+        // session's RAP servers boot lazily on its first step.
         Ok(session_id)
     }
 
@@ -341,139 +425,14 @@ impl SessionManager {
         }
     }
 
-    /// Internal: spin up the agent loop for a session.
-    async fn start_session(
-        &mut self,
-        session_id: String,
-        cwd: &Path,
-        emit: &mut impl AsyncFnMut(DaemonMessage),
-    ) -> Result<(), BoxError> {
-        if self.sessions.contains_key(&session_id) {
-            return Ok(());
-        }
-
-        let active_threads = Arc::new(std::sync::Mutex::new(HashSet::new()));
-
-        let (agent_tx, agent_rx) = mpsc::unbounded_channel::<AgentMessage>();
-        // Adapter: InMemoryMessageSender needs a (InputMessage, String) sender.
-        // Create one that wraps into AgentMessage::Input.
-        let (input_tx, mut input_adapter_rx) = mpsc::unbounded_channel::<(InputMessage, String)>();
-        let agent_tx_for_adapter = agent_tx.clone();
-        tokio::task::spawn_local(rap_protocol::log_panic("input_adapter", async move {
-            while let Some((msg, id)) = input_adapter_rx.recv().await {
-                if agent_tx_for_adapter
-                    .send(AgentMessage::Input(Box::new(msg), id))
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        }));
-        let sender = InMemoryMessageSender::new(input_tx.clone());
-
-        // Load RAP config
-        let sid = session_id.clone();
-        let info = |text: String| DaemonMessage::Info {
-            thread_id: Some(sid.clone()),
-            text,
-        };
-
-        let boot_result = boot_rap_servers(
-            cwd,
-            self.user_rap_config.as_deref(),
-            &mut async |text: String| {
-                emit(info(text)).await;
-            },
-        )
-        .await;
-        let booted = match boot_result {
-            Ok(b) => b,
-            Err(e) => {
-                emit(info(format!("Warning: failed to boot RAP servers: {e}"))).await;
-                BootedRapServers {
-                    server_ports: HashMap::new(),
-                    server_ids: HashMap::new(),
-                    spawned_servers: Vec::new(),
-                    urls: Vec::new(),
-                }
-            }
-        };
-        let spawned_servers = booted.spawned_servers;
-        let urls = booted.urls;
-
-        let rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>> = if !urls.is_empty() {
-            let servers_with_ids: Vec<(String, Option<String>)> = urls
-                .iter()
-                .map(|u| {
-                    let id = booted.server_ids.get(u).cloned();
-                    (u.clone(), id)
-                })
-                .collect();
-            match rap_tools::load_rap_tools(&servers_with_ids).await {
-                Ok(loaded) => {
-                    emit(info(format!("Loaded {} RAP tool(s)", loaded.tools.len()))).await;
-
-                    emit(info(String::new())).await;
-
-                    loaded.tools
-                }
-                Err(e) => {
-                    emit(info(format!("Warning: failed to load RAP tools: {e}"))).await;
-                    Vec::new()
-                }
-            }
-        } else {
-            Vec::new()
-        };
-
-        let extra_system_prompt = Some(format!(
-            "The user's current working directory is: {cwd:?}\n\n\
-             Use the `set_title` tool to give the current thread a short, descriptive title. \
-             Set it once at the start when the user's intent becomes clear, and update it only \
-             when the overall scope of work changes significantly. Do not call it repeatedly \
-             for minor follow-ups within the same task."
-        ));
-
-        let state_store = self.state_store.clone();
-
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-
-        let (idle_tx, agent_handle, subscriber_map) = self.start_agent_loop(
-            session_id.clone(),
-            agent_rx,
-            self.conversation_store.clone(),
-            state_store,
-            sender,
-            self.callback_url.clone(),
-            rap_tools,
-            urls,
-            extra_system_prompt,
-            active_threads.clone(),
-            shutdown_rx,
-            spawned_servers,
-        );
-
-        let session = Session {
-            session_id: session_id.clone(),
-            cwd: cwd.to_path_buf(),
-            active_threads,
-            agent_tx,
-            agent_task: agent_handle,
-            shutdown_tx: Some(shutdown_tx),
-            idle_tx,
-            subscriber_map,
-        };
-        self.sessions.insert(session_id.clone(), session);
-        Ok(())
-    }
-
-    /// Attach a client's message sender to a thread for receiving display events.
-    /// If the session is alive, sends a subscribe request through the agent loop.
-    /// Otherwise, loads history directly from the conversation store and sends
-    /// a Replay message to the client.
+    /// Attach a client's message sender to a thread for receiving display
+    /// events. The request is routed to the thread's driver (spawning one if
+    /// none is live) and resolves once the subscriber is installed — its
+    /// replay sent and its registration completed — so input sent afterwards
+    /// is guaranteed to be observed by the client.
     ///
-    /// `keeps_session_alive`: when `false`, this subscriber will not prevent the
-    /// session from going idle and being shut down by the daemon.
+    /// `keeps_session_alive`: when `false`, this subscriber will not prevent
+    /// the session from going idle (and its RAP servers being stopped).
     pub async fn attach_client(
         &mut self,
         thread_id: &str,
@@ -481,123 +440,69 @@ impl SessionManager {
         wants_replay: bool,
         keeps_session_alive: bool,
     ) {
-        let session_id = self.conversation_store.get_root_thread_id(thread_id);
-
-        let is_alive = self
-            .sessions
-            .get(&session_id)
-            .is_some_and(|s| !s.agent_task.is_finished());
-
-        if is_alive {
-            let agent_tx = self
-                .sessions
-                .get(&session_id)
-                .expect("bug: session missing after is_alive check")
-                .agent_tx
-                .clone();
-            let _ = agent_tx.send(AgentMessage::Subscribe {
-                thread_id: thread_id.to_owned(),
-                request: SubscribeRequest {
+        let installed = self
+            .subscribe
+            .subscribe(
+                thread_id,
+                SubscribeRequest {
                     tx: tx.clone(),
                     wants_replay,
                     keeps_session_alive,
                 },
-            });
-        } else if wants_replay {
-            // Session not alive — load history from the conversation store directly.
-            let history = self
-                .conversation_store
-                .load_history_up_to(thread_id, None, None)
-                .await
-                .unwrap_or_default();
-            let history: Vec<DaemonMessage> = history
-                .iter()
-                .filter_map(|m| display::history_message_to_daemon(m, thread_id, &history))
-                .collect();
-            let choices = self
-                .conversation_store
-                .get_pending_choice_messages(&session_id);
-            let views = self.conversation_store.get_views(thread_id);
-            if !history.is_empty() || !choices.is_empty() || !views.is_empty() {
-                let _ = tx.send(DaemonMessage::Replay {
-                    history,
-                    pending_choices: choices,
-                    views,
-                    // The session is not running, so nothing is in flight.
-                    in_progress: false,
-                });
-            }
+            )
+            .await;
+        if !installed {
+            // Only possible while the daemon itself is shutting down.
+            tracing::warn!("failed to attach client to thread {thread_id}");
         }
     }
 
-    /// Send user input text to a session's agent loop.
-    /// If the session was shut down and no agent loop is running, this
-    /// clears the shut_down flag and starts a new agent loop first.
+    /// Send an input message to a session's agent system.
     ///
-    /// `subscriber` is the client to re-attach after a session restart.
-    /// Pass `None` for RAP callbacks (which should not trigger a restart).
+    /// The system is always running, so this is just flag bookkeeping plus a
+    /// send: a shut-down session is transparently "restarted" by clearing its
+    /// flags (its RAP servers reboot lazily on the next tool interaction).
+    ///
+    /// `subscriber` distinguishes user-driven input (`Some`) from RAP
+    /// callbacks (`None`): callbacks for a session the user explicitly shut
+    /// down are ignored rather than reviving it.
     pub async fn send_input(
         &mut self,
         thread_id: &str,
         msg: (InputMessage, Option<String>),
         subscriber: Option<Subscriber>,
-        emit: &mut impl AsyncFnMut(DaemonMessage),
+        _emit: &mut impl AsyncFnMut(DaemonMessage),
     ) -> bool {
         // Resolve thread ID to root session ID in case a child thread ID was provided.
         let session_id = self.conversation_store.get_root_thread_id(thread_id);
         let session_id = session_id.as_str();
 
-        // If session task finished or was never started, check if we need to restart.
-        let needs_restart = if let Some(session) = self.sessions.get(session_id) {
-            session.agent_task.is_finished()
-        } else {
-            // Session isn't running in memory. It needs a restart if it exists in the
-            // store at all — either it was shut down cleanly, or the daemon restarted
-            // while it was still running (in which case shut_down may be false).
-            let store = self.session_store.lock().await;
-            store.sessions.contains_key(session_id)
-        };
-
-        // if subscriber is None, that means this is for a RAP callback, but if the agent was shut down,
-        // we should ignore the callback (the agent will not idle if any tool calls or subscriptions are active)
-        if needs_restart && subscriber.is_some() {
-            // Remove stale session if present.
-            self.sessions.remove(session_id);
-            {
-                let mut store = self.session_store.lock().await;
-                store.clear_shut_down(session_id);
-                store.clear_idle(session_id);
-                let _ = store.save();
-            }
-            let cwd = self.session_store.lock().await.get_cwd(session_id).clone();
-            if let Err(e) = self.start_session(session_id.to_owned(), &cwd, emit).await {
-                tracing::error!("failed to restart session: {e}");
+        {
+            let mut store = self.session_store.lock().await;
+            if !store.sessions.contains_key(session_id) {
                 return false;
             }
-            // Re-attach client to the new session.
-            if let Some(sub) = subscriber {
-                self.attach_client(session_id, sub.tx, false, sub.keeps_session_alive)
-                    .await;
+            if subscriber.is_none() && store.is_shut_down(session_id) {
+                // A RAP callback for a session the user shut down — ignore it
+                // rather than reviving the session.
+                return false;
             }
+            // The session is about to do work: clear the idle flag, and (for
+            // user-driven input) the shut-down flag.
+            if subscriber.is_some() {
+                store.clear_shut_down(session_id);
+            }
+            store.clear_idle(session_id);
+            let _ = store.save();
         }
 
-        if let Some(session) = self.sessions.get(session_id) {
-            // Clear idle since the agent is about to do work.
-            {
-                let mut store = self.session_store.lock().await;
-                store.clear_idle(session_id);
-                let _ = store.save();
-            }
-            session
-                .agent_tx
-                .send(AgentMessage::Input(
-                    Box::new(msg.0),
-                    msg.1.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-                ))
-                .is_ok()
-        } else {
-            false
-        }
+        let (input, dedup) = msg;
+        let dedup_id = dedup.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let group_id = input.group_id.clone();
+        self.sender
+            .send_to_input_queue(input, &group_id, &dedup_id)
+            .await
+            .is_ok()
     }
 
     /// Switch the model used for future requests on a specific thread. The
@@ -605,15 +510,22 @@ impl SessionManager {
     /// threads.
     ///
     /// The selection is validated against the catalog and persisted in the
-    /// conversation store, so idle threads pick it up when their worker next
-    /// spawns. A live worker is notified through its model-switch channel,
-    /// applies the switch between completions (an in-flight completion
-    /// finishes on the old model), and broadcasts the confirmation to the
-    /// thread's subscribers when it does.
+    /// conversation store; every completion round resolves the persisted
+    /// selection when it starts (via [`CatalogModelSource`]), so the switch
+    /// takes effect on the thread's next round — an in-flight completion
+    /// finishes on the model it started with.
     ///
-    /// On success, returns the [`DaemonMessage::ModelSwitched`] confirmation
-    /// for the requesting client.
-    pub fn switch_model(&self, thread_id: &str, model: ModelRef) -> Result<DaemonMessage, String> {
+    /// The [`DaemonMessage::ModelSwitched`] confirmation is broadcast to the
+    /// thread's subscribers, and delivered to `requester` as well when the
+    /// requester is not already among those subscribers — so the requesting
+    /// client sees the confirmation exactly once whether or not it is
+    /// attached.
+    pub fn switch_model(
+        &self,
+        thread_id: &str,
+        model: ModelRef,
+        requester: Option<&mpsc::UnboundedSender<DaemonMessage>>,
+    ) -> Result<(), String> {
         let Some(entry) = self.catalog.find(&model) else {
             return Err(format!(
                 "unknown model {}/{}",
@@ -624,7 +536,7 @@ impl SessionManager {
             return Err(format!("thread {thread_id} not found"));
         }
 
-        // Persist so future workers (and daemon restarts) resolve the new
+        // Persist so future rounds (and daemon restarts) resolve the new
         // selection.
         self.conversation_store
             .set_thread_model(thread_id, model.clone());
@@ -636,17 +548,28 @@ impl SessionManager {
             provider_id: model.provider_id.clone(),
         };
 
-        // Tell a live worker to switch for future requests. If the session
-        // (or just this thread's worker) is not running, the persisted
-        // selection is resolved when the worker next spawns.
-        let session_id = self.conversation_store.get_root_thread_id(thread_id);
-        if let Some(session) = self.sessions.get(&session_id) {
-            let _ = session.agent_tx.send(AgentMessage::SwitchModel {
-                thread_id: thread_id.to_owned(),
-                model,
+        // Broadcast the confirmation to the thread's subscribers, noting
+        // whether the requester was among them.
+        let mut requester_reached = false;
+        if let Some(subs) = self
+            .subscriber_map
+            .lock()
+            .expect("bug: mutex poisoned")
+            .get(thread_id)
+        {
+            let mut subs = subs.lock().expect("bug: mutex poisoned");
+            subs.retain(|sub| {
+                let delivered = sub.tx.send(msg.clone()).is_ok();
+                if delivered && requester.is_some_and(|r| r.same_channel(&sub.tx)) {
+                    requester_reached = true;
+                }
+                delivered
             });
         }
-        Ok(msg)
+        if !requester_reached && let Some(requester) = requester {
+            let _ = requester.send(msg);
+        }
+        Ok(())
     }
 
     /// List all sessions — active ones plus persisted ones from the cache.
@@ -687,320 +610,108 @@ impl SessionManager {
         result
     }
 
-    /// Clean up a session: signal shutdown, wait for agent task to finish
-    /// (which handles RAP server cleanup and marking the session store).
+    /// Shut down a session: stop its RAP servers, drop its cached toolset
+    /// (so a later restart re-reads the RAP config), clear pending choices,
+    /// and mark it shut down in the store.
+    ///
+    /// The agent system keeps running — a thread that is mid-completion
+    /// finishes and flushes its turn, then parks. Sending new user input
+    /// clears the flag and picks the session back up (its servers reboot
+    /// lazily); RAP callbacks arriving while shut down are ignored.
     #[tracing::instrument(skip(self))]
     pub async fn cleanup_session(&mut self, session_id: &str) {
-        if let Some(mut session) = self.sessions.remove(session_id) {
-            // Signal shutdown; the spawned future will kill servers and mark shut_down.
-            tracing::debug!("Session found, sending `shutdown_tx`");
-            if let Some(tx) = session.shutdown_tx.take() {
-                let _ = tx.send(());
-            }
-            if let Err(ref e) = session.agent_task.await {
-                if e.is_panic() {
-                    tracing::error!("session agent task panicked: {e}");
-                } else {
-                    tracing::warn!("session agent task cancelled: {e}");
-                }
-            }
-
-            // Ensure shut_down is set (task may have already finished as idle).
-            tracing::debug!("Setting `shut_down`");
-            let mut store = self.session_store.lock().await;
-            if !store.is_shut_down(session_id) {
-                store.mark_shut_down(session_id);
-                let _ = store.save();
-            }
+        self.conversation_store.clear_pending_choices(session_id);
+        self.rap_manager.evict_session(session_id).await;
+        let mut store = self.session_store.lock().await;
+        if store.sessions.contains_key(session_id) {
+            store.mark_shut_down(session_id);
+            let _ = store.save();
             tracing::info!("Cleanup complete");
         } else {
             tracing::warn!("Session not found");
         }
     }
 
-    /// Returns true if the session has no running thread workers.
+    /// Returns true if the session has no running thread drivers.
     pub fn is_session_idle(&self, session_id: &str) -> bool {
-        match self.sessions.get(session_id) {
-            Some(session) => {
-                session.agent_task.is_finished()
-                    || session
-                        .active_threads
-                        .lock()
-                        .expect("bug: mutex poisoned")
-                        .is_empty()
-            }
-            None => true,
-        }
+        !self
+            .active_threads
+            .lock()
+            .expect("bug: mutex poisoned")
+            .iter()
+            .any(|thread_id| self.conversation_store.get_root_thread_id(thread_id) == session_id)
     }
 
-    /// Ping the agent to attempt to idle (e.g. after client disconnect).
+    /// Request an idle re-evaluation for a session (e.g. after a client
+    /// disconnect): if none of its threads are live and no keep-alive client
+    /// remains, its RAP servers are stopped.
     pub fn send_idle_ping(&self, session_id: &str) {
-        if let Some(session) = self.sessions.get(session_id) {
-            let _ = session.idle_tx.send(());
-        }
-    }
-
-    /// Start the agent loop for a session.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "session setup requires many dependencies"
-    )]
-    fn start_agent_loop(
-        &self,
-        session_id: String,
-        agent_rx: mpsc::UnboundedReceiver<AgentMessage>,
-        conversation_store: InMemoryConversationStore,
-        state_store: InMemoryStateStore,
-        sender: InMemoryMessageSender,
-        callback_url: String,
-        rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>>,
-        tool_server_urls: Vec<String>,
-        extra_system_prompt: Option<String>,
-        active_threads: ActiveThreads,
-        shutdown_rx: oneshot::Receiver<()>,
-        spawned_servers: Vec<tokio::process::Child>,
-    ) -> (mpsc::UnboundedSender<()>, JoinHandle<()>, SubscriberMap) {
-        spawn_agent_loop(
-            session_id,
-            self.session_store.clone(),
-            agent_rx,
-            self.catalog.clone(),
-            conversation_store,
-            state_store,
-            sender,
-            callback_url,
-            rap_tools,
-            tool_server_urls,
-            extra_system_prompt,
-            active_threads,
-            shutdown_rx,
-            spawned_servers,
-        )
+        let _ = self.idle_eval_tx.send(session_id.to_owned());
     }
 }
 
-// ── Agent loop (mirrors CLI main.rs agent_loop/thread_worker) ───────────────
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "agent loop requires many dependencies"
-)]
-fn spawn_agent_loop(
-    session_id: String,
-    session_store: SessionStoreHandle,
-    agent_rx: mpsc::UnboundedReceiver<AgentMessage>,
-    catalog: Arc<ModelCatalog>,
-    conversation_store: InMemoryConversationStore,
-    state_store: InMemoryStateStore,
-    sender: InMemoryMessageSender,
-    callback_url: String,
-    rap_tools: Vec<Box<dyn Tool<InMemoryMessageSender>>>,
-    tool_server_urls: Vec<String>,
-    extra_system_prompt: Option<String>,
-    active_threads: ActiveThreads,
-    shutdown_rx: oneshot::Receiver<()>,
-    spawned_servers: Vec<tokio::process::Child>,
-) -> (mpsc::UnboundedSender<()>, JoinHandle<()>, SubscriberMap) {
-    let rap_notifier = if tool_server_urls.is_empty() {
-        None
-    } else {
-        Some(rap_client::notifier::RapNotifier::new(
-            tool_server_urls,
-            rap_tools::SimpleHttpClient::new(),
-        ))
-    };
-
-    let mut tool_impls: Vec<Box<dyn Tool<InMemoryMessageSender>>> = vec![
-        Box::new(SleepUntilEventOrInputTool),
-        Box::new(SleepTool),
-        Box::new(SleepUntilTool),
-        Box::new(SpawnThreadTool {
-            conversation_store: conversation_store.clone(),
-        }),
-        Box::new(ReportToParentTool {
-            conversation_store: conversation_store.clone(),
-        }),
-        Box::new(CloseThreadTool {
-            conversation_store: conversation_store.clone(),
-            rap_notifier: rap_notifier.clone(),
-        }),
-        Box::new(SendMessageToChildTool {
-            conversation_store: conversation_store.clone(),
-        }),
-        Box::new(
-            infinity_agent_core::tools::cancel_subscription::CancelSubscriptionTool {
-                state_store: state_store.clone(),
-                rap_notifier: rap_notifier.clone(),
-            },
-        ),
-        Box::new(set_title_tool::SetTitleTool {
-            conversation_store: conversation_store.clone(),
-        }),
-    ];
-    tool_impls.extend(rap_tools);
-
-    let tool_impls: Arc<Vec<Box<dyn Tool<InMemoryMessageSender>>>> = Arc::new(tool_impls);
-    let extra_system_prompt = Arc::new(extra_system_prompt);
-    let (idle_tx, idle_rx) = mpsc::unbounded_channel();
-
-    let subscriber_map = Arc::new(std::sync::Mutex::new(HashMap::new()));
-
-    // Internal token used by session_wrapper to tell the agent loop to wind
-    // down its thread workers (interrupting in-flight completions so they
-    // flush pending history) before the session is torn down.
-    let worker_shutdown = tokio_util::sync::CancellationToken::new();
-
-    let agent_fut = agent_loop(
-        session_id.clone(),
-        agent_rx,
-        catalog,
-        conversation_store.clone(),
-        state_store,
-        sender,
-        callback_url,
-        tool_impls,
-        extra_system_prompt,
-        rap_notifier,
-        subscriber_map.clone(),
-        active_threads.clone(),
-        idle_tx.clone(),
-        worker_shutdown.clone(),
-    );
-
-    let handle = tokio::task::spawn_local(session_wrapper(
-        agent_fut,
-        session_id,
-        session_store,
-        conversation_store,
-        subscriber_map.clone(),
-        active_threads,
-        idle_rx,
-        shutdown_rx,
-        worker_shutdown,
-        spawned_servers,
-    ));
-    (idle_tx, handle, subscriber_map)
-}
-
-/// Wrapper that owns the RAP servers and handles cleanup.
-/// Runs agent_loop, selects on shutdown signal and idle notifications.
-/// When done, gracefully kills servers and marks the session store.
-#[tracing::instrument(skip_all, fields(session_id))]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "session wrapper requires many dependencies"
-)]
-async fn session_wrapper(
-    agent_fut: impl Future<Output = ()>,
-    session_id: String,
-    session_store: SessionStoreHandle,
-    conversation_store: InMemoryConversationStore,
-    subscriber_map: SubscriberMap,
-    active_threads: ActiveThreads,
-    mut idle_rx: mpsc::UnboundedReceiver<()>,
-    mut shutdown_rx: oneshot::Receiver<()>,
-    worker_shutdown: tokio_util::sync::CancellationToken,
-    mut spawned_servers: Vec<tokio::process::Child>,
+/// Decide whether `session_id` has gone idle and release its resources.
+///
+/// Runs on every thread-driver exit and on explicit idle pings. "Idle" means
+/// no live driver belongs to the session; the session is then flagged idle in
+/// the store, and — if no keep-alive client is attached — its RAP servers are
+/// stopped. Stopping is always safe (never a race): a message that arrives a
+/// moment later simply respawns a driver, and the first tool interaction
+/// boots the servers back up.
+async fn evaluate_session_idle(
+    session_id: &str,
+    conversation_store: &InMemoryConversationStore,
+    session_store: &SessionStoreHandle,
+    subscriber_map: &SubscriberMap,
+    active_threads: &ActiveThreads,
+    rap_manager: &SessionRapManager,
 ) {
-    // Determine why we exited: idle (no client) vs explicit shutdown.
-    let idle_exited;
-    tokio::pin!(agent_fut);
-    loop {
-        tokio::select! {
-            // Biased so that a completed agent_fut is always consumed by its
-            // own arm; the other arms may then safely `.await` it knowing it
-            // has not already returned Ready.
-            biased;
-            _ = &mut agent_fut => {
-                // agent_loop returned (rx closed). It joins all thread
-                // workers before returning, so nothing is left running.
-                idle_exited = {
-                    let smap = subscriber_map.lock().expect("bug: mutex poisoned");
-                    smap.values().all(|subs| subs.lock().expect("bug: mutex poisoned").iter().all(|sub| sub.tx.is_closed() || !sub.keeps_session_alive))
-                };
-                break;
-            }
-            _ = &mut shutdown_rx => {
-                tracing::info!("Received `shutdown_rx`.");
-                conversation_store.clear_pending_choices(&session_id);
-                // Interrupt live thread workers and wait for them to flush
-                // pending history items (e.g. in-flight tool results) to the
-                // store before tearing the session down.
-                worker_shutdown.cancel();
-                (&mut agent_fut).await;
-                idle_exited = false;
-                break;
-            }
-            _ = idle_rx.recv() => {
-                // idle_tx means "might be idle" — check active threads.
-                if !active_threads.lock().expect("bug: active_threads mutex poisoned").is_empty() {
-                    continue;
-                }
-
-                // Mark idle in the store immediately so listing shows Idle status.
-                {
-                    let mut store = session_store.lock().await;
-                    store.mark_idle(&session_id);
-                    let _ = store.save();
-                }
-
-                // If no keep-alive client is attached, exit the loop entirely.
-                let has_clients = {
-                    let smap = subscriber_map.lock().expect("bug: mutex poisoned");
-                    smap.values().any(|subs| subs.lock().expect("bug: mutex poisoned").iter().any(|sub| !sub.tx.is_closed() && sub.keeps_session_alive))
-                };
-                if !has_clients {
-                    tracing::info!("Exiting agent {} due to idle", session_id);
-                    // Wind down the agent loop too. All workers are already
-                    // idle, so this returns promptly after joining their
-                    // finished tasks.
-                    worker_shutdown.cancel();
-                    (&mut agent_fut).await;
-                    idle_exited = true;
-                    break;
-                } else {
-                    tracing::info!("Agent {} is idle but client is still connected", session_id);
-                }
-                // Client still attached — keep running.
-            }
-        }
-    }
-    tracing::info!("Idle loop exited, cleaning up RAP servers");
-
-    // Gracefully kill RAP servers.
-    for child in spawned_servers.iter_mut() {
-        #[cfg(unix)]
-        {
-            use nix::sys::signal::{self, Signal};
-            use nix::unistd::Pid;
-
-            let child_id = child.id();
-            tracing::trace!(child_id, "Killing RAP server, sending SIGINT");
-            if let Some(id) = child_id {
-                // Negative ID kills the entire process group.
-                let _ = signal::kill(Pid::from_raw(-(id as i32)), Signal::SIGINT);
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            tracing::trace!("Killing RAP server");
-            let _ = child.start_kill();
-        }
-        let _ = child.wait().await;
-        tracing::trace!("Child exited");
+    let any_active = active_threads
+        .lock()
+        .expect("bug: mutex poisoned")
+        .iter()
+        .any(|thread_id| conversation_store.get_root_thread_id(thread_id) == session_id);
+    if any_active {
+        return;
     }
 
-    // Mark session store.
-    let mut store = session_store.lock().await;
-    if !idle_exited {
-        store.mark_shut_down(&session_id);
+    // Mark idle in the store so listing shows Idle status.
+    {
+        let mut store = session_store.lock().await;
+        if !store.sessions.contains_key(session_id) {
+            return;
+        }
+        store.mark_idle(session_id);
+        let _ = store.save();
     }
-    let _ = store.save();
 
-    tracing::info!("Done");
+    // If a keep-alive client is attached to any of the session's threads,
+    // keep its servers warm.
+    let has_clients = {
+        let smap = subscriber_map.lock().expect("bug: mutex poisoned");
+        smap.iter()
+            .filter(|(thread_id, _)| conversation_store.get_root_thread_id(thread_id) == session_id)
+            .any(|(_, subs)| {
+                subs.lock()
+                    .expect("bug: mutex poisoned")
+                    .iter()
+                    .any(|sub| !sub.tx.is_closed() && sub.keeps_session_alive)
+            })
+    };
+    if !has_clients {
+        tracing::info!(
+            "Session {session_id} is idle with no keep-alive clients; stopping its RAP servers"
+        );
+        rap_manager.shutdown_session(session_id).await;
+    } else {
+        tracing::info!("Session {session_id} is idle but a client is still connected");
+    }
 }
 
-async fn spawn_rap_server(
+/// Spawn a command-based RAP server (`RAP_EMBEDDED=1`) and wait for it to
+/// report its port on stdout. Used both by the lazy per-session server
+/// management ([`crate::rap_servers`]) and by migration flows.
+pub async fn spawn_rap_server(
     command: &str,
     cwd: &Path,
 ) -> Result<(tokio::process::Child, u16), BoxError> {

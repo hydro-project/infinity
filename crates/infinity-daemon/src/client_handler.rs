@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use infinity_agent_core::message::{
@@ -8,10 +6,10 @@ use infinity_agent_core::message::{
 use infinity_protocol::{ClientMessage, DaemonMessage, length_delimited_codec};
 use rig::message::UserContent;
 use tokio::net::UnixStream;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tokio_util::codec::Framed;
 
-use crate::session::{SessionManager, Subscriber};
+use crate::session::{SharedSessionManager, Subscriber};
 
 /// List directory entries matching a partial path for tab-completion.
 /// Given "/home/user/fo", lists entries in "/home/user/" that start with "fo".
@@ -243,7 +241,7 @@ fn strip_client_message(msg: ClientMessage, remote_name: &str) -> ClientMessage 
 }
 
 /// Handle a client over a unix socket (serialized framing).
-pub async fn handle_client(stream: UnixStream, session_manager: Arc<Mutex<SessionManager>>) {
+pub async fn handle_client(stream: UnixStream, session_manager: SharedSessionManager) {
     let mut framed = Framed::new(stream, length_delimited_codec());
     let (client_msg_tx, client_msg_rx) = mpsc::unbounded_channel();
     let (daemon_msg_tx, mut daemon_msg_rx) = mpsc::unbounded_channel();
@@ -300,7 +298,7 @@ pub async fn handle_client(stream: UnixStream, session_manager: Arc<Mutex<Sessio
 pub async fn handle_client_channels(
     mut client_rx: mpsc::UnboundedReceiver<ClientMessage>,
     daemon_tx: mpsc::UnboundedSender<DaemonMessage>,
-    session_manager: Arc<Mutex<SessionManager>>,
+    session_manager: SharedSessionManager,
 ) {
     let (mut client_tx, mut client_tx_rx) = mpsc::unbounded_channel::<DaemonMessage>();
     let mut attached_session_id: Option<String> = None;
@@ -581,16 +579,14 @@ pub async fn handle_client_channels(
                     }
                     ClientMessage::SwitchModel { session_id: thread_id, model } => {
                         let mgr = session_manager.lock().await;
-                        match mgr.switch_model(&thread_id, model) {
-                            Ok(confirmation) => {
-                                let _ = daemon_tx.send(confirmation);
-                            }
-                            Err(e) => {
-                                let _ = daemon_tx.send(DaemonMessage::Error {
-                                    thread_id: Some(thread_id),
-                                    text: format!("failed to switch model: {e}"),
-                                });
-                            }
+                        // `switch_model` delivers the confirmation to this
+                        // client exactly once: via its subscription when
+                        // attached, directly otherwise.
+                        if let Err(e) = mgr.switch_model(&thread_id, model, Some(&client_tx)) {
+                            let _ = daemon_tx.send(DaemonMessage::Error {
+                                thread_id: Some(thread_id),
+                                text: format!("failed to switch model: {e}"),
+                            });
                         }
                     }
                     ClientMessage::UserChoiceAnswered { choice_id, selected } => {

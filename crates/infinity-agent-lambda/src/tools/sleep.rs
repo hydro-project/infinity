@@ -48,12 +48,18 @@ pub struct SleepTool {
     pub scheduler_client: SchedulerClient,
     pub scheduler_role_arn: String,
     pub delay_queue_url: String,
+    /// ARN of the input queue, used as the EventBridge Scheduler target.
+    pub input_queue_arn: String,
 }
 
 #[async_trait]
 impl Tool<SqsMessageSender> for SleepTool {
     fn name(&self) -> &str {
         "sleep"
+    }
+
+    fn is_passive(&self) -> bool {
+        true
     }
 
     fn description(&self) -> &str {
@@ -133,7 +139,7 @@ impl Tool<SqsMessageSender> for SleepTool {
                 )
                 .target(
                     Target::builder()
-                        .arn(&context.input_queue_arn)
+                        .arn(&self.input_queue_arn)
                         .role_arn(&self.scheduler_role_arn)
                         .input(serde_json::to_string(&tool_result_msg)?)
                         .sqs_parameters(
@@ -156,12 +162,18 @@ pub struct SleepUntilTool {
     pub scheduler_client: SchedulerClient,
     pub scheduler_role_arn: String,
     pub delay_queue_url: String,
+    /// ARN of the input queue, used as the EventBridge Scheduler target.
+    pub input_queue_arn: String,
 }
 
 #[async_trait]
 impl Tool<SqsMessageSender> for SleepUntilTool {
     fn name(&self) -> &str {
         "sleep_until"
+    }
+
+    fn is_passive(&self) -> bool {
+        true
     }
 
     fn description(&self) -> &str {
@@ -272,7 +284,7 @@ impl Tool<SqsMessageSender> for SleepUntilTool {
                 )
                 .target(
                     Target::builder()
-                        .arn(&context.input_queue_arn)
+                        .arn(&self.input_queue_arn)
                         .role_arn(&self.scheduler_role_arn)
                         .input(serde_json::to_string(&tool_result_msg)?)
                         .sqs_parameters(

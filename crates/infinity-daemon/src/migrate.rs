@@ -5,14 +5,12 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use infinity_protocol::{ClientMessage, DaemonMessage};
-use tokio::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::remote::{RemoteDaemons, SshPortForward};
-use crate::session::SessionManager;
+use crate::session::SharedSessionManager;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -22,7 +20,7 @@ pub async fn orchestrate_migration(
     session_id: String,
     to: Option<String>,
     dest_cwd: PathBuf,
-    session_manager: Arc<Mutex<SessionManager>>,
+    session_manager: SharedSessionManager,
     daemon_tx: UnboundedSender<DaemonMessage>,
 ) {
     let _ = daemon_tx.send(DaemonMessage::MigrateStarted {
@@ -57,7 +55,7 @@ async fn run_migration(
     session_id: &str,
     to: Option<&str>,
     dest_cwd: &Path,
-    session_manager: &Arc<Mutex<SessionManager>>,
+    session_manager: &SharedSessionManager,
 ) -> Result<(), BoxError> {
     let source_is_local = !session_id.contains('/');
     let (source_remote, real_session_id) = if source_is_local {
@@ -222,7 +220,7 @@ pub async fn filter_migration_server_ports(
         .iter()
         .map(|u| (u.clone(), booted.server_ids.get(u).cloned()))
         .collect();
-    let loaded = crate::rap_tools::load_rap_tools::<crate::memory_store::InMemoryMessageSender>(
+    let loaded = crate::rap_tools::load_rap_tools::<infinity_agent_core::system::ChannelSender>(
         &servers_with_ids,
     )
     .await?;
@@ -250,7 +248,7 @@ pub async fn filter_migration_server_ports(
 pub async fn handle_emigrate(
     session_id: &str,
     dest_rap_urls: HashMap<String, String>,
-    session_manager: &Arc<Mutex<SessionManager>>,
+    session_manager: &SharedSessionManager,
 ) -> Result<String, BoxError> {
     // Get cwd and shut down the session first
     let cwd = {
@@ -295,7 +293,7 @@ async fn boot_dest_and_tunnel(
     to: Option<&str>,
     dest_cwd: &Path,
     source_remote: &Option<String>,
-    session_manager: &Arc<Mutex<SessionManager>>,
+    session_manager: &SharedSessionManager,
 ) -> Result<
     (
         HashMap<String, String>,

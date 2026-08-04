@@ -20,4 +20,3 @@ pub use infinity_daemon::rap_callback;
 pub use infinity_daemon::rap_tools;
 pub use infinity_daemon::session_store;
 pub use infinity_daemon::set_title_tool;
-pub use infinity_daemon::sleep_tools;

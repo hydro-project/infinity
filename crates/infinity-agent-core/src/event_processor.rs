@@ -2514,7 +2514,6 @@ mod tests {
         ToolContext {
             message_sender: StubSender,
             group_id: "thread-1".into(),
-            input_queue_arn: String::new(),
             callback_url: String::new(),
             user_id: None,
             thread_stack: vec!["thread-1".into()],

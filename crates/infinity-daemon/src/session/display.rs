@@ -1,40 +1,36 @@
-use infinity_agent_core::batch_processor::DisplayEvent;
 use infinity_agent_core::message::InfinityMessage;
+use infinity_agent_core::system::AgentEvent;
 use infinity_protocol::{DaemonMessage, TokenUsage};
-use rig::completion::GetTokenUsage;
 use rig::message::{AssistantContent, ToolResultContent, UserContent};
 
-pub(crate) fn display_event_to_daemon<R: GetTokenUsage>(
-    thread_id: &str,
-    evt: DisplayEvent<R>,
-) -> Option<DaemonMessage> {
+pub(crate) fn agent_event_to_daemon(thread_id: &str, evt: &AgentEvent) -> Option<DaemonMessage> {
     let tid = Some(thread_id.to_owned());
     Some(match evt {
-        DisplayEvent::StartOutput => DaemonMessage::StartOutput { thread_id: tid },
-        DisplayEvent::TextChunk { chunk } => DaemonMessage::TextChunk {
+        AgentEvent::CompletionStarted => DaemonMessage::StartOutput { thread_id: tid },
+        AgentEvent::TextChunk { text } => DaemonMessage::TextChunk {
             thread_id: tid,
-            chunk,
+            chunk: text.clone(),
         },
-        DisplayEvent::ToolCall {
+        AgentEvent::ToolCall {
             name,
             args,
             display_as,
         } => DaemonMessage::ToolCall {
-            name,
+            name: name.clone(),
             args: args.to_string(),
             thread_id: tid,
-            display_as,
+            display_as: display_as.clone(),
         },
-        DisplayEvent::ToolResult { segments } => DaemonMessage::ToolResult {
-            segments,
+        AgentEvent::ToolResult { segments } => DaemonMessage::ToolResult {
+            segments: segments.clone(),
             thread_id: tid,
         },
-        DisplayEvent::Info(s) => DaemonMessage::Info {
+        AgentEvent::Info { text } => DaemonMessage::Info {
             thread_id: tid,
-            text: s,
+            text: text.clone(),
         },
-        DisplayEvent::ResponseDone(r) => {
-            let token_usage = r.and_then(|r| r.token_usage()).map(|u| TokenUsage {
+        AgentEvent::CompletionFinished { usage } => {
+            let token_usage = usage.map(|u| TokenUsage {
                 input_tokens: Some(u.input_tokens),
                 output_tokens: Some(u.output_tokens),
                 total_tokens: Some(u.total_tokens),
@@ -44,42 +40,26 @@ pub(crate) fn display_event_to_daemon<R: GetTokenUsage>(
                 token_usage,
             }
         }
-        DisplayEvent::UserInput(s) => DaemonMessage::UserInputEcho {
+        AgentEvent::UserInput { text } => DaemonMessage::UserInputEcho {
             thread_id: tid,
-            text: s,
+            text: text.clone(),
         },
-        DisplayEvent::SubscriptionEvent { name, text } => DaemonMessage::SubscriptionEvent {
-            name,
-            text,
+        AgentEvent::SubscriptionEvent { name, text } => DaemonMessage::SubscriptionEvent {
+            name: name.clone(),
+            text: text.clone(),
             thread_id: tid,
         },
-        DisplayEvent::OAuthRequired { auth_url } => DaemonMessage::OAuthRequired {
+        AgentEvent::OAuthRequired { auth_url } => DaemonMessage::OAuthRequired {
             thread_id: tid,
-            auth_url,
+            auth_url: auth_url.clone(),
         },
-        DisplayEvent::UserChoiceRequired {
-            id,
-            prompt,
-            choices,
-            default,
-            response_url: _,
-        } => DaemonMessage::UserChoiceRequired {
+        AgentEvent::ThinkingStarted => DaemonMessage::ThinkingStart { thread_id: tid },
+        AgentEvent::ThinkingEnded => DaemonMessage::ThinkingEnd { thread_id: tid },
+        AgentEvent::ThinkingChunk { text } => DaemonMessage::ThinkingChunk {
             thread_id: tid,
-            id,
-            prompt,
-            choices,
-            default,
+            chunk: text.clone(),
         },
-        DisplayEvent::ThinkingStart => DaemonMessage::ThinkingStart { thread_id: tid },
-        DisplayEvent::ThinkingEnd => DaemonMessage::ThinkingEnd { thread_id: tid },
-        DisplayEvent::ThinkingChunk { chunk } => DaemonMessage::ThinkingChunk {
-            thread_id: tid,
-            chunk,
-        },
-        DisplayEvent::CompactionApplied => DaemonMessage::CompactionApplied { thread_id: tid },
-        DisplayEvent::UserChoiceComplete { choice_id } => {
-            DaemonMessage::UserChoiceComplete { choice_id }
-        }
+        AgentEvent::CompactionApplied => DaemonMessage::CompactionApplied { thread_id: tid },
     })
 }
 

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use aws_lambda_events::event::sqs::SqsEvent;
 use aws_sdk_dsql::Client as DsqlClient;
 use aws_sdk_dynamodb::Client as DynamoDbClient;
@@ -6,17 +8,15 @@ use aws_sdk_sqs::Client as SqsClient;
 use infinity_provider_bedrock::BedrockProvider;
 use lambda_runtime::{Error, LambdaEvent, tracing};
 
-use infinity_agent_core::batch_processor::{self, DisplayEvent};
 use infinity_agent_core::event_processor;
 use infinity_agent_core::message::InputMessage;
+use infinity_agent_core::system::{
+    AgentEvent, AgentSystemBuilder, EventCollector, NoDeferral, StaticModel,
+};
+use infinity_agent_core::tools::Tool;
 use infinity_agent_core::tools::config::ToolsConfig;
 use infinity_agent_core::tools::rap_tool::RapTool;
-use infinity_agent_core::tools::sleep::SleepUntilEventOrInputTool;
-use infinity_agent_core::tools::thread::{
-    CloseThreadTool, ReportToParentTool, SendMessageToChildTool, SpawnThreadTool,
-};
-use infinity_agent_core::tools::{Tool, ToolContext};
-use infinity_provider_protocol::ModelProvider;
+use infinity_provider_protocol::{ModelEntry, ModelProvider};
 use rap_client::toolset_loader::ToolsetLoader;
 
 use crate::conversation_history::DsqlConversationStore;
@@ -93,19 +93,11 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
 
     let http_client = RapHttpClient::new(&config);
 
-    let rap_notifier = if toolset_server_urls.is_empty() {
-        None
-    } else {
-        Some(rap_client::notifier::RapNotifier::new(
-            toolset_server_urls.clone(),
-            http_client.clone(),
-        ))
-    };
+    let rap_notifier =
+        rap_client::notifier::RapNotifier::new(toolset_server_urls.clone(), http_client.clone());
 
     let toolset_cache = DynamoDbToolsetCache::new(dynamodb_client.clone(), table_name.clone());
     let toolset_loader = ToolsetLoader::new(http_client.clone(), toolset_cache);
-
-    let provider = BedrockProvider::from_env();
 
     let input_queue_url = std::env::var("INPUT_QUEUE_URL").unwrap_or_default();
     let input_queue_arn = std::env::var("INPUT_QUEUE_ARN").unwrap_or_default();
@@ -163,135 +155,79 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         }
     }
 
-    // Add built-in tools
+    // Platform-specific sleep tools (durable timers via EventBridge / SQS
+    // delays). The remaining built-in tools come from the system builder.
     tool_impls.push(Box::new(SleepTool {
         scheduler_client: scheduler_client.clone(),
         scheduler_role_arn: scheduler_role_arn.clone(),
         delay_queue_url: std::env::var("DELAY_QUEUE_URL").unwrap_or_default(),
+        input_queue_arn: input_queue_arn.clone(),
     }));
-    tool_impls.push(Box::new(SleepUntilEventOrInputTool));
     tool_impls.push(Box::new(SleepUntilTool {
         scheduler_client: scheduler_client.clone(),
         scheduler_role_arn: scheduler_role_arn.clone(),
         delay_queue_url: std::env::var("DELAY_QUEUE_URL").unwrap_or_default(),
+        input_queue_arn,
     }));
-    tool_impls.push(Box::new(SpawnThreadTool {
-        conversation_store: conversation_store.clone(),
-    }));
-    tool_impls.push(Box::new(ReportToParentTool {
-        conversation_store: conversation_store.clone(),
-    }));
-    tool_impls.push(Box::new(CloseThreadTool {
-        conversation_store: conversation_store.clone(),
-        rap_notifier: rap_notifier.clone(),
-    }));
-    tool_impls.push(Box::new(SendMessageToChildTool {
-        conversation_store: conversation_store.clone(),
-    }));
-    tool_impls.push(Box::new(
-        infinity_agent_core::tools::cancel_subscription::CancelSubscriptionTool {
-            state_store: state_store.clone(),
-            rap_notifier: rap_notifier.clone(),
-        },
-    ));
 
-    // Create history once for the batch
-    let current_history = event_processor::HistoryManager::new_with_history(
-        conversation_store.clone(),
-        state_store.clone(),
-        group_id.clone(),
-    )
-    .await
-    .map_err(|e| Error::from(format!("{}", e)))?;
-
-    let tool_names: std::collections::HashSet<String> =
-        tool_impls.iter().map(|t| t.name().to_owned()).collect();
-    let tool_defs: Vec<rig::completion::ToolDefinition> = tool_impls
-        .iter()
-        .map(|t| rig::completion::ToolDefinition {
-            name: t.name().to_owned(),
-            description: t.description().to_owned(),
-            parameters: t.parameters(),
-        })
-        .collect();
-
-    let user_id = current_history
-        .get_metadata()
-        .and_then(|m| m.get("user_id").and_then(|v| v.as_str()).map(String::from));
-
-    let tool_context = ToolContext {
-        message_sender: sender.clone(),
-        group_id: group_id.clone(),
-        input_queue_arn: input_queue_arn.clone(),
-        callback_url: callback_url.clone(),
-        user_id,
-        thread_stack: current_history.get_thread_stack(),
+    // Resolve the model's capabilities (image input, context window) from its
+    // catalog entry; fall back to a minimal entry if listing fails.
+    let provider: Arc<dyn ModelProvider> = Arc::new(BedrockProvider::from_env());
+    let model = match StaticModel::new(provider.clone(), MODEL_ID).await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("Failed to resolve model entry for {MODEL_ID}: {e}");
+            StaticModel::from_entry(
+                provider,
+                &ModelEntry {
+                    model_id: MODEL_ID.to_owned(),
+                    display_name: MODEL_ID.to_owned(),
+                    context_window: 0,
+                    max_output_tokens: None,
+                    supports_image_input: false,
+                },
+            )
+        }
     };
 
-    let tool_registry: std::collections::HashMap<String, &dyn Tool<SqsMessageSender>> = tool_impls
-        .iter()
-        .map(|t| (t.name().to_owned(), t.as_ref()))
-        .collect();
+    let system = AgentSystemBuilder::new(conversation_store, state_store, model, sender.clone())
+        .tools(tool_impls)
+        .callback_url(callback_url)
+        .rap_notifier(rap_notifier)
+        .build();
 
-    let (display_tx, mut display_rx) = tokio::sync::mpsc::unbounded_channel();
-    let extra_system_prompt: Option<String> = None;
-
-    // Resolve the model's image-input capability once from its catalog entry.
-    let supports_image_input = provider
-        .list_models()
+    // One SQS delivery = one slice: load the thread, run one step over the
+    // batch, and let the process exit. There is nowhere to hold deferred
+    // events in a Lambda, so `NoDeferral` processes everything immediately.
+    let thread = system
+        .thread(&group_id)
         .await
-        .ok()
-        .and_then(|models| {
-            models
-                .into_iter()
-                .find(|m| m.model_id == MODEL_ID)
-                .map(|m| m.supports_image_input)
-        })
-        .unwrap_or(false);
+        .map_err(|e| Error::from(format!("{}", e)))?;
+    let collector = EventCollector::new();
+    // Keep the cancel sender alive for the step's duration (dropping it
+    // signals cancellation). Lambda never interrupts a slice.
+    let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+    thread
+        .step(inputs, &collector, &mut NoDeferral, cancel_rx)
+        .await
+        .map_err(|e| Error::from(format!("{}", e)))?;
 
-    {
-        let batch_result = batch_processor::process_batch(
-            inputs.into_iter(),
-            &current_history,
-            &conversation_store,
-            &display_tx,
-            &group_id,
-            &provider,
-            MODEL_ID,
-            supports_image_input,
-            &tool_names,
-            &tool_defs,
-            &tool_registry,
-            tool_context,
-            &extra_system_prompt,
-            rap_notifier.as_ref(),
-            None,
-        )
-        .await;
-
-        if let Some((fut, _cancel_tx)) = batch_result {
-            fut.await;
-        }
-    }
-
-    drop(display_tx);
-
-    // Drain display events and transform into output
+    // Transform the step's events into output-queue messages.
     let mut accumulated_text = String::new();
     let mut oauth_auth_url: Option<String> = None;
 
-    while let Ok(event) = display_rx.try_recv() {
+    for event in collector.take() {
         match event {
-            DisplayEvent::TextChunk { chunk, .. } => {
-                accumulated_text.push_str(&chunk);
+            AgentEvent::TextChunk { text } => {
+                accumulated_text.push_str(&text);
             }
-            DisplayEvent::ToolCall { name, args, .. } if name != "sleep_until_event_or_input" => {
+            AgentEvent::ToolCall { name, args, .. } if name != "sleep_until_event_or_input" => {
                 accumulated_text.push_str(&format!(
                     "\n[Tool Call: {} with arguments {}]\n",
                     name, args
                 ));
             }
-            DisplayEvent::OAuthRequired { auth_url } => {
+            AgentEvent::OAuthRequired { auth_url } => {
                 oauth_auth_url = Some(auth_url);
             }
             _ => {}
@@ -300,7 +236,8 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
 
     // Send OAuth output if needed
     if let Some(auth_url) = oauth_auth_url {
-        let metadata = current_history
+        let metadata = thread
+            .history()
             .get_metadata()
             .unwrap_or(serde_json::json!({}));
         let oauth_msg = event_processor::OAuthOutputMessage {
@@ -316,11 +253,12 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
 
     // Send accumulated text to output queue
     if !accumulated_text.is_empty() {
-        let metadata = current_history
+        let metadata = thread
+            .history()
             .get_metadata()
             .unwrap_or(serde_json::json!({}));
-        let thread_id = current_history.thread_id.clone();
-        let root_id = current_history.root_thread_id.clone();
+        let thread_id = thread.history().thread_id.clone();
+        let root_id = thread.history().root_thread_id.clone();
         let output_text = if thread_id != root_id {
             format!("[{}] {}", thread_id, accumulated_text)
         } else {

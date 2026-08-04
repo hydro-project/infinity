@@ -13,10 +13,9 @@ use rig::OneOrMany;
 use rig::message::{
     DocumentSourceKind, Image, ImageMediaType, MimeType, ToolResult, ToolResultContent, UserContent,
 };
-use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::session::SessionManager;
+use crate::session::{SessionManager, SharedSessionManager};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -27,7 +26,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// directly to the session manager, eliminating an mpsc indirection.
 pub async fn start_callback_server(
     state_dir: std::path::PathBuf,
-) -> Result<Arc<Mutex<SessionManager>>, BoxError> {
+) -> Result<SharedSessionManager, BoxError> {
     let (listener, callback_url) = rap_client::callback_server::bind_callback_listener().await?;
     let session_manager = SessionManager::new(state_dir, callback_url).await?;
     Ok(serve_callbacks(listener, session_manager))
@@ -40,8 +39,8 @@ pub async fn start_callback_server(
 pub fn serve_callbacks(
     listener: tokio::net::TcpListener,
     session_manager: SessionManager,
-) -> Arc<Mutex<SessionManager>> {
-    let session_manager = Arc::new(Mutex::new(session_manager));
+) -> SharedSessionManager {
+    let session_manager = SharedSessionManager::new(Mutex::new(session_manager));
 
     // Use a channel to bridge from the Send-required callback server
     // to the LocalSet where SessionManager lives.
