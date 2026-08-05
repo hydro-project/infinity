@@ -4,9 +4,46 @@ pub mod rap_tool;
 pub mod sleep;
 pub mod thread;
 
+use crate::message::{InputMessage, InputMessageContent};
 use crate::traits::InputSender;
 use async_trait::async_trait;
-use rig::message::ToolResult;
+use rig::OneOrMany;
+use rig::agent::Text;
+use rig::message::{ToolResult, ToolResultContent, UserContent};
+
+pub(crate) type ToolError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Enqueue an error as the result of a tool call so the agent can recover.
+pub(crate) async fn send_tool_error<M: InputSender>(
+    context: &ToolContext<M>,
+    id: &str,
+    call_id: Option<String>,
+    error: impl Into<String>,
+) -> Result<(), ToolError>
+where
+    M::Error: 'static,
+{
+    let message = InputMessage {
+        content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+            id: id.to_owned(),
+            call_id,
+            content: OneOrMany::one(ToolResultContent::Text(Text {
+                text: format!("Error: {}", error.into()),
+            })),
+        })),
+        group_id: context.group_id.clone(),
+        metadata: None,
+        synthetic: None,
+        display_as: None,
+        subscription: false,
+    };
+
+    context
+        .message_sender
+        .send_to_input_queue(message, &context.group_id, id)
+        .await
+        .map_err(|error| Box::new(error) as ToolError)
+}
 
 /// Context passed to tool implementations — generic over platform backends.
 #[derive(Clone)]
