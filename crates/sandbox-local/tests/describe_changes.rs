@@ -100,7 +100,12 @@ async fn describe_and_read_log(repo: &Path) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    redact_jj_log(&String::from_utf8(output.stdout).expect("jj log output as utf8"))
+    let log = redact_jj_log(&String::from_utf8(output.stdout).expect("jj log output as utf8"));
+    assert!(
+        !log.contains("Committer: (no name set)"),
+        "sandbox fallback identity must be applied before workspace creation:\n{log}"
+    );
+    log
 }
 
 #[tokio::test]
