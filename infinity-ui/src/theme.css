@@ -1,6 +1,23 @@
-/* ── Infinity UI theme variables ── */
+/* ── Infinity UI theme ──
+   Everything in this file is scoped to `.infinity-ui-root`, which must be
+   applied to the element that hosts Infinity UI components: infinity-web sets
+   it on `<html>`, and embeds (e.g. the docs landing-page demo) set it on
+   their wrapper element. Scoping to a class (instead of `:root`/global
+   element selectors) means:
 
-:root {
+   * components get their theme variables and inherited typography from the
+     class, with enough specificity to beat a host page's global styles
+     (e.g. Docusaurus/Infima), and
+   * our variables and resets do not leak out into the host page.
+
+   The element resets below use `:where()` so their specificity stays at
+   exactly one class (0,1,0): higher than a host page's bare element
+   selectors (`p`, `code`, `a`, ...), but never higher than Infinity UI's own
+   component classes. Component-module rules with a single class have the
+   *same* specificity, so this file must be imported *before* any component
+   CSS for the components to win the resulting order ties. */
+
+.infinity-ui-root {
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "JetBrains Mono", "Fira Code", monospace;
   --max-width: 800px;
@@ -35,9 +52,25 @@
   --primary: oklch(0.985 0 0);
   --primary-foreground: oklch(0.205 0 0);
   --radius: 0.5rem;
+
+  /* Baseline typography inherited by all components */
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.6;
+  text-align: start;
+  -webkit-font-smoothing: antialiased;
+  transition:
+    background 0.3s,
+    color 0.3s;
 }
 
-[data-theme="light"] {
+/* Light theme: matches both the root element carrying `data-theme` itself
+   (infinity-web puts the class on <html>, where `data-theme` is set) and a
+   root nested under a host page's `data-theme` (the Docusaurus embed). */
+.infinity-ui-root[data-theme="light"],
+[data-theme="light"] .infinity-ui-root {
   --bg: #f5f5f7;
   --bg-surface: #ffffff;
   --bg-hover: #eee;
@@ -68,20 +101,82 @@
   --primary-foreground: oklch(0.985 0 0);
 }
 
+/* Neutralize host-page element styles (e.g. Docusaurus/Infima styles `p`,
+   `ul`, `code`, `a`, headings, tables, ... directly, which beats values
+   inherited from `.infinity-ui-root`). `all: revert` rolls every property
+   back to the user-agent default, and the explicit declarations after it
+   reproduce infinity-web's global `* { margin: 0; padding: 0; box-sizing:
+   border-box; }` reset, so markup renders identically in the app and in
+   embeds. */
+.infinity-ui-root
+  :where(
+    p,
+    h1,
+    h2,
+    h3,
+    h4,
+    h5,
+    h6,
+    ul,
+    ol,
+    li,
+    blockquote,
+    pre,
+    code,
+    kbd,
+    a,
+    strong,
+    em,
+    small,
+    sup,
+    sub,
+    hr,
+    table,
+    thead,
+    tbody,
+    tr,
+    th,
+    td,
+    img,
+    figure,
+    button,
+    input,
+    textarea,
+    select,
+    label
+  ) {
+  all: revert;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* Deliberate shared defaults on top of the reset (same one-class specificity,
+   later in the file, so they win the order tie against the revert above). */
+.infinity-ui-root :where(a) {
+  color: var(--accent);
+}
+
+.infinity-ui-root :where(code, kbd, pre) {
+  font-family: var(--font-mono);
+}
+
 /* Form controls do not inherit the document font by default (they use the
    UA's button/input font, which varies per platform), so every class below
    that styles a <button>/<input> with visible text sets `font-family`. */
 
 /* ── Reduced motion ──
    Freeze CSS animations and transitions (including those from third-party
-   libraries) when the user prefers reduced motion. Also relied upon by
+   libraries) when the user prefers reduced motion. Scoped to the UI root so
+   we don't override a host page's own animation policy. Also relied upon by
    screenshot-based e2e tests, which emulate this preference to get
    deterministic renders. Canvas animations (e.g. the Spinner) check the
    same media query in JS. */
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  .infinity-ui-root,
+  .infinity-ui-root *,
+  .infinity-ui-root *::before,
+  .infinity-ui-root *::after {
     animation-duration: 0.001ms !important;
     animation-delay: 0ms !important;
     animation-iteration-count: 1 !important;

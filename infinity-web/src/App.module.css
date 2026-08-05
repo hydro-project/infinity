@@ -1,5 +1,6 @@
 /* ── Global reset & App layout ── */
-/* Theme variables are provided by infinity-ui/src/theme.css */
+/* Theme variables and baseline typography come from the `infinity-ui-root`
+   class (infinity-ui/src/theme.css), applied to #root in index.html. */
 
 :global(*) {
   margin: 0;
@@ -12,14 +13,7 @@
 :global(#root) {
   height: 100%;
   background: var(--bg);
-  color: var(--text);
-  font-family: var(--font-sans);
-  font-size: 14px;
-  line-height: 1.6;
-  -webkit-font-smoothing: antialiased;
-  transition:
-    background 0.3s,
-    color 0.3s;
+  transition: background 0.3s;
 }
 
 .root {
