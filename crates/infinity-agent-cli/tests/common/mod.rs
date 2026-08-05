@@ -478,8 +478,20 @@ impl TuiHarness {
         let term = VirtualTerm {
             emu: Arc::clone(&emu),
         };
-
         let (event_tx, event_rx) = mpsc::unbounded_channel();
+        Self::spawn_with_term(term, emu, event_tx, event_rx, opts).await
+    }
+
+    /// Spawn the TUI against a caller-provided [`TermOut`] (e.g. one that
+    /// interposes on cursor queries to model races), with the emulator and
+    /// event channel also provided by the caller.
+    pub async fn spawn_with_term<T: TermOut + Send + 'static>(
+        term: T,
+        emu: SharedEmulator,
+        event_tx: mpsc::UnboundedSender<Event>,
+        event_rx: mpsc::UnboundedReceiver<Event>,
+        opts: HarnessOptions,
+    ) -> Self {
         let events = ScriptedEvents {
             rx: event_rx,
             pending: None,

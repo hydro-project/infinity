@@ -1,0 +1,68 @@
+---
+source: crates/infinity-agent-cli/tests/tui_resize_race.rs
+expression: after
+---
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ 
+~ Infinity Agent CLI
+~ Type your messages below. /help for commands. Ctrl+C to exit.
+~ 
+~ > tell me things
+~ assistant line 01
+~ assistant line 02
+~ assistant line 03
+~ assistant line 04
+~ assistant line 05
+~ assistant line 06
+~ assistant line 07
+┌────────────────────────────────────────────────────────────────────────────────┐
+│assistant line 08                                                               │
+│assistant line 09                                                               │
+│assistant line 10                                                               │
+│assistant line 11                                                               │
+│assistant line 12                                                               │
+│assistant line 13                                                               │
+│assistant line 14                                                               │
+│assistant line 15                                                               │
+│assistant line 16                                                               │
+│assistant line 17                                                               │
+│assistant line 18                                                               │
+│assistant line 19                                                               │
+│assistant line 20                                                               │
+│assistant line 21                                                               │
+│assistant line 22                                                               │
+│assistant line 23                                                               │
+│assistant line 24                                                               │
+│assistant line 25                                                               │
+│assistant line 26                                                               │
+│assistant line 27                                                               │
+│assistant line 28                                                               │
+│assistant line 29                                                               │
+│assistant line 30                                                               │
+│                                                                                │
+│                                                                                │
+│────────────────────────────────────────────────────────────────────────────────│
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│/help for commands                                 mock: mock-model · 0% context│
+└────────────────────────────────────────────────────────────────────────────────┘
+cursor: row=27 col=1
