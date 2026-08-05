@@ -10,6 +10,7 @@ description = "In-process stub RAP tool servers for integration tests (not publi
 rap-protocol = { path = "../rap-protocol" }
 axum = { workspace = true }
 serde_json = { workspace = true }
+similar = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "macros"] }
 reqwest = { workspace = true }
 
