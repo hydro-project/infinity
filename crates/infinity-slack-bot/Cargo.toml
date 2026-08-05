@@ -28,7 +28,7 @@ reqwest = { workspace = true }
 bytes = "1"
 
 [dev-dependencies]
-hydro_lang = { version = "0.17.0-alpha.2", features = ["deploy"] }
+hydro_lang = { version = "0.17.0-alpha.2", features = ["deploy", "sim"] }
 hydro_deploy = "0.17.0-alpha.1"
 futures = "0.3"
 
