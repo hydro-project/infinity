@@ -413,13 +413,17 @@ pub async fn thread_worker(
                 });
             }
         }
-        subscribers
-            .lock()
-            .expect("bug: mutex poisoned")
-            .push(Subscriber {
-                tx,
-                keeps_session_alive,
-            });
+        let mut subs = subscribers.lock().expect("bug: mutex poisoned");
+        // A client can legitimately re-send Connect on the same connection
+        // (e.g. its connect-retry timer fires while a slow resume is still in
+        // flight). Replace any existing subscription on the same channel
+        // instead of stacking a duplicate, which would deliver every display
+        // event to that client N times from then on.
+        subs.retain(|sub| !sub.tx.same_channel(&tx));
+        subs.push(Subscriber {
+            tx,
+            keeps_session_alive,
+        });
     };
 
     loop {

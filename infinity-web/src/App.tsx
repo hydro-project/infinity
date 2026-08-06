@@ -495,6 +495,18 @@ export function App() {
               views: Record<string, any>;
               in_progress?: boolean;
             }>(m);
+            // A Replay always carries the complete transcript for the
+            // connected thread, so rebuild the view from scratch instead of
+            // appending. On a WS reconnect (Welcome → re-Connect) the old
+            // transcript is still loaded; appending the replayed history
+            // duplicated the entire message list (and DOM) on every
+            // reconnect, degrading performance permanently. Bumping the
+            // generation invalidates MessageList's prefix cache so the
+            // fresh list re-renders once. (Unlike resetMessages, keep the
+            // input draft — the user may be mid-typing during a blip.)
+            setMsgState((prev) => ({ messages: [], gen: prev.gen + 1 }));
+            setPendingChoices([]);
+            streamingRef.current = false;
             for (const h of p.history) processOne(h);
             // After replay, mark any open assistant as done
             finishAssistant();
