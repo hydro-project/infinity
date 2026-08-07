@@ -35,7 +35,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
         tools: vec![
             ToolDef {
                 name: "list_steering".to_owned(),
-                description: "List all known steering/instruction files found in a project root. Scans for CLAUDE.md, AGENTS.md, .kiro/steering/, .cursorrules, .github/copilot-instructions.md, .windsurfrules, CONVENTIONS.md, .cursor/rules/, .ai/rules/, etc. Returns deduplicated relative paths (symlinks resolved).".to_owned(),
+                description: "List all known steering/instruction files found in a project root. Call this immediately at the start of a session, before doing any other work, so the user's instructions can guide the rest of the task. Scans for CLAUDE.md, AGENTS.md, .kiro/steering/, .cursorrules, .github/copilot-instructions.md, .windsurfrules, CONVENTIONS.md, .cursor/rules/, .ai/rules/, etc. Also scans the user's home directory for user-level (non-project) steering files, returned with a `~/` prefix — these contain the user's global preferences and should generally be loaded. Returns deduplicated relative paths (symlinks resolved).".to_owned(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
