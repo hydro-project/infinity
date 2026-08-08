@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use infinity_daemon::client_handler::handle_client_channels;
 use infinity_daemon::ids::SequentialIdSource;
-use infinity_daemon::session::{SessionManager, SessionManagerConfig};
+use infinity_daemon::session::{SessionManager, SessionManagerConfig, SharedSessionManager};
 use infinity_protocol::{ClientMessage, DaemonMessage};
 use infinity_provider_protocol::{ModelEntry, ModelProvider, SingleModelProvider};
 use rig_mock::{MockModelController, mock_model};
@@ -20,7 +20,7 @@ use tokio::sync::{Mutex, mpsc};
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 struct TestHarness {
-    manager: Arc<Mutex<SessionManager>>,
+    manager: SharedSessionManager,
     ctrl: MockModelController,
     client_tx: mpsc::UnboundedSender<ClientMessage>,
     daemon_rx: mpsc::UnboundedReceiver<DaemonMessage>,
@@ -55,7 +55,7 @@ async fn start_harness() -> Result<TestHarness, BoxError> {
         vec![],
     )
     .await?;
-    let manager = Arc::new(Mutex::new(manager));
+    let manager = SharedSessionManager::new(Mutex::new(manager));
 
     let (client_tx, client_rx) = mpsc::unbounded_channel::<ClientMessage>();
     let (daemon_tx, daemon_rx) = mpsc::unbounded_channel::<DaemonMessage>();
@@ -134,16 +134,19 @@ async fn create_session_and_chat(h: &mut TestHarness, keeps_session_alive: bool)
     session_id
 }
 
-/// Poll until the session's agent task finishes, or time out.
-async fn wait_for_agent_exit(manager: &Arc<Mutex<SessionManager>>, session_id: &str) -> bool {
+/// Poll until the session's RAP servers have been stopped (the session-idle
+/// teardown path ran), or time out.
+async fn wait_for_server_teardown(manager: &SharedSessionManager, session_id: &str) -> bool {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
         {
             let mgr = manager.lock().await;
-            match mgr.sessions.get(session_id) {
-                Some(s) if s.agent_task.is_finished() => return true,
-                None => return true,
-                _ => {}
+            if mgr.rap_manager.times_shut_down(session_id) > 0 {
+                assert!(
+                    mgr.is_session_idle(session_id),
+                    "servers must only be stopped once the session is idle"
+                );
+                return true;
             }
         }
         if tokio::time::Instant::now() > deadline {
@@ -154,8 +157,10 @@ async fn wait_for_agent_exit(manager: &Arc<Mutex<SessionManager>>, session_id: &
 }
 
 /// A connection with `keeps_session_alive: false` (like the Slack bot) must
-/// not keep the session warm: after the response completes, the session
-/// idles out and its agent task exits even though the client stays connected.
+/// not keep the session warm: after the response completes, the session goes
+/// idle and its RAP servers are stopped even though the client is still
+/// connected. (The agent system itself keeps running — servers reboot lazily
+/// on the next input.)
 #[tokio::test(flavor = "current_thread")]
 async fn non_keep_alive_client_does_not_keep_session_warm() {
     let local = tokio::task::LocalSet::new();
@@ -168,15 +173,20 @@ async fn non_keep_alive_client_does_not_keep_session_warm() {
             // session must still wind down because the only subscriber is
             // non-keep-alive.
             assert!(
-                wait_for_agent_exit(&h.manager, &session_id).await,
+                wait_for_server_teardown(&h.manager, &session_id).await,
                 "session should idle out despite the connected non-keep-alive client"
+            );
+            let mgr = h.manager.lock().await;
+            assert!(
+                mgr.session_store.lock().await.is_idle(&session_id),
+                "session should be marked idle in the store"
             );
         })
         .await;
 }
 
 /// A normal connection (`keeps_session_alive: true`) keeps the session warm
-/// while it stays connected.
+/// while it stays connected: its RAP servers are never stopped.
 #[tokio::test(flavor = "current_thread")]
 async fn keep_alive_client_keeps_session_warm() {
     let local = tokio::task::LocalSet::new();
@@ -186,16 +196,13 @@ async fn keep_alive_client_keeps_session_warm() {
             let session_id = create_session_and_chat(&mut h, true).await;
 
             // Give the idle machinery ample time to (incorrectly) tear the
-            // session down; it must still be running afterwards.
+            // session down; its servers must still be untouched afterwards.
             tokio::time::sleep(Duration::from_millis(500)).await;
             let mgr = h.manager.lock().await;
-            let session = mgr
-                .sessions
-                .get(&session_id)
-                .expect("session should still be tracked");
-            assert!(
-                !session.agent_task.is_finished(),
-                "session should stay warm while a keep-alive client is connected"
+            assert_eq!(
+                mgr.rap_manager.times_shut_down(&session_id),
+                0,
+                "session servers should stay warm while a keep-alive client is connected"
             );
         })
         .await;

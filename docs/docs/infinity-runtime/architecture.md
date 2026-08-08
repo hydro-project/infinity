@@ -42,7 +42,7 @@ The three phases map directly onto the core API:
 
 1. **Load.** `HistoryManager::new_with_history` restores the thread's conversation from the `ConversationStore`, walking the ancestor chain for child threads and substituting compaction summaries where they exist. It also loads the set of already-processed message IDs from the `StateStore`.
 
-2. **Prepare and complete.** `process_batch` runs each input through `prepare_input`, which deduplicates redelivered messages, drops messages for closed threads, routes subscription events (see below), and appends actionable content to history. If any input was actionable, `run_completion` streams a completion from the `ModelProvider`.
+2. **Prepare and complete.** A [`Thread::step`](./agent-systems/step-mode.md) runs each input through `prepare_input`, which deduplicates redelivered messages, drops messages for closed threads, routes subscription events (see below), and appends actionable content to history. If any input was actionable, `run_completion` streams a completion from the `ModelProvider`.
 
 3. **Dispatch and yield.** If the model produced a tool call, `execute_action` invokes the matching `Tool` implementation. For RAP tools this is a single HTTP POST containing the arguments and a `callback_url`; the tool server acknowledges and the call returns. The slice persists any remaining state and ends. On Lambda the process exits; in an embedded runtime the worker task goes back to awaiting its channel.
 
@@ -112,7 +112,7 @@ The parent's context stays clean: it sees a report if the event mattered and not
 
 ## Compaction
 
-Long-lived agents eventually outgrow the model's context window. When a thread's history approaches the limit (the daemon embedding triggers at roughly three quarters of the model's context window), the runtime spawns a compaction thread that summarizes the conversation and stores the summary in the `ConversationStore`, tagged with the history index it covers. Subsequent slices load the summary plus only the messages after that index. Because summaries are indexed by position, child threads spawned before a compaction still reconstruct the exact history they inherited.
+Long-lived agents eventually outgrow the model's context window. When a thread's history approaches the limit (the local driver triggers at roughly three quarters of the model's context window), the runtime spawns a compaction thread that summarizes the conversation and stores the summary in the `ConversationStore`, tagged with the history index it covers. Subsequent slices load the summary plus only the messages after that index. Because summaries are indexed by position, child threads spawned before a compaction still reconstruct the exact history they inherited.
 
 ## Why this runs on serverless
 

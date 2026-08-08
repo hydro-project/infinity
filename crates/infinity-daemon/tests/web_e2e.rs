@@ -35,7 +35,7 @@ use std::time::Duration;
 
 use infinity_daemon::ids::SequentialIdSource;
 use infinity_daemon::rap_callback;
-use infinity_daemon::session::{SessionManager, SessionManagerConfig};
+use infinity_daemon::session::{SessionManager, SessionManagerConfig, SharedSessionManager};
 use infinity_daemon::ws_handler;
 use infinity_provider_protocol::{ModelEntry, ModelProvider, SingleModelProvider};
 use playwright_rs::{
@@ -43,7 +43,6 @@ use playwright_rs::{
     expect_page,
 };
 use rig_mock::{MockCompletionModel, MockModelController, mock_model};
-use tokio::sync::Mutex;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -53,7 +52,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// WebSocket protocol on `port`.
 struct TestDaemon {
     #[expect(dead_code, reason = "held so the manager outlives the test")]
-    manager: Arc<Mutex<SessionManager>>,
+    manager: SharedSessionManager,
     port: u16,
     /// Working directory for sessions created through the UI.
     cwd: tempfile::TempDir,

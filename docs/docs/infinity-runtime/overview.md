@@ -44,13 +44,14 @@ The [Architecture](./architecture.md) page walks through the yielding machinery 
 
 **Deploy it on AWS Lambda.** The `infinity-agent-lambda` crate binds the core to SQS FIFO queues, Aurora DSQL, DynamoDB, and Bedrock, and the included CDK constructs provision the whole stack. This is the production path. See [Deploying on AWS Lambda](./deploying-on-lambda.mdx).
 
-**Embed it through the Rust API.** Implement the core's traits against your own backends (or the in-memory ones) and drive the loop from your own process. The Infinity Code daemon is a full example: it embeds the runtime with in-memory stores, `mpsc` channels instead of SQS, and file-based persistence. See [The Rust API](./rust-api.md).
+**Embed it through the Rust API.** Build an *agent system* with the high-level builder API (stores, tools, a model source) and either run it as a self-contained local runtime (an internal queue with per-thread drivers) or drive single steps from your own scheduler. The Infinity Code daemon is a full example: it runs a single long-lived agent system whose threads are grouped into sessions, backed by file-backed in-memory stores. See [The Agent System API](./agent-systems/overview.md).
 
 | | AWS Lambda | Embedded (Rust API) |
 |---|---|---|
+| Driving the loop | `AgentSystem::step` per queue delivery | Built-in local driver (`LocalAgentSystem::start`) |
 | Conversation history | Aurora DSQL | Anything implementing `ConversationStore` |
 | Dedup & subscription state | DynamoDB | Anything implementing `StateStore` |
-| Message delivery | SQS FIFO queue | Anything implementing `InputSender` |
+| Message delivery | SQS FIFO queue | Built-in in-process queue (`ChannelSender`) |
 | Yield | Process exits | Task idles on a channel |
 | Timers (`sleep`) | SQS delay / EventBridge Scheduler | `tokio::time::sleep` |
 | Tool auth | SigV4-signed HTTP | Plain HTTP |
@@ -60,7 +61,8 @@ The execution model is identical in both. Code written against the core (tools, 
 ## What's in these docs
 
 - **[Architecture](./architecture.md)**: the slice lifecycle, the yielding mechanism, turn durability, and message ordering, with diagrams.
-- **[The Rust API](./rust-api.md)**: the crates, the traits, and how to embed the runtime in your own process.
+- **[The Agent System API](./agent-systems/overview.md)**: the builder, the local driver and step modes, observers and durability, and the patterns the production embeddings use.
+- **[The Low-Level API](./low-level/overview.md)**: the platform traits and the loop pieces underneath the agent system, for custom embeddings.
 - **[Deploying on AWS Lambda](./deploying-on-lambda.mdx)**: the CDK constructs and the AWS architecture.
 - **[Model Providers](./model-providers.md)**: the `ModelProvider` trait and how to add model backends.
 - **[Built-in Tools](./built-in-tools.md)**: sleep and threading tools the runtime provides to every agent.

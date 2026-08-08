@@ -550,7 +550,6 @@ mod tests {
         ToolContext {
             message_sender: StubSender,
             group_id: "t1".into(),
-            input_queue_arn: String::new(),
             callback_url: String::new(),
             user_id: None,
             thread_stack: vec!["t1".into()],

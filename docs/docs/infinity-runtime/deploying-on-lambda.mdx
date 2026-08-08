@@ -1,5 +1,5 @@
 ---
-sidebar_position: 4
+sidebar_position: 5
 title: Deploying on AWS Lambda
 ---
 
@@ -7,7 +7,7 @@ import CloudArchitecture from '@site/static/img/cloud-architecture.svg';
 
 # Deploying on AWS Lambda
 
-The Lambda deployment is the production embedding of the Infinity Runtime, and the one that takes fullest advantage of the [yielding architecture](./architecture.md): when a slice ends, the Lambda invocation ends, and an idle agent consumes no compute at all. This page covers the AWS architecture and the CDK constructs that provision it. If you want to run the runtime inside your own process instead, see [The Rust API](./rust-api.md).
+The Lambda deployment is the production embedding of the Infinity Runtime, and the one that takes fullest advantage of the [yielding architecture](./architecture.md): when a slice ends, the Lambda invocation ends, and an idle agent consumes no compute at all. This page covers the AWS architecture and the CDK constructs that provision it. If you want to run the runtime inside your own process instead, see [The Agent System API](./agent-systems/overview.md).
 
 ## Architecture
 
@@ -278,7 +278,7 @@ new LambdaMCPToolSet(this, 'DatabaseMcp', {
 ## What's Next
 
 - **[Architecture](./architecture.md)**: how slices, yielding, and message ordering work
-- **[The Rust API](./rust-api.md)**: embed the runtime directly instead of deploying to Lambda
+- **[The Agent System API](./agent-systems/overview.md)**: embed the runtime directly instead of deploying to Lambda
 - **[Built-in Tools](./built-in-tools.md)**: sleep, threading, and subscription tools
 - **[Build a RAP Tool](/docs/rap/using-rap/building-a-rap-tool)**: create your own tool server
 - **[MCP Compatibility](/docs/rap/about/mcp-compatibility)**: how the MCP proxy layer works

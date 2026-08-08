@@ -13,7 +13,6 @@ use rig::message::ToolResult;
 pub struct ToolContext<M: InputSender> {
     pub message_sender: M,
     pub group_id: String,
-    pub input_queue_arn: String,
     pub callback_url: String,
     pub user_id: Option<String>,
     /// Full thread stack: [root, ..ancestors, current_thread].
@@ -34,6 +33,15 @@ pub trait Tool<M: InputSender>: Send + Sync {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     fn supports_sync(&self) -> bool {
+        false
+    }
+
+    /// Whether a dispatched call to this tool represents *waiting* rather
+    /// than in-flight work (e.g. the sleep tools). While a thread's last
+    /// history entry is an unanswered call to a non-passive tool, deferrable
+    /// synthetic events are held back so they don't interrupt the running
+    /// call; calls to passive tools may be interrupted freely.
+    fn is_passive(&self) -> bool {
         false
     }
 

@@ -1,24 +1,15 @@
 ---
-source: crates/infinity-daemon/src/session/agent_loop.rs
-assertion_line: 770
-expression: compaction_child_req.chat_history
+source: crates/infinity-agent-core/src/system/tests.rs
+assertion_line: 1459
+expression: compaction_req.chat_history
 ---
 [
   {
-    "role": "assistant",
-    "id": null,
-    "content": [
-      {
-        "text": "[Compacted conversation summary]\nSummary of first round"
-      }
-    ]
-  },
-  {
     "role": "user",
     "content": [
       {
         "type": "text",
-        "text": "second message"
+        "text": "root message one"
       }
     ]
   },
@@ -27,7 +18,7 @@ expression: compaction_child_req.chat_history
     "id": null,
     "content": [
       {
-        "text": "second response"
+        "text": "root response one"
       }
     ]
   },
@@ -36,7 +27,7 @@ expression: compaction_child_req.chat_history
     "content": [
       {
         "type": "text",
-        "text": "third message"
+        "text": "root message two"
       }
     ]
   },
@@ -45,7 +36,7 @@ expression: compaction_child_req.chat_history
     "id": null,
     "content": [
       {
-        "text": "third response"
+        "text": "root response two"
       }
     ]
   },
@@ -54,7 +45,61 @@ expression: compaction_child_req.chat_history
     "content": [
       {
         "type": "text",
-        "text": "fourth message"
+        "text": "spawn a child"
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "id": null,
+    "content": [
+      {
+        "id": "[id]",
+        "call_id": null,
+        "function": {
+          "name": "spawn_thread",
+          "arguments": {
+            "child_of": [
+              "root"
+            ],
+            "instructions": "do child work"
+          }
+        },
+        "signature": null,
+        "additional_params": null
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "toolresult",
+        "id": "[id]",
+        "content": [
+          {
+            "type": "text",
+            "text": "[spawn_instructions]"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "id": null,
+    "content": [
+      {
+        "text": "child first response"
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "child follow-up"
       }
     ]
   },

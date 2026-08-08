@@ -6,12 +6,12 @@ pub mod memory_store;
 pub mod migrate;
 pub mod models;
 pub mod rap_callback;
+pub mod rap_servers;
 pub mod rap_tools;
 pub mod remote;
 pub mod session;
 pub mod session_store;
 pub mod set_title_tool;
-pub mod sleep_tools;
 pub mod web_assets;
 pub mod ws_handler;
 
@@ -113,11 +113,11 @@ pub async fn run_daemon(
     let _ = std::fs::remove_file(&sock_path);
     let _ = std::fs::remove_file(infinity_protocol::pid_path());
 
-    let mut mgr = session_manager.lock().await;
-    let session_ids: Vec<String> = mgr.sessions.keys().cloned().collect();
-    for sid in session_ids {
-        mgr.cleanup_session(&sid).await;
-    }
+    // Stop every booted RAP server; sessions themselves need no teardown
+    // (their state is already durable, and they resume on the next input
+    // after the daemon restarts).
+    let mgr = session_manager.lock().await;
+    mgr.rap_manager.shutdown_all().await;
 
     tracing::info!("daemon shut down");
     Ok(())

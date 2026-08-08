@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use infinity_agent_core::message::{InfinityMessage, InputMessage};
-use infinity_agent_core::traits::{ConversationStore, InputSender, StateStore};
+use infinity_agent_core::message::InfinityMessage;
+use infinity_agent_core::traits::{ConversationStore, StateStore};
 use infinity_protocol::ModelRef;
 use rig::message::Message;
 use serde::{Deserialize, Serialize};
@@ -1255,36 +1255,6 @@ impl StateStore for InMemoryStateStore {
             }
         }
         self.save_key(thread_id);
-        Ok(())
-    }
-}
-
-// ── In-memory message sender (pushes to mpsc) ──
-
-#[derive(Clone)]
-pub struct InMemoryMessageSender {
-    tx: tokio::sync::mpsc::UnboundedSender<(InputMessage, String)>,
-}
-
-impl InMemoryMessageSender {
-    pub fn new(tx: tokio::sync::mpsc::UnboundedSender<(InputMessage, String)>) -> Self {
-        Self { tx }
-    }
-}
-
-#[async_trait]
-impl InputSender for InMemoryMessageSender {
-    type Error = MemoryError;
-
-    async fn send_to_input_queue(
-        &self,
-        message: InputMessage,
-        _group_id: &str,
-        dedup_id: &str,
-    ) -> Result<(), MemoryError> {
-        self.tx
-            .send((message, dedup_id.to_owned()))
-            .map_err(|e| MemoryError(format!("channel send failed: {}", e)))?;
         Ok(())
     }
 }

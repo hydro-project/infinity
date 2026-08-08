@@ -325,11 +325,10 @@ async fn run_direct(
         )
     );
 
-    let mut mgr = mgr.lock().await;
-    let session_ids: Vec<String> = mgr.sessions.keys().cloned().collect();
-    for sid in session_ids {
-        mgr.cleanup_session(&sid).await;
-    }
+    // Stop every booted RAP server; sessions themselves need no teardown
+    // (their state is already durable).
+    let mgr = mgr.lock().await;
+    mgr.rap_manager.shutdown_all().await;
 
     res
 }
