@@ -292,7 +292,7 @@ where
                 sessions.extend(updates);
 
                 if let Some(session_picker) = session_picker.as_mut() {
-                    let last_picked_id = session_picker.sessions[session_picker.selected].0.clone();
+                    let last_picked_id = session_picker.sessions.get(session_picker.selected).map(|s| s.0.clone());
 
                     let mut all_sessions: Vec<(String, infinity_protocol::SessionInfo)> = sessions.iter()
                         .map(|(id, info)| (id.clone(), info.clone()))
@@ -300,7 +300,7 @@ where
                     all_sessions.sort_by(|a, b| b.1.last_updated.cmp(&a.1.last_updated));
 
                     session_picker.sessions = all_sessions;
-                    if let Some(found) = session_picker.sessions.iter().position(|s| s.0 == last_picked_id) {
+                    if let Some(found) = last_picked_id.and_then(|id| session_picker.sessions.iter().position(|s| s.0 == id)) {
                         session_picker.selected = found;
                     }
                 }

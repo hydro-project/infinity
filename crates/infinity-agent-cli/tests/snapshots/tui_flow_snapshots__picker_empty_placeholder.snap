@@ -1,0 +1,21 @@
+---
+source: crates/infinity-agent-cli/tests/tui_flow_snapshots.rs
+expression: h.screen()
+---
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│Infinity Agent CLI                                                              │
+│Type your messages below. /help for commands. Ctrl+C to exit.                   │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│────────────────────────────────────────────────────────────────────────────────│
+│ No sessions to load — press esc to dismiss and start a new one.                │
+│                                                                                │
+│↑↓ navigate  enter select  esc cancel              mock: mock-model · 0% context│
+└────────────────────────────────────────────────────────────────────────────────┘
+cursor: row=7 col=0 (hidden)
