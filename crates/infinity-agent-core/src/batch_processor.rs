@@ -17,11 +17,44 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::event_processor::{self, CompletionAction, HistoryManager};
 use crate::message::{InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind};
-use crate::tools::{Tool, ToolContext};
+use crate::tools::{Tool, ToolContext, send_tool_error};
 use crate::traits::{ConversationStore, InputSender, StateStore};
 use infinity_provider_protocol::{ModelProvider, ProviderStreamingResponse};
 use rap_client::http::HttpClient;
 use rap_client::notifier::RapNotifier;
+
+async fn execute_action_with_error_result<M, R>(
+    action: CompletionAction<R>,
+    tool_registry: &HashMap<String, &dyn Tool<M>>,
+    tool_context: &ToolContext<M>,
+) -> Result<(), crate::tools::ToolError>
+where
+    M: InputSender + 'static,
+{
+    let failed_tool_call = match &action {
+        CompletionAction::ExecuteToolCall {
+            tool_call_id,
+            call_id,
+            ..
+        } => Some((tool_call_id.clone(), call_id.clone())),
+        CompletionAction::Done(_) => None,
+    };
+
+    if let Err(error) = event_processor::execute_action(action, tool_registry, tool_context).await {
+        if let Some((tool_call_id, call_id)) = failed_tool_call
+            && let Err(send_error) =
+                send_tool_error(tool_context, &tool_call_id, call_id, "Tool call failed").await
+        {
+            tracing::error!(
+                "failed to send fallback result after tool execution error: {}",
+                send_error
+            );
+        }
+        return Err(error);
+    }
+
+    Ok(())
+}
 
 /// Events emitted during batch processing and completion for display purposes.
 ///
@@ -374,10 +407,10 @@ where
         current_history.sync().await.ok();
 
         if let Some(action) = action
-            && let Err(e) =
-                event_processor::execute_action(action, tool_registry, &tool_context).await
+            && let Err(error) =
+                execute_action_with_error_result(action, tool_registry, &tool_context).await
         {
-            let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", e)));
+            let _ = display_tx.send(DisplayEvent::Info(format!("Error: {}", error)));
         }
     });
 
@@ -393,6 +426,7 @@ mod tests {
     use crate::event_processor::HistoryManager;
     use crate::message::{InputMessage, InputMessageContent, OAuthRequired, UserChoiceRequired};
     use crate::test_helpers::mock_provider;
+    use crate::tools::thread::CloseThreadTool;
     use crate::tools::{Tool, ToolContext};
     use crate::traits::{ConversationStore, InputSender, StateStore};
     use async_trait::async_trait;
@@ -419,6 +453,47 @@ mod tests {
         type Error = E;
         async fn send_to_input_queue(&self, _: InputMessage, _: &str, _: &str) -> Result<(), E> {
             Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct CapturingSender(mpsc::UnboundedSender<InputMessage>);
+    #[async_trait]
+    impl InputSender for CapturingSender {
+        type Error = E;
+        async fn send_to_input_queue(
+            &self,
+            message: InputMessage,
+            _: &str,
+            _: &str,
+        ) -> Result<(), E> {
+            self.0.send(message).map_err(|_| E)
+        }
+    }
+
+    struct FailingTool;
+    #[async_trait]
+    impl Tool<CapturingSender> for FailingTool {
+        fn name(&self) -> &str {
+            "failing_tool"
+        }
+
+        fn description(&self) -> &str {
+            "Always fails for testing."
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+
+        async fn execute(
+            &self,
+            _: serde_json::Value,
+            _: String,
+            _: Option<String>,
+            _: &ToolContext<CapturingSender>,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            Err(Box::new(E))
         }
     }
 
@@ -603,6 +678,82 @@ mod tests {
     }
 
     const NONE_NOTIFIER: Option<&'static rap_client::notifier::RapNotifier<StubHttp>> = None;
+
+    #[tokio::test]
+    async fn close_thread_missing_id_enqueues_error_result() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let context = ToolContext {
+            message_sender: CapturingSender(tx),
+            group_id: "child".into(),
+            input_queue_arn: String::new(),
+            callback_url: String::new(),
+            user_id: None,
+            thread_stack: vec!["root".into(), "child".into()],
+        };
+        let tool = CloseThreadTool::<_, StubHttp> {
+            conversation_store: StubConvo::new(),
+            rap_notifier: None,
+        };
+
+        tool.execute(
+            serde_json::json!({}),
+            "tc-close".into(),
+            Some("call-close".into()),
+            &context,
+        )
+        .await
+        .expect("validation error should be returned as a tool result");
+
+        let message = rx.recv().await.expect("validation tool result");
+        let InputMessageContent::User(UserContent::ToolResult(result)) = message.content else {
+            panic!("expected a tool result");
+        };
+        assert_eq!(result.id, "tc-close");
+        assert_eq!(result.call_id.as_deref(), Some("call-close"));
+        let ToolResultContent::Text(text) = result.content.first() else {
+            panic!("expected text content");
+        };
+        assert_eq!(text.text, "Error: thread_id is required");
+    }
+
+    #[tokio::test]
+    async fn failed_tool_execution_enqueues_fallback_result() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let context = ToolContext {
+            message_sender: CapturingSender(tx),
+            group_id: "t1".into(),
+            input_queue_arn: String::new(),
+            callback_url: String::new(),
+            user_id: None,
+            thread_stack: vec!["t1".into()],
+        };
+        let tool = FailingTool;
+        let tools: HashMap<String, &dyn Tool<CapturingSender>> =
+            HashMap::from([("failing_tool".into(), &tool as &dyn Tool<CapturingSender>)]);
+        let action = crate::event_processor::CompletionAction::<ProviderStreamingResponse>::ExecuteToolCall {
+            tool_name: "failing_tool".into(),
+            tool_args: serde_json::json!({}),
+            tool_call_id: "tc-1".into(),
+            call_id: Some("call-1".into()),
+            display_as: None,
+        };
+
+        let error = super::execute_action_with_error_result(action, &tools, &context)
+            .await
+            .expect_err("tool execution should fail");
+        assert_eq!(error.to_string(), "stub");
+
+        let message = rx.recv().await.expect("fallback tool result");
+        let InputMessageContent::User(UserContent::ToolResult(result)) = message.content else {
+            panic!("expected a tool result");
+        };
+        assert_eq!(result.id, "tc-1");
+        assert_eq!(result.call_id.as_deref(), Some("call-1"));
+        let ToolResultContent::Text(text) = result.content.first() else {
+            panic!("expected text content");
+        };
+        assert_eq!(text.text, "Error: Tool call failed");
+    }
 
     #[tokio::test]
     async fn closed_thread_returns_none() {
