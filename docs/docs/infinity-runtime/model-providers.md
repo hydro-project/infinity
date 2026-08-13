@@ -1,5 +1,5 @@
 ---
-sidebar_position: 5
+sidebar_position: 6
 title: Model Providers
 ---
 
@@ -112,7 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 2. The binary prints the socket path as its **first stdout line**; that's how the supervising daemon discovers it. Anything else (logging, diagnostics) should go to stderr; the daemon captures both streams and forwards every later line to its own log.
 3. It then awaits the server future forever. The daemon owns the process lifecycle: it spawns the binary at startup and kills it on shutdown.
 
-On the wire, the protocol is newline-delimited JSON with one request per connection (concurrent invocations simply use concurrent connections): a `ListModels` request gets a single response, while `InvokeModel` streams the completion back as chunk lines terminated by a stream-end marker. The daemon side is `RemoteModelProvider`, itself a `ModelProvider` implementation that forwards every call over the socket, so in-process and out-of-process providers are indistinguishable to the runtime.
+On the wire, the protocol is newline-delimited JSON with one request per connection (concurrent invocations use concurrent connections): a `ListModels` request gets a single response, while `InvokeModel` streams the completion back as chunk lines terminated by a stream-end marker. The daemon side is `RemoteModelProvider`, itself a `ModelProvider` implementation that forwards every call over the socket, so in-process and out-of-process providers are indistinguishable to the runtime.
 
 Once your provider crate is published (or available in a git repo), users install it with:
 

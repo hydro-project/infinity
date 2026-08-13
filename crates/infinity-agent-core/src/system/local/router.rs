@@ -152,13 +152,15 @@ impl<Sub: Send + 'static> RunningSystem<Sub> {
     }
 }
 
-impl<C, S, H> LocalAgentSystem<C, S, H>
+impl<C, S, H> LocalAgentSystem<C, S, H, crate::system::builder::Handles>
 where
     C: ConversationStore + 'static,
     S: StateStore + 'static,
     H: HttpClient + 'static,
 {
-    /// Run the system with a custom [`ThreadObserver`].
+    /// Run the system with a custom [`ThreadObserver`] instead of the
+    /// built-in handle observer of [`start`](Self::start): use this when you
+    /// need durability hooks or your own event fan-out.
     ///
     /// `make_observer` creates the observer for each thread driver as it
     /// spawns. Drivers are spawned on demand when a thread receives its
@@ -173,7 +175,7 @@ where
     }
 }
 
-impl<C, S, H> LocalAgentSystem<C, S, H>
+impl<C, S, H, Mode> LocalAgentSystem<C, S, H, Mode>
 where
     C: ConversationStore + 'static,
     S: StateStore + 'static,

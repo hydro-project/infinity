@@ -3,9 +3,29 @@
 //! self-contained **local system** with an internal queue and per-thread
 //! drivers (resident processes).
 //!
-//! Local systems run with a [`ThreadObserver`] supplied by their embedding;
-//! step-mode systems expose [`AgentSystem::step`] for external transports.
-//! Both build on [`event_processor`](crate::event_processor).
+//! ```ignore
+//! use infinity_agent_core::system::{AgentSystemBuilder, StaticModel};
+//! use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
+//!
+//! let model = StaticModel::new(provider, "my-model").await?;
+//! let system = AgentSystemBuilder::new_local(
+//!     InMemoryConversationStore::new(),
+//!     InMemoryStateStore::new(),
+//!     model,
+//! )
+//! .tools(my_tools)
+//! .build_local();
+//!
+//! let running = system.start();
+//! let mut thread = running.thread_handle("thread-1").await.expect("system running");
+//! thread.send_user_text("hello!").await?;
+//! while let Some(event) = thread.recv().await { /* ... */ }
+//! ```
+//!
+//! See the crate-level docs and the "Agent System API" section of the
+//! Infinity Runtime documentation for the full picture, including how this
+//! layers over the low-level API in
+//! [`event_processor`](crate::event_processor).
 
 mod builder;
 mod config;
@@ -16,8 +36,10 @@ mod model;
 mod observer;
 mod thread;
 
-pub use builder::{AgentSystem, AgentSystemBuilder, LocalAgentSystem, NoRapHttp};
-pub use config::{ThreadConfig, ThreadConfigSource};
+pub use builder::{
+    AgentSystem, AgentSystemBuilder, Handles, Launcher, LocalAgentSystem, NoRapHttp,
+};
+pub use config::{StaticThreadConfig, ThreadConfig, ThreadConfigSource};
 pub use defer::{DeferQueue, InMemoryDeferQueue, NoDeferral};
 pub use events::{AgentEvent, ReplaySnapshot, UserChoice};
 pub use model::{ModelSource, ResolvedModel, StaticModel};
