@@ -2150,7 +2150,7 @@ fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
         tools: vec![
             ToolDef {
                 name: "clone_repo".to_owned(),
-                description: "Initialize a repository for sandboxed execution. Provide a local path to a git repo (local mode) or a git remote URI (remote mode). This must be called before execute_command.".to_owned(),
+                description: "Initialize a repository for sandboxed execution. Provide a local path to a git repo (local mode) or a git remote URI (remote mode). This must be called before execute_command. Do NOT call this until you have called list_steering and loaded the applicable steering files — steering files may redirect you to a different repository path.".to_owned(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
