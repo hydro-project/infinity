@@ -1,9 +1,10 @@
 #![warn(missing_docs)]
 
-//! Connect to MCP servers from Infinity runtime embeddings.
+//! Connect MCP servers to Infinity agent systems.
 //!
-//! [`McpClient`] owns a lazily initialized stdio or Streamable HTTP session
-//! and provides canonical tool metadata and dispatch for protocol adapters.
+//! [`McpToolSet`] exposes a lazily connected stdio or Streamable HTTP MCP
+//! server as local Infinity tools. [`McpClient`] is the shared transport layer
+//! used by adapters that expose the same MCP session through another protocol.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -11,7 +12,14 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use infinity_agent_core::message::{InputMessage, InputMessageContent};
+use infinity_agent_core::system::local::ChannelSender;
+use infinity_agent_core::tools::{Tool, ToolContext};
+use infinity_agent_core::traits::InputSender;
 use rap_protocol::DisplaySegment;
+use rig::OneOrMany;
+use rig::agent::Text;
+use rig::message::{ToolResult, ToolResultContent, UserContent};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
@@ -413,6 +421,49 @@ impl McpClient {
     }
 }
 
+/// A local-agent toolset backed by one shared MCP session.
+pub struct McpToolSet {
+    client: McpClient,
+}
+
+impl McpToolSet {
+    /// Create a toolset for a lazy stdio MCP server.
+    pub fn stdio(
+        name: impl Into<String>,
+        command: Vec<String>,
+        env: HashMap<String, String>,
+    ) -> Self {
+        Self {
+            client: McpClient::stdio(name, command, env),
+        }
+    }
+
+    /// Create a toolset for a lazy Streamable HTTP MCP server.
+    pub fn http(
+        name: impl Into<String>,
+        url: impl Into<String>,
+        headers: HashMap<String, String>,
+    ) -> Self {
+        Self {
+            client: McpClient::http(name, url, headers),
+        }
+    }
+
+    /// Build the list and invoke tools for registration on a local agent system.
+    pub fn tools(&self) -> Vec<Box<dyn Tool<ChannelSender>>> {
+        self.client
+            .tool_definitions()
+            .into_iter()
+            .map(|definition| {
+                Box::new(McpTool {
+                    definition,
+                    client: self.client.clone(),
+                }) as Box<dyn Tool<ChannelSender>>
+            })
+            .collect()
+    }
+}
+
 /// One of the two operations the adapter exposes for each MCP server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum McpOperation {
@@ -476,8 +527,10 @@ impl McpOperation {
 /// The model-facing definition of one adapter tool.
 ///
 /// Definitions are the single source for the adapter's tool names,
-/// descriptions, and schemas. Protocol adapters such as a RAP proxy convert
-/// them into their own manifest entries.
+/// descriptions, and schemas: the local [`Tool`] adapters returned by
+/// [`McpToolSet::tools`] read them, and protocol
+/// adapters (such as a RAP proxy) convert them into their own manifest
+/// entries.
 #[derive(Clone, Debug, PartialEq)]
 pub struct McpToolDefinition {
     /// Tool name: `{server}_list_tools` or `{server}_invoke_tool`.
@@ -569,6 +622,62 @@ impl McpClient {
             None => Err(format!("unknown operation: {tool_name}").into()),
         };
         result.unwrap_or_else(|error| (format!("MCP tool error: {error}"), None))
+    }
+}
+
+struct McpTool {
+    definition: McpToolDefinition,
+    client: McpClient,
+}
+
+#[async_trait]
+impl Tool<ChannelSender> for McpTool {
+    fn name(&self) -> &str {
+        &self.definition.name
+    }
+
+    fn description(&self) -> &str {
+        &self.definition.description
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        self.definition.input_schema.clone()
+    }
+
+    fn display_script(&self) -> Option<&str> {
+        self.definition.display_script.as_deref()
+    }
+
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        id: String,
+        call_id: Option<String>,
+        context: &ToolContext<ChannelSender>,
+    ) -> Result<(), BoxError> {
+        let client = self.client.clone();
+        let tool_name = self.definition.name.clone();
+        let group_id = context.group_id.clone();
+        let sender = context.message_sender.clone();
+        tokio::spawn(async move {
+            let (text, display_as) = client.dispatch(&tool_name, &arguments).await;
+            let message = InputMessage {
+                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                    id: id.clone(),
+                    call_id,
+                    content: OneOrMany::one(ToolResultContent::Text(Text { text })),
+                })),
+                group_id: group_id.clone(),
+                metadata: None,
+                synthetic: None,
+                display_as,
+                subscription: false,
+            };
+            if let Err(error) = sender.send_to_input_queue(message, &id).await {
+                tracing::warn!(%error, "failed to deliver MCP tool result");
+            }
+        });
+        Ok(())
     }
 }
 

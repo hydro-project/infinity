@@ -6,12 +6,15 @@ use async_trait::async_trait;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::message::InputMessage;
+use crate::tools::Tool;
 use crate::traits::{ConversationStore, InputSender, StateStore};
 use rap_client::http::HttpClient;
+use rap_client::notifier::RapNotifier;
 
 use super::config::{StaticThreadConfig, ThreadConfigSource};
 use super::defer::DeferQueue;
 use super::local::ChannelSender;
+use super::local::{LaunchRegistry, UnionConfigSource, UnionModelSource};
 use super::model::ModelSource;
 use super::observer::ThreadObserver;
 use super::thread::{StepOutcome, Thread};
@@ -79,15 +82,16 @@ where
 ///   API**: the platform delivers each thread's message batches and calls
 ///   [`AgentSystem::step`] per batch.
 /// - [`AgentSystemBuilder::new_local`] creates an internal in-process queue
-///   ([`ChannelSender`]).
-///   [`LocalAgentSystem::start_with_observer`] then runs the full
+///   ([`ChannelSender`]). [`LocalAgentSystem::start`] then runs the full
 ///   actor-system-style driver: a router that spawns one worker per thread,
 ///   batches inputs, handles interruption, deferral, idling, and
 ///   auto-compaction.
 ///
-/// [`thread_config`](Self::thread_config) resolves a
-/// [`ThreadConfig`](super::ThreadConfig) per thread load. The built-in thread
-/// and subscription tools (`spawn_thread`,
+/// Tool/prompt configuration is either **static** (the `tools`,
+/// `extra_system_prompt`, and `rap_notifier` methods — every thread sees the
+/// same set) or **dynamic** via [`thread_config`](Self::thread_config), which
+/// resolves a [`ThreadConfig`](super::ThreadConfig) per thread load. The
+/// built-in thread and subscription tools (`spawn_thread`,
 /// `report_to_parent`, `close_thread`, `send_message_to_child`,
 /// `cancel_subscription`, `sleep_until_event_or_input`) are added on top in
 /// both cases; disable with
@@ -102,12 +106,16 @@ where
     conversation_store: C,
     state_store: S,
     model: Box<dyn ModelSource>,
+    tools: Vec<Rc<dyn Tool<M>>>,
     config: Option<Box<dyn ThreadConfigSource<M, H>>>,
     sender: M,
     local_rx: Option<mpsc::UnboundedReceiver<(InputMessage, String)>>,
+    extra_system_prompt: Option<String>,
     callback_url: String,
+    rap_notifier: Option<RapNotifier<H>>,
     builtin_tools: bool,
     tokio_sleep_tools: bool,
+    launch_registry: Option<Rc<LaunchRegistry<M>>>,
 }
 
 impl<C, S, M, H> AgentSystemBuilder<C, S, M, H>
@@ -132,32 +140,66 @@ where
             conversation_store,
             state_store,
             model: Box::new(model),
+            tools: Vec::new(),
             config: None,
             sender,
             local_rx,
+            extra_system_prompt: None,
             callback_url: String::new(),
+            rap_notifier: None,
             builtin_tools: true,
             tokio_sleep_tools: false,
+            launch_registry: None,
         }
     }
 
-    /// Resolve tools, prompt, and notifier dynamically per thread. Use this
-    /// when threads need different toolsets, such as one session per working
+    /// Register an additional tool (static configuration).
+    pub fn tool(mut self, tool: Box<dyn Tool<M>>) -> Self {
+        self.tools.push(Rc::from(tool));
+        self
+    }
+
+    /// Register additional tools (static configuration).
+    pub fn tools(mut self, tools: impl IntoIterator<Item = Box<dyn Tool<M>>>) -> Self {
+        self.tools.extend(tools.into_iter().map(Rc::from));
+        self
+    }
+
+    /// Append text to the built-in system prompt (static configuration).
+    pub fn extra_system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.extra_system_prompt = Some(prompt.into());
+        self
+    }
+
+    /// Resolve tools, prompt, and notifier dynamically per thread instead of
+    /// using the static `tools`/`extra_system_prompt`/`rap_notifier`
+    /// configuration (which must not be combined with a source). Use this
+    /// when threads need different toolsets — e.g. one session per working
     /// directory, each with its own tool servers.
     pub fn thread_config<H2: HttpClient + 'static>(
         self,
         source: impl ThreadConfigSource<M, H2> + 'static,
     ) -> AgentSystemBuilder<C, S, M, H2> {
+        assert!(
+            self.tools.is_empty()
+                && self.extra_system_prompt.is_none()
+                && self.rap_notifier.is_none(),
+            "thread_config replaces the static tools/extra_system_prompt/rap_notifier configuration; do not combine them"
+        );
         AgentSystemBuilder {
             conversation_store: self.conversation_store,
             state_store: self.state_store,
             model: self.model,
+            tools: Vec::new(),
             config: Some(Box::new(source)),
             sender: self.sender,
             local_rx: self.local_rx,
+            extra_system_prompt: None,
             callback_url: self.callback_url,
+            rap_notifier: None,
             builtin_tools: self.builtin_tools,
             tokio_sleep_tools: self.tokio_sleep_tools,
+            launch_registry: self.launch_registry,
         }
     }
 
@@ -182,12 +224,57 @@ where
         self
     }
 
+    /// Configure the notifier that sends best-effort lifecycle notifications
+    /// (tool cancellation, thread closure) to RAP tool servers (static
+    /// configuration; with [`thread_config`](Self::thread_config) the
+    /// notifier comes from each thread's `ThreadConfig` instead).
+    pub fn rap_notifier<H2: HttpClient + 'static>(
+        self,
+        notifier: RapNotifier<H2>,
+    ) -> AgentSystemBuilder<C, S, M, H2> {
+        assert!(
+            self.config.is_none(),
+            "rap_notifier cannot be combined with thread_config; put the notifier in the ThreadConfig instead"
+        );
+        AgentSystemBuilder {
+            conversation_store: self.conversation_store,
+            state_store: self.state_store,
+            model: self.model,
+            tools: self.tools,
+            config: None,
+            sender: self.sender,
+            local_rx: self.local_rx,
+            extra_system_prompt: self.extra_system_prompt,
+            callback_url: self.callback_url,
+            rap_notifier: Some(notifier),
+            builtin_tools: self.builtin_tools,
+            tokio_sleep_tools: self.tokio_sleep_tools,
+            launch_registry: self.launch_registry,
+        }
+    }
+
     fn build_inner(self) -> BuildParts<C, S, M, H> {
-        let config: Box<dyn ThreadConfigSource<M, H>> = match self.config {
+        let mut config: Box<dyn ThreadConfigSource<M, H>> = match self.config {
             Some(source) => source,
-            None => Box::new(StaticThreadConfig::default()),
+            None => Box::new(StaticThreadConfig {
+                tools: self.tools,
+                extra_system_prompt: self.extra_system_prompt,
+                rap_notifier: self.rap_notifier,
+            }),
         };
-        let model = self.model;
+        let mut model = self.model;
+        if let Some(registry) = self.launch_registry {
+            config = Box::new(UnionConfigSource {
+                inner: config,
+                registry: registry.clone(),
+                conversation_store: self.conversation_store.clone(),
+            });
+            model = Box::new(UnionModelSource {
+                inner: model,
+                registry,
+                conversation_store: self.conversation_store.clone(),
+            });
+        }
         (
             Rc::new(SystemInner {
                 conversation_store: self.conversation_store,
@@ -254,10 +341,13 @@ where
     S: StateStore + 'static,
     H: HttpClient + 'static,
 {
-    /// Build a local system ready for
-    /// [`start_with_observer`](LocalAgentSystem::start_with_observer).
-    /// Requires construction via [`new_local`](AgentSystemBuilder::new_local).
-    pub fn build_local(self) -> LocalAgentSystem<C, S, H> {
+    /// Build a local system ready to run with either the built-in
+    /// [`ThreadBuilder`](super::local::ThreadBuilder) convenience API or a
+    /// custom [`ThreadObserver`]. Requires construction via
+    /// [`new_local`](AgentSystemBuilder::new_local).
+    pub fn build_local(mut self) -> LocalAgentSystem<C, S, H> {
+        let registry = Rc::new(LaunchRegistry::default());
+        self.launch_registry = Some(registry.clone());
         let (inner, local_rx) = self.build_inner();
         let input_rx = local_rx.expect(
             "bug: build_local requires a builder created with AgentSystemBuilder::new_local",
@@ -265,6 +355,7 @@ where
         LocalAgentSystem {
             system: AgentSystem { inner },
             input_rx,
+            registry,
         }
     }
 }
@@ -294,6 +385,11 @@ where
     M: InputSender + 'static,
     H: HttpClient + 'static,
 {
+    /// The sender used for the system's loopback path.
+    pub fn sender(&self) -> &M {
+        &self.inner.sender
+    }
+
     /// Run one step for every thread with messages in `inputs`, concurrently.
     /// This is the whole per-slice job of a step-mode embedding (e.g. one
     /// Lambda invocation).
@@ -367,8 +463,12 @@ where
 }
 
 /// A built local system: an [`AgentSystem`] plus the receiving end of its
-/// internal input queue. Use
-/// [`start_with_observer`](Self::start_with_observer) to run it.
+/// internal input queue.
+///
+/// Call [`start`](LocalAgentSystem::start) to use the built-in
+/// [`ThreadBuilder`](super::local::ThreadBuilder) and [`ThreadHandle`](super::local::ThreadHandle)
+/// convenience API. Call [`start_with_observer`](LocalAgentSystem::start_with_observer)
+/// when the embedding owns event fan-out and thread identity.
 pub struct LocalAgentSystem<C, S, H>
 where
     C: ConversationStore,
@@ -377,6 +477,7 @@ where
 {
     pub(crate) system: AgentSystem<C, S, ChannelSender, H>,
     pub(crate) input_rx: mpsc::UnboundedReceiver<(InputMessage, String)>,
+    pub(crate) registry: Rc<LaunchRegistry<ChannelSender>>,
 }
 
 impl<C, S, H> LocalAgentSystem<C, S, H>
