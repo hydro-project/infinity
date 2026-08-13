@@ -3400,11 +3400,14 @@ name = "infinity-mcp-bridge"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "infinity-agent-core",
  "rap-protocol",
  "reqwest",
+ "rig-core",
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

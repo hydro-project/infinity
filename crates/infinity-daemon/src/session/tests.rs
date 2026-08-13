@@ -5,16 +5,11 @@
 //! The generic driver behaviors (batching, interruption, deferral, idling,
 //! compaction) are tested in `infinity_agent_core::system::tests`.
 
-use std::rc::Rc;
 use std::sync::Arc;
-
-use async_trait::async_trait;
 
 use infinity_agent_core::message::{InputMessage, InputMessageContent, UserChoiceRequired};
 use infinity_agent_core::system::local::{ChannelSender, RunningSystem, ThreadLifecycleState};
-use infinity_agent_core::system::{
-    AgentSystemBuilder, NoRapHttp, ThreadConfig, ThreadConfigSource, UserChoice,
-};
+use infinity_agent_core::system::{AgentSystemBuilder, UserChoice};
 use infinity_agent_core::tools::Tool;
 use infinity_agent_core::traits::{ConversationStore, StateStore};
 use infinity_protocol::{DaemonMessage, SessionStatus};
@@ -87,25 +82,6 @@ fn tmp_stores(
     (conv, state, dir)
 }
 
-struct TestThreadConfig {
-    tools: Vec<Rc<dyn Tool<ChannelSender>>>,
-}
-
-#[async_trait(?Send)]
-impl ThreadConfigSource<ChannelSender, NoRapHttp> for TestThreadConfig {
-    async fn resolve(
-        &self,
-        _thread_id: &str,
-    ) -> Result<ThreadConfig<ChannelSender, NoRapHttp>, Box<dyn std::error::Error + Send + Sync>>
-    {
-        Ok(ThreadConfig {
-            tools: self.tools.clone(),
-            extra_system_prompt: None,
-            rap_notifier: None,
-        })
-    }
-}
-
 /// Start an agent system wired exactly like a daemon session: a
 /// [`CatalogModelSource`] over the catalog + conversation store, and a
 /// [`DaemonObserver`] per thread. Returns the running handle and a subscriber
@@ -129,9 +105,7 @@ fn start_daemon_system(
             conversation_store: conv.clone(),
         },
     )
-    .thread_config(TestThreadConfig {
-        tools: tools.into_iter().map(Rc::from).collect(),
-    })
+    .tools(tools)
     .build_local();
 
     let (client_tx, client_rx) = mpsc::unbounded_channel();

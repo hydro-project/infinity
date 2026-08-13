@@ -38,6 +38,28 @@ pub trait ThreadObserver {
 
     /// A subscriber attached to a running thread (local driver mode only;
     /// step-mode embeddings never receive this call).
+    ///
+    /// This is the **live-attach hook**: when a client attaches to a thread
+    /// that is already running (via
+    /// [`RunningSystem::subscribe`](super::local::RunningSystem::subscribe)), the
+    /// driver produces a [`ReplaySnapshot`] — including in-memory state that
+    /// exists nowhere else, like the partially streamed turn and in-progress
+    /// reasoning — and hands it to the observer together with the
+    /// embedding-specific `request`. The implementation should render the
+    /// snapshot into its client-facing catch-up message and then register the
+    /// subscriber in the same list its [`on_event`](Self::on_event) fan-out
+    /// broadcasts to.
+    ///
+    /// The registration lives on the observer (rather than on
+    /// [`RunningSystem`](super::local::RunningSystem)) for two reasons: only the
+    /// embedding knows its client message type and subscriber registry, and
+    /// the snapshot + registration must happen **atomically relative to the
+    /// live event stream**. The driver invokes this method on the same task
+    /// that emits events, at a safe point between step polls, so every event
+    /// is either reflected in the snapshot or broadcast to the newly
+    /// registered subscriber afterwards — never both, never neither. Handing
+    /// the snapshot to another task to do the registration would reopen that
+    /// race.
     fn on_subscribe(
         &self,
         _thread_id: &str,

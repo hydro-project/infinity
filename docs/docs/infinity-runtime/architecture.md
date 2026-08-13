@@ -42,7 +42,7 @@ The three phases map directly onto the core API:
 
 1. **Load.** `HistoryManager::new_with_history` restores the thread's conversation from the `ConversationStore`, walking the ancestor chain for child threads and substituting compaction summaries where they exist. It also loads the set of already-processed message IDs from the `StateStore`.
 
-2. **Prepare and complete.** `process_batch` runs each input through `prepare_input`, which deduplicates redelivered messages, drops messages for closed threads, routes subscription events (see below), and appends actionable content to history. If any input was actionable, `run_completion` streams a completion from the `ModelProvider`.
+2. **Prepare and complete.** A [step](./agent-systems/step-mode.md) runs each input through `prepare_input`, which deduplicates redelivered messages, drops messages for closed threads, routes subscription events (see below), and appends actionable content to history. If any input was actionable, `run_completion` streams a completion from the `ModelProvider`.
 
 3. **Dispatch and yield.** If the model produced a tool call, `execute_action` invokes the matching `Tool` implementation. For RAP tools this is a single HTTP POST containing the arguments and a `callback_url`; the tool server acknowledges and the call returns. The slice persists any remaining state and ends. On Lambda the process exits; in an embedded runtime the worker task goes back to awaiting its channel.
 
@@ -87,7 +87,7 @@ flowchart LR
     B2 -->|group: thread B| WB[Slice for thread B]
 ```
 
-This is also how [threading](./threading.md) gets its concurrency: spawning a child thread just creates a new message group. Children inherit the parent's history up to the spawn point, run their own slices in parallel, and report back with messages tagged as thread reports, which the parent sees as synthetic tool results.
+This is also how [threading](./threading.md) gets its concurrency: spawning a child thread creates a new message group. Children inherit the parent's history up to the spawn point, run their own slices in parallel, and report back with messages tagged as thread reports, which the parent sees as synthetic tool results.
 
 ## Subscription events
 
@@ -112,7 +112,7 @@ The parent's context stays clean: it sees a report if the event mattered and not
 
 ## Compaction
 
-Long-lived agents eventually outgrow the model's context window. When a thread's history approaches the limit (the daemon embedding triggers at roughly three quarters of the model's context window), the runtime spawns a compaction thread that summarizes the conversation and stores the summary in the `ConversationStore`, tagged with the history index it covers. Subsequent slices load the summary plus only the messages after that index. Because summaries are indexed by position, child threads spawned before a compaction still reconstruct the exact history they inherited.
+Long-lived agents eventually outgrow the model's context window. When a thread's history approaches the limit (the local driver triggers at roughly three quarters of the model's context window), the runtime spawns a compaction thread that summarizes the conversation and stores the summary in the `ConversationStore`, tagged with the history index it covers. Subsequent slices load the summary plus only the messages after that index. Because summaries are indexed by position, child threads spawned before a compaction still reconstruct the exact history they inherited.
 
 ## Why this runs on serverless
 
@@ -123,4 +123,4 @@ Putting the pieces together, the runtime satisfies every constraint a serverless
 - **At-least-once delivery.** Processed-ID tracking makes redelivery harmless.
 - **Concurrency control without locks.** FIFO message groups serialize each thread at the queue layer, so the runtime itself needs no distributed locking.
 
-Runtimes that block on tool calls can be *hosted* on serverless platforms only by holding invocations open while tools run, paying for idle wall-clock time and hitting invocation timeouts. The Infinity Runtime is the first agent runtime where serverless is the natural substrate: the platform's own scale-to-zero behavior is the hibernation mechanism.
+Runtimes that block on tool calls can be *hosted* on serverless platforms only by holding invocations open while tools run, paying for idle wall-clock time and hitting invocation timeouts. The Infinity Runtime is the first agent runtime that fits the platform's execution model directly: the platform's own scale-to-zero behavior is the hibernation mechanism.
