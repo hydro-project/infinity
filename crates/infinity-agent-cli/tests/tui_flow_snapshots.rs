@@ -411,6 +411,23 @@ async fn sessions_updated_while_picker_open() {
     insta::assert_snapshot!("picker_after_update", h.screen());
 }
 
+/// Opening the session picker with no sessions must show a placeholder
+/// message instead of a blank area, and Enter must dismiss it.
+#[tokio::test(start_paused = true)]
+async fn empty_session_picker_shows_placeholder() {
+    let h = TuiHarness::spawn(80, 14).await;
+
+    h.type_str("/load");
+    h.key(KeyCode::Enter);
+    h.settle().await;
+    insta::assert_snapshot!("picker_empty_placeholder", h.screen());
+
+    // Enter on the empty picker dismisses it.
+    h.key(KeyCode::Enter);
+    h.settle().await;
+    insta::assert_snapshot!("picker_empty_dismissed", h.screen());
+}
+
 /// Feedback lines for commands that act without a session: /compact prints
 /// its trigger, /stop and /archive print "no active session" notes.
 #[tokio::test(start_paused = true)]

@@ -45,7 +45,8 @@ impl SessionPicker {
     }
 
     pub fn visible_rows(&self) -> u16 {
-        (self.sessions.len() as u16).min(MAX_VISIBLE_ROWS)
+        // Reserve one row for the "no sessions" placeholder when empty.
+        (self.sessions.len() as u16).clamp(1, MAX_VISIBLE_ROWS)
     }
 
     pub fn preferred_height(&self) -> u16 {
@@ -74,6 +75,9 @@ impl SessionPicker {
     fn confirm(&mut self) {
         if let Some((id, _)) = self.sessions.get(self.selected) {
             self.result = Some(SessionPickerResult::Selected(id.clone()));
+        } else if self.sessions.is_empty() {
+            // Nothing to select — treat Enter as dismissal.
+            self.result = Some(SessionPickerResult::Cancelled);
         }
     }
 
@@ -83,6 +87,20 @@ impl SessionPicker {
 
     pub fn render(&self, area: Rect, buf: &mut Buffer) {
         if area.height == 0 || area.width == 0 {
+            return;
+        }
+        if self.sessions.is_empty() {
+            let msg = " No sessions to load — press esc to dismiss and start a new one.";
+            for (col, ch) in msg.chars().enumerate() {
+                let x = area.x + col as u16;
+                if x >= area.right() {
+                    break;
+                }
+                buf[(x, area.y)]
+                    .set_char(ch)
+                    .set_fg(Color::DarkGray)
+                    .set_style(Style::default().add_modifier(Modifier::ITALIC));
+            }
             return;
         }
         let visible = self.visible_rows() as usize;
