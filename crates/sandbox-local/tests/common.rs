@@ -23,6 +23,19 @@ pub async fn start_test_server(metadata_dir: &Path) -> String {
     start_test_server_sandboxed(metadata_dir, false).await
 }
 
+/// Start a RAP server that the caller can shut down and await. Restart tests
+/// use this to ensure the original backend (and its sandbox cache) is dropped
+/// before state is restored by a new server.
+pub async fn start_test_server_with_shutdown(
+    metadata_dir: &Path,
+) -> (
+    String,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    start_test_server_with_shutdown_sandboxed(metadata_dir, false).await
+}
+
 /// Start the RAP server with platform sandboxing (bwrap/sandbox-exec) enabled.
 pub async fn start_test_server_sandboxed(metadata_dir: &Path, sandbox_enabled: bool) -> String {
     std::fs::create_dir_all(metadata_dir).expect("create metadata dir");
@@ -45,6 +58,44 @@ pub async fn start_test_server_sandboxed(metadata_dir: &Path, sandbox_enabled: b
     tokio::spawn(async move { axum::serve(listener, app).await.expect("serve test server") });
 
     format!("http://127.0.0.1:{port}")
+}
+
+async fn start_test_server_with_shutdown_sandboxed(
+    metadata_dir: &Path,
+    sandbox_enabled: bool,
+) -> (
+    String,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    std::fs::create_dir_all(metadata_dir).expect("create metadata dir");
+
+    unsafe {
+        std::env::set_var(
+            "XDG_CONFIG_HOME",
+            std::env::temp_dir().join("xdg-config-home"),
+        );
+    }
+
+    let backend = LocalBackend::new(sandbox_enabled);
+    let metadata = FileMetadataStore::new(metadata_dir.to_path_buf());
+    let (app, _tracker) = build_router(backend, metadata, PlainCallbackClient::new(), false, None);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test server");
+    let port = listener.local_addr().expect("get local addr").port();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("serve test server")
+    });
+
+    (format!("http://127.0.0.1:{port}"), shutdown_tx, server)
 }
 
 /// POST a RapInvocation and wait for the callback result text.

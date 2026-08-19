@@ -45,17 +45,30 @@ impl MetadataStore for DynamoMetadataStore {
             .cloned()
             .unwrap_or_else(|| format!("sandbox-{group_id}"));
 
-        let base_revision = item
-            .get("base_revision")
+        let starting_revision = item
+            .get("starting_revision")
+            .or_else(|| item.get("base_revision"))
             .and_then(|v| v.as_s().ok())
             .cloned()
             .unwrap_or_default();
+
+        let resume_revision = item
+            .get("resume_revision")
+            .and_then(|v| v.as_s().ok())
+            .cloned();
+
+        let retention_ref = item
+            .get("retention_ref")
+            .and_then(|v| v.as_s().ok())
+            .cloned();
 
         Ok(Some(RepoState {
             group_id: group_id.to_owned(),
             remote_uri,
             bookmark,
-            mode: SandboxMode::Jj { base_revision },
+            mode: SandboxMode::Jj { starting_revision },
+            resume_revision,
+            retention_ref,
             sandbox_path: None,
             write_orig_granted: false,
             write_path_grants: Default::default(),
@@ -72,8 +85,23 @@ impl MetadataStore for DynamoMetadataStore {
             .item("remote_uri", AttributeValue::S(state.remote_uri.clone()))
             .item("bookmark", AttributeValue::S(state.bookmark.clone()));
 
-        if let SandboxMode::Jj { ref base_revision } = state.mode {
-            req = req.item("base_revision", AttributeValue::S(base_revision.clone()));
+        if let SandboxMode::Jj {
+            ref starting_revision,
+        } = state.mode
+        {
+            req = req.item(
+                "starting_revision",
+                AttributeValue::S(starting_revision.clone()),
+            );
+        }
+        if let Some(resume_revision) = &state.resume_revision {
+            req = req.item(
+                "resume_revision",
+                AttributeValue::S(resume_revision.clone()),
+            );
+        }
+        if let Some(retention_ref) = &state.retention_ref {
+            req = req.item("retention_ref", AttributeValue::S(retention_ref.clone()));
         }
 
         req.send()
