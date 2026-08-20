@@ -6,6 +6,21 @@ use rap_protocol::ThreadId;
 use crate::message::{InfinityMessage, InputMessage};
 use crate::system::UserChoice;
 
+/// How much of the parent's conversation history a newly spawned child
+/// thread inherits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpawnContext {
+    /// Inherit the parent's full history up to the moment of the spawn.
+    Inherit,
+    /// Inherit the parent's history up to the given message order. Used to
+    /// exclude trailing unanswered tool calls from the child's view.
+    InheritUpTo(usize),
+    /// Start with an empty history: the child sees none of the parent's (or
+    /// any ancestor's) messages. Instructions sent to the child must be
+    /// fully self-contained.
+    Fresh,
+}
+
 /// Persistent conversation history storage (DSQL in Lambda, in-memory for CLI).
 #[async_trait]
 pub trait ConversationStore: Send + Sync + Clone {
@@ -55,7 +70,23 @@ pub trait ConversationStore: Send + Sync + Clone {
             return Ok((combined, Some(compacted_up_to), 0));
         }
 
-        let ancestors = self.get_ancestor_chain(thread_id).await?;
+        let mut ancestors = self.get_ancestor_chain(thread_id).await?;
+
+        // Fresh-context threads sever history inheritance: nothing from
+        // before the fresh spawn is visible. Find the deepest fresh boundary
+        // in the chain (the leaf itself, or an ancestor) and drop every
+        // ancestor slice above it. Entry `i` holds ancestor `i`'s own slice,
+        // so when ancestor `i` is the fresh thread its slice is kept.
+        if self.is_fresh_context_thread(thread_id).await? {
+            ancestors.clear();
+        } else {
+            for i in (0..ancestors.len()).rev() {
+                if self.is_fresh_context_thread(&ancestors[i].0).await? {
+                    ancestors.drain(..i);
+                    break;
+                }
+            }
+        }
 
         // Walk backwards to find the first ancestor with a compaction summary
         let mut compaction_idx = None;
@@ -116,7 +147,7 @@ pub trait ConversationStore: Send + Sync + Clone {
         parent_thread_id: &ThreadId<str>,
         spawn_tool_call_id: &str,
         is_for_subscription_event: bool,
-        spawn_order_override: Option<usize>,
+        context: SpawnContext,
     ) -> Result<ThreadId, Self::Error>;
 
     async fn is_thread_closed(&self, thread_id: &ThreadId<str>) -> Result<bool, Self::Error>;
@@ -124,6 +155,16 @@ pub trait ConversationStore: Send + Sync + Clone {
     async fn close_thread(&self, thread_id: &ThreadId<str>) -> Result<(), Self::Error>;
 
     async fn is_subscription_event_thread(
+        &self,
+        thread_id: &ThreadId<str>,
+    ) -> Result<bool, Self::Error>;
+
+    /// Whether `thread_id` was spawned with [`SpawnContext::Fresh`] (no
+    /// inherited history). Fresh threads act as a boundary in
+    /// [`load_history_with_ancestors`](Self::load_history_with_ancestors):
+    /// neither they nor their descendants see any context from before the
+    /// fresh spawn.
+    async fn is_fresh_context_thread(
         &self,
         thread_id: &ThreadId<str>,
     ) -> Result<bool, Self::Error>;

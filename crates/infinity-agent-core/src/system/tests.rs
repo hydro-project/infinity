@@ -1114,3 +1114,75 @@ async fn compaction_inside_child_thread_does_not_panic() {
         })
         .await;
 }
+
+/// A `fresh_context: true` spawn creates a child that inherits no parent
+/// history: its first model request contains only the synthetic spawn call
+/// and the self-contained instructions, none of the parent's messages.
+#[tokio::test(flavor = "current_thread")]
+async fn fresh_context_spawn_has_no_parent_history() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (running, mut _rx, mut ctrl, _conv) = start_system(vec![], None);
+
+            // Build root history the child must NOT see.
+            running
+                .send_user_text(ThreadId::from_ref("root"), "root secret message")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_text("root response");
+            ctrl.finish();
+
+            // Spawn a fresh-context child.
+            running
+                .send_user_text(ThreadId::from_ref("root"), "spawn a fresh child")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_tool_call(
+                "tc-spawn-fresh",
+                "spawn_thread",
+                serde_json::json!({
+                    "instructions": "summarize the file docs/overview.md",
+                    "child_of": ["root"],
+                    "fresh_context": true
+                }),
+            );
+            ctrl.finish();
+
+            // Parent loops back after the sync spawn and is told the child
+            // started fresh.
+            let parent_followup = ctrl.next_request().await;
+            let spawn_result = tool_result_texts(&parent_followup)
+                .iter()
+                .find(|t| t.contains("Child thread is successfully spawned"))
+                .cloned()
+                .expect("spawn result present in parent follow-up");
+            assert!(
+                spawn_result.contains("fresh context"),
+                "parent should be told the child cannot see this conversation: {spawn_result}"
+            );
+            ctrl.send_text("ok, spawned");
+            ctrl.finish();
+
+            // The child's first model request: no parent content, only the
+            // synthetic spawn call and the fresh instructions.
+            let child_req = ctrl.next_request().await;
+            let history_json =
+                serde_json::to_string(&child_req.chat_history).expect("serialize history");
+            assert!(
+                !history_json.contains("root secret message"),
+                "fresh child must not inherit parent history: {history_json}"
+            );
+            assert!(
+                history_json.contains("summarize the file docs/overview.md"),
+                "fresh child sees its instructions: {history_json}"
+            );
+            assert!(
+                history_json.contains("FRESH context"),
+                "fresh child gets the fresh-context preamble: {history_json}"
+            );
+            ctrl.send_text("child done");
+            ctrl.finish();
+        })
+        .await;
+}

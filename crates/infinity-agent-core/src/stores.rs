@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::message::InfinityMessage;
 use crate::system::UserChoice;
-use crate::traits::{ConversationStore, StateStore};
+use crate::traits::{ConversationStore, SpawnContext, StateStore};
 
 /// Error type for the in-memory stores. The operations themselves are
 /// infallible; this exists to satisfy the trait signatures.
@@ -49,6 +49,9 @@ pub struct ThreadInfo {
     pub is_subscription_event: bool,
     #[serde(default)]
     pub is_compaction: bool,
+    /// Spawned with [`SpawnContext::Fresh`]: inherits no ancestor history.
+    #[serde(default)]
+    pub fresh_context: bool,
 }
 
 /// One compaction summary entry (public and serializable for the same
@@ -153,21 +156,28 @@ impl InMemoryConversationStore {
     /// Spawn a child thread under `parent_thread_id` with a caller-chosen ID
     /// (the trait-level [`spawn_thread`](ConversationStore::spawn_thread)
     /// generates a UUID and delegates here). The spawn order — how much of
-    /// the parent's history the child inherits — is the parent's current
-    /// message count unless overridden.
+    /// the parent's history the child inherits — is derived from `context`:
+    /// the parent's current message count for [`SpawnContext::Inherit`], the
+    /// given cutoff for [`SpawnContext::InheritUpTo`], and zero for
+    /// [`SpawnContext::Fresh`] (which additionally marks the thread as a
+    /// fresh-context boundary).
     pub fn spawn_thread_with_id(
         &self,
         new_thread_id: &ThreadId<str>,
         parent_thread_id: &ThreadId<str>,
         spawn_tool_call_id: &str,
         is_for_subscription_event: bool,
-        spawn_order_override: Option<usize>,
+        context: SpawnContext,
     ) {
-        let msgs = self.messages.lock().expect("bug: mutex poisoned");
-        let spawn_message_order = spawn_order_override
-            .unwrap_or_else(|| msgs.get(parent_thread_id).map(|v| v.len()).unwrap_or(0))
-            as i64;
-        drop(msgs);
+        let (spawn_message_order, fresh_context) = match context {
+            SpawnContext::Inherit => {
+                let msgs = self.messages.lock().expect("bug: mutex poisoned");
+                let count = msgs.get(parent_thread_id).map(|v| v.len()).unwrap_or(0);
+                (count as i64, false)
+            }
+            SpawnContext::InheritUpTo(order) => (order as i64, false),
+            SpawnContext::Fresh => (0, true),
+        };
 
         let mut threads = self.threads.lock().expect("bug: mutex poisoned");
         let root = threads
@@ -184,6 +194,7 @@ impl InMemoryConversationStore {
                 closed: false,
                 is_subscription_event: is_for_subscription_event,
                 is_compaction: false,
+                fresh_context,
             },
         );
     }
@@ -205,6 +216,7 @@ impl ConversationStore for InMemoryConversationStore {
                 closed: false,
                 is_subscription_event: false,
                 is_compaction: false,
+                fresh_context: false,
             });
         Ok(())
     }
@@ -253,7 +265,7 @@ impl ConversationStore for InMemoryConversationStore {
         parent_thread_id: &ThreadId<str>,
         spawn_tool_call_id: &str,
         is_for_subscription_event: bool,
-        spawn_order_override: Option<usize>,
+        context: SpawnContext,
     ) -> Result<ThreadId, Self::Error> {
         let new_id = ThreadId::from(uuid::Uuid::new_v4().to_string());
         self.spawn_thread_with_id(
@@ -261,7 +273,7 @@ impl ConversationStore for InMemoryConversationStore {
             parent_thread_id,
             spawn_tool_call_id,
             is_for_subscription_event,
-            spawn_order_override,
+            context,
         );
         Ok(new_id)
     }
@@ -287,6 +299,14 @@ impl ConversationStore for InMemoryConversationStore {
         Ok(threads
             .get(thread_id)
             .map(|t| t.is_subscription_event)
+            .unwrap_or(false))
+    }
+
+    async fn is_fresh_context_thread(&self, thread_id: &ThreadId<str>) -> Result<bool, Self::Error> {
+        let threads = self.threads.lock().expect("bug: mutex poisoned");
+        Ok(threads
+            .get(thread_id)
+            .map(|t| t.fresh_context)
             .unwrap_or(false))
     }
 
@@ -586,5 +606,161 @@ impl StateStore for InMemoryStateStore {
             .get(thread_id)
             .cloned()
             .unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::traits::ConversationStore;
+
+    fn user_msg(text: &str) -> InfinityMessage {
+        InfinityMessage::User {
+            content: infinity_provider_protocol::message::UserContent::Text(
+                infinity_provider_protocol::message::Text {
+                    text: text.to_owned(),
+                },
+            ),
+        }
+    }
+
+    fn texts(history: &[InfinityMessage]) -> Vec<String> {
+        history
+            .iter()
+            .filter_map(|m| match m {
+                InfinityMessage::User {
+                    content: infinity_provider_protocol::message::UserContent::Text(t),
+                } => Some(t.text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn fresh_spawn_inherits_no_history() {
+        let store = InMemoryConversationStore::new();
+        store
+            .ensure_root_thread(ThreadId::from_ref("root"))
+            .await
+            .expect("root");
+        store
+            .append_messages(
+                ThreadId::from_ref("root"),
+                vec![
+                    (user_msg("root one"), "m1".to_owned()),
+                    (user_msg("root two"), "m2".to_owned()),
+                ],
+            )
+            .await
+            .expect("append");
+
+        let child = store
+            .spawn_thread(
+                ThreadId::from_ref("root"),
+                "tc-fresh",
+                false,
+                SpawnContext::Fresh,
+            )
+            .await
+            .expect("spawn fresh child");
+        store
+            .append_messages(&child, vec![(user_msg("child own"), "c1".to_owned())])
+            .await
+            .expect("append child");
+
+        let (history, _, ancestor_prefix_len) = store
+            .load_history_with_ancestors(&child)
+            .await
+            .expect("load history");
+        assert_eq!(ancestor_prefix_len, 0, "fresh child has no ancestor prefix");
+        assert_eq!(texts(&history), vec!["child own"]);
+    }
+
+    #[tokio::test]
+    async fn fresh_boundary_blocks_grandparent_context_for_descendants() {
+        let store = InMemoryConversationStore::new();
+        store
+            .ensure_root_thread(ThreadId::from_ref("root"))
+            .await
+            .expect("root");
+        store
+            .append_messages(
+                ThreadId::from_ref("root"),
+                vec![(user_msg("root secret"), "m1".to_owned())],
+            )
+            .await
+            .expect("append");
+
+        // root → fresh child → normal grandchild
+        let fresh = store
+            .spawn_thread(
+                ThreadId::from_ref("root"),
+                "tc-fresh",
+                false,
+                SpawnContext::Fresh,
+            )
+            .await
+            .expect("spawn fresh child");
+        store
+            .append_messages(&fresh, vec![(user_msg("fresh work"), "f1".to_owned())])
+            .await
+            .expect("append fresh");
+
+        let grandchild = store
+            .spawn_thread(&fresh, "tc-inherit", false, SpawnContext::Inherit)
+            .await
+            .expect("spawn grandchild");
+        store
+            .append_messages(&grandchild, vec![(user_msg("gc work"), "g1".to_owned())])
+            .await
+            .expect("append grandchild");
+
+        let (history, _, ancestor_prefix_len) = store
+            .load_history_with_ancestors(&grandchild)
+            .await
+            .expect("load history");
+        assert_eq!(
+            texts(&history),
+            vec!["fresh work", "gc work"],
+            "grandchild sees the fresh thread's context but nothing above the fresh boundary"
+        );
+        assert_eq!(ancestor_prefix_len, 1);
+    }
+
+    #[tokio::test]
+    async fn inherit_spawn_still_sees_full_ancestor_history() {
+        let store = InMemoryConversationStore::new();
+        store
+            .ensure_root_thread(ThreadId::from_ref("root"))
+            .await
+            .expect("root");
+        store
+            .append_messages(
+                ThreadId::from_ref("root"),
+                vec![(user_msg("root one"), "m1".to_owned())],
+            )
+            .await
+            .expect("append");
+
+        let child = store
+            .spawn_thread(
+                ThreadId::from_ref("root"),
+                "tc-1",
+                false,
+                SpawnContext::Inherit,
+            )
+            .await
+            .expect("spawn child");
+        store
+            .append_messages(&child, vec![(user_msg("child own"), "c1".to_owned())])
+            .await
+            .expect("append child");
+
+        let (history, _, ancestor_prefix_len) = store
+            .load_history_with_ancestors(&child)
+            .await
+            .expect("load history");
+        assert_eq!(texts(&history), vec!["root one", "child own"]);
+        assert_eq!(ancestor_prefix_len, 1);
     }
 }

@@ -4,8 +4,10 @@ use rap_protocol::ThreadId;
 use tracing;
 
 use super::{Tool, ToolContext, send_tool_error};
-use crate::message::{InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind};
-use crate::traits::{ConversationStore, InputSender};
+use crate::message::{
+    InfinityMessage, InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind,
+};
+use crate::traits::{ConversationStore, InputSender, SpawnContext};
 use rap_client::http::HttpClient;
 use rap_client::notifier::RapNotifier;
 
@@ -21,7 +23,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
     }
 
     fn description(&self) -> &str {
-        "Spawn a new child thread for a sub-task. The new thread inherits the conversation context of the current thread and will see its tasks automatically. Returns the new thread ID."
+        "Spawn a new child thread for a sub-task. By default the new thread inherits the conversation context of the current thread and will see its tasks automatically. Pass fresh_context: true to spawn a subagent WITHOUT the inherited context — it sees only the instructions you provide. Returns the new thread ID."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -36,6 +38,10 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "The thread stack that you are spawning from, used for validation. Pass the full thread stack from root to current thread. For example, if you are the root thread 'R', pass [\"R\"]. If you are child 'A' of root 'R', pass [\"R\", \"A\"]."
+                },
+                "fresh_context": {
+                    "type": "boolean",
+                    "description": "If true, the child thread starts with a FRESH (empty) context: it does NOT inherit the conversation history of this thread or its ancestors. Use this for independent sub-tasks where the accumulated context would be irrelevant or distracting. The instructions must then be fully self-contained: include all relevant file paths, IDs, requirements, and background the child needs. Defaults to false (full context inheritance)."
                 }
             },
             "required": ["instructions", "child_of"]
@@ -82,9 +88,19 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             });
         }
 
+        let fresh_context = args
+            .get("fresh_context")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let spawn_context = if fresh_context {
+            SpawnContext::Fresh
+        } else {
+            SpawnContext::Inherit
+        };
+
         let new_thread_id = match self
             .conversation_store
-            .spawn_thread(&context.group_id, id, false, None)
+            .spawn_thread(&context.group_id, id, false, spawn_context)
             .await
         {
             Ok(id) => id,
@@ -101,9 +117,10 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
         };
 
         tracing::info!(
-            "Spawned new thread {} from parent {}",
+            "Spawned new thread {} from parent {} (fresh_context: {})",
             new_thread_id,
-            context.group_id
+            context.group_id,
+            fresh_context
         );
 
         let parent_result = ToolResult {
@@ -111,8 +128,13 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             call_id: call_id.map(|c| c.to_owned()),
             content: vec![ToolResultContent::Text(Text {
                 text: format!(
-                    "Child thread is successfully spawned and has ID: {}. You will be notified automatically when the child has anything to report. Make sure that you **do not** do the task assigned to the child thread.",
-                    new_thread_id
+                    "Child thread is successfully spawned and has ID: {}.{} You will be notified automatically when the child has anything to report. Make sure that you **do not** do the task assigned to the child thread.",
+                    new_thread_id,
+                    if fresh_context {
+                        " The child started with a fresh context (it cannot see this conversation)."
+                    } else {
+                        ""
+                    }
                 ),
             })],
         };
@@ -123,22 +145,78 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             .as_str()
             .expect("bug: 'instructions' arg is not a string");
 
-        let child_result = InputMessage {
-            content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                id: id.to_owned(),
-                call_id: call_id.map(|c| c.to_owned()),
-                content: vec![ToolResultContent::Text(Text {
-                    text: format!(
-                        "You are now INSIDE the thread that you requested to create. Your thread ID is {}. Your next task is to exactly follow these instructions: {}\n. Start by repeating to yourself the instructions, ignoring thinking from the parent context. Make sure to not be confused by the parent context. If the parent was planning to spawn more threads, you should not.",
-                        new_thread_id, instructions
-                    ),
-                })],
-            })),
-            group_id: new_thread_id,
-            metadata: None,
-            synthetic: None,
-            display_as: None,
-            subscription: false,
+        let child_result = if fresh_context {
+            // The child inherits no history, so the tool result sent below
+            // would dangle without a matching tool call. Write a synthetic
+            // spawn call directly into the child's (empty) store to pair
+            // with it, mirroring how subscription-event threads are seeded.
+            let spawn_tool_call = InfinityMessage::ToolCall {
+                call: infinity_provider_protocol::message::ToolCall {
+                    id: id.to_owned(),
+                    call_id: None,
+                    function: infinity_provider_protocol::message::ToolFunction {
+                        name: "spawn_thread".to_owned(),
+                        arguments: serde_json::json!({
+                            "instructions": instructions,
+                            "fresh_context": true,
+                        }),
+                    },
+                },
+                display_as: None,
+            };
+            if let Err(e) = self
+                .conversation_store
+                .append_messages(
+                    &new_thread_id,
+                    vec![(spawn_tool_call, format!("{}-spawn-call", id))],
+                )
+                .await
+            {
+                tracing::error!("failed to seed fresh thread with spawn call: {e}");
+                return Some(ToolResult {
+                    id: id.to_owned(),
+                    call_id: call_id.map(|c| c.to_owned()),
+                    content: vec![ToolResultContent::Text(Text {
+                        text: format!("Error: failed to seed fresh thread: {e}"),
+                    })],
+                });
+            }
+
+            InputMessage {
+                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                    id: id.to_owned(),
+                    call_id: None,
+                    content: vec![ToolResultContent::Text(Text {
+                        text: format!(
+                            "You are now INSIDE a newly created thread with a FRESH context. Your thread ID is {}. You do NOT inherit any conversation history from your parent thread: the instructions above are your ONLY context, so do not assume any other background. Follow the instructions exactly. Use report_to_parent to send results to the parent, and call close_thread with your thread ID when you are done.",
+                            new_thread_id
+                        ),
+                    })],
+                })),
+                group_id: new_thread_id,
+                metadata: None,
+                synthetic: None,
+                display_as: None,
+                subscription: false,
+            }
+        } else {
+            InputMessage {
+                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                    id: id.to_owned(),
+                    call_id: call_id.map(|c| c.to_owned()),
+                    content: vec![ToolResultContent::Text(Text {
+                        text: format!(
+                            "You are now INSIDE the thread that you requested to create. Your thread ID is {}. Your next task is to exactly follow these instructions: {}\n. Start by repeating to yourself the instructions, ignoring thinking from the parent context. Make sure to not be confused by the parent context. If the parent was planning to spawn more threads, you should not.",
+                            new_thread_id, instructions
+                        ),
+                    })],
+                })),
+                group_id: new_thread_id,
+                metadata: None,
+                synthetic: None,
+                display_as: None,
+                subscription: false,
+            }
         };
 
         context
