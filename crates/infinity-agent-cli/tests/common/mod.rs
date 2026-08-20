@@ -34,12 +34,11 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
+use infinity_agent_cli::display::DisplayEvent;
 use infinity_agent_cli::term_io::{EventSource, TermOut};
 use infinity_agent_cli::terminal::{self, DetachResult, SessionChanged};
-use infinity_agent_core::batch_processor::DisplayEvent;
 use infinity_protocol::{ModelInfo, SessionInfo};
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use rig_mock::MockStreamingResponse;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
@@ -48,7 +47,7 @@ use tokio::sync::mpsc;
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// The display-event payload type the harness feeds to the UI.
-pub type DisplayItem = (Option<String>, DisplayEvent<MockStreamingResponse>);
+pub type DisplayItem = (Option<String>, DisplayEvent);
 
 // ── Emulator abstraction ────────────────────────────────────────────────────
 
@@ -557,14 +556,14 @@ impl TuiHarness {
     }
 
     /// Send a display event attributed to the root thread.
-    pub fn display(&self, event: DisplayEvent<MockStreamingResponse>) {
+    pub fn display(&self, event: DisplayEvent) {
         self.display_tx
             .send((None, event))
             .expect("bug: UI task dropped display channel");
     }
 
     /// Send a display event attributed to a child thread.
-    pub fn display_for_thread(&self, thread_id: &str, event: DisplayEvent<MockStreamingResponse>) {
+    pub fn display_for_thread(&self, thread_id: &str, event: DisplayEvent) {
         self.display_tx
             .send((Some(thread_id.to_owned()), event))
             .expect("bug: UI task dropped display channel");

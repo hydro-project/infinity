@@ -35,7 +35,7 @@ use std::time::Duration;
 
 use infinity_daemon::ids::SequentialIdSource;
 use infinity_daemon::rap_callback;
-use infinity_daemon::session::{SessionManager, SessionManagerConfig};
+use infinity_daemon::session::{SessionManager, SessionManagerConfig, SharedSessionManager};
 use infinity_daemon::ws_handler;
 use infinity_provider_protocol::{ModelEntry, ModelProvider, SingleModelProvider};
 use playwright_rs::{
@@ -43,7 +43,6 @@ use playwright_rs::{
     expect_page,
 };
 use rig_mock::{MockCompletionModel, MockModelController, mock_model};
-use tokio::sync::Mutex;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -53,7 +52,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// WebSocket protocol on `port`.
 struct TestDaemon {
     #[expect(dead_code, reason = "held so the manager outlives the test")]
-    manager: Arc<Mutex<SessionManager>>,
+    manager: SharedSessionManager,
     port: u16,
     /// Working directory for sessions created through the UI.
     cwd: tempfile::TempDir,
@@ -85,7 +84,8 @@ async fn start_daemon_with_providers(
     let state_dir = tempfile::tempdir()?;
     let cwd = tempfile::tempdir()?;
 
-    let (cb_listener, callback_url) = rap_client::callback_server::bind_callback_listener().await?;
+    let bridge = infinity_rap_bridge::RapCallbackBridge::bind().await?;
+    let callback_url = bridge.callback_url().to_owned();
     let manager = SessionManager::with_providers(
         SessionManagerConfig {
             state_dir: state_dir.path().to_path_buf(),
@@ -99,7 +99,7 @@ async fn start_daemon_with_providers(
         vec![],
     )
     .await?;
-    let manager = rap_callback::serve_callbacks(cb_listener, manager);
+    let manager = rap_callback::serve_callbacks(bridge, manager);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();

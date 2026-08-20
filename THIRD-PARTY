@@ -8568,9 +8568,11 @@ Used by:
   infinity-agent-core 0.1.0
   infinity-agent-lambda 0.1.0
   infinity-daemon 0.1.0
+  infinity-mcp-bridge 0.1.0
   infinity-protocol 0.1.0
   infinity-provider-bedrock 0.1.0
   infinity-provider-protocol 0.1.0
+  infinity-rap-bridge 0.1.0
   infinity-slack-bot 0.1.0
   rap-client 0.1.0
   rap-github-event-poller 0.1.0

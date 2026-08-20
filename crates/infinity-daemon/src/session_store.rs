@@ -1,16 +1,7 @@
 use std::{collections::HashMap, path::PathBuf};
 
-use infinity_protocol::DaemonMessage;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
-
-/// A pending user choice request awaiting user response.
-#[derive(Clone, Debug)]
-pub struct PendingChoice {
-    pub id: String,
-    pub message: DaemonMessage,
-    pub response_url: String,
-}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SessionEntry {
@@ -139,12 +130,16 @@ impl SessionStore {
         }
     }
 
-    pub fn clear_shut_down(&mut self, session_id: &str) {
+    pub fn clear_shut_down(&mut self, session_id: &str) -> bool {
         tracing::trace!("Clearing shut down status for {}", session_id);
-        if let Some(entry) = self.sessions.get_mut(session_id) {
+        if let Some(entry) = self.sessions.get_mut(session_id)
+            && entry.shut_down
+        {
             entry.shut_down = false;
             self.notify(session_id);
+            return true;
         }
+        false
     }
 
     pub fn mark_idle(&mut self, session_id: &str) {
@@ -156,13 +151,15 @@ impl SessionStore {
         }
     }
 
-    pub fn clear_idle(&mut self, session_id: &str) {
+    pub fn clear_idle(&mut self, session_id: &str) -> bool {
         if let Some(entry) = self.sessions.get_mut(session_id)
             && entry.idle
         {
             entry.idle = false;
             self.notify(session_id);
+            return true;
         }
+        false
     }
 
     pub fn is_idle(&self, session_id: &str) -> bool {

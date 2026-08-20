@@ -21,8 +21,11 @@ pub async fn bind_callback_listener()
 }
 
 /// Start the accept loop on a pre-bound listener, dispatching each
-/// [`RapCallback`] to the given handler.
-pub fn start_callback_server_on<F, Fut>(listener: TcpListener, handler: F)
+/// [`RapCallback`] to the given handler. Returns the spawned accept-loop task.
+pub fn start_callback_server_on<F, Fut>(
+    listener: TcpListener,
+    handler: F,
+) -> tokio::task::JoinHandle<()>
 where
     F: Fn(RapCallback) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send + 'static,
@@ -58,7 +61,7 @@ where
                 }));
             }
         },
-    ));
+    ))
 }
 
 /// Start a callback server that passes each [`RapCallback`] to the given handler.

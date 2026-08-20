@@ -136,12 +136,13 @@ export class InfinityAgent extends Construct {
     );
 
     // RAP (Reactive Agent Protocol) HTTP receiver Lambda.
-    // Tool Lambdas POST their results here instead of sending directly to SQS.
-    const rapReceiverFunction = new NodejsFunction(this, 'RapReceiverFunction', {
-      entry: path.join(__dirname, 'rap-receiver', 'index.mjs'),
-      runtime: lambda.Runtime.NODEJS_24_X,
-      handler: 'handler',
-      bundling: NODEJS_BUNDLING_DEFAULTS,
+    // Tool Lambdas POST their results here instead of sending directly to
+    // SQS. Implemented in Rust (crates/infinity-agent-lambda, `rap-receiver`
+    // binary) so callback conversion is shared with the rest of the runtime.
+    const rapReceiverFunction = new RustFunction(this, 'RapReceiverFunction', {
+      manifestPath: props.codePath || path.join(__dirname, '../../../crates/infinity-agent-lambda'),
+      binaryName: 'rap-receiver',
+      architecture: lambda.Architecture.ARM_64,
       timeout: cdk.Duration.seconds(30),
       memorySize: 128,
       environment: {

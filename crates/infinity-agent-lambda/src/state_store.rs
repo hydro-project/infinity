@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use aws_sdk_dynamodb::{Client as DynamoDbClient, types::AttributeValue};
+use infinity_agent_core::system::UserChoice;
 use infinity_agent_core::traits::StateStore;
 use std::collections::HashSet;
 
@@ -180,6 +181,102 @@ impl StateStore for DynamoDbStateStore {
             .await
             .map_err(|e| DynamoError(format!("Failed to add active subscription: {}", e)))?;
         Ok(())
+    }
+
+    async fn add_pending_user_choice(
+        &self,
+        thread_id: &str,
+        choice: UserChoice,
+    ) -> Result<(), DynamoError> {
+        let json = serde_json::to_string(&choice)
+            .map_err(|e| DynamoError(format!("Failed to serialize pending user choice: {e}")))?;
+        let existing = self
+            .get_pending_user_choices(thread_id)
+            .await?
+            .into_iter()
+            .find(|existing| existing.id == choice.id)
+            .map(|existing| serde_json::to_string(&existing))
+            .transpose()
+            .map_err(|e| DynamoError(format!("Failed to serialize pending user choice: {e}")))?;
+        if let Some(existing) = existing {
+            self.client
+                .update_item()
+                .table_name(&self.table_name)
+                .key("session", AttributeValue::S(thread_id.to_owned()))
+                .update_expression("DELETE pending_user_choices :old")
+                .expression_attribute_values(":old", AttributeValue::Ss(vec![existing]))
+                .send()
+                .await
+                .map_err(|e| DynamoError(format!("Failed to replace pending user choice: {e}")))?;
+        }
+        self.client
+            .update_item()
+            .table_name(&self.table_name)
+            .key("session", AttributeValue::S(thread_id.to_owned()))
+            .update_expression("ADD pending_user_choices :new")
+            .expression_attribute_values(":new", AttributeValue::Ss(vec![json]))
+            .send()
+            .await
+            .map_err(|e| DynamoError(format!("Failed to add pending user choice: {e}")))?;
+        Ok(())
+    }
+
+    async fn remove_pending_user_choice(
+        &self,
+        thread_id: &str,
+        choice_id: &str,
+    ) -> Result<(), DynamoError> {
+        let Some(choice) = self
+            .get_pending_user_choices(thread_id)
+            .await?
+            .into_iter()
+            .find(|choice| choice.id == choice_id)
+        else {
+            return Ok(());
+        };
+        let json = serde_json::to_string(&choice)
+            .map_err(|e| DynamoError(format!("Failed to serialize pending user choice: {e}")))?;
+        self.client
+            .update_item()
+            .table_name(&self.table_name)
+            .key("session", AttributeValue::S(thread_id.to_owned()))
+            .update_expression("DELETE pending_user_choices :choice")
+            .expression_attribute_values(":choice", AttributeValue::Ss(vec![json]))
+            .send()
+            .await
+            .map_err(|e| DynamoError(format!("Failed to remove pending user choice: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_pending_user_choices(
+        &self,
+        thread_id: &str,
+    ) -> Result<Vec<UserChoice>, DynamoError> {
+        let result = self
+            .client
+            .get_item()
+            .table_name(&self.table_name)
+            .key("session", AttributeValue::S(thread_id.to_owned()))
+            .send()
+            .await
+            .map_err(|e| DynamoError(format!("Failed to get pending user choices: {e}")))?;
+        let choices = result
+            .item
+            .as_ref()
+            .and_then(|item| item.get("pending_user_choices"))
+            .and_then(|value| match value {
+                AttributeValue::Ss(values) => Some(values),
+                _ => None,
+            })
+            .into_iter()
+            .flatten()
+            .map(|json| {
+                serde_json::from_str(json).map_err(|e| {
+                    DynamoError(format!("Failed to deserialize pending user choice: {e}"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(choices)
     }
 
     async fn remove_active_subscription(

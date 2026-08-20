@@ -104,6 +104,13 @@ impl SyntheticKind {
         matches!(self, SyntheticKind::Tagged(TaggedSyntheticKind::Compaction))
     }
 
+    pub fn is_compaction_complete(&self) -> bool {
+        matches!(
+            self,
+            SyntheticKind::Tagged(TaggedSyntheticKind::CompactionComplete)
+        )
+    }
+
     /// Associative subscription events are injected inline into the subscribing
     /// thread's history (like thread reports) rather than spawning a child thread.
     pub fn is_associative(&self) -> bool {
@@ -146,13 +153,27 @@ pub struct InputMessage {
     pub subscription: bool,
 }
 
+impl InputMessage {
+    /// A plain (non-synthetic) user text message addressed to `thread_id`.
+    pub fn user_text(thread_id: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            content: InputMessageContent::User(UserContent::text(text.into())),
+            group_id: thread_id.into(),
+            metadata: None,
+            synthetic: None,
+            display_as: None,
+            subscription: false,
+        }
+    }
+}
+
 /// Wraps rig message content with optional display metadata that survives
 /// serialization. On replay the display metadata is used directly instead of
 /// being reconstructed or stored as sidecar data.
 ///
 /// Each variant stores the type-specific rig struct directly rather than a
-/// full `rig::message::Message`. Use [`into_message`](Self::into_message) to
-/// reconstruct the `Message` for LLM calls.
+/// full `rig::message::Message`. Use [`into_messages`](Self::into_messages) to
+/// reconstruct the `Message`s for LLM calls.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum InfinityMessage {

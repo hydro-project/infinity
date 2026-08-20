@@ -8,11 +8,17 @@ license = "Apache-2.0"
 name = "infinity-agent-lambda"
 path = "src/main.rs"
 
+[[bin]]
+name = "rap-receiver"
+path = "src/bin/rap-receiver.rs"
+
 [dependencies]
 infinity-agent-core = { path = "../infinity-agent-core" }
+infinity-rap-bridge = { path = "../infinity-rap-bridge" }
 infinity-provider-bedrock = { path = "../infinity-provider-bedrock" }
 infinity-provider-protocol = { path = "../infinity-provider-protocol" }
 rap-client = { path = "../rap-client" }
+rap-protocol = { path = "../rap-protocol" }
 
 rig-core = { workspace = true }
 serde = { workspace = true }
@@ -27,7 +33,11 @@ url = { workspace = true }
 tracing = { workspace = true }
 
 lambda_runtime = "1"
-aws_lambda_events = { version = "1", default-features = false, features = ["sqs"] }
+aws_lambda_events = { version = "1", default-features = false, features = [
+    "sqs",
+    "lambda_function_urls",
+] }
+base64 = "0.22"
 aws-sdk-dynamodb = { workspace = true }
 aws-sdk-sqs = { workspace = true }
 aws-sdk-scheduler = { workspace = true }

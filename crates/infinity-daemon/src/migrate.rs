@@ -5,14 +5,13 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use infinity_protocol::{ClientMessage, DaemonMessage};
-use tokio::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::rap_servers::{MigrationServer, boot_migration_servers, migration_server_ports};
 use crate::remote::{RemoteDaemons, SshPortForward};
-use crate::session::SessionManager;
+use crate::session::SharedSessionManager;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -22,7 +21,7 @@ pub async fn orchestrate_migration(
     session_id: String,
     to: Option<String>,
     dest_cwd: PathBuf,
-    session_manager: Arc<Mutex<SessionManager>>,
+    session_manager: SharedSessionManager,
     daemon_tx: UnboundedSender<DaemonMessage>,
 ) {
     let _ = daemon_tx.send(DaemonMessage::MigrateStarted {
@@ -57,7 +56,7 @@ async fn run_migration(
     session_id: &str,
     to: Option<&str>,
     dest_cwd: &Path,
-    session_manager: &Arc<Mutex<SessionManager>>,
+    session_manager: &SharedSessionManager,
 ) -> Result<(), BoxError> {
     let source_is_local = !session_id.contains('/');
     let (source_remote, real_session_id) = if source_is_local {
@@ -72,7 +71,7 @@ async fn run_migration(
 
     // Shut down the source session first (kills agent + original RAP servers)
     let source_cwd = if source_is_local {
-        let mut mgr = session_manager.lock().await;
+        let mgr = session_manager.lock().await;
         let cwd = mgr
             .session_store
             .lock()
@@ -102,7 +101,7 @@ async fn run_migration(
                 .iter()
                 .map(|(_, url)| url.clone())
                 .collect(),
-            crate::rap_tools::SimpleHttpClient::new(),
+            rap_client::http::SimpleHttpClient::new(),
         );
         if let Err(errors) = notifier
             .request_migration(&real_session_id, &migration_servers, &dest_rap_urls)
@@ -191,58 +190,25 @@ async fn run_migration(
     Ok(())
 }
 
-/// Boot RAP servers at `cwd` and return (config_id, url) pairs for the given migration config_ids.
-/// Caller must kill spawned_servers when done.
+/// Boot the RAP servers at `cwd` and return the (config_id, url) pairs for
+/// the servers matching the destination's migration config_ids, plus the
+/// booted servers themselves (kept alive until the migration completes).
 async fn boot_source_rap_servers(
     cwd: &Path,
     dest_rap_urls: &HashMap<String, String>,
-) -> Result<(Vec<(String, String)>, Vec<tokio::process::Child>), BoxError> {
+) -> Result<(Vec<(String, String)>, Vec<MigrationServer>), BoxError> {
     let user_rap = crate::config::user_config_path().ok();
-    let booted =
-        crate::session::boot_rap_servers(cwd, user_rap.as_deref(), &mut |_text| async {}).await?;
-    let migration_servers: Vec<(String, String)> = dest_rap_urls
-        .keys()
-        .filter_map(|id| {
-            booted
-                .server_ids
-                .iter()
-                .find(|(_, sid)| *sid == id)
-                .map(|(url, _)| (id.clone(), url.clone()))
+    let servers = boot_migration_servers(cwd, user_rap.as_deref()).await?;
+    let migration_servers: Vec<(String, String)> = servers
+        .iter()
+        .filter_map(|s| {
+            let id = s.config_id.as_ref()?;
+            dest_rap_urls
+                .contains_key(id)
+                .then(|| (id.clone(), s.url.clone()))
         })
         .collect();
-    Ok((migration_servers, booted.spawned_servers))
-}
-
-/// Filter BootedRapServers.server_ports to only servers that declare needsMigration.
-pub async fn filter_migration_server_ports(
-    booted: &crate::session::BootedRapServers,
-) -> Result<HashMap<String, u16>, BoxError> {
-    let servers_with_ids: Vec<(String, Option<String>)> = booted
-        .urls
-        .iter()
-        .map(|u| (u.clone(), booted.server_ids.get(u).cloned()))
-        .collect();
-    let loaded = crate::rap_tools::load_rap_tools::<crate::memory_store::InMemoryMessageSender>(
-        &servers_with_ids,
-    )
-    .await?;
-    let migration_ids: std::collections::HashSet<String> = loaded
-        .migration_servers
-        .into_iter()
-        .map(|(id, _)| id)
-        .collect();
-
-    tracing::info!(
-        "Identified servers that require migration {:?}",
-        migration_ids
-    );
-
-    Ok(booted
-        .server_ports
-        .iter()
-        .filter(|(id, _)| migration_ids.contains(*id))
-        .map(|(id, port)| (id.clone(), *port))
-        .collect())
+    Ok((migration_servers, servers))
 }
 
 /// Handle an Emigrate request: shut down session, boot fresh RAP servers,
@@ -250,7 +216,7 @@ pub async fn filter_migration_server_ports(
 pub async fn handle_emigrate(
     session_id: &str,
     dest_rap_urls: HashMap<String, String>,
-    session_manager: &Arc<Mutex<SessionManager>>,
+    session_manager: &SharedSessionManager,
 ) -> Result<String, BoxError> {
     // Get cwd and shut down the session first
     let cwd = {
@@ -258,7 +224,7 @@ pub async fn handle_emigrate(
         mgr.session_store.lock().await.get_cwd(session_id).clone()
     };
     {
-        let mut mgr = session_manager.lock().await;
+        let mgr = session_manager.lock().await;
         mgr.cleanup_session(session_id).await;
     }
 
@@ -270,7 +236,7 @@ pub async fn handle_emigrate(
                 .iter()
                 .map(|(_, url)| url.clone())
                 .collect(),
-            crate::rap_tools::SimpleHttpClient::new(),
+            rap_client::http::SimpleHttpClient::new(),
         );
         if let Err(errors) = notifier
             .request_migration(session_id, &migration_servers, &dest_rap_urls)
@@ -285,7 +251,7 @@ pub async fn handle_emigrate(
 }
 
 pub enum LocalOrRemoteSpawned {
-    Local(Vec<tokio::process::Child>),
+    Local(Vec<MigrationServer>),
     Remote(UnboundedSender<ClientMessage>),
 }
 
@@ -295,7 +261,7 @@ async fn boot_dest_and_tunnel(
     to: Option<&str>,
     dest_cwd: &Path,
     source_remote: &Option<String>,
-    session_manager: &Arc<Mutex<SessionManager>>,
+    session_manager: &SharedSessionManager,
 ) -> Result<
     (
         HashMap<String, String>,
@@ -308,11 +274,9 @@ async fn boot_dest_and_tunnel(
     // Boot RAP servers on destination — server_ports is config_id → port (migration-only)
     let (dest_server_ports, dest_spawned) = if dest_is_local {
         let user_rap = crate::config::user_config_path().ok();
-        let booted =
-            crate::session::boot_rap_servers(dest_cwd, user_rap.as_deref(), &mut |_text| async {})
-                .await?;
-        let ports = filter_migration_server_ports(&booted).await?;
-        (ports, LocalOrRemoteSpawned::Local(booted.spawned_servers))
+        let servers = boot_migration_servers(dest_cwd, user_rap.as_deref()).await?;
+        let ports = migration_server_ports(&servers);
+        (ports, LocalOrRemoteSpawned::Local(servers))
     } else {
         tracing::info!("Launching RAP servers on remote destination to receive migration");
         let rd = {
