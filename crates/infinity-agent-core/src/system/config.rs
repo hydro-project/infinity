@@ -39,22 +39,13 @@ pub trait ThreadConfigSource<M: InputSender, H: HttpClient> {
     async fn resolve(&self, thread_id: &str) -> Result<ThreadConfig<M, H>, BoxError>;
 }
 
-/// Empty fixed configuration used when an embedding does not provide a
-/// [`ThreadConfigSource`].
-pub(crate) struct StaticThreadConfig<M: InputSender, H: HttpClient> {
-    pub(crate) tools: Vec<Rc<dyn Tool<M>>>,
-    pub(crate) extra_system_prompt: Option<String>,
-    pub(crate) rap_notifier: Option<RapNotifier<H>>,
-}
-
-impl<M: InputSender, H: HttpClient> Default for StaticThreadConfig<M, H> {
-    fn default() -> Self {
-        Self {
-            tools: Vec::new(),
-            extra_system_prompt: None,
-            rap_notifier: None,
-        }
-    }
+/// The same fixed configuration for every thread — what
+/// [`AgentSystemBuilder`](super::AgentSystemBuilder)'s `tools` /
+/// `extra_system_prompt` / `rap_notifier` methods build.
+pub struct StaticThreadConfig<M: InputSender, H: HttpClient> {
+    pub tools: Vec<Rc<dyn Tool<M>>>,
+    pub extra_system_prompt: Option<String>,
+    pub rap_notifier: Option<RapNotifier<H>>,
 }
 
 #[async_trait(?Send)]

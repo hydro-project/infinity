@@ -341,6 +341,7 @@ impl ThreadConfigSource<SqsMessageSender, RapHttpClient> for LambdaThreadConfig 
                                 descriptor: def.into(),
                                 endpoint: endpoint.clone(),
                                 http_client: self.http_client.clone(),
+                                callback_url: None,
                             }));
                         }
                     }

@@ -1,14 +1,20 @@
 #![warn(missing_docs)]
 
-//! Receive RAP callbacks in Infinity runtime embeddings.
+//! Connect RAP tool servers to local Infinity agent systems.
 //!
-//! [`RapCallbackBridge`] serves callbacks into an embedding's input sender,
-//! while [`prepare_callback`] exposes the same conversion and deduplication
-//! policy to platform-specific receivers.
+//! [`RapToolSet`] discovers tools and builds lifecycle notifications.
+//! [`RapCallbackBridge`] binds the callback destination separately, making
+//! input routing and display-only view handling explicit.
 
 use infinity_agent_core::message::InputMessage;
+use infinity_agent_core::system::local::ChannelSender;
+use infinity_agent_core::tools::Tool;
+use infinity_agent_core::tools::rap_tool::RapTool;
 use infinity_agent_core::traits::InputSender;
 use rap_client::callback_server::{bind_callback_listener, start_callback_server_on};
+use rap_client::http::{InMemoryToolsetCache, SimpleHttpClient};
+use rap_client::notifier::RapNotifier;
+use rap_client::toolset_loader::ToolsetLoader;
 use rap_protocol::{RapCallback, RapViewUpdate};
 
 mod callback;
@@ -127,16 +133,73 @@ impl RapCallbackBridge {
     }
 }
 
+/// RAP tools discovered from one or more servers, ready for a local system.
+///
+/// Callback reception is configured separately through
+/// [`RapCallbackBridge`]. Pass that bridge's URL to [`connect`](Self::connect),
+/// then serve it into the local system's sender after the system is built.
+pub struct RapToolSet {
+    tools: Vec<RapTool<SimpleHttpClient>>,
+    server_urls: Vec<String>,
+}
+
+impl RapToolSet {
+    /// Discover tools from each server using an explicit callback destination.
+    ///
+    /// `session_id` scopes the in-memory manifest cache. Each server must
+    /// expose `/.well-known/rap-toolset`. `callback_url` should name a bound
+    /// [`RapCallbackBridge`] or another receiver for RAP callbacks.
+    pub async fn connect(
+        server_urls: impl IntoIterator<Item = String>,
+        session_id: &str,
+        callback_url: impl Into<String>,
+    ) -> Result<Self, BoxError> {
+        let server_urls: Vec<String> = server_urls.into_iter().collect();
+        let callback_url = callback_url.into();
+        let http = SimpleHttpClient::new();
+        let loaded = ToolsetLoader::new(http.clone(), InMemoryToolsetCache::new())
+            .load_toolsets(&server_urls, session_id)
+            .await?;
+
+        let mut tools = Vec::new();
+        for toolset in loaded {
+            let endpoint = toolset.manifest.endpoint;
+            for definition in toolset.manifest.tools {
+                tools.push(RapTool {
+                    descriptor: definition.into(),
+                    endpoint: endpoint.clone(),
+                    http_client: http.clone(),
+                    callback_url: Some(callback_url.clone()),
+                });
+            }
+        }
+
+        Ok(Self { tools, server_urls })
+    }
+
+    /// Build the discovered tools for registration on a local agent system.
+    pub fn tools(&self) -> Vec<Box<dyn Tool<ChannelSender>>> {
+        self.tools
+            .iter()
+            .cloned()
+            .map(|tool| Box::new(tool) as Box<dyn Tool<ChannelSender>>)
+            .collect()
+    }
+
+    /// Build the lifecycle notifier for the connected RAP servers.
+    pub fn notifier(&self) -> RapNotifier<SimpleHttpClient> {
+        RapNotifier::new(self.server_urls.clone(), SimpleHttpClient::new())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
     use super::*;
     use async_trait::async_trait;
-    use rap_client::http::SimpleHttpClient;
     use rap_protocol::{
         RapOAuth, RapSubscriptionEvent, RapToolResult, RapUserChoice, RapViewUpdate,
     };
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn stable_dedup_for_single_callbacks() {

@@ -1,6 +1,5 @@
 //! Shared fixtures for system unit tests.
 
-use std::rc::Rc;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -14,8 +13,7 @@ use crate::traits::InputSender;
 use infinity_provider_protocol::ModelEntry;
 use rig_mock::{MockModelController, mock_model};
 
-use super::builder::{AgentSystemBuilder, NoRapHttp};
-use super::config::{ThreadConfig, ThreadConfigSource};
+use super::builder::AgentSystemBuilder;
 use super::events::{AgentEvent, ReplaySnapshot};
 use super::local::{ChannelSender, RunningSystem};
 use super::model::StaticModel;
@@ -184,35 +182,6 @@ impl Tool<ChannelSender> for FailingTool {
     }
 }
 
-/// Fixed tool configuration used by system tests without exposing the
-/// application-facing static builder conveniences.
-pub(crate) struct TestThreadConfig {
-    tools: Vec<Rc<dyn Tool<ChannelSender>>>,
-}
-
-impl TestThreadConfig {
-    pub(crate) fn new(tools: Vec<Box<dyn Tool<ChannelSender>>>) -> Self {
-        Self {
-            tools: tools.into_iter().map(Rc::from).collect(),
-        }
-    }
-}
-
-#[async_trait(?Send)]
-impl ThreadConfigSource<ChannelSender, NoRapHttp> for TestThreadConfig {
-    async fn resolve(
-        &self,
-        _thread_id: &str,
-    ) -> Result<ThreadConfig<ChannelSender, NoRapHttp>, Box<dyn std::error::Error + Send + Sync>>
-    {
-        Ok(ThreadConfig {
-            tools: self.tools.clone(),
-            extra_system_prompt: None,
-            rap_notifier: None,
-        })
-    }
-}
-
 /// Start a local system with the given tools, returning the running handle,
 /// the observer event stream, the model controller, and the store.
 pub(crate) fn start_system(
@@ -240,8 +209,7 @@ pub(crate) fn start_system_with(
     let (model, ctrl) = model_source(entry);
     let conv = InMemoryConversationStore::new();
     let state = InMemoryStateStore::new();
-    let mut builder = AgentSystemBuilder::new_local(conv.clone(), state, model)
-        .thread_config(TestThreadConfig::new(tools));
+    let mut builder = AgentSystemBuilder::new_local(conv.clone(), state, model).tools(tools);
     if !builtin_tools {
         builder = builder.without_builtin_tools();
     }
@@ -396,4 +364,72 @@ impl Tool<ChannelSender> for SubscribeTool {
         ctx.message_sender.send_to_input_queue(msg, &id).await?;
         Ok(())
     }
+}
+
+/// Drain a handle's events until the completion finishes, returning the text
+/// chunks seen along the way.
+pub(crate) async fn handle_texts_until_finished(
+    handle: &mut super::local::ThreadHandle,
+) -> Vec<String> {
+    let mut texts = Vec::new();
+    loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), handle.recv())
+            .await
+            .expect("timed out waiting for a handle event")
+            .expect("handle event channel closed");
+        match event {
+            AgentEvent::TextChunk { text } => texts.push(text),
+            AgentEvent::CompletionFinished { .. } => break,
+            _ => {}
+        }
+    }
+    texts
+}
+/// A no-op async tool with a configurable name, for asserting which tools a
+/// thread sees.
+pub(crate) struct NamedTool(pub(crate) &'static str);
+
+#[async_trait]
+impl Tool<ChannelSender> for NamedTool {
+    fn name(&self) -> &str {
+        self.0
+    }
+    fn description(&self) -> &str {
+        "named"
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type":"object","properties":{}})
+    }
+    async fn execute(
+        &self,
+        _: serde_json::Value,
+        _: String,
+        _: Option<String>,
+        _: &ToolContext<ChannelSender>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Ok(())
+    }
+}
+
+/// Start a local system with the given system-wide tools and prompt.
+pub(crate) fn start_launcher_system(
+    tools: Vec<Box<dyn Tool<ChannelSender>>>,
+    extra_system_prompt: &str,
+) -> (
+    super::local::LaunchingSystem<InMemoryConversationStore, InMemoryStateStore, super::NoRapHttp>,
+    MockModelController,
+) {
+    let (model, ctrl) = model_source(None);
+    let conv = InMemoryConversationStore::new();
+    let state = InMemoryStateStore::new();
+    let system = AgentSystemBuilder::new_local(conv, state, model)
+        .tools(tools)
+        .extra_system_prompt(extra_system_prompt)
+        .build_local()
+        .start();
+    (system, ctrl)
+}
+
+pub(crate) fn tool_names(req: &rig::completion::CompletionRequest) -> Vec<String> {
+    req.tools.iter().map(|t| t.name.clone()).collect()
 }

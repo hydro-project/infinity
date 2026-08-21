@@ -5,9 +5,15 @@
 //! [`LocalAgentSystem`]: super::LocalAgentSystem
 
 mod driver;
+mod handle;
+mod launch;
 mod router;
 mod sender;
 
 pub use driver::{ThreadLifecycleEvent, ThreadLifecycleState};
+pub use handle::ThreadHandle;
+pub use launch::{LaunchingSystem, ThreadBuilder};
 pub use router::{RunningSystem, SubscribeHandle};
 pub use sender::{ChannelSendError, ChannelSender};
+
+pub(crate) use launch::{LaunchRegistry, UnionConfigSource, UnionModelSource};

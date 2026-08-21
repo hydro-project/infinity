@@ -132,10 +132,14 @@ where
 /// A RAP tool that invokes a remote tool server endpoint via HTTP.
 /// Generic over the HTTP client (SigV4-signed for Lambda, plain for CLI)
 /// and the input sender (SQS for Lambda, mpsc for CLI).
+#[derive(Clone)]
 pub struct RapTool<H: HttpClient> {
     pub descriptor: RapToolDescriptor,
     pub endpoint: String,
     pub http_client: H,
+    /// Callback destination supplied to the RAP server. When absent, the
+    /// enclosing system's callback URL is used.
+    pub callback_url: Option<String>,
 }
 
 #[async_trait]
@@ -171,7 +175,7 @@ impl<H: HttpClient + 'static, M: InputSender + 'static> Tool<M> for RapTool<H> {
                 arguments: args,
                 id,
                 call_id,
-                callback_url: None,
+                callback_url: self.callback_url.as_deref(),
             },
             context,
         )

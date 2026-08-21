@@ -165,7 +165,8 @@ where
     S: StateStore + 'static,
     H: HttpClient + 'static,
 {
-    /// Run the system with a custom [`ThreadObserver`].
+    /// Run the system with a custom [`ThreadObserver`]. Use this lower-level
+    /// path when the embedding owns event fan-out and thread identity.
     ///
     /// `make_observer` creates the observer for each thread driver as it
     /// spawns. Drivers are spawned on demand when a thread receives its
