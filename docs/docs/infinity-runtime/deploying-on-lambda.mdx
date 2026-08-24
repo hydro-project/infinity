@@ -1,5 +1,5 @@
 ---
-sidebar_position: 4
+sidebar_position: 5
 title: Deploying on AWS Lambda
 ---
 
@@ -7,7 +7,7 @@ import CloudArchitecture from '@site/static/img/cloud-architecture.svg';
 
 # Deploying on AWS Lambda
 
-The Lambda deployment is the production embedding of the Infinity Runtime, and the one that takes fullest advantage of the [yielding architecture](./architecture.md): when a slice ends, the Lambda invocation ends, and an idle agent consumes no compute at all. This page covers the AWS architecture and the CDK constructs that provision it. If you want to run the runtime inside your own process instead, see [The Rust API](./rust-api.md).
+The Lambda deployment is the production embedding of the Infinity Runtime, and the one that takes fullest advantage of the [yielding architecture](./architecture.md): when a slice ends, the Lambda invocation ends, and an idle agent consumes no compute at all. This page covers the AWS architecture and the CDK constructs that provision it. If you want to run the runtime inside your own process instead, see [The Agent System API](./agent-systems/overview.md).
 
 ## Architecture
 
@@ -17,7 +17,7 @@ The agent runs as a short-lived Lambda function. It starts when a message arrive
 
 Everything flows through a single SQS FIFO queue. User messages, tool results, subscription events, and sleep wake-ups all enter through the same channel. The queue serializes messages per thread (via `MessageGroupId`), so a single conversation processes in order while independent threads run concurrently on separate Lambda invocations.
 
-Tools are independent HTTP services. The runtime POSTs an invocation to a tool's Function URL and moves on without waiting for a response. When the tool finishes, it POSTs the result to a RAP Receiver Lambda, which enqueues it back on the input queue. This closes the loop: the agent wakes up again, picks up the tool result, and continues the conversation. Note that the receiver currently accepts `tool_result`, `oauth`, and `subscription_event` callbacks; the `user_choice` and `view_update` [server features](/docs/rap/spec/server/user-choice) are only supported by the embedded daemon runtime today.
+Tools are independent HTTP services. The runtime POSTs an invocation to a tool's Function URL and moves on without waiting for a response. When the tool finishes, it POSTs the result to a RAP Receiver Lambda, which enqueues it back on the input queue. This closes the loop: the agent wakes up again, picks up the tool result, and continues the conversation. The receiver accepts `tool_result`, `oauth`, `subscription_event`, and `user_choice` callbacks; `view_update` [server callbacks](/docs/rap/spec/server/view-updates) are acknowledged and dropped, since views are a display feature of the embedded daemon runtime.
 
 The `sleep` and `sleep_until` tools use AWS infrastructure for durable timers:
 
@@ -278,7 +278,7 @@ new LambdaMCPToolSet(this, 'DatabaseMcp', {
 ## What's Next
 
 - **[Architecture](./architecture.md)**: how slices, yielding, and message ordering work
-- **[The Rust API](./rust-api.md)**: embed the runtime directly instead of deploying to Lambda
+- **[The Agent System API](./agent-systems/overview.md)**: embed the runtime directly instead of deploying to Lambda
 - **[Built-in Tools](./built-in-tools.md)**: sleep, threading, and subscription tools
 - **[Build a RAP Tool](/docs/rap/using-rap/building-a-rap-tool)**: create your own tool server
 - **[MCP Compatibility](/docs/rap/about/mcp-compatibility)**: how the MCP proxy layer works
