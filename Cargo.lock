@@ -3305,6 +3305,7 @@ dependencies = [
  "futures-util",
  "infinity-provider-protocol",
  "insta",
+ "libc",
  "rap-client",
  "rap-protocol",
  "rhai",

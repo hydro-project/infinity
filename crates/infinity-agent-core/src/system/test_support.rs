@@ -213,9 +213,8 @@ pub(crate) fn start_system_with(
     if !builtin_tools {
         builder = builder.without_builtin_tools();
     }
-    let system = builder.build_local();
     let (tx, rx) = mpsc::unbounded_channel();
-    let running = system.start_with_observer(move |_thread_id| TestObserver { tx: tx.clone() });
+    let running = builder.start_with_observer(move |_thread_id| TestObserver { tx: tx.clone() });
     (running, rx, ctrl, conv)
 }
 
@@ -425,7 +424,6 @@ pub(crate) fn start_launcher_system(
     let system = AgentSystemBuilder::new_local(conv, state, model)
         .tools(tools)
         .extra_system_prompt(extra_system_prompt)
-        .build_local()
         .start();
     (system, ctrl)
 }

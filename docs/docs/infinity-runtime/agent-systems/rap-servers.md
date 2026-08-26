@@ -23,7 +23,6 @@ let rap = RapToolSet::connect(
 let system = AgentSystemBuilder::new_local(conversation_store, state_store, model)
     .tools(rap.tools())
     .rap_notifier(rap.notifier())
-    .build_local()
     .start();
 
 let (mut views, callback_server_task) = bridge.serve_into(system.sender());

@@ -29,7 +29,7 @@ let system = AgentSystemBuilder::new_local(
     RedisStateStore::connect(&redis_url).await?,
     model,
 )
-.build_local();
+.start();
 ```
 
 Store methods define the runtime's ordering, deduplication, and thread-tree contract. Implement both traits directly when adding a persistence provider, and test interrupted turns, duplicate inputs, child threads, compaction, and active subscriptions. The [platform traits](../low-level/overview.md#the-platform-traits) document the complete interfaces.

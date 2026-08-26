@@ -9,7 +9,6 @@ A **local agent system** runs for the lifetime of a Tokio process and exposes ea
 ```rust
 let system = AgentSystemBuilder::new_local(conversation_store, state_store, model)
     .tools(shared_tools)
-    .build_local()
     .start();
 
 let mut reviewer = system

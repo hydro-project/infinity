@@ -27,7 +27,6 @@ let filesystem = McpToolSet::stdio(
 
 let system = AgentSystemBuilder::new_local(conversation_store, state_store, model)
     .tools(filesystem.tools())
-    .build_local()
     .start();
 ```
 
@@ -63,7 +62,7 @@ let github = McpToolSet::http(
 
 let system = AgentSystemBuilder::new_local(conversation_store, state_store, model)
     .tools(github.tools())
-    .build_local();
+    .start();
 ```
 
 The client retains the MCP session ID returned by the server and sends it on later requests. Store credentials in transport headers rather than prompts or tool arguments.

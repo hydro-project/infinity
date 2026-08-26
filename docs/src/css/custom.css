@@ -10,21 +10,30 @@ html {
   }
 }
 
-.layer-section {
+.chapter {
   scroll-margin-top: calc(var(--ifm-navbar-height) + 0.5rem);
 }
 
 /* Hero */
 .hero-section {
-  max-width: 1600px;
+  max-width: 1200px;
   margin: 0 auto;
-  padding: 5rem 2rem 4rem;
-  border-bottom: 1px solid var(--ifm-color-emphasis-300);
-  text-align: center;
+  padding: 4.5rem 2rem 0;
+  display: grid;
+  grid-template-columns: minmax(0, 10fr) minmax(0, 11fr);
+  gap: 3.5rem;
+  align-items: center;
+}
+
+/* Separator matching the chapter borders: spans the content width. */
+.hero-section::after {
+  content: "";
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--ifm-color-emphasis-200);
 }
 
 .hero-section h1 {
-  font-size: 5rem;
+  font-size: 4.5rem;
   font-weight: 700;
   line-height: 1.1;
   margin-bottom: 1rem;
@@ -32,19 +41,40 @@ html {
 }
 
 .hero-tagline {
-  font-size: 1.35rem;
+  font-size: 1.3rem;
+  line-height: 1.55;
+  color: var(--ifm-font-color-base);
+  margin: 0 0 1rem;
+}
+
+.hero-subline {
+  font-size: 1.02rem;
   line-height: 1.6;
   color: var(--ifm-color-emphasis-700);
-  margin: 0 auto 2rem;
-  max-width: 560px;
+  margin: 0 0 2rem;
+}
+
+.hero-code {
+  min-width: 0;
+}
+
+.hero-code .theme-code-block {
+  margin: 0;
 }
 
 .hero-buttons {
   display: flex;
   gap: 1rem;
-  justify-content: center;
+  justify-content: flex-start;
   flex-wrap: wrap;
-  margin-bottom: 3.5rem;
+}
+
+@media (max-width: 996px) {
+  .hero-section {
+    grid-template-columns: 1fr;
+    gap: 2.5rem;
+    padding-top: 3rem;
+  }
 }
 
 .hero-buttons a {
@@ -82,131 +112,114 @@ html {
   text-decoration: none;
 }
 
-/* Hero layer cards */
-.hero-layers {
+/* Story chapters */
+.story {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 2rem;
+}
+
+.chapter {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1rem;
-  max-width: 1100px;
-  margin: 0 auto;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: 3.5rem;
+  align-items: center;
+  padding: 4.5rem 0;
 }
 
-@media (max-width: 996px) {
-  .hero-layers {
-    grid-template-columns: 1fr;
-    max-width: 480px;
-  }
+.chapter + .chapter {
+  border-top: 1px solid var(--ifm-color-emphasis-200);
 }
 
-.hero-layer-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  padding: 1.25rem 3rem 1.25rem 1.5rem;
-  border: 1px solid var(--ifm-color-emphasis-200);
+/* Agent trace (asynchrony section) */
+.trace {
+  background: #0d1117;
+  border: 1px solid #21262d;
   border-radius: 12px;
-  background: var(--ifm-background-surface-color);
-  text-align: left;
-  text-decoration: none;
-  transition: border-color 0.15s ease;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.35);
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.82rem;
+  line-height: 1.55;
+  padding: 20px 22px;
 }
 
-.hero-layer-card:hover {
-  border-color: var(--ifm-color-primary);
-  text-decoration: none;
+.trace-line {
+  display: grid;
+  grid-template-columns: 3.8rem minmax(0, 1fr);
+  gap: 0.9rem;
+  padding: 3px 0;
+  transition: opacity 0.4s ease;
 }
 
-.hero-layer-name {
-  font-size: 1.05rem;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: var(--ifm-font-color-base);
-}
-
-.hero-layer-desc {
-  font-size: 0.9rem;
-  line-height: 1.5;
-  color: var(--ifm-color-emphasis-600);
-}
-
-.hero-layer-arrow {
-  position: absolute;
-  right: 1.25rem;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 1.15rem;
+.trace-tag {
   font-weight: 600;
-  color: var(--ifm-color-emphasis-400);
-  transition:
-    color 0.15s ease,
-    transform 0.15s ease;
 }
 
-.hero-layer-card:hover .hero-layer-arrow {
+.trace-tag-user {
+  color: #f0f6fc;
+}
+
+.trace-tag-agent {
+  color: #79c0ff;
+}
+
+.trace-tag-event {
+  color: #ffa657;
+}
+
+.trace-tag-report {
+  color: #b392f0;
+}
+
+.trace-text {
+  color: #c9d1d9;
+  overflow-wrap: break-word;
+}
+
+.trace-note {
+  color: #8b949e;
+}
+
+.trace-idle {
+  color: #8b949e;
+  font-style: italic;
+  padding: 10px 0 10px calc(3.8rem + 0.9rem);
+  transition: opacity 0.4s ease;
+}
+
+.chapter-kicker {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--ifm-color-primary);
-  transform: translateY(calc(-50% + 3px));
+  margin: 0 0 0.75rem;
 }
 
-/* Layer sections */
-.layer-section {
-  padding: 4rem 2rem;
-}
-
-.layer-section:nth-child(odd) {
-  background: var(--ifm-background-surface-color);
-}
-
-.layer-inner {
-  max-width: 1100px;
-  margin: 0 auto;
-  text-align: left;
-}
-
-/* Scope element selectors to the section's own content (direct children /
-   .layer-paragraphs) so they never reach into embedded Infinity UI demos
-   rendered inside .layer-visual. */
-.layer-inner > h2 {
-  font-size: 2.75rem;
+.chapter-copy h2 {
+  font-size: 2.1rem;
   font-weight: 700;
   letter-spacing: -0.02em;
-  margin-bottom: 0.25rem;
+  line-height: 1.2;
+  margin-bottom: 1.1rem;
 }
 
-.layer-inner .layer-subtitle {
-  font-size: 1.2rem;
-  font-weight: 600;
-  line-height: 1.6;
-  color: var(--ifm-color-primary);
-  margin: 0 0 2rem;
-}
-
-.layer-paragraphs {
-  max-width: 710px;
-  margin: 0 auto 1.25rem;
-  text-align: center;
-}
-
-.layer-paragraphs p {
-  font-size: 1.05rem;
-  line-height: 1.6;
+.chapter-copy p {
+  font-size: 1.02rem;
+  line-height: 1.65;
   color: var(--ifm-color-emphasis-700);
   margin: 0 0 1rem;
-  text-align: center;
 }
 
-.layer-paragraphs .showcase-link {
-  margin-top: 0.25rem;
-}
-
-.layer-paragraphs code {
+.chapter-copy code {
   background: none;
   border: none;
   border-radius: 0;
   padding: 0;
 }
 
-.showcase-link {
+.chapter-link {
   display: inline-flex;
   align-items: center;
   font-size: 0.95rem;
@@ -216,31 +229,95 @@ html {
   transition: opacity 0.15s;
 }
 
-.showcase-link:hover {
+.chapter-link:hover {
   opacity: 0.8;
   text-decoration: none;
 }
 
-.layer-visual {
+.chapter-visual {
+  min-width: 0;
+}
+
+@media (max-width: 996px) {
+  .hero-section h1 {
+    font-size: 3.25rem;
+  }
+
+  .chapter {
+    grid-template-columns: 1fr;
+    gap: 2rem;
+    padding: 2.5rem 0;
+  }
+}
+
+/* Product sections (RAP, Infinity Code): distinct from the runtime chapters */
+.product-section {
+  scroll-margin-top: calc(var(--ifm-navbar-height) + 0.5rem);
+}
+
+.product-section.product-alt {
+  background: var(--ifm-background-surface-color);
+}
+
+.product-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 2rem 4.5rem;
+}
+
+/* Separator matching the chapter borders exactly: a block inside the padded
+   container spans the same content width. */
+.product-inner::before {
+  content: "";
+  display: block;
+  border-top: 1px solid var(--ifm-color-emphasis-200);
+  margin-bottom: 4.5rem;
+}
+
+/* Scope element selectors to the section's own content (direct children /
+   .product-prose) so they never reach into embedded Infinity UI demos
+   rendered inside .product-visual. */
+.product-inner > h2 {
+  font-size: 2.1rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  margin-bottom: 0.25rem;
+}
+
+.product-inner .product-subtitle {
+  font-size: 1.15rem;
+  font-weight: 600;
+  line-height: 1.6;
+  color: var(--ifm-color-primary);
+  margin: 0 0 2rem;
+}
+
+.product-visual {
   margin-bottom: 2.5rem;
   display: flex;
   justify-content: center;
   text-align: left;
 }
 
-.layer-visual > * {
+.product-visual > * {
   width: 100%;
 }
 
-@media (max-width: 996px) {
-  .hero-section h1 {
-    font-size: 3.5rem;
-  }
+.product-prose {
+  max-width: 760px;
+}
+
+.product-prose p {
+  font-size: 1.02rem;
+  line-height: 1.65;
+  color: var(--ifm-color-emphasis-700);
+  margin: 0 0 1rem;
 }
 
 /* Closing section */
 .closing-section {
-  max-width: 1100px;
+  max-width: 1200px;
   margin: 0 auto;
   padding: 5rem 2rem 6rem;
   text-align: center;
