@@ -278,7 +278,7 @@ async fn main() {
 
             let finished = Rc::new(Cell::new(0u64));
             let observer_count = finished.clone();
-            let running = AgentSystemBuilder::new_local(
+            let mut running = AgentSystemBuilder::new_local(
                 InMemoryConversationStore::new(),
                 InMemoryStateStore::new(),
                 model,
@@ -321,6 +321,10 @@ async fn main() {
                 launched += batch;
                 // Let idle drivers finish exiting before sampling.
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                // Drain lifecycle notifications like a real embedding would;
+                // otherwise they accumulate in the channel for the whole run
+                // and get counted as per-agent memory.
+                while running.try_next_lifecycle_event().is_ok() {}
                 trim_allocator();
                 println!("{launched},{}", rss_bytes());
             }

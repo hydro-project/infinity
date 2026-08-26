@@ -1,6 +1,6 @@
 //! The per-thread driver loop used by local (resident) agent systems.
 //!
-//! One driver task owns one thread: it batches inputs from the thread's
+//! One driver owns one thread: it batches inputs from the thread's
 //! channel, runs [`Thread::step`]s, interrupts an in-flight completion when
 //! user text arrives, defers synthetic events while a tool call is pending,
 //! triggers auto-compaction, and idles out when there is nothing left to

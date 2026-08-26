@@ -377,8 +377,6 @@ pub struct ThreadState {
     #[serde(default)]
     pub processed_message_ids: HashSet<String>,
     #[serde(default)]
-    pub processed_tool_call_ids: HashSet<String>,
-    #[serde(default)]
     pub metadata: Option<serde_json::Value>,
     #[serde(default)]
     pub subscriptions: HashSet<String>,
@@ -390,8 +388,7 @@ pub struct ThreadState {
 /// subscription tracking in process memory.
 #[derive(Clone, Default)]
 pub struct InMemoryStateStore {
-    #[expect(clippy::type_complexity, reason = "shared state")]
-    processed_ids: Arc<Mutex<HashMap<String, (HashSet<String>, HashSet<String>)>>>,
+    processed_ids: Arc<Mutex<HashMap<String, HashSet<String>>>>,
     metadata: Arc<Mutex<HashMap<String, serde_json::Value>>>,
     subscriptions: Arc<Mutex<HashMap<String, HashSet<String>>>>,
     pending_user_choices: Arc<Mutex<HashMap<String, Vec<UserChoice>>>>,
@@ -411,10 +408,8 @@ impl InMemoryStateStore {
             .pending_user_choices
             .lock()
             .expect("bug: mutex poisoned");
-        let (msg_ids, tc_ids) = processed.get(thread_id).cloned().unwrap_or_default();
         ThreadState {
-            processed_message_ids: msg_ids,
-            processed_tool_call_ids: tc_ids,
+            processed_message_ids: processed.get(thread_id).cloned().unwrap_or_default(),
             metadata: metadata.get(thread_id).cloned(),
             subscriptions: subscriptions.get(thread_id).cloned().unwrap_or_default(),
             pending_user_choices: pending_user_choices
@@ -429,10 +424,7 @@ impl InMemoryStateStore {
         self.processed_ids
             .lock()
             .expect("bug: mutex poisoned")
-            .insert(
-                thread_id.to_owned(),
-                (state.processed_message_ids, state.processed_tool_call_ids),
-            );
+            .insert(thread_id.to_owned(), state.processed_message_ids);
         if let Some(meta) = state.metadata {
             self.metadata
                 .lock()
@@ -458,10 +450,7 @@ impl InMemoryStateStore {
 impl StateStore for InMemoryStateStore {
     type Error = InMemoryStoreError;
 
-    async fn get_processed_ids(
-        &self,
-        thread_id: &str,
-    ) -> Result<(HashSet<String>, HashSet<String>), Self::Error> {
+    async fn get_processed_ids(&self, thread_id: &str) -> Result<HashSet<String>, Self::Error> {
         let store = self.processed_ids.lock().expect("bug: mutex poisoned");
         Ok(store.get(thread_id).cloned().unwrap_or_default())
     }
@@ -475,22 +464,7 @@ impl StateStore for InMemoryStateStore {
         store
             .entry(thread_id.to_owned())
             .or_default()
-            .0
             .extend(message_ids);
-        Ok(())
-    }
-
-    async fn add_processed_tool_calls(
-        &self,
-        thread_id: &str,
-        tool_call_ids: Vec<String>,
-    ) -> Result<(), Self::Error> {
-        let mut store = self.processed_ids.lock().expect("bug: mutex poisoned");
-        store
-            .entry(thread_id.to_owned())
-            .or_default()
-            .1
-            .extend(tool_call_ids);
         Ok(())
     }
 

@@ -160,27 +160,18 @@ pub trait ConversationStore: Send + Sync + Clone {
 pub trait StateStore: Send + Sync + Clone {
     type Error: std::error::Error + Send + Sync + 'static;
 
+    /// Durably deduplicated message IDs for this thread. Only inputs that are
+    /// not naturally idempotent are tracked (user text and subscription
+    /// events); tool results are deduplicated against history itself.
     async fn get_processed_ids(
         &self,
         thread_id: &str,
-    ) -> Result<
-        (
-            std::collections::HashSet<String>,
-            std::collections::HashSet<String>,
-        ),
-        Self::Error,
-    >;
+    ) -> Result<std::collections::HashSet<String>, Self::Error>;
 
     async fn add_processed_message_ids(
         &self,
         thread_id: &str,
         message_ids: Vec<String>,
-    ) -> Result<(), Self::Error>;
-
-    async fn add_processed_tool_calls(
-        &self,
-        thread_id: &str,
-        tool_call_ids: Vec<String>,
     ) -> Result<(), Self::Error>;
 
     async fn get_metadata(

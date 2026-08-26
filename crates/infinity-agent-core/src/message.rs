@@ -199,9 +199,14 @@ pub enum InfinityMessage {
     },
     /// Synthetic subscription event injected into history. The display name is
     /// recomputed on replay from the original tool call in history.
+    ///
+    /// The payloads are boxed to keep this rare variant from inflating the
+    /// size of every `InfinityMessage` (histories store many of these enums
+    /// inline). `Box` is transparent to serde, so the wire format is
+    /// unchanged.
     #[serde(rename = "subscription_event")]
     SubscriptionEvent {
-        result: rig::message::ToolResult,
+        result: Box<rig::message::ToolResult>,
         /// The tool_call_id of the original subscription tool call.
         tool_call_id: String,
         /// Set when this is a thread report (used to build the display name).
@@ -212,7 +217,7 @@ pub enum InfinityMessage {
         /// the LLM, but replay only emits the subscription display event.
         /// `None` for backward-compat with old serialized histories.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        invocation: Option<rig::message::ToolCall>,
+        invocation: Option<Box<rig::message::ToolCall>>,
     },
 }
 
@@ -243,14 +248,24 @@ impl InfinityMessage {
                 if let Some(call) = invocation {
                     msgs.push(Message::Assistant {
                         id: None,
-                        content: OneOrMany::one(AssistantContent::ToolCall(call)),
+                        content: OneOrMany::one(AssistantContent::ToolCall(*call)),
                     });
                 }
                 msgs.push(Message::User {
-                    content: OneOrMany::one(UserContent::ToolResult(result)),
+                    content: OneOrMany::one(UserContent::ToolResult(*result)),
                 });
                 msgs
             }
+        }
+    }
+
+    /// The tool result carried by a `ToolResult` or `SubscriptionEvent`
+    /// message, if any.
+    pub fn tool_result(&self) -> Option<&rig::message::ToolResult> {
+        match self {
+            Self::ToolResult { result, .. } => Some(result),
+            Self::SubscriptionEvent { result, .. } => Some(result),
+            _ => None,
         }
     }
 

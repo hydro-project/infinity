@@ -128,6 +128,17 @@ pub struct PendingItem {
     message_id: String,
 }
 
+/// Result of matching an incoming tool result against the history tail (see
+/// [`HistoryManager::match_tool_result`]).
+enum ToolResultMatch {
+    /// A matching, still-unanswered tool call exists: the result is fresh.
+    Unanswered,
+    /// The matching call already has a result in history: duplicate delivery.
+    AlreadyAnswered,
+    /// No matching call in the live tail: the result is stale.
+    NoPendingCall,
+}
+
 pub struct HistoryManager<C: ConversationStore, S: StateStore> {
     conversation_store: C,
     state_store: S,
@@ -136,14 +147,12 @@ pub struct HistoryManager<C: ConversationStore, S: StateStore> {
     ancestor_chain: Vec<String>,
     pub history: RefCell<Vec<InfinityMessage>>,
     processed_message_ids: RefCell<HashSet<String>>,
-    processed_tool_calls: RefCell<HashSet<String>>,
     metadata: RefCell<Option<serde_json::Value>>,
     pending_items: RefCell<Vec<PendingItem>>,
     /// until a turn is complete the data lives here. If errors occur,
     /// it'll get discarded, if the turn completes, then it will get flushed to
     /// _both_ pending_items and history.
     turn_buffer: RefCell<Vec<PendingItem>>,
-    pending_complete_tool_calls: RefCell<HashSet<String>>,
     /// Tool call IDs that were interrupted by a new user message during
     /// `handle_content`. Callers can drain this via `take_interrupted_tool_calls`
     /// to send best-effort cancellation notifications to RAP tool servers.
@@ -187,10 +196,10 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             .await
             .unwrap_or(None);
 
-        let (processed_message_ids, processed_tool_calls) = state_store
+        let processed_message_ids = state_store
             .get_processed_ids(&thread_id)
             .await
-            .unwrap_or_else(|_| (HashSet::new(), HashSet::new()));
+            .unwrap_or_default();
 
         Ok(Self {
             conversation_store,
@@ -200,18 +209,16 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             ancestor_chain,
             history: RefCell::new(history),
             processed_message_ids: RefCell::new(processed_message_ids),
-            processed_tool_calls: RefCell::new(processed_tool_calls),
             metadata: RefCell::new(metadata),
             pending_items: RefCell::new(Vec::new()),
             turn_buffer: RefCell::new(Vec::new()),
-            pending_complete_tool_calls: RefCell::new(HashSet::new()),
             interrupted_tool_calls: RefCell::new(Vec::new()),
             compacted_up_to: RefCell::new(compacted_up_to),
             ancestor_prefix_len: Cell::new(ancestor_prefix_len),
         })
     }
 
-    pub async fn handle_content(
+    pub fn handle_content(
         &self,
         message: InfinityMessage,
         message_id: String,
@@ -232,42 +239,24 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         );
 
         if !is_self_contained_subscription {
-            if let InfinityMessage::ToolResult { ref result, .. }
-            | InfinityMessage::SubscriptionEvent { ref result, .. } = message
-            {
-                let tool_result = result;
-                if self
-                    .processed_tool_calls
-                    .borrow()
-                    .contains(tool_result.id.as_str())
-                {
-                    tracing::info!(
-                        "Tool call {} already processed, ignoring duplicate",
-                        tool_result.id
-                    );
-                    self.processed_message_ids
-                        .borrow_mut()
-                        .insert(message_id.clone());
-                    if let Err(e) = self
-                        .state_store
-                        .add_processed_message_ids(&self.thread_id, vec![message_id])
-                        .await
-                    {
-                        tracing::warn!(error = %e, "failed to persist processed message id");
+            if let Some(tool_result) = message.tool_result() {
+                match self.match_tool_result(&tool_result.id) {
+                    ToolResultMatch::Unanswered => {}
+                    ToolResultMatch::AlreadyAnswered => {
+                        tracing::info!(
+                            "Tool call {} already processed, ignoring duplicate",
+                            tool_result.id
+                        );
+                        self.processed_message_ids.borrow_mut().insert(message_id);
+                        return Ok(false);
                     }
-                    return Ok(false);
-                } else if !self.history.borrow().last().is_some_and(|l| {
-                    if let InfinityMessage::ToolCall { call, .. } = l {
-                        call.id == tool_result.id
-                    } else {
-                        false
+                    ToolResultMatch::NoPendingCall => {
+                        tracing::info!(
+                            "Got tool call result for wrong call, ignoring {:?}",
+                            tool_result
+                        );
+                        return Ok(false);
                     }
-                }) {
-                    tracing::info!(
-                        "Got tool call result for wrong call, ignoring {:?}",
-                        tool_result
-                    );
-                    return Ok(false);
                 }
             } else {
                 self.interrupt_pending_tool_call();
@@ -281,8 +270,37 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         Ok(true)
     }
 
+    /// Match an incoming tool result against the tail of history, walking
+    /// backwards just in time instead of maintaining a separate index of
+    /// answered tool calls. The walk only crosses tool calls and tool
+    /// results (future-proofing for concurrent calls, e.g. `tc tc tr tr`);
+    /// anything else — user text, assistant content, subscription events —
+    /// is a turn boundary: every call before it is settled, so the result
+    /// must be stale.
+    fn match_tool_result(&self, result_id: &str) -> ToolResultMatch {
+        for msg in self.history.borrow().iter().rev() {
+            match msg {
+                InfinityMessage::ToolCall { call, .. } => {
+                    if call.id == result_id {
+                        // Its result would have been seen before the call in
+                        // a backwards walk, so this call is unanswered.
+                        return ToolResultMatch::Unanswered;
+                    }
+                }
+                InfinityMessage::ToolResult { result, .. } => {
+                    if result.id == result_id {
+                        return ToolResultMatch::AlreadyAnswered;
+                    }
+                }
+                _ => return ToolResultMatch::NoPendingCall,
+            }
+        }
+        ToolResultMatch::NoPendingCall
+    }
+
     /// If the last history entry is an unanswered tool call, inject a
-    /// synthetic "interrupted" result and mark it complete.
+    /// synthetic "interrupted" result. (A tool call at the tail is unanswered
+    /// by construction: its result would have been appended after it.)
     fn interrupt_pending_tool_call(&self) {
         let last_call = self.history.borrow().last().and_then(|m| {
             if let InfinityMessage::ToolCall { call, .. } = m {
@@ -291,12 +309,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 None
             }
         });
-        if let Some(tool_call) = last_call
-            && !self
-                .processed_tool_calls
-                .borrow()
-                .contains(tool_call.id.as_str())
-        {
+        if let Some(tool_call) = last_call {
             tracing::info!("Tool call {} interrupted by incoming message", tool_call.id);
             self.interrupted_tool_calls
                 .borrow_mut()
@@ -312,7 +325,6 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 display_segments: None,
             };
             self.append_pending(synthetic_result, format!("{}-interrupted", tool_call.id));
-            self.mark_tool_call_complete(tool_call.id);
         }
     }
 
@@ -431,11 +443,6 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         );
 
         self.history.borrow_mut().push(message.clone());
-        if let InfinityMessage::ToolResult { ref result, .. }
-        | InfinityMessage::SubscriptionEvent { ref result, .. } = message
-        {
-            self.mark_tool_call_complete(result.id.clone());
-        }
         self.pending_items.borrow_mut().push(PendingItem {
             message,
             message_id,
@@ -461,15 +468,6 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         true
     }
 
-    fn mark_tool_call_complete(&self, call_id: String) {
-        self.processed_tool_calls
-            .borrow_mut()
-            .insert(call_id.clone());
-        self.pending_complete_tool_calls
-            .borrow_mut()
-            .insert(call_id);
-    }
-
     pub async fn sync(&self) -> Result<(), BoxError> {
         // `sync` only persists committed (`pending_items`) content. Any in-flight
         // turn must have been flushed or discarded before this point; otherwise a
@@ -480,33 +478,36 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         );
 
         let pending_items = std::mem::take(&mut *self.pending_items.borrow_mut());
-        let pending_complete_tool_calls =
-            std::mem::take(&mut *self.pending_complete_tool_calls.borrow_mut());
-        if pending_items.is_empty() && pending_complete_tool_calls.is_empty() {
+        if pending_items.is_empty() {
             return Ok(());
         }
-        if !pending_items.is_empty() {
-            let msgs: Vec<(InfinityMessage, String)> = pending_items
-                .iter()
-                .map(|item| (item.message.clone(), item.message_id.clone()))
-                .collect();
-            self.conversation_store
-                .append_messages(&self.thread_id, msgs)
-                .await
-                .map_err(|e| Box::new(e) as BoxError)?;
-        }
-        let msg_ids: Vec<String> = pending_items.iter().map(|i| i.message_id.clone()).collect();
-        let tc_ids: Vec<String> = pending_complete_tool_calls.iter().cloned().collect();
+        let msgs: Vec<(InfinityMessage, String)> = pending_items
+            .iter()
+            .map(|item| (item.message.clone(), item.message_id.clone()))
+            .collect();
+        self.conversation_store
+            .append_messages(&self.thread_id, msgs)
+            .await
+            .map_err(|e| Box::new(e) as BoxError)?;
+        // Only inputs that are not naturally idempotent need durable dedup
+        // IDs: user text and subscription events (a redelivered subscription
+        // event would mint a fresh invocation and be appended again). Tool
+        // results are deduplicated against the history tail itself, and
+        // assistant/tool-call items only exist downstream of a deduped input.
+        let msg_ids: Vec<String> = pending_items
+            .iter()
+            .filter(|i| {
+                matches!(
+                    i.message,
+                    InfinityMessage::User { .. } | InfinityMessage::SubscriptionEvent { .. }
+                )
+            })
+            .map(|i| i.message_id.clone())
+            .collect();
         if !msg_ids.is_empty() {
             let _ = self
                 .state_store
                 .add_processed_message_ids(&self.thread_id, msg_ids)
-                .await;
-        }
-        if !tc_ids.is_empty() {
-            let _ = self
-                .state_store
-                .add_processed_tool_calls(&self.thread_id, tc_ids)
                 .await;
         }
         Ok(())
@@ -607,22 +608,28 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     /// Returns an absolute store order (accounting for prior compaction offset
     /// and ancestor prefix) suitable for use as `spawn_order_override`.
     pub fn safe_spawn_point(&self) -> usize {
-        // TODO: when we support parallel tool calls, we may need to walk back across
-        // tool results if there is an unresolved tool call remaining in the group.
         let history = self.history.borrow();
-        let processed = self.processed_tool_calls.borrow();
-        let safe = history
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, msg)| {
-                if let InfinityMessage::ToolCall { call, .. } = msg {
-                    processed.contains(call.id.as_str())
-                } else {
-                    true
+        // Walk the trailing run of tool calls / tool results (future-proofing
+        // for concurrent calls, e.g. `tc tc tr tr`), tracking which calls
+        // have their result. The safe point cuts before the deepest
+        // unanswered call — excluding it and everything after it. Anything
+        // else (user text, assistant content, subscription events) ends the
+        // run: every call before it is settled.
+        let mut answered: HashSet<&str> = HashSet::new();
+        let mut safe = history.len();
+        for (i, msg) in history.iter().enumerate().rev() {
+            match msg {
+                InfinityMessage::ToolCall { call, .. } => {
+                    if !answered.contains(call.id.as_str()) {
+                        safe = i;
+                    }
                 }
-            })
-            .map_or(0, |(i, _)| i + 1); // +1: safe point is exclusive (after the last safe message)
+                InfinityMessage::ToolResult { result, .. } => {
+                    answered.insert(result.id.as_str());
+                }
+                _ => break,
+            }
+        }
         // Convert in-memory index to absolute store order by adding the offset
         // from any prior compaction. The -1 accounts for the compaction summary
         // message occupying slot 0 in the in-memory history.
@@ -1038,10 +1045,10 @@ where
     let infinity_msg = if let Some((tool_call_id, child_thread_id)) = subscription_event_meta {
         if let UserContent::ToolResult(result) = content {
             InfinityMessage::SubscriptionEvent {
-                result,
+                result: Box::new(result),
                 tool_call_id,
                 child_thread_id,
-                invocation: subscription_invocation,
+                invocation: subscription_invocation.map(Box::new),
             }
         } else {
             InfinityMessage::User { content }
@@ -1056,9 +1063,7 @@ where
         }
     };
 
-    let is_new = current_history
-        .handle_content(infinity_msg, message_id.clone())
-        .await?;
+    let is_new = current_history.handle_content(infinity_msg, message_id.clone())?;
 
     if !is_new {
         tracing::info!("Message was duplicate or ignored, skipping agent processing");
@@ -1462,7 +1467,7 @@ where
                                     },
                                     display_segments: None,
                                 };
-                                history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
+                                history.handle_content(tool_result, format!("{}-unknown-tool", call.id))?;
                                 should_loop_back = true;
                                 continue;
                             } else if !tool_names.contains(call.function.name.as_str()) {
@@ -1478,7 +1483,7 @@ where
                                     },
                                     display_segments: None,
                                 };
-                                history.handle_content(tool_result, format!("{}-unknown-tool", call.id)).await?;
+                                history.handle_content(tool_result, format!("{}-unknown-tool", call.id))?;
                                 should_loop_back = true;
                                 continue;
                             }
@@ -1514,7 +1519,7 @@ where
                                         display_segments: None,
                                     },
                                     sync_id,
-                                ).await?;
+                                )?;
                                 should_loop_back = true;
                             } else {
                                 yield CompletionEvent::Action(CompletionAction::ExecuteToolCall {
@@ -2155,9 +2160,6 @@ mod tests {
             },
         ];
         let hm = make_history(&store, initial).await;
-        hm.processed_tool_calls
-            .borrow_mut()
-            .insert("tc-sub".to_owned());
 
         let input = tool_result_input(
             "thread-1",
@@ -2374,9 +2376,6 @@ mod tests {
             },
         ];
         let hm = make_history(&store, initial).await;
-        hm.processed_tool_calls
-            .borrow_mut()
-            .insert("tc-cmd".to_owned());
 
         let input = tool_result_input(
             "thread-1",
