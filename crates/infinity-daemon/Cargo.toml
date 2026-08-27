@@ -1,7 +1,11 @@
 [package]
 name = "infinity-daemon"
+publish = true
 version = "0.1.0"
+documentation = "https://docs.rs/infinity-daemon/"
+description = "The Infinity daemon: hosts durable agent sessions and serves local clients."
 edition = "2024"
+repository = { workspace = true }
 license = "Apache-2.0"
 
 [lib]
@@ -13,13 +17,13 @@ name = "infinity-daemon"
 path = "src/main.rs"
 
 [dependencies]
-infinity-agent-core = { path = "../infinity-agent-core" }
-infinity-rap-bridge = { path = "../infinity-rap-bridge" }
-infinity-mcp-bridge = { path = "../infinity-mcp-bridge" }
-infinity-protocol = { path = "../infinity-protocol" }
-infinity-provider-protocol = { path = "../infinity-provider-protocol", features = ["remote"] }
-rap-client = { path = "../rap-client" }
-rap-protocol = { path = "../rap-protocol" }
+infinity-agent-core = { path = "../infinity-agent-core", version = "^0.1.0" }
+infinity-rap-bridge = { path = "../infinity-rap-bridge", version = "^0.1.0" }
+infinity-mcp-bridge = { path = "../infinity-mcp-bridge", version = "^0.1.0" }
+infinity-protocol = { path = "../infinity-protocol", version = "^0.1.0" }
+infinity-provider-protocol = { path = "../infinity-provider-protocol", version = "^0.1.0", features = ["remote"] }
+rap-client = { path = "../rap-client", version = "^0.1.0" }
+rap-protocol = { path = "../rap-protocol", version = "^0.1.0" }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -54,7 +58,7 @@ nix = { version = "0.31", features = ["signal"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 rap-test-servers = { path = "../rap-test-servers" }
 tempfile = { workspace = true }
-infinity-provider-protocol = { path = "../infinity-provider-protocol", features = ["mock"] }
+infinity-provider-protocol = { path = "../infinity-provider-protocol", version = "^0.1.0", features = ["mock"] }
 insta = { workspace = true }
 
 [features]

@@ -1,11 +1,15 @@
 [package]
 name = "infinity-provider-rig"
+publish = true
 version = "0.1.0"
+documentation = "https://docs.rs/infinity-provider-rig/"
+description = "Optional bridge between rig provider backends and the Infinity provider protocol."
 edition = "2024"
+repository = { workspace = true }
 license = "Apache-2.0"
 
 [dependencies]
-infinity-provider-protocol = { path = "../infinity-provider-protocol" }
+infinity-provider-protocol = { path = "../infinity-provider-protocol", version = "^0.1.0" }
 rig-core = { workspace = true }
 async-trait = { workspace = true }
 async-stream = "0.3"

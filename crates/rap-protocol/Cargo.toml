@@ -1,7 +1,11 @@
 [package]
 name = "rap-protocol"
+publish = true
 version = "0.1.0"
+documentation = "https://docs.rs/rap-protocol/"
+description = "Core types and server scaffolding for the Reactive Agent Protocol (RAP)."
 edition = "2024"
+repository = { workspace = true }
 license = "Apache-2.0"
 
 [dependencies]

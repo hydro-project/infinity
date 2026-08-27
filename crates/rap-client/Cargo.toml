@@ -1,11 +1,15 @@
 [package]
 name = "rap-client"
+publish = true
 version = "0.1.0"
+documentation = "https://docs.rs/rap-client/"
+description = "RAP client library: toolset discovery, tool invocation, lifecycle notifications, and callback handling."
 edition = "2024"
+repository = { workspace = true }
 license = "Apache-2.0"
 
 [dependencies]
-rap-protocol = { path = "../rap-protocol" }
+rap-protocol = { path = "../rap-protocol", version = "^0.1.0" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

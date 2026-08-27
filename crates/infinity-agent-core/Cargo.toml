@@ -1,13 +1,17 @@
 [package]
 name = "infinity-agent-core"
+publish = true
 version = "0.1.0"
+documentation = "https://docs.rs/infinity-agent-core/"
+description = "Core time-sliced agent runtime for Infinity: event processing, threads, and tool dispatch."
 edition = "2024"
+repository = { workspace = true }
 license = "Apache-2.0"
 
 [dependencies]
-rap-client = { path = "../rap-client" }
-rap-protocol = { path = "../rap-protocol" }
-infinity-provider-protocol = { path = "../infinity-provider-protocol" }
+rap-client = { path = "../rap-client", version = "^0.1.0" }
+rap-protocol = { path = "../rap-protocol", version = "^0.1.0" }
+infinity-provider-protocol = { path = "../infinity-provider-protocol", version = "^0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time", "sync", "macros"] }
@@ -25,7 +29,7 @@ rhai = { workspace = true }
 [dev-dependencies]
 insta = { version = "1", features = ["json", "redactions"] }
 libc = "0.2"
-infinity-provider-protocol = { path = "../infinity-provider-protocol", features = ["mock"] }
+infinity-provider-protocol = { path = "../infinity-provider-protocol", version = "^0.1.0", features = ["mock"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 futures-util = { workspace = true, features = ["sink"] }
 

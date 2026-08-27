@@ -1,7 +1,11 @@
 [package]
 name = "infinity-provider-protocol"
+publish = true
 version = "0.1.0"
+documentation = "https://docs.rs/infinity-provider-protocol/"
+description = "Extensible model provider abstraction and remote wire protocol for Infinity agents."
 edition = "2024"
+repository = { workspace = true }
 license = "Apache-2.0"
 
 [dependencies]
