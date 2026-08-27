@@ -14,10 +14,9 @@
 //!     model,
 //! )
 //! .tools(my_tools)
-//! .build_local();
+//! .start();
 //!
-//! let running = system.start();
-//! let mut thread = running.thread_builder().launch().await;
+//! let mut thread = system.thread_builder().launch().await;
 //! thread.send_user_text("hello!").await?;
 //! while let Some(event) = thread.recv().await { /* ... */ }
 //! ```

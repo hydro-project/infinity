@@ -23,7 +23,7 @@ The builder constructor selects who schedules slices.
 ```rust
 let system = AgentSystemBuilder::new_local(conversation_store, state_store, model)
     .tools(shared_tools)
-    .build_local();
+    .start();
 ```
 
 Use local mode for a daemon, desktop application, or service that stays alive. User text interrupts an in-progress completion, active threads compact automatically, and an idle thread releases its driver until another message arrives. [Launch Local Threads](./running-locally.md) covers the `thread_builder()` and `ThreadHandle` APIs.

@@ -86,12 +86,10 @@ async fn pending_choices_are_thread_local_and_replayed() {
                 .ensure_root_thread("t1")
                 .await
                 .expect("ensure replay root");
-            let local_system =
-                AgentSystemBuilder::new_local(replay_conv, state, model_source(None).0)
-                    .build_local();
-            let running = local_system.start_with_observer(|_| TestObserver {
-                tx: mpsc::unbounded_channel().0,
-            });
+            let running = AgentSystemBuilder::new_local(replay_conv, state, model_source(None).0)
+                .start_with_observer(|_| TestObserver {
+                    tx: mpsc::unbounded_channel().0,
+                });
             running.subscribe("t1", sub_tx).await;
             let Evt::Replay(snapshot) = next_evt(&mut sub_rx).await else {
                 panic!("expected replay");

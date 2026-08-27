@@ -23,7 +23,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 model,
             )
             .with_tokio_sleep_tools()
-            .build_local()
             .start();
 
             let mut thread = system.thread_builder().launch().await;

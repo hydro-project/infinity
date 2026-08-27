@@ -97,7 +97,7 @@ let system = AgentSystemBuilder::new_local(
     conversations: conversation_store,
     tenants,
 })
-.build_local();
+.start();
 ```
 
 :::note

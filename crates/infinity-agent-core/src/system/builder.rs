@@ -14,7 +14,9 @@ use rap_client::notifier::RapNotifier;
 use super::config::{StaticThreadConfig, ThreadConfigSource};
 use super::defer::DeferQueue;
 use super::local::ChannelSender;
-use super::local::{LaunchRegistry, UnionConfigSource, UnionModelSource};
+use super::local::{
+    LaunchRegistry, LaunchingSystem, RunningSystem, UnionConfigSource, UnionModelSource,
+};
 use super::model::ModelSource;
 use super::observer::ThreadObserver;
 use super::thread::{StepOutcome, Thread};
@@ -82,7 +84,7 @@ where
 ///   API**: the platform delivers each thread's message batches and calls
 ///   [`AgentSystem::step`] per batch.
 /// - [`AgentSystemBuilder::new_local`] creates an internal in-process queue
-///   ([`ChannelSender`]). [`LocalAgentSystem::start`] then runs the full
+///   ([`ChannelSender`]). [`start`](Self::start) then runs the full
 ///   actor-system-style driver: a router that spawns one worker per thread,
 ///   batches inputs, handles interruption, deferral, idling, and
 ///   auto-compaction.
@@ -341,9 +343,11 @@ where
     S: StateStore + 'static,
     H: HttpClient + 'static,
 {
-    /// Build a local system ready to run with either the built-in
-    /// [`ThreadBuilder`](super::local::ThreadBuilder) convenience API or a
-    /// custom [`ThreadObserver`]. Requires construction via
+    /// Build a local system without starting it. Most embeddings can call
+    /// [`start`](Self::start) or
+    /// [`start_with_observer`](Self::start_with_observer) directly; use this
+    /// two-phase form when the built [`LocalAgentSystem`] must be held before
+    /// running it. Requires construction via
     /// [`new_local`](AgentSystemBuilder::new_local).
     pub fn build_local(mut self) -> LocalAgentSystem<C, S, H> {
         let registry = LaunchRegistry::default();
@@ -357,6 +361,31 @@ where
             input_rx,
             registry,
         }
+    }
+
+    /// Build the local system and start it with the built-in thread-builder
+    /// API: create threads through [`LaunchingSystem::thread_builder`], and
+    /// reattach to existing threads with [`LaunchingSystem::thread_handle`].
+    ///
+    /// Shorthand for [`build_local()`](Self::build_local) followed by
+    /// [`LocalAgentSystem::start`]. Requires construction via
+    /// [`new_local`](AgentSystemBuilder::new_local).
+    pub fn start(self) -> LaunchingSystem<C, S, H> {
+        self.build_local().start()
+    }
+
+    /// Build the local system and start it with a custom [`ThreadObserver`].
+    ///
+    /// Shorthand for [`build_local()`](Self::build_local) followed by
+    /// [`LocalAgentSystem::start_with_observer`], which documents the
+    /// observer contract. Requires construction via
+    /// [`new_local`](AgentSystemBuilder::new_local).
+    pub fn start_with_observer<O, F>(self, make_observer: F) -> RunningSystem<O::SubscribeRequest>
+    where
+        O: ThreadObserver + 'static,
+        F: Fn(&str) -> O + 'static,
+    {
+        self.build_local().start_with_observer(make_observer)
     }
 }
 

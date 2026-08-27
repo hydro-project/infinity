@@ -90,28 +90,42 @@ const config: Config = {
       style: "dark",
       links: [
         {
-          title: "Learn",
-          items: [
-            { label: "What is RAP?", to: "/docs/rap/what-is-rap" },
-            { label: "Architecture", to: "/docs/rap/about/architecture" },
-            { label: "Specification", to: "/docs/rap/spec/overview" },
-          ],
-        },
-        {
-          title: "Build",
+          title: "Infinity Runtime",
           items: [
             {
-              label: "Infinity Runtime",
-              to: "/docs/infinity-runtime/overview",
+              label: "Quickstart",
+              to: "/docs/infinity-runtime/agent-systems/building-a-system",
+            },
+            {
+              label: "Architecture",
+              to: "/docs/infinity-runtime/architecture",
             },
             {
               label: "Deploy on AWS Lambda",
               to: "/docs/infinity-runtime/deploying-on-lambda",
             },
+          ],
+        },
+        {
+          title: "Reactive Agent Protocol",
+          items: [
+            { label: "What is RAP?", to: "/docs/rap/what-is-rap" },
             {
               label: "Build a RAP Tool",
               to: "/docs/rap/using-rap/building-a-rap-tool",
             },
+            { label: "Specification", to: "/docs/rap/spec/overview" },
+          ],
+        },
+        {
+          title: "Infinity Code",
+          items: [
+            { label: "Get Started", to: "/docs/infinity-code/overview" },
+            {
+              label: "Background Agents",
+              to: "/docs/infinity-code/background-agents",
+            },
+            { label: "Slack Bot", to: "/docs/infinity-code/slack-bot" },
           ],
         },
       ],
