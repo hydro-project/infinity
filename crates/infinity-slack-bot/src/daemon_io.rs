@@ -1,60 +1,33 @@
-//! Daemon sidecar: manages per-thread daemon connections.
+//! Daemon I/O: manages per-thread connections to the Infinity daemon.
 //!
-//! Inbound: `(String, DaemonMessage)` — (thread_ts, msg) from all active connections.
-//! Outbound: `DaemonCommand` — instructions to create/connect/send on daemon connections.
+//! Inbound: [`DaemonEvent`]s — `(thread_ts, DaemonMessage)` from all active
+//! connections. Outbound: [`DaemonCommand`]s — instructions to
+//! create/connect/send on daemon connections.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use infinity_protocol::DaemonMessage;
+use infinity_slack_dataflow::daemon::{DaemonCommand, DaemonEvent};
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
-use tokio_util::sync::PollSender;
 
 use crate::daemon_client::DaemonClient;
 
-/// A command sent from the dataflow to the daemon sidecar.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub enum DaemonCommand {
-    /// Create a new session for this thread.
-    CreateSession {
-        thread_ts: String,
-        cwd: PathBuf,
-        model: Option<infinity_protocol::ModelRef>,
-    },
-    /// Connect to an existing session.
-    ConnectSession {
-        thread_ts: String,
-        session_id: String,
-    },
-    /// Send user input on the connection for this thread.
-    SendInput {
-        thread_ts: String,
-        session_id: String,
-        text: String,
-    },
-    /// Answer a choice prompt on the connection for this thread.
-    AnswerChoice {
-        thread_ts: String,
-        choice_id: String,
-        selected: usize,
-    },
-}
-
-/// A message received from a daemon connection, tagged with the thread it belongs to.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct DaemonEvent {
-    pub thread_ts: String,
-    pub message: DaemonMessage,
-}
-
-/// Creates the daemon sidecar for use with Hydro's `sidecar_bidi`.
+/// Spawns the daemon I/O task and returns the dataflow-facing endpoints.
 ///
-/// - Inbound stream: `DaemonEvent` items from all active daemon connections.
-/// - Outbound sink: `DaemonCommand` items instructing the sidecar to act.
-pub fn create() -> (ReceiverStream<DaemonEvent>, PollSender<DaemonCommand>) {
+/// - The returned `Receiver<DaemonEvent>` emits daemon messages from all
+///   active connections; the CLI wraps it in a stream and feeds it to the
+///   embedded dataflow.
+/// - The returned `UnboundedSender<DaemonCommand>` accepts commands produced
+///   by the dataflow; the spawned task acts on them. The channel is unbounded
+///   because the dataflow emits commands from a synchronous callback during a
+///   tick (it cannot await backpressure), and command volume is bounded by
+///   human-scale chat traffic.
+pub fn spawn() -> (
+    mpsc::Receiver<DaemonEvent>,
+    mpsc::UnboundedSender<DaemonCommand>,
+) {
     let (to_df_tx, to_df_rx) = mpsc::channel::<DaemonEvent>(1024);
-    let (from_df_tx, mut from_df_rx) = mpsc::channel::<DaemonCommand>(1024);
+    let (from_df_tx, mut from_df_rx) = mpsc::unbounded_channel::<DaemonCommand>();
 
     tokio::spawn(async move {
         // Map of thread_ts → sender half of the daemon client.
@@ -175,7 +148,7 @@ pub fn create() -> (ReceiverStream<DaemonEvent>, PollSender<DaemonCommand>) {
         }
     });
 
-    (ReceiverStream::new(to_df_rx), PollSender::new(from_df_tx))
+    (to_df_rx, from_df_tx)
 }
 
 /// Spawn a task that forwards DaemonMessages from a connection into the dataflow.
@@ -203,7 +176,7 @@ fn spawn_receiver(
                 available_models, ..
             } = &first_msg
             {
-                let rt = crate::runtime::get();
+                let rt = infinity_slack_dataflow::runtime::get();
                 let mut models = rt.available_models.lock().expect("bug: lock poisoned");
                 *models = available_models.clone();
                 tracing::info!(
@@ -213,7 +186,7 @@ fn spawn_receiver(
             } else {
                 // Not a Welcome — forward it normally.
                 if let DaemonMessage::Connected { ref session_id, .. } = first_msg {
-                    let rt = crate::runtime::get();
+                    let rt = infinity_slack_dataflow::runtime::get();
                     let pending_text = {
                         let mut pending = rt.pending_input.lock().expect("bug: lock poisoned");
                         pending.remove(&ts)
@@ -244,7 +217,7 @@ fn spawn_receiver(
         while let Some(msg) = rx.recv().await {
             // On Connected, send pending input automatically.
             if let DaemonMessage::Connected { ref session_id, .. } = msg {
-                let rt = crate::runtime::get();
+                let rt = infinity_slack_dataflow::runtime::get();
                 let pending_text = {
                     let mut pending = rt.pending_input.lock().expect("bug: lock poisoned");
                     pending.remove(&ts)

@@ -8,7 +8,6 @@ pub struct SlackClient {
     http: reqwest::Client,
     token: String,
     pub team_id: String,
-    pub bot_user_id: String,
     /// Set once `assistant.threads.setTitle` reports `no_permission` so we
     /// stop re-attempting it (and spamming warnings) for the process lifetime.
     /// Setting the title requires the `assistant:write` scope and the app's
@@ -108,7 +107,6 @@ impl SlackClient {
             http,
             token: token.to_owned(),
             team_id,
-            bot_user_id,
             title_unsupported: AtomicBool::new(false),
         })
     }

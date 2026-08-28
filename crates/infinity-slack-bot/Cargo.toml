@@ -4,16 +4,20 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 
-[lib]
-name = "infinity_slack_bot"
-path = "src/lib.rs"
+[[bin]]
+name = "infinity-slack-bot"
+path = "src/main.rs"
 
 [dependencies]
 infinity-protocol = { path = "../infinity-protocol" }
+infinity-slack-dataflow = { path = "../infinity-slack-dataflow", features = ["stageleft_macro_entrypoint"] }
 
-hydro_lang = "0.17.0-alpha.2"
+# `embedded_runtime` provides `hydro_lang::runtime_support::dfir_rs`, which the
+# generated embedded dataflow (see `build.rs`) is expressed in terms of.
+hydro_lang = { version = "0.17.0-alpha.2", default-features = false, features = ["embedded_runtime"] }
+# Required by stageleft's staging machinery, which inspects this manifest when
+# `build.rs` stages the dataflow.
 stageleft = "0.15.0"
-ctor = "0.2"
 
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { version = "0.1", default-features = false }
@@ -27,13 +31,10 @@ tracing-subscriber = { workspace = true }
 reqwest = { workspace = true }
 bytes = "1"
 
-[dev-dependencies]
-hydro_lang = { version = "0.17.0-alpha.2", features = ["deploy", "sim"] }
-hydro_deploy = "0.17.0-alpha.1"
-futures = "0.3"
-
 [build-dependencies]
-stageleft_tool = "0.15.0"
+hydro_lang = { version = "0.17.0-alpha.2", default-features = false, features = ["build"] }
+infinity-slack-dataflow = { path = "../infinity-slack-dataflow" }
+prettyplease = { version = "0.2", features = ["verbatim"] }
 
 [lints]
 workspace = true
