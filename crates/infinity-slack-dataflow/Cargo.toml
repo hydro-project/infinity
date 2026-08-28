@@ -1,0 +1,35 @@
+[package]
+name = "infinity-slack-dataflow"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "infinity_slack_dataflow"
+path = "src/lib.rs"
+
+[features]
+# Forwarded to `hydro_lang` so the staged (`__staged`) module is emitted for
+# consumers that compile the dataflow with `generate_embedded` (the CLI crate).
+stageleft_macro_entrypoint = ["hydro_lang/stageleft_macro_entrypoint"]
+
+[dependencies]
+infinity-protocol = { path = "../infinity-protocol" }
+
+hydro_lang = "0.17.0-alpha.2"
+stageleft = "0.15.0"
+ctor = "0.2"
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+hydro_lang = { version = "0.17.0-alpha.2", features = ["sim"] }
+futures = "0.3"
+
+[build-dependencies]
+stageleft_tool = "0.15.0"
+
+[lints]
+workspace = true
