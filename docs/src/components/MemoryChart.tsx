@@ -4,10 +4,10 @@ import React, { useEffect, useRef, useState } from "react";
  * MemoryChart: measured agents-per-memory curve for the local runtime.
  *
  * Data source: `crates/infinity-agent-core/examples/agent_scale.rs`, run with
- * AGENTS=50000 TURNS=20 WAVE=2500 on an AMD EPYC 9R14 (single thread,
+ * AGENTS=80000 TURNS=20 WAVE=4000 on an AMD EPYC 9R14 (single thread,
  * in-memory stores, scripted in-process model). Each agent runs 20 synthetic
  * turns; every turn is two completion rounds and one asynchronous tool round
- * trip through the input queue. RSS is sampled after each wave of 2,500
+ * trip through the input queue. RSS is sampled after each wave of 4,000
  * agents finishes and goes idle.
  *
  * Plotted inverted (memory on x, agents on y): how many resident agents fit
@@ -17,27 +17,27 @@ import React, { useEffect, useRef, useState } from "react";
 // (rss_bytes, agents) pairs from the benchmark run (AMD EPYC 9R14, 2026-08).
 // Regenerate with the command in the component doc comment.
 const DATA: [number, number][] = [
-  [5353472, 0],
-  [580362240, 2500],
-  [965492736, 5000],
-  [1352081408, 7500],
-  [1736101888, 10000],
-  [2120110080, 12500],
-  [2510336000, 15000],
-  [2894336000, 17500],
-  [3278622720, 20000],
-  [3663183872, 22500],
-  [4046798848, 25000],
-  [4430938112, 27500],
-  [4826189824, 30000],
-  [5210464256, 32500],
-  [5594009600, 35000],
-  [5977997312, 37500],
-  [6360985600, 40000],
-  [6745284608, 42500],
-  [7129370624, 45000],
-  [7513305088, 47500],
-  [7896977408, 50000],
+  [5296128, 0],
+  [727326720, 4000],
+  [1157394432, 8000],
+  [1586438144, 12000],
+  [2017300480, 16000],
+  [2445373440, 20000],
+  [2873470976, 24000],
+  [3302096896, 28000],
+  [3737341952, 32000],
+  [4165697536, 36000],
+  [4593598464, 40000],
+  [5021593600, 44000],
+  [5449093120, 48000],
+  [5877960704, 52000],
+  [6304645120, 56000],
+  [6749179904, 60000],
+  [7177465856, 64000],
+  [7605604352, 68000],
+  [8033284096, 72000],
+  [8461262848, 76000],
+  [8889257984, 80000],
 ];
 
 const GB = 1e9;
@@ -49,8 +49,8 @@ const MARGIN = { top: 24, right: 96, bottom: 52, left: 76 };
 const PLOT_W = W - MARGIN.left - MARGIN.right;
 const PLOT_H = H - MARGIN.top - MARGIN.bottom;
 
-const X_MAX_GB = 8.6;
-const Y_MAX = 52000;
+const X_MAX_GB = 9.6;
+const Y_MAX = 84000;
 
 const C_LINE = "var(--ifm-color-primary)";
 const C_AXIS = "var(--ifm-color-emphasis-400)";
@@ -93,7 +93,7 @@ export default function MemoryChart({
   const perAgentKb =
     (DATA[DATA.length - 1][0] - DATA[0][0]) / lastAgents / 1024;
 
-  const yTicks = [0, 10000, 20000, 30000, 40000, 50000];
+  const yTicks = [0, 20000, 40000, 60000, 80000];
   const xTicks = [0, 2, 4, 6, 8];
 
   return (
@@ -265,7 +265,7 @@ export default function MemoryChart({
         }}
       >
         Measured: idle resident agents after 20 tool-calling turns each
-        (2,000,000 completions total), single thread, in-memory stores.{" "}
+        (3,200,000 completions total), single thread, in-memory stores.{" "}
         <a href="https://github.com/hydro-project/infinity/blob/main/crates/infinity-agent-core/examples/agent_scale.rs">
           Benchmark source
         </a>

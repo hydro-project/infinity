@@ -1052,10 +1052,7 @@ impl PersistentStateStore {
 impl StateStore for PersistentStateStore {
     type Error = MemoryError;
 
-    async fn get_processed_ids(
-        &self,
-        thread_id: &str,
-    ) -> Result<(HashSet<String>, HashSet<String>), MemoryError> {
+    async fn get_processed_ids(&self, thread_id: &str) -> Result<HashSet<String>, MemoryError> {
         self.ensure_loaded(thread_id);
         Ok(self.core.get_processed_ids(thread_id).await?)
     }
@@ -1068,19 +1065,6 @@ impl StateStore for PersistentStateStore {
         self.ensure_loaded(thread_id);
         self.core
             .add_processed_message_ids(thread_id, message_ids)
-            .await?;
-        self.save_key(thread_id);
-        Ok(())
-    }
-
-    async fn add_processed_tool_calls(
-        &self,
-        thread_id: &str,
-        tool_call_ids: Vec<String>,
-    ) -> Result<(), MemoryError> {
-        self.ensure_loaded(thread_id);
-        self.core
-            .add_processed_tool_calls(thread_id, tool_call_ids)
             .await?;
         self.save_key(thread_id);
         Ok(())

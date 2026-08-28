@@ -29,10 +29,7 @@ impl DynamoDbStateStore {
 impl StateStore for DynamoDbStateStore {
     type Error = DynamoError;
 
-    async fn get_processed_ids(
-        &self,
-        thread_id: &str,
-    ) -> Result<(HashSet<String>, HashSet<String>), DynamoError> {
+    async fn get_processed_ids(&self, thread_id: &str) -> Result<HashSet<String>, DynamoError> {
         let result = self
             .client
             .get_item()
@@ -49,15 +46,9 @@ impl StateStore for DynamoDbStateStore {
                 } else {
                     HashSet::new()
                 };
-            let processed_tools =
-                if let Some(AttributeValue::Ss(ids)) = item.get("processed_tool_calls") {
-                    ids.iter().cloned().collect()
-                } else {
-                    HashSet::new()
-                };
-            Ok((processed_ids, processed_tools))
+            Ok(processed_ids)
         } else {
-            Ok((HashSet::new(), HashSet::new()))
+            Ok(HashSet::new())
         }
     }
 
@@ -78,26 +69,6 @@ impl StateStore for DynamoDbStateStore {
             .send()
             .await
             .map_err(|e| DynamoError(format!("Failed to add processed message IDs: {}", e)))?;
-        Ok(())
-    }
-
-    async fn add_processed_tool_calls(
-        &self,
-        thread_id: &str,
-        tool_call_ids: Vec<String>,
-    ) -> Result<(), DynamoError> {
-        if tool_call_ids.is_empty() {
-            return Ok(());
-        }
-        self.client
-            .update_item()
-            .table_name(&self.table_name)
-            .key("session", AttributeValue::S(thread_id.to_owned()))
-            .update_expression("ADD processed_tool_calls :ids")
-            .expression_attribute_values(":ids", AttributeValue::Ss(tool_call_ids))
-            .send()
-            .await
-            .map_err(|e| DynamoError(format!("Failed to add processed tool calls: {}", e)))?;
         Ok(())
     }
 

@@ -1,10 +1,14 @@
 //! The router: dispatches messages to per-thread drivers, spawning them on
 //! demand. This plus the [drivers](super::driver) is the "actor system" of a
-//! local agent system.
+//! local agent system. The router owns the driver futures directly (one
+//! `FuturesUnordered` pool rather than one spawned task per thread), so a
+//! driver's memory is fully released the moment it goes idle.
 
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -224,7 +228,6 @@ where
 struct WorkerChannels<Sub> {
     input_tx: mpsc::UnboundedSender<(InputMessage, String)>,
     subscribe_tx: mpsc::UnboundedSender<(Sub, oneshot::Sender<()>)>,
-    handle: tokio::task::JoinHandle<()>,
 }
 
 enum RoutedMessage<Sub> {
@@ -249,11 +252,26 @@ async fn route_loop<C, S, H, O, F>(
 {
     let mut workers: HashMap<String, WorkerChannels<O::SubscribeRequest>> = HashMap::new();
     let mut subscribe_closed = false;
+    // The router owns the driver futures directly (instead of spawning each
+    // as its own task): a completed driver yields its thread ID and its
+    // memory — the future itself and its worker entry — is released
+    // immediately. With per-thread tasks, both would be retained until the
+    // thread's next message, which adds up across many idle threads.
+    let mut drivers = FuturesUnordered::new();
 
     loop {
         let msg: Option<RoutedMessage<O::SubscribeRequest>> = tokio::select! {
             biased;
             _ = shutdown.cancelled() => None,
+            exited = drivers.next(), if !drivers.is_empty() => {
+                let exited: String = exited.expect("bug: drivers is empty");
+                // Only remove the exited driver's own entry: if the thread
+                // already respawned, the new entry's channel is still open.
+                if workers.get(&exited).is_some_and(|w| w.input_tx.is_closed()) {
+                    workers.remove(&exited);
+                }
+                continue;
+            }
             msg = input_rx.recv() => msg.map(|(m, id)| RoutedMessage::Input(Box::new(m), id)),
             req = subscribe_rx.recv(), if !subscribe_closed => {
                 match req {
@@ -341,9 +359,9 @@ async fn route_loop<C, S, H, O, F>(
         let (worker_subscribe_tx, worker_subscribe_rx) = mpsc::unbounded_channel();
         let observer = make_observer(&thread_id);
 
-        let handle = tokio::task::spawn_local(rap_protocol::log_panic(
-            "thread_driver",
-            drive_thread(
+        drivers.push({
+            let thread_id = thread_id.clone();
+            let driver = drive_thread(
                 inner.clone(),
                 thread_id.clone(),
                 input_rx_worker,
@@ -351,8 +369,14 @@ async fn route_loop<C, S, H, O, F>(
                 observer,
                 active_threads.clone(),
                 lifecycle_tx.clone(),
-            ),
-        ));
+            );
+            async move {
+                // Contain a panicking driver to its own thread (the panic is
+                // logged); the router and the other drivers keep running.
+                rap_protocol::log_panic("thread_driver", driver).await;
+                thread_id
+            }
+        });
 
         match msg {
             RoutedMessage::Input(input, id) => {
@@ -367,28 +391,16 @@ async fn route_loop<C, S, H, O, F>(
             WorkerChannels {
                 input_tx,
                 subscribe_tx: worker_subscribe_tx,
-                handle,
             },
         );
     }
 
     // Wind down: dropping each driver's channels signals it to interrupt any
     // in-flight completion (which flushes pending history items to the store)
-    // and exit. Wait for every driver to finish so the embedding is not torn
-    // down underneath them.
-    let handles: Vec<(String, tokio::task::JoinHandle<()>)> = workers
-        .drain()
-        .map(|(thread_id, w)| (thread_id, w.handle))
-        .collect();
-    for (thread_id, handle) in handles {
-        if let Err(e) = handle.await {
-            if e.is_panic() {
-                tracing::error!("thread driver {thread_id} panicked during shutdown: {e}");
-            } else {
-                tracing::warn!("thread driver {thread_id} cancelled during shutdown: {e}");
-            }
-        }
-    }
+    // and exit. Drive every remaining driver to completion so the embedding
+    // is not torn down underneath them.
+    drop(workers);
+    while drivers.next().await.is_some() {}
 }
 #[cfg(test)]
 mod tests {
