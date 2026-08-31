@@ -136,31 +136,45 @@ struct SlashCommandPayload {
 
 // ── I/O task constructor ─────────────────────────────────────────────────────
 
-/// Spawns the Slack I/O tasks and returns the dataflow-facing endpoints.
-///
-/// - The returned `Receiver<SlackEvent>` emits parsed Slack events; the CLI
-///   wraps it in a stream and feeds it to the embedded dataflow.
-/// - The returned `UnboundedSender<SlackAction>` accepts actions produced by
-///   the dataflow; a spawned task executes them against the Slack Web API.
-///   The channel is unbounded because the dataflow emits actions from a
-///   synchronous callback during a tick (it cannot await backpressure), and
-///   action volume is bounded by human-scale chat traffic.
-pub fn spawn(
-    config: &'static Config,
-) -> (
-    mpsc::Receiver<SlackEvent>,
-    mpsc::UnboundedSender<SlackAction>,
-) {
+/// Endpoints and task handles returned by [`spawn`].
+pub struct SlackIo {
+    /// Parsed Slack events; the CLI wraps this in a stream and feeds it to
+    /// the embedded dataflow.
+    pub events: mpsc::Receiver<SlackEvent>,
+    /// Actions produced by the dataflow; a spawned task executes them against
+    /// the Slack Web API. The channel is unbounded because the dataflow emits
+    /// actions from a synchronous callback during a tick (it cannot await
+    /// backpressure), and action volume is bounded by human-scale chat traffic.
+    pub actions: mpsc::UnboundedSender<SlackAction>,
+    /// Handle of the outbound (action executor) task. This task never
+    /// finishes during normal operation; completion means a panic or bug and
+    /// should be treated as fatal by the caller.
+    pub outbound: tokio::task::JoinHandle<()>,
+    /// Handle of the inbound (Socket Mode) task. Same liveness contract as
+    /// `outbound`.
+    pub inbound: tokio::task::JoinHandle<()>,
+}
+
+/// Validates the Slack credentials, then spawns the Slack I/O tasks and
+/// returns the dataflow-facing endpoints.
+pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> {
+    // Validate both credentials on the startup path: a bad token must fail
+    // startup with an actionable error. (Previously the bot token was checked
+    // inside a detached task, whose panic tokio isolates -- leaving the bot
+    // running but permanently unable to execute actions.)
+    let slack = SlackClient::new(&config.bot_token).await.map_err(|e| {
+        format!("failed to authenticate with Slack: {e}\nVerify `bot_token` in slack.json")
+    })?;
+    tracing::info!("Slack bot authenticated");
+    let initial_ws_url = get_ws_url(&config.app_token).await.map_err(|e| {
+        format!("failed to open a Socket Mode connection: {e}\nVerify `app_token` in slack.json")
+    })?;
+
     let (to_df_tx, to_df_rx) = mpsc::channel::<SlackEvent>(1024);
     let (from_df_tx, mut from_df_rx) = mpsc::unbounded_channel::<SlackAction>();
 
     // Outbound: execute SlackActions against the Slack API.
-    tokio::spawn(async move {
-        let slack = SlackClient::new(&config.bot_token)
-            .await
-            .expect("failed to authenticate with Slack");
-        tracing::info!("Slack bot authenticated");
-
+    let outbound = tokio::spawn(async move {
         /// Per-thread stream state.
         struct StreamState {
             ts: String,
@@ -636,17 +650,23 @@ pub fn spawn(
         }
     });
 
-    // Inbound: Slack WebSocket → dataflow.
-    tokio::spawn(async move {
+    // Inbound: Slack WebSocket → dataflow. The URL fetched during startup
+    // validation is consumed by the first connection attempt (Socket Mode
+    // URLs are short-lived tickets, so refetch on every reconnect after).
+    let mut pending_ws_url = Some(initial_ws_url);
+    let inbound = tokio::spawn(async move {
         loop {
             tracing::info!("connecting to Slack Socket Mode...");
-            let url = match get_ws_url(&config.app_token).await {
-                Ok(u) => u,
-                Err(e) => {
-                    tracing::error!("failed to get Socket Mode URL: {e}");
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    continue;
-                }
+            let url = match pending_ws_url.take() {
+                Some(url) => url,
+                None => match get_ws_url(&config.app_token).await {
+                    Ok(u) => u,
+                    Err(e) => {
+                        tracing::error!("failed to get Socket Mode URL: {e}");
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        continue;
+                    }
+                },
             };
 
             let (ws_stream, _) = match tokio_tungstenite::connect_async(&url).await {
@@ -712,7 +732,12 @@ pub fn spawn(
         }
     });
 
-    (to_df_rx, from_df_tx)
+    Ok(SlackIo {
+        events: to_df_rx,
+        actions: from_df_tx,
+        outbound,
+        inbound,
+    })
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
