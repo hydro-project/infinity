@@ -71,9 +71,20 @@ fn init_tracing() {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), BoxError> {
+async fn main() -> std::process::ExitCode {
     init_tracing();
+    match run().await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            // Report via Display (the default `Result`-from-`main` path uses
+            // Debug, which quotes the message and escapes newlines).
+            tracing::error!("{e}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
 
+async fn run() -> Result<(), BoxError> {
     // Bootstrap config, session store, and the shared runtime state that the
     // dataflow's closures access via `runtime::get()`.
     let config: &'static Config = Box::leak(Box::new(Config::load()?));
@@ -82,8 +93,14 @@ async fn main() -> Result<(), BoxError> {
     let sessions = std::sync::Arc::new(std::sync::Mutex::new(store));
     runtime::init(config, sessions);
 
-    // I/O tasks. Each returns (inbound events receiver, outbound sender).
-    let (slack_events_rx, slack_actions_tx) = slack_io::spawn(config);
+    // I/O tasks. Slack credentials are validated before the tasks spawn, so
+    // a bad token fails startup here instead of killing a detached task.
+    let slack_io::SlackIo {
+        events: slack_events_rx,
+        actions: slack_actions_tx,
+        outbound: slack_outbound,
+        inbound: slack_inbound,
+    } = slack_io::spawn(config).await?;
     let (daemon_events_rx, daemon_commands_tx) = daemon_io::spawn();
 
     // Output callbacks fire synchronously while the dataflow ticks; they hand
@@ -116,15 +133,26 @@ async fn main() -> Result<(), BoxError> {
         .run_until(async {
             tokio::select! {
                 _ = flow.run() => unreachable!("bug: Dfir::run returns Never"),
+                result = slack_outbound => Err(io_task_exited("Slack outbound", result)),
+                result = slack_inbound => Err(io_task_exited("Slack inbound", result)),
                 result = tokio::signal::ctrl_c() => {
                     result.expect("failed to listen for ctrl-c");
                     tracing::info!("shutting down");
+                    Ok(())
                 }
             }
         })
-        .await;
+        .await
+}
 
-    Ok(())
+/// A Slack I/O task finished, which never happens in normal operation:
+/// either it panicked or hit a bug. Fatal either way -- a bot with dead I/O
+/// must not linger looking healthy.
+fn io_task_exited(name: &str, result: Result<(), tokio::task::JoinError>) -> BoxError {
+    match result {
+        Ok(()) => format!("{name} I/O task exited unexpectedly").into(),
+        Err(e) => format!("{name} I/O task failed: {e}").into(),
+    }
 }
 
 #[cfg(test)]
