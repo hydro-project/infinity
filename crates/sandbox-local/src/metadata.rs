@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
+use sandbox_core::ThreadId;
 use sandbox_core::error::SandboxError;
 use sandbox_core::metadata::MetadataStore;
 use sandbox_core::types::RepoState;
@@ -19,14 +20,14 @@ impl FileMetadataStore {
         Self { base_dir }
     }
 
-    fn path_for(&self, group_id: &str) -> PathBuf {
+    fn path_for(&self, group_id: &ThreadId) -> PathBuf {
         self.base_dir.join(format!("{group_id}.json"))
     }
 }
 
 #[async_trait]
 impl MetadataStore for FileMetadataStore {
-    async fn get(&self, group_id: &str) -> Result<Option<RepoState>, SandboxError> {
+    async fn get(&self, group_id: &ThreadId) -> Result<Option<RepoState>, SandboxError> {
         let path = self.path_for(group_id);
         match std::fs::read_to_string(&path) {
             Ok(contents) => {
@@ -51,7 +52,7 @@ impl MetadataStore for FileMetadataStore {
         Ok(())
     }
 
-    async fn delete(&self, group_id: &str) -> Result<(), SandboxError> {
+    async fn delete(&self, group_id: &ThreadId) -> Result<(), SandboxError> {
         let path = self.path_for(group_id);
         match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),

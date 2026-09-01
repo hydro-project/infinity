@@ -17,8 +17,8 @@ use tracing;
 
 use rap_protocol::{
     CallbackClient, DiffContent, DisplaySegment, RapCallback, RapInvocation, RapToolResult,
-    RapToolResultContent, ToolDef, ToolsetManifest, send_subscription_event, send_tool_result,
-    send_user_choice,
+    RapToolResultContent, ThreadId, ToolDef, ToolsetManifest, send_subscription_event,
+    send_tool_result, send_user_choice,
 };
 
 type DisplayResult = Result<(String, Option<Vec<DisplaySegment>>), SandboxError>;
@@ -325,7 +325,7 @@ fn with_content(result: DisplayResult) -> ContentResult {
 /// Request payload for the `/close_thread` RAP protocol endpoint.
 #[derive(Debug, Deserialize)]
 struct CloseThreadRequest {
-    thread_id: String,
+    thread_id: ThreadId,
 }
 
 /// Best-effort notification endpoint for thread closure.
@@ -368,7 +368,7 @@ async fn close_thread_handler<
 #[derive(Debug, Deserialize)]
 struct CancelToolCallRequest {
     tool_call_id: String,
-    thread_id: String,
+    thread_id: ThreadId,
 }
 
 /// Best-effort notification endpoint for tool call cancellation.
@@ -444,8 +444,8 @@ async fn user_choice_response_handler<
 }
 
 /// Build the full thread chain: ancestors (if any) + current group_id.
-fn thread_chain(invocation: &RapInvocation) -> Vec<String> {
-    let mut chain: Vec<String> = invocation
+fn thread_chain(invocation: &RapInvocation) -> Vec<ThreadId> {
+    let mut chain: Vec<ThreadId> = invocation
         .thread_ancestors
         .as_deref()
         .unwrap_or_default()
@@ -455,7 +455,7 @@ fn thread_chain(invocation: &RapInvocation) -> Vec<String> {
 }
 
 /// Check if write-orig is granted on any thread in the chain.
-async fn is_write_orig_granted<M: MetadataStore>(metadata: &M, chain: &[String]) -> bool {
+async fn is_write_orig_granted<M: MetadataStore>(metadata: &M, chain: &[ThreadId]) -> bool {
     for id in chain {
         if let Ok(Some(s)) = metadata.get(id).await
             && s.write_orig_granted
@@ -467,7 +467,10 @@ async fn is_write_orig_granted<M: MetadataStore>(metadata: &M, chain: &[String])
 }
 
 /// Return the set of paths already granted across the thread chain.
-async fn granted_write_paths<M: MetadataStore>(metadata: &M, chain: &[String]) -> HashSet<String> {
+async fn granted_write_paths<M: MetadataStore>(
+    metadata: &M,
+    chain: &[ThreadId],
+) -> HashSet<String> {
     let mut granted = HashSet::new();
     for id in chain {
         if let Ok(Some(s)) = metadata.get(id).await {
@@ -480,7 +483,7 @@ async fn granted_write_paths<M: MetadataStore>(metadata: &M, chain: &[String]) -
 /// Build per-thread-level "Yes" choices from root to current thread.
 /// Returns `(choices, thread_ids)` where `choices[i]` is the label and
 /// `thread_ids[i]` is the group_id to persist the grant on.
-fn build_grant_choices(chain: &[String]) -> (Vec<String>, Vec<String>) {
+fn build_grant_choices(chain: &[ThreadId]) -> (Vec<String>, Vec<ThreadId>) {
     let mut choices = Vec::new();
     let mut ids = Vec::new();
     for id in chain {
@@ -1829,7 +1832,7 @@ fn build_edit_diff(path: &str, old_str: &str, new_str: &str) -> Vec<DisplaySegme
 
 #[derive(Debug, Deserialize)]
 struct MigrateRequest {
-    session_id: String,
+    session_id: ThreadId,
     destination_url: String,
 }
 
@@ -1880,7 +1883,7 @@ async fn migrate_inner<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
         .list_all()
         .await?
         .into_iter()
-        .filter(|s| s.root_thread_id.as_deref() == Some(&request.session_id))
+        .filter(|s| s.root_thread_id.as_ref() == Some(&request.session_id))
         .collect();
     if all_states.is_empty() {
         return Err(SandboxError::Other(

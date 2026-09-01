@@ -39,6 +39,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "ansi"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "default-tls", "multipart", "stream"] }
 rhai = { version = "1", features = ["no_optimize"] }
+strkind = "0.0.1"
 
 # AWS crates
 aws-sdk-dynamodb = { version = "1", default-features = false }

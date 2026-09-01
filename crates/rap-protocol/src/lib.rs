@@ -3,6 +3,19 @@ use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 
+// ── Identifier kinds ──
+
+strkind::strkind! {
+    /// Identifies a conversation thread.
+    ///
+    /// This is the identifier RAP calls `group_id` on the wire: every
+    /// invocation and callback carries the thread it belongs to. In the
+    /// embedded daemon runtime thread IDs are UUIDs; in the Lambda runtime a
+    /// root thread ID is the caller-chosen conversation key (which doubles as
+    /// the SQS FIFO `MessageGroupId`). Treat the contents as opaque.
+    pub ThreadId;
+}
+
 // ── RAP protocol types ──
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -13,12 +26,12 @@ pub struct RapInvocation {
     pub id: String,
     pub call_id: Option<String>,
     pub callback_url: String,
-    pub group_id: String,
+    pub group_id: ThreadId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
     /// Ordered ancestor thread group IDs, from root to the parent of the current thread.
     #[serde(default)]
-    pub thread_ancestors: Option<Vec<String>>,
+    pub thread_ancestors: Option<Vec<ThreadId>>,
 }
 
 /// A segment of display content for human-facing UIs.
@@ -92,7 +105,7 @@ pub enum RapToolResultContent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RapToolResult {
-    pub group_id: String,
+    pub group_id: ThreadId,
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
@@ -115,7 +128,7 @@ pub struct RapToolResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RapUserChoice {
-    pub group_id: String,
+    pub group_id: ThreadId,
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
@@ -128,7 +141,7 @@ pub struct RapUserChoice {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RapSubscriptionEvent {
-    pub group_id: String,
+    pub group_id: ThreadId,
     pub tool_call_id: String,
     pub text: String,
     #[serde(default)]
@@ -141,7 +154,7 @@ pub struct RapSubscriptionEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RapViewUpdate {
-    pub group_id: String,
+    pub group_id: ThreadId,
     /// The type of view being updated (e.g. "diff").
     pub view_type: String,
     /// View-specific payload. The runtime passes this through to clients without interpretation.
@@ -150,7 +163,7 @@ pub struct RapViewUpdate {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RapOAuth {
-    pub group_id: String,
+    pub group_id: ThreadId,
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
@@ -301,7 +314,7 @@ pub async fn send_user_choice<C: CallbackClient>(
 pub async fn send_subscription_event<C: CallbackClient>(
     client: &C,
     callback_url: &str,
-    group_id: String,
+    group_id: ThreadId,
     tool_call_id: String,
     text: &str,
     associative: bool,
@@ -324,7 +337,7 @@ pub async fn send_subscription_event<C: CallbackClient>(
 pub async fn send_view_update<C: CallbackClient>(
     client: &C,
     callback_url: &str,
-    group_id: String,
+    group_id: ThreadId,
     view_type: &str,
     content: serde_json::Value,
 ) {

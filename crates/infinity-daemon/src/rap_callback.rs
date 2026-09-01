@@ -34,7 +34,7 @@ pub fn serve_callbacks(
                 update.group_id
             );
             let manager = sm.lock().await;
-            manager.handle_view_update(&update.group_id, &update.view_type, update.content);
+            manager.handle_view_update(update.group_id.as_str(), &update.view_type, update.content);
         }
     });
 

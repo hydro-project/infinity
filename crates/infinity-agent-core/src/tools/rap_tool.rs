@@ -88,8 +88,13 @@ where
         callback_url,
     } = params;
 
-    let thread_ancestors = (context.thread_stack.len() > 1)
-        .then(|| context.thread_stack[..context.thread_stack.len() - 1].to_vec());
+    let thread_ancestors = (context.thread_stack.len() > 1).then(|| {
+        context.thread_stack[..context.thread_stack.len() - 1]
+            .iter()
+            .cloned()
+            .map(rap_protocol::ThreadId::from)
+            .collect()
+    });
 
     let invocation = RapInvocation {
         operation: operation.to_owned(),
@@ -99,7 +104,7 @@ where
         callback_url: callback_url
             .unwrap_or(context.callback_url.as_str())
             .to_owned(),
-        group_id: context.group_id.clone(),
+        group_id: context.group_id.clone().into(),
         user_id: context.user_id.clone(),
         thread_ancestors,
     };
@@ -359,7 +364,7 @@ mod tests {
             serde_json::from_str(&posts[0].1).expect("posted body is a RapInvocation");
         assert_eq!(
             invocation.thread_ancestors,
-            Some(vec!["root".to_owned(), "middle".to_owned()]),
+            Some(vec!["root".into(), "middle".into()]),
             "ancestors exclude the current thread"
         );
         assert_eq!(invocation.callback_url, "http://bridge-listener");

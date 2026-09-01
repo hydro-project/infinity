@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use rap_protocol::ThreadId;
 use serde::{Deserialize, Serialize};
 
 /// The version-control mode used by a sandbox.
@@ -78,7 +79,7 @@ pub(crate) fn parse_changed_files(output: &str) -> Vec<(FileChangeStatus, &str)>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoState {
     /// The group_id this state belongs to.
-    pub group_id: String,
+    pub group_id: ThreadId,
     /// The git remote URI (local path or s3 URI).
     pub remote_uri: String,
     /// The bookmark name used to track state.
@@ -96,7 +97,7 @@ pub struct RepoState {
     pub write_path_grants: HashSet<String>,
     /// The root thread (session) this sandbox belongs to.
     #[serde(default)]
-    pub root_thread_id: Option<String>,
+    pub root_thread_id: Option<ThreadId>,
 }
 
 /// Input for the clone_repo tool.
@@ -105,7 +106,7 @@ pub struct CloneRepoArgs {
     /// Local path to a git repo, or a git remote URI.
     pub repo: String,
     /// Optional thread ID to base this sandbox on top of.
-    pub base_thread_id: Option<String>,
+    pub base_thread_id: Option<ThreadId>,
 }
 
 /// Input for the open_sandbox_direct tool.
@@ -169,7 +170,7 @@ pub struct DescribeOverallChangesArgs {
 #[derive(Debug, Deserialize)]
 pub struct SquashSandboxArgs {
     /// The thread ID of the child sandbox to squash from.
-    pub from_thread_id: String,
+    pub from_thread_id: ThreadId,
 }
 
 /// Input for the grep tool.

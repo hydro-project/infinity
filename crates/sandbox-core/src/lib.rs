@@ -7,6 +7,11 @@ pub mod sandbox;
 pub mod server;
 pub mod types;
 
+/// The thread identifier used to key sandboxes and repo state (RAP's
+/// `group_id`). Re-exported so backend crates can name it without a direct
+/// `rap-protocol` dependency.
+pub use rap_protocol::ThreadId;
+
 pub const DEFAULT_SANDBOX_NAME: &str = "Infinity 🤖";
 pub const DEFAULT_SANDBOX_EMAIL: &str = "infinity@hydro.run";
 

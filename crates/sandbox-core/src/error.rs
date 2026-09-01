@@ -1,9 +1,10 @@
+use rap_protocol::ThreadId;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum SandboxError {
     #[error("repo not found for group_id: {0}")]
-    RepoNotFound(String),
+    RepoNotFound(ThreadId),
 
     #[error("jujutsu command failed: {0}")]
     JujutsuError(String),

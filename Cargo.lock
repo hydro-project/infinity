@@ -4862,6 +4862,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "strkind",
  "tracing",
 ]
 
@@ -6294,6 +6295,15 @@ dependencies = [
  "unicode-bidi",
  "unicode-normalization",
  "unicode-properties",
+]
+
+[[package]]
+name = "strkind"
+version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3eb03d2aeddfec2029e22a61e21bb9c2b4b5ab5dc0e52302ee2f656f8e20176d"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
