@@ -5,6 +5,7 @@ use aws_sdk_dsql::{
     auth_token::{AuthTokenGenerator, Config},
 };
 use aws_types::region::Region;
+use infinity_agent_core::ThreadId;
 use infinity_agent_core::message::InfinityMessage;
 use infinity_agent_core::traits::ConversationStore;
 use infinity_provider_protocol::message::Message;
@@ -149,24 +150,24 @@ impl DsqlConversationStore {
 impl ConversationStore for DsqlConversationStore {
     type Error = DsqlError;
 
-    async fn ensure_root_thread(&self, thread_id: &str) -> Result<(), DsqlError> {
+    async fn ensure_root_thread(&self, thread_id: &ThreadId) -> Result<(), DsqlError> {
         sqlx::query(
             r#"INSERT INTO thread_hierarchy (thread_id, parent_thread_id, root_thread_id)
             VALUES ($1, NULL, $1)
             ON CONFLICT (thread_id) DO NOTHING"#,
         )
-        .bind(thread_id)
+        .bind(thread_id.as_str())
         .execute(&self.pool)
         .await
         .map_err(|e| DsqlError(format!("Failed to ensure root thread: {}", e)))?;
         Ok(())
     }
 
-    async fn thread_exists(&self, thread_id: &str) -> Result<bool, DsqlError> {
+    async fn thread_exists(&self, thread_id: &ThreadId) -> Result<bool, DsqlError> {
         sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS (SELECT 1 FROM thread_hierarchy WHERE thread_id = $1)",
         )
-        .bind(thread_id)
+        .bind(thread_id.as_str())
         .fetch_one(&self.pool)
         .await
         .map_err(|e| DsqlError(format!("Failed to check thread existence: {e}")))
@@ -174,7 +175,7 @@ impl ConversationStore for DsqlConversationStore {
 
     async fn load_history_up_to(
         &self,
-        session_id: &str,
+        session_id: &ThreadId,
         start_from: Option<i64>,
         up_to: Option<i64>,
     ) -> Result<Vec<InfinityMessage>, DsqlError> {
@@ -191,7 +192,7 @@ impl ConversationStore for DsqlConversationStore {
         }
         query.push_str(" ORDER BY message_order ASC");
 
-        let mut q = sqlx::query(&query).bind(session_id);
+        let mut q = sqlx::query(&query).bind(session_id.as_str());
         if let Some(n) = start_from {
             q = q.bind(n);
         }
@@ -219,7 +220,7 @@ impl ConversationStore for DsqlConversationStore {
 
     async fn append_messages(
         &self,
-        session_id: &str,
+        session_id: &ThreadId,
         messages: Vec<(InfinityMessage, String)>,
     ) -> Result<(), DsqlError> {
         if messages.is_empty() {
@@ -230,7 +231,7 @@ impl ConversationStore for DsqlConversationStore {
             r#"SELECT COALESCE(MAX(message_order), 0)
             FROM conversation_history WHERE session_id = $1"#,
         )
-        .bind(session_id)
+        .bind(session_id.as_str())
         .fetch_one(&self.pool)
         .await
         .map_err(|e| DsqlError(format!("Failed to get max order: {}", e)))?;
@@ -245,7 +246,7 @@ impl ConversationStore for DsqlConversationStore {
             current_order += 1;
             let json_str = serde_json::to_string(&message)
                 .map_err(|e| DsqlError(format!("Failed to serialize message: {}", e)))?;
-            session_ids.push(session_id.to_owned());
+            session_ids.push(session_id.as_str().to_owned());
             message_orders.push(current_order);
             message_ids_vec.push(message_id);
             message_data.push(json_str);
@@ -278,12 +279,12 @@ impl ConversationStore for DsqlConversationStore {
 
     async fn spawn_thread(
         &self,
-        parent_thread_id: &str,
+        parent_thread_id: &ThreadId,
         spawn_tool_call_id: &str,
         is_for_subscription_event: bool,
         spawn_order_override: Option<usize>,
-    ) -> Result<String, DsqlError> {
-        let new_thread_id = uuid::Uuid::new_v4().to_string();
+    ) -> Result<ThreadId, DsqlError> {
+        let new_thread_id = ThreadId::from(uuid::Uuid::new_v4().to_string());
 
         let spawn_message_order = if let Some(order) = spawn_order_override {
             order as i64
@@ -292,7 +293,7 @@ impl ConversationStore for DsqlConversationStore {
                 r#"SELECT COALESCE(MAX(message_order), 0)
                 FROM conversation_history WHERE session_id = $1"#,
             )
-            .bind(parent_thread_id)
+            .bind(parent_thread_id.as_str())
             .fetch_one(&self.pool)
             .await
             .map_err(|e| DsqlError(format!("Failed to get current message order: {}", e)))?;
@@ -302,7 +303,7 @@ impl ConversationStore for DsqlConversationStore {
         let root_thread_id: String = sqlx::query_scalar(
             r#"SELECT root_thread_id FROM thread_hierarchy WHERE thread_id = $1"#,
         )
-        .bind(parent_thread_id)
+        .bind(parent_thread_id.as_str())
         .fetch_one(&self.pool)
         .await
         .map_err(|e| DsqlError(format!("Failed to find parent thread: {}", e)))?;
@@ -311,8 +312,8 @@ impl ConversationStore for DsqlConversationStore {
             r#"INSERT INTO thread_hierarchy (thread_id, parent_thread_id, root_thread_id, spawn_message_order, spawn_tool_call_id, is_subscription_event)
             VALUES ($1, $2, $3, $4, $5, $6)"#,
         )
-        .bind(&new_thread_id)
-        .bind(parent_thread_id)
+        .bind(new_thread_id.as_str())
+        .bind(parent_thread_id.as_str())
         .bind(&root_thread_id)
         .bind(spawn_message_order)
         .bind(spawn_tool_call_id)
@@ -324,30 +325,30 @@ impl ConversationStore for DsqlConversationStore {
         Ok(new_thread_id)
     }
 
-    async fn is_thread_closed(&self, thread_id: &str) -> Result<bool, DsqlError> {
+    async fn is_thread_closed(&self, thread_id: &ThreadId) -> Result<bool, DsqlError> {
         let row: Option<(bool,)> =
             sqlx::query_as(r#"SELECT closed FROM thread_hierarchy WHERE thread_id = $1"#)
-                .bind(thread_id)
+                .bind(thread_id.as_str())
                 .fetch_optional(&self.pool)
                 .await
                 .map_err(|e| DsqlError(format!("Failed to check thread closed: {}", e)))?;
         Ok(row.map(|(c,)| c).unwrap_or(false))
     }
 
-    async fn close_thread(&self, thread_id: &str) -> Result<(), DsqlError> {
+    async fn close_thread(&self, thread_id: &ThreadId) -> Result<(), DsqlError> {
         sqlx::query(r#"UPDATE thread_hierarchy SET closed = TRUE WHERE thread_id = $1"#)
-            .bind(thread_id)
+            .bind(thread_id.as_str())
             .execute(&self.pool)
             .await
             .map_err(|e| DsqlError(format!("Failed to close thread: {}", e)))?;
         Ok(())
     }
 
-    async fn is_subscription_event_thread(&self, thread_id: &str) -> Result<bool, DsqlError> {
+    async fn is_subscription_event_thread(&self, thread_id: &ThreadId) -> Result<bool, DsqlError> {
         let row: Option<(bool,)> = sqlx::query_as(
             r#"SELECT is_subscription_event FROM thread_hierarchy WHERE thread_id = $1"#,
         )
-        .bind(thread_id)
+        .bind(thread_id.as_str())
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| DsqlError(format!("Failed to check subscription event: {}", e)))?;
@@ -356,12 +357,12 @@ impl ConversationStore for DsqlConversationStore {
 
     async fn get_thread_parent_info(
         &self,
-        thread_id: &str,
-    ) -> Result<Option<(String, String)>, DsqlError> {
+        thread_id: &ThreadId,
+    ) -> Result<Option<(ThreadId, String)>, DsqlError> {
         let row = sqlx::query(
             r#"SELECT parent_thread_id, spawn_tool_call_id FROM thread_hierarchy WHERE thread_id = $1"#,
         )
-        .bind(thread_id)
+        .bind(thread_id.as_str())
         .fetch_one(&self.pool)
         .await
         .map_err(|e| DsqlError(format!("Failed to get thread info: {}", e)))?;
@@ -369,14 +370,17 @@ impl ConversationStore for DsqlConversationStore {
         let parent: Option<String> = row.get("parent_thread_id");
         let tool_call_id: Option<String> = row.get("spawn_tool_call_id");
         match (parent, tool_call_id) {
-            (Some(p), Some(t)) => Ok(Some((p, t))),
+            (Some(p), Some(t)) => Ok(Some((ThreadId::from(p), t))),
             _ => Ok(None),
         }
     }
 
-    async fn get_ancestor_chain(&self, thread_id: &str) -> Result<Vec<(String, i64)>, DsqlError> {
-        let mut result: Vec<(String, i64)> = Vec::new();
-        let mut current = thread_id.to_owned();
+    async fn get_ancestor_chain(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<(ThreadId, i64)>, DsqlError> {
+        let mut result: Vec<(ThreadId, i64)> = Vec::new();
+        let mut current = thread_id.as_str().to_owned();
 
         loop {
             let row = sqlx::query(
@@ -392,7 +396,7 @@ impl ConversationStore for DsqlConversationStore {
 
             match parent {
                 Some(p) => {
-                    result.push((p.clone(), spawn_order.unwrap_or(0)));
+                    result.push((ThreadId::from(p.clone()), spawn_order.unwrap_or(0)));
                     current = p;
                 }
                 None => break,
@@ -405,7 +409,7 @@ impl ConversationStore for DsqlConversationStore {
 
     async fn save_compaction_summary(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         summary: &str,
         up_to_order: i64,
     ) -> Result<(), DsqlError> {
@@ -414,7 +418,7 @@ impl ConversationStore for DsqlConversationStore {
             VALUES ($1, $2, $3)
             ON CONFLICT (thread_id, up_to_order) DO UPDATE SET summary = $3"#,
         )
-        .bind(thread_id)
+        .bind(thread_id.as_str())
         .bind(up_to_order)
         .bind(summary)
         .execute(&self.pool)
@@ -425,7 +429,7 @@ impl ConversationStore for DsqlConversationStore {
 
     async fn load_latest_compaction_summary_up_to(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         up_to_order: Option<i64>,
     ) -> Result<Option<(String, i64)>, DsqlError> {
         let row = match up_to_order {
@@ -435,7 +439,7 @@ impl ConversationStore for DsqlConversationStore {
                     WHERE thread_id = $1 AND up_to_order <= $2
                     ORDER BY up_to_order DESC LIMIT 1"#,
                 )
-                .bind(thread_id)
+                .bind(thread_id.as_str())
                 .bind(n)
                 .fetch_optional(&self.pool)
                 .await
@@ -445,7 +449,7 @@ impl ConversationStore for DsqlConversationStore {
                     r#"SELECT summary, up_to_order FROM compaction_summaries
                     WHERE thread_id = $1 ORDER BY up_to_order DESC LIMIT 1"#,
                 )
-                .bind(thread_id)
+                .bind(thread_id.as_str())
                 .fetch_optional(&self.pool)
                 .await
             }
@@ -459,30 +463,30 @@ impl ConversationStore for DsqlConversationStore {
         }))
     }
 
-    async fn is_compaction_thread(&self, thread_id: &str) -> Result<bool, DsqlError> {
+    async fn is_compaction_thread(&self, thread_id: &ThreadId) -> Result<bool, DsqlError> {
         let row: Option<(bool,)> =
             sqlx::query_as(r#"SELECT is_compaction FROM thread_hierarchy WHERE thread_id = $1"#)
-                .bind(thread_id)
+                .bind(thread_id.as_str())
                 .fetch_optional(&self.pool)
                 .await
                 .map_err(|e| DsqlError(format!("Failed to check compaction thread: {}", e)))?;
         Ok(row.map(|(v,)| v).unwrap_or(false))
     }
 
-    async fn mark_thread_as_compaction(&self, thread_id: &str) -> Result<(), DsqlError> {
+    async fn mark_thread_as_compaction(&self, thread_id: &ThreadId) -> Result<(), DsqlError> {
         sqlx::query(r#"UPDATE thread_hierarchy SET is_compaction = TRUE WHERE thread_id = $1"#)
-            .bind(thread_id)
+            .bind(thread_id.as_str())
             .execute(&self.pool)
             .await
             .map_err(|e| DsqlError(format!("Failed to mark compaction thread: {}", e)))?;
         Ok(())
     }
 
-    async fn get_thread_spawn_order(&self, thread_id: &str) -> Result<Option<i64>, DsqlError> {
+    async fn get_thread_spawn_order(&self, thread_id: &ThreadId) -> Result<Option<i64>, DsqlError> {
         let row: Option<(Option<i64>,)> = sqlx::query_as(
             r#"SELECT spawn_message_order FROM thread_hierarchy WHERE thread_id = $1"#,
         )
-        .bind(thread_id)
+        .bind(thread_id.as_str())
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| DsqlError(format!("Failed to get spawn order: {}", e)))?;

@@ -7,6 +7,7 @@
 //! wait for. The [router](super::router) respawns a driver when new input
 //! arrives for an idle thread.
 
+use rap_protocol::ThreadId;
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
@@ -51,7 +52,7 @@ impl InFlightStep<'_> {
 }
 
 /// Set of thread IDs with a live driver.
-pub type ActiveThreads = Arc<Mutex<HashSet<String>>>;
+pub type ActiveThreads = Arc<Mutex<HashSet<ThreadId>>>;
 
 /// A transition in one thread driver's liveness.
 ///
@@ -61,7 +62,7 @@ pub type ActiveThreads = Arc<Mutex<HashSet<String>>>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadLifecycleEvent {
     /// The thread whose driver changed state.
-    pub thread_id: String,
+    pub thread_id: ThreadId,
     /// The driver's new lifecycle state.
     pub state: ThreadLifecycleState,
 }
@@ -84,7 +85,7 @@ fn is_compaction_complete(msg: &InputMessage) -> bool {
 
 pub(crate) async fn drive_thread<C, S, H, O>(
     inner: Rc<SystemInner<C, S, ChannelSender, H>>,
-    thread_id: String,
+    thread_id: ThreadId,
     mut rx: mpsc::UnboundedReceiver<(InputMessage, String)>,
     mut subscribe_rx: mpsc::UnboundedReceiver<(O::SubscribeRequest, oneshot::Sender<()>)>,
     observer: O,
@@ -332,7 +333,7 @@ fn check_before_idle<C, S, H, O>(
     subscribe_rx: &mut mpsc::UnboundedReceiver<(O::SubscribeRequest, oneshot::Sender<()>)>,
     observer: &O,
     thread: &Thread<C, S, ChannelSender, H>,
-    thread_id: &str,
+    thread_id: &ThreadId,
 ) -> IdleDecision
 where
     C: ConversationStore + 'static,
@@ -364,7 +365,7 @@ where
 fn handle_step_result(
     res: Result<StepOutcome, BoxError>,
     observer: &impl ThreadObserver,
-    thread_id: &str,
+    thread_id: &ThreadId,
     total_tokens: &mut u64,
     compaction_triggered: &mut bool,
     pending_batch: &mut Vec<(InputMessage, String)>,
@@ -400,7 +401,7 @@ fn handle_step_result(
                 pending_batch.push((
                     InputMessage {
                         content: InputMessageContent::User(UserContent::text("")),
-                        group_id: thread_id.to_owned(),
+                        group_id: thread_id.clone(),
                         metadata: None,
                         synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::Compaction)),
                         display_as: None,
@@ -423,7 +424,7 @@ fn handle_step_result(
 }
 
 struct DriverGuard {
-    thread_id: String,
+    thread_id: ThreadId,
     active_threads: ActiveThreads,
     lifecycle_tx: mpsc::UnboundedSender<ThreadLifecycleEvent>,
 }
@@ -457,7 +458,7 @@ mod tests {
             .run_until(async {
                 let (mut running, mut rx, mut ctrl, _conv) =
                     start_system(vec![Box::new(SubscribeTool)], None);
-                running.send_user_text("t1", "subscribe").await;
+                running.send_user_text(&"t1".into(), "subscribe").await;
                 let _req = ctrl.next_request().await;
                 ctrl.send_tool_call("tc-sub", "subscribe_tool", serde_json::json!({}));
                 ctrl.finish();
@@ -506,7 +507,7 @@ mod tests {
                 // Tiny context window so the usage report crosses the threshold.
                 let (mut running, mut rx, mut ctrl, _conv) =
                     start_system(vec![], Some(small_context_entry()));
-                running.send_user_text("t1", "hello").await;
+                running.send_user_text(&"t1".into(), "hello").await;
                 let _req = ctrl.next_request().await;
                 ctrl.send_text("hi there");
                 ctrl.finish_with_usage(high_usage());

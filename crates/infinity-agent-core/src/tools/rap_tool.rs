@@ -88,13 +88,8 @@ where
         callback_url,
     } = params;
 
-    let thread_ancestors = (context.thread_stack.len() > 1).then(|| {
-        context.thread_stack[..context.thread_stack.len() - 1]
-            .iter()
-            .cloned()
-            .map(rap_protocol::ThreadId::from)
-            .collect()
-    });
+    let thread_ancestors = (context.thread_stack.len() > 1)
+        .then(|| context.thread_stack[..context.thread_stack.len() - 1].to_vec());
 
     let invocation = RapInvocation {
         operation: operation.to_owned(),
@@ -104,7 +99,7 @@ where
         callback_url: callback_url
             .unwrap_or(context.callback_url.as_str())
             .to_owned(),
-        group_id: context.group_id.clone().into(),
+        group_id: context.group_id.clone(),
         user_id: context.user_id.clone(),
         thread_ancestors,
     };
@@ -274,10 +269,13 @@ mod tests {
             message_sender: CapturingSender {
                 messages: Arc::new(Mutex::new(Vec::new())),
             },
-            group_id: "thread-1".to_owned(),
+            group_id: "thread-1".into(),
             callback_url: "http://context-callback".to_owned(),
             user_id: Some("user-1".to_owned()),
-            thread_stack: thread_stack.into_iter().map(str::to_owned).collect(),
+            thread_stack: thread_stack
+                .into_iter()
+                .map(rap_protocol::ThreadId::from)
+                .collect(),
         }
     }
 
@@ -314,7 +312,7 @@ mod tests {
         assert_eq!(sent.len(), 1, "exactly one error result is enqueued");
         let (message, dedup_id) = &sent[0];
         assert_eq!(dedup_id, "tc-1", "dedup ID is the tool-call ID");
-        assert_eq!(message.group_id, "thread-1");
+        assert_eq!(message.group_id.as_str(), "thread-1");
         let InputMessageContent::User(UserContent::ToolResult(result)) = &message.content else {
             panic!("expected a tool result, got {:?}", message.content);
         };

@@ -254,7 +254,7 @@ async fn view_update_is_broadcast_without_waking_the_session() {
 
             let mgr = h.manager.lock().await;
             assert!(
-                mgr.is_session_idle(&session_id),
+                mgr.is_session_idle(&session_id.clone().into()),
                 "a view update must not wake any thread driver"
             );
         })

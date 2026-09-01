@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use rap_protocol::ThreadId;
 use serde::{Deserialize, Serialize};
 
 use crate::message::InfinityMessage;
@@ -39,8 +40,8 @@ impl std::error::Error for InMemoryStoreError {}
 /// re-implementing the store semantics.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ThreadInfo {
-    pub parent_thread_id: Option<String>,
-    pub root_thread_id: String,
+    pub parent_thread_id: Option<ThreadId>,
+    pub root_thread_id: ThreadId,
     /// Number of parent messages the child inherits (history cutoff).
     pub spawn_message_order: Option<i64>,
     pub spawn_tool_call_id: Option<String>,
@@ -63,9 +64,9 @@ pub struct CompactionSummary {
 #[derive(Clone, Default)]
 pub struct InMemoryConversationStore {
     #[expect(clippy::type_complexity, reason = "shared state")]
-    messages: Arc<Mutex<HashMap<String, Vec<(InfinityMessage, String)>>>>,
-    threads: Arc<Mutex<HashMap<String, ThreadInfo>>>,
-    compaction_summaries: Arc<Mutex<HashMap<String, Vec<CompactionSummary>>>>,
+    messages: Arc<Mutex<HashMap<ThreadId, Vec<(InfinityMessage, String)>>>>,
+    threads: Arc<Mutex<HashMap<ThreadId, ThreadInfo>>>,
+    compaction_summaries: Arc<Mutex<HashMap<ThreadId, Vec<CompactionSummary>>>>,
 }
 
 impl InMemoryConversationStore {
@@ -82,7 +83,7 @@ impl InMemoryConversationStore {
     // chains, compaction cutoffs) stays implemented here, once.
 
     /// Snapshot one thread's bookkeeping, if the thread exists.
-    pub fn thread_info(&self, thread_id: &str) -> Option<ThreadInfo> {
+    pub fn thread_info(&self, thread_id: &ThreadId) -> Option<ThreadInfo> {
         self.threads
             .lock()
             .expect("bug: mutex poisoned")
@@ -91,16 +92,16 @@ impl InMemoryConversationStore {
     }
 
     /// Restore (or overwrite) one thread's bookkeeping.
-    pub fn set_thread_info(&self, thread_id: &str, info: ThreadInfo) {
+    pub fn set_thread_info(&self, thread_id: &ThreadId, info: ThreadInfo) {
         self.threads
             .lock()
             .expect("bug: mutex poisoned")
-            .insert(thread_id.to_owned(), info);
+            .insert(thread_id.clone(), info);
     }
 
     /// Snapshot one thread's messages (with their dedup IDs), if any were
     /// ever appended.
-    pub fn thread_messages(&self, thread_id: &str) -> Option<Vec<(InfinityMessage, String)>> {
+    pub fn thread_messages(&self, thread_id: &ThreadId) -> Option<Vec<(InfinityMessage, String)>> {
         self.messages
             .lock()
             .expect("bug: mutex poisoned")
@@ -112,18 +113,18 @@ impl InMemoryConversationStore {
     /// thread were already present (and have been overwritten).
     pub fn set_thread_messages(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         messages: Vec<(InfinityMessage, String)>,
     ) -> bool {
         self.messages
             .lock()
             .expect("bug: mutex poisoned")
-            .insert(thread_id.to_owned(), messages)
+            .insert(thread_id.clone(), messages)
             .is_some()
     }
 
     /// Snapshot one thread's compaction summaries.
-    pub fn thread_compaction_summaries(&self, thread_id: &str) -> Vec<CompactionSummary> {
+    pub fn thread_compaction_summaries(&self, thread_id: &ThreadId) -> Vec<CompactionSummary> {
         self.compaction_summaries
             .lock()
             .expect("bug: mutex poisoned")
@@ -136,13 +137,13 @@ impl InMemoryConversationStore {
     /// summaries for the thread were already present (and overwritten).
     pub fn set_thread_compaction_summaries(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         summaries: Vec<CompactionSummary>,
     ) -> bool {
         self.compaction_summaries
             .lock()
             .expect("bug: mutex poisoned")
-            .insert(thread_id.to_owned(), summaries)
+            .insert(thread_id.clone(), summaries)
             .is_some()
     }
 
@@ -153,8 +154,8 @@ impl InMemoryConversationStore {
     /// message count unless overridden.
     pub fn spawn_thread_with_id(
         &self,
-        new_thread_id: &str,
-        parent_thread_id: &str,
+        new_thread_id: &ThreadId,
+        parent_thread_id: &ThreadId,
         spawn_tool_call_id: &str,
         is_for_subscription_event: bool,
         spawn_order_override: Option<usize>,
@@ -169,11 +170,11 @@ impl InMemoryConversationStore {
         let root = threads
             .get(parent_thread_id)
             .map(|t| t.root_thread_id.clone())
-            .unwrap_or_else(|| parent_thread_id.to_owned());
+            .unwrap_or_else(|| parent_thread_id.clone());
         threads.insert(
-            new_thread_id.to_owned(),
+            new_thread_id.clone(),
             ThreadInfo {
-                parent_thread_id: Some(parent_thread_id.to_owned()),
+                parent_thread_id: Some(parent_thread_id.clone()),
                 root_thread_id: root,
                 spawn_message_order: Some(spawn_message_order),
                 spawn_tool_call_id: Some(spawn_tool_call_id.to_owned()),
@@ -189,13 +190,13 @@ impl InMemoryConversationStore {
 impl ConversationStore for InMemoryConversationStore {
     type Error = InMemoryStoreError;
 
-    async fn ensure_root_thread(&self, thread_id: &str) -> Result<(), Self::Error> {
+    async fn ensure_root_thread(&self, thread_id: &ThreadId) -> Result<(), Self::Error> {
         let mut threads = self.threads.lock().expect("bug: mutex poisoned");
         threads
-            .entry(thread_id.to_owned())
+            .entry(thread_id.clone())
             .or_insert_with(|| ThreadInfo {
                 parent_thread_id: None,
-                root_thread_id: thread_id.to_owned(),
+                root_thread_id: thread_id.clone(),
                 spawn_message_order: None,
                 spawn_tool_call_id: None,
                 closed: false,
@@ -205,7 +206,7 @@ impl ConversationStore for InMemoryConversationStore {
         Ok(())
     }
 
-    async fn thread_exists(&self, thread_id: &str) -> Result<bool, Self::Error> {
+    async fn thread_exists(&self, thread_id: &ThreadId) -> Result<bool, Self::Error> {
         Ok(self
             .threads
             .lock()
@@ -215,7 +216,7 @@ impl ConversationStore for InMemoryConversationStore {
 
     async fn load_history_up_to(
         &self,
-        session_id: &str,
+        session_id: &ThreadId,
         start_from: Option<i64>,
         up_to: Option<i64>,
     ) -> Result<Vec<InfinityMessage>, Self::Error> {
@@ -233,12 +234,12 @@ impl ConversationStore for InMemoryConversationStore {
 
     async fn append_messages(
         &self,
-        session_id: &str,
+        session_id: &ThreadId,
         messages: Vec<(InfinityMessage, String)>,
     ) -> Result<(), Self::Error> {
         let mut store = self.messages.lock().expect("bug: mutex poisoned");
         store
-            .entry(session_id.to_owned())
+            .entry(session_id.clone())
             .or_default()
             .extend(messages);
         Ok(())
@@ -246,12 +247,12 @@ impl ConversationStore for InMemoryConversationStore {
 
     async fn spawn_thread(
         &self,
-        parent_thread_id: &str,
+        parent_thread_id: &ThreadId,
         spawn_tool_call_id: &str,
         is_for_subscription_event: bool,
         spawn_order_override: Option<usize>,
-    ) -> Result<String, Self::Error> {
-        let new_id = uuid::Uuid::new_v4().to_string();
+    ) -> Result<ThreadId, Self::Error> {
+        let new_id = ThreadId::from(uuid::Uuid::new_v4().to_string());
         self.spawn_thread_with_id(
             &new_id,
             parent_thread_id,
@@ -262,12 +263,12 @@ impl ConversationStore for InMemoryConversationStore {
         Ok(new_id)
     }
 
-    async fn is_thread_closed(&self, thread_id: &str) -> Result<bool, Self::Error> {
+    async fn is_thread_closed(&self, thread_id: &ThreadId) -> Result<bool, Self::Error> {
         let threads = self.threads.lock().expect("bug: mutex poisoned");
         Ok(threads.get(thread_id).map(|t| t.closed).unwrap_or(false))
     }
 
-    async fn close_thread(&self, thread_id: &str) -> Result<(), Self::Error> {
+    async fn close_thread(&self, thread_id: &ThreadId) -> Result<(), Self::Error> {
         let mut threads = self.threads.lock().expect("bug: mutex poisoned");
         if let Some(t) = threads.get_mut(thread_id) {
             t.closed = true;
@@ -275,7 +276,10 @@ impl ConversationStore for InMemoryConversationStore {
         Ok(())
     }
 
-    async fn is_subscription_event_thread(&self, thread_id: &str) -> Result<bool, Self::Error> {
+    async fn is_subscription_event_thread(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<bool, Self::Error> {
         let threads = self.threads.lock().expect("bug: mutex poisoned");
         Ok(threads
             .get(thread_id)
@@ -285,8 +289,8 @@ impl ConversationStore for InMemoryConversationStore {
 
     async fn get_thread_parent_info(
         &self,
-        thread_id: &str,
-    ) -> Result<Option<(String, String)>, Self::Error> {
+        thread_id: &ThreadId,
+    ) -> Result<Option<(ThreadId, String)>, Self::Error> {
         let threads = self.threads.lock().expect("bug: mutex poisoned");
         Ok(threads.get(thread_id).and_then(|t| {
             match (&t.parent_thread_id, &t.spawn_tool_call_id) {
@@ -296,10 +300,13 @@ impl ConversationStore for InMemoryConversationStore {
         }))
     }
 
-    async fn get_ancestor_chain(&self, thread_id: &str) -> Result<Vec<(String, i64)>, Self::Error> {
+    async fn get_ancestor_chain(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<(ThreadId, i64)>, Self::Error> {
         let threads = self.threads.lock().expect("bug: mutex poisoned");
         let mut result = Vec::new();
-        let mut current = thread_id.to_owned();
+        let mut current = thread_id.clone();
         while let Some(info) = threads.get(&current) {
             let Some(parent) = info.parent_thread_id.clone() else {
                 break;
@@ -312,7 +319,7 @@ impl ConversationStore for InMemoryConversationStore {
         Ok(result)
     }
 
-    async fn mark_thread_as_compaction(&self, thread_id: &str) -> Result<(), Self::Error> {
+    async fn mark_thread_as_compaction(&self, thread_id: &ThreadId) -> Result<(), Self::Error> {
         let mut threads = self.threads.lock().expect("bug: mutex poisoned");
         if let Some(t) = threads.get_mut(thread_id) {
             t.is_compaction = true;
@@ -320,7 +327,7 @@ impl ConversationStore for InMemoryConversationStore {
         Ok(())
     }
 
-    async fn is_compaction_thread(&self, thread_id: &str) -> Result<bool, Self::Error> {
+    async fn is_compaction_thread(&self, thread_id: &ThreadId) -> Result<bool, Self::Error> {
         let threads = self.threads.lock().expect("bug: mutex poisoned");
         Ok(threads
             .get(thread_id)
@@ -328,14 +335,17 @@ impl ConversationStore for InMemoryConversationStore {
             .unwrap_or(false))
     }
 
-    async fn get_thread_spawn_order(&self, thread_id: &str) -> Result<Option<i64>, Self::Error> {
+    async fn get_thread_spawn_order(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Option<i64>, Self::Error> {
         let threads = self.threads.lock().expect("bug: mutex poisoned");
         Ok(threads.get(thread_id).and_then(|t| t.spawn_message_order))
     }
 
     async fn save_compaction_summary(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         summary: &str,
         up_to_order: i64,
     ) -> Result<(), Self::Error> {
@@ -343,7 +353,7 @@ impl ConversationStore for InMemoryConversationStore {
             .compaction_summaries
             .lock()
             .expect("bug: mutex poisoned");
-        cs.entry(thread_id.to_owned())
+        cs.entry(thread_id.clone())
             .or_default()
             .push(CompactionSummary {
                 summary: summary.to_owned(),
@@ -354,7 +364,7 @@ impl ConversationStore for InMemoryConversationStore {
 
     async fn load_latest_compaction_summary_up_to(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         up_to_order: Option<i64>,
     ) -> Result<Option<(String, i64)>, Self::Error> {
         let cs = self
@@ -388,10 +398,10 @@ pub struct ThreadState {
 /// subscription tracking in process memory.
 #[derive(Clone, Default)]
 pub struct InMemoryStateStore {
-    processed_ids: Arc<Mutex<HashMap<String, HashSet<String>>>>,
-    metadata: Arc<Mutex<HashMap<String, serde_json::Value>>>,
-    subscriptions: Arc<Mutex<HashMap<String, HashSet<String>>>>,
-    pending_user_choices: Arc<Mutex<HashMap<String, Vec<UserChoice>>>>,
+    processed_ids: Arc<Mutex<HashMap<ThreadId, HashSet<String>>>>,
+    metadata: Arc<Mutex<HashMap<ThreadId, serde_json::Value>>>,
+    subscriptions: Arc<Mutex<HashMap<ThreadId, HashSet<String>>>>,
+    pending_user_choices: Arc<Mutex<HashMap<ThreadId, Vec<UserChoice>>>>,
 }
 
 impl InMemoryStateStore {
@@ -400,7 +410,7 @@ impl InMemoryStateStore {
     }
 
     /// Snapshot one thread's state (see [`ThreadState`]).
-    pub fn thread_state(&self, thread_id: &str) -> ThreadState {
+    pub fn thread_state(&self, thread_id: &ThreadId) -> ThreadState {
         let processed = self.processed_ids.lock().expect("bug: mutex poisoned");
         let metadata = self.metadata.lock().expect("bug: mutex poisoned");
         let subscriptions = self.subscriptions.lock().expect("bug: mutex poisoned");
@@ -420,28 +430,28 @@ impl InMemoryStateStore {
     }
 
     /// Restore one thread's state (see [`ThreadState`]).
-    pub fn set_thread_state(&self, thread_id: &str, state: ThreadState) {
+    pub fn set_thread_state(&self, thread_id: &ThreadId, state: ThreadState) {
         self.processed_ids
             .lock()
             .expect("bug: mutex poisoned")
-            .insert(thread_id.to_owned(), state.processed_message_ids);
+            .insert(thread_id.clone(), state.processed_message_ids);
         if let Some(meta) = state.metadata {
             self.metadata
                 .lock()
                 .expect("bug: mutex poisoned")
-                .insert(thread_id.to_owned(), meta);
+                .insert(thread_id.clone(), meta);
         }
         if !state.subscriptions.is_empty() {
             self.subscriptions
                 .lock()
                 .expect("bug: mutex poisoned")
-                .insert(thread_id.to_owned(), state.subscriptions);
+                .insert(thread_id.clone(), state.subscriptions);
         }
         if !state.pending_user_choices.is_empty() {
             self.pending_user_choices
                 .lock()
                 .expect("bug: mutex poisoned")
-                .insert(thread_id.to_owned(), state.pending_user_choices);
+                .insert(thread_id.clone(), state.pending_user_choices);
         }
     }
 }
@@ -450,19 +460,22 @@ impl InMemoryStateStore {
 impl StateStore for InMemoryStateStore {
     type Error = InMemoryStoreError;
 
-    async fn get_processed_ids(&self, thread_id: &str) -> Result<HashSet<String>, Self::Error> {
+    async fn get_processed_ids(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<HashSet<String>, Self::Error> {
         let store = self.processed_ids.lock().expect("bug: mutex poisoned");
         Ok(store.get(thread_id).cloned().unwrap_or_default())
     }
 
     async fn add_processed_message_ids(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         message_ids: Vec<String>,
     ) -> Result<(), Self::Error> {
         let mut store = self.processed_ids.lock().expect("bug: mutex poisoned");
         store
-            .entry(thread_id.to_owned())
+            .entry(thread_id.clone())
             .or_default()
             .extend(message_ids);
         Ok(())
@@ -470,7 +483,7 @@ impl StateStore for InMemoryStateStore {
 
     async fn get_metadata(
         &self,
-        root_thread_id: &str,
+        root_thread_id: &ThreadId,
     ) -> Result<Option<serde_json::Value>, Self::Error> {
         let store = self.metadata.lock().expect("bug: mutex poisoned");
         Ok(store.get(root_thread_id).cloned())
@@ -478,15 +491,18 @@ impl StateStore for InMemoryStateStore {
 
     async fn set_metadata(
         &self,
-        root_thread_id: &str,
+        root_thread_id: &ThreadId,
         metadata: serde_json::Value,
     ) -> Result<(), Self::Error> {
         let mut store = self.metadata.lock().expect("bug: mutex poisoned");
-        store.insert(root_thread_id.to_owned(), metadata);
+        store.insert(root_thread_id.clone(), metadata);
         Ok(())
     }
 
-    async fn get_active_subscriptions(&self, thread_id: &str) -> Result<Vec<String>, Self::Error> {
+    async fn get_active_subscriptions(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<String>, Self::Error> {
         let store = self.subscriptions.lock().expect("bug: mutex poisoned");
         Ok(store
             .get(thread_id)
@@ -496,12 +512,12 @@ impl StateStore for InMemoryStateStore {
 
     async fn add_active_subscription(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         tool_call_id: &str,
     ) -> Result<(), Self::Error> {
         let mut store = self.subscriptions.lock().expect("bug: mutex poisoned");
         store
-            .entry(thread_id.to_owned())
+            .entry(thread_id.clone())
             .or_default()
             .insert(tool_call_id.to_owned());
         Ok(())
@@ -509,7 +525,7 @@ impl StateStore for InMemoryStateStore {
 
     async fn remove_active_subscription(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         tool_call_id: &str,
     ) -> Result<(), Self::Error> {
         let mut store = self.subscriptions.lock().expect("bug: mutex poisoned");
@@ -521,14 +537,14 @@ impl StateStore for InMemoryStateStore {
 
     async fn add_pending_user_choice(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         choice: UserChoice,
     ) -> Result<(), Self::Error> {
         let mut store = self
             .pending_user_choices
             .lock()
             .expect("bug: mutex poisoned");
-        let choices = store.entry(thread_id.to_owned()).or_default();
+        let choices = store.entry(thread_id.clone()).or_default();
         if let Some(existing) = choices.iter_mut().find(|existing| existing.id == choice.id) {
             *existing = choice;
         } else {
@@ -539,7 +555,7 @@ impl StateStore for InMemoryStateStore {
 
     async fn remove_pending_user_choice(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         choice_id: &str,
     ) -> Result<(), Self::Error> {
         if let Some(choices) = self
@@ -555,7 +571,7 @@ impl StateStore for InMemoryStateStore {
 
     async fn get_pending_user_choices(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
     ) -> Result<Vec<UserChoice>, Self::Error> {
         Ok(self
             .pending_user_choices

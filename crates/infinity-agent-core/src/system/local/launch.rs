@@ -5,6 +5,7 @@
 //! ID and runs with the union of the system-wide configuration and the tools
 //! and prompt registered at launch.
 
+use rap_protocol::ThreadId;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -39,7 +40,7 @@ struct LaunchConfig<M: InputSender> {
 /// configuration only.
 #[derive(Clone)]
 pub(crate) struct LaunchRegistry<M: InputSender> {
-    threads: Rc<RefCell<HashMap<String, LaunchConfig<M>>>>,
+    threads: Rc<RefCell<HashMap<ThreadId, LaunchConfig<M>>>>,
 }
 
 impl<M: InputSender> Default for LaunchRegistry<M> {
@@ -55,15 +56,15 @@ impl<M: InputSender> Default for LaunchRegistry<M> {
 /// their root so they inherit its entry.
 async fn root_thread_id<C: ConversationStore>(
     store: &C,
-    thread_id: &str,
-) -> Result<String, BoxError> {
+    thread_id: &ThreadId,
+) -> Result<ThreadId, BoxError> {
     Ok(store
         .get_ancestor_chain(thread_id)
         .await
         .map_err(|e| Box::new(e) as BoxError)?
         .first()
         .map(|(id, _)| id.clone())
-        .unwrap_or_else(|| thread_id.to_owned()))
+        .unwrap_or_else(|| thread_id.clone()))
 }
 
 /// Wraps the system-wide [`ModelSource`]: threads launched with their own
@@ -81,7 +82,7 @@ where
     C: ConversationStore + 'static,
     M: InputSender + 'static,
 {
-    async fn resolve(&self, thread_id: &str) -> Result<ResolvedModel, BoxError> {
+    async fn resolve(&self, thread_id: &ThreadId) -> Result<ResolvedModel, BoxError> {
         let root_id = root_thread_id(&self.conversation_store, thread_id).await?;
         let launched = self
             .registry
@@ -115,7 +116,7 @@ where
     M: InputSender + 'static,
     H: HttpClient + 'static,
 {
-    async fn resolve(&self, thread_id: &str) -> Result<ThreadConfig<M, H>, BoxError> {
+    async fn resolve(&self, thread_id: &ThreadId) -> Result<ThreadConfig<M, H>, BoxError> {
         let mut config = self.inner.resolve(thread_id).await?;
         let root_id = root_thread_id(&self.conversation_store, thread_id).await?;
         if let Some(local) = self.registry.threads.borrow().get(&root_id) {
@@ -191,14 +192,17 @@ where
     /// Attach to an existing thread. Returns `Ok(None)` if the thread was not
     /// launched in this process and does not exist in the conversation store.
     /// New threads are created with [`thread_builder`](Self::thread_builder).
-    pub async fn thread_handle(&self, thread_id: &str) -> Result<Option<ThreadHandle>, C::Error> {
+    pub async fn thread_handle(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Option<ThreadHandle>, C::Error> {
         if !self.thread_exists(thread_id).await? {
             return Ok(None);
         }
         Ok(Some(attach(&self.running, thread_id).await))
     }
 
-    async fn thread_exists(&self, thread_id: &str) -> Result<bool, C::Error> {
+    async fn thread_exists(&self, thread_id: &ThreadId) -> Result<bool, C::Error> {
         if self.registry.threads.borrow().contains_key(thread_id) {
             return Ok(true);
         }
@@ -292,7 +296,7 @@ where
     /// thread resumed after a restart runs with the system-wide
     /// configuration only.
     pub async fn launch(self) -> ThreadHandle {
-        let thread_id = uuid::Uuid::new_v4().to_string();
+        let thread_id = ThreadId::from(uuid::Uuid::new_v4().to_string());
         self.system.registry.threads.borrow_mut().insert(
             thread_id.clone(),
             LaunchConfig {
@@ -373,7 +377,7 @@ mod tests {
                 // Unknown threads cannot be attached to.
                 assert!(
                     system
-                        .thread_handle("no-such-thread")
+                        .thread_handle(&"no-such-thread".into())
                         .await
                         .expect("check unknown thread")
                         .is_none()

@@ -1,6 +1,7 @@
 //! [`Thread`]: a handle to one conversation thread, with a step-oriented
 //! execution API.
 
+use rap_protocol::ThreadId;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -115,7 +116,7 @@ where
 {
     pub(crate) async fn load(
         inner: Rc<SystemInner<C, S, M, H>>,
-        thread_id: String,
+        thread_id: ThreadId,
     ) -> Result<Self, BoxError> {
         let history = HistoryManager::new_with_history(
             inner.conversation_store.clone(),
@@ -394,7 +395,7 @@ where
         &self,
         input_msg: &InputMessage,
         observer: &O,
-        thread_id: &str,
+        thread_id: &ThreadId,
     ) {
         if let Some(event) = event_processor::input_event(&self.history, input_msg) {
             observer.on_event(thread_id, &event);
@@ -587,7 +588,7 @@ where
         &self,
         event: CompletionEvent,
         observer: &impl ThreadObserver,
-        thread_id: &str,
+        thread_id: &ThreadId,
         action: &mut Option<CompletionAction>,
         usage: &mut Option<Usage>,
     ) {
@@ -686,7 +687,7 @@ mod tests {
             .run_until(async {
                 let (mut running, mut rx, mut ctrl, _conv) =
                     start_system(vec![Box::new(FailingTool)], None);
-                running.send_user_text("t1", "use tool").await;
+                running.send_user_text(&"t1".into(), "use tool").await;
                 let _req = ctrl.next_request().await;
                 ctrl.send_tool_call("call-1", "failing_tool", serde_json::json!({}));
                 ctrl.finish();

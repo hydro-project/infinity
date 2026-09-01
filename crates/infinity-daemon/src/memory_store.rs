@@ -13,6 +13,7 @@
 //! - session serialization for migration.
 
 use async_trait::async_trait;
+use infinity_agent_core::ThreadId;
 use infinity_agent_core::message::InfinityMessage;
 use infinity_agent_core::stores::{
     self as core_stores, CompactionSummary, ThreadInfo, ThreadState,
@@ -52,18 +53,18 @@ pub struct PersistentConversationStore {
     /// Daemon-only per-thread bookkeeping. Invariant: a thread has an entry
     /// here iff it has one in `core` (both are created together by the
     /// spawn/load/import paths of this wrapper).
-    extras: Arc<Mutex<HashMap<String, ThreadExtras>>>,
+    extras: Arc<Mutex<HashMap<ThreadId, ThreadExtras>>>,
     /// Directory where per-thread JSON files are stored. `None` disables persistence.
     dir: Option<PathBuf>,
     /// Tracks which thread IDs have had their full data loaded from disk.
-    loaded: Arc<Mutex<HashSet<String>>>,
+    loaded: Arc<Mutex<HashSet<ThreadId>>>,
     /// Tracks which thread IDs have had their metadata loaded from disk.
-    metadata_loaded: Arc<Mutex<HashSet<String>>>,
+    metadata_loaded: Arc<Mutex<HashSet<ThreadId>>>,
     /// Optional sender to notify session store of changes (for SessionsUpdated broadcasts).
-    change_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    change_tx: Option<tokio::sync::mpsc::UnboundedSender<ThreadId>>,
     /// Per-thread active views, keyed by thread_id → (view_type → content).
     /// Persisted separately to `{thread_id}.views.json`.
-    views: Arc<Mutex<HashMap<String, HashMap<String, serde_json::Value>>>>,
+    views: Arc<Mutex<HashMap<ThreadId, HashMap<String, serde_json::Value>>>>,
     /// The global default model, used for new threads and backfilled into
     /// metadata serialized before models were tracked per-thread.
     default_model: ModelRef,
@@ -78,7 +79,7 @@ pub(crate) struct ThreadExtras {
     #[serde(default)]
     title: Option<String>,
     #[serde(default)]
-    children: Vec<String>,
+    children: Vec<ThreadId>,
     #[serde(default)]
     total_tokens_used: usize,
     #[serde(default)]
@@ -263,13 +264,13 @@ impl PersistentConversationStore {
     }
 
     /// Set the change notification sender. Called after construction.
-    pub fn set_change_tx(&mut self, tx: tokio::sync::mpsc::UnboundedSender<String>) {
+    pub fn set_change_tx(&mut self, tx: tokio::sync::mpsc::UnboundedSender<ThreadId>) {
         self.change_tx = Some(tx);
     }
 
     /// Migration: if a thread's last_updated / total_tokens_used is empty, try to
     /// restore them from the legacy `sessions.json` (parent of the threads dir).
-    fn migrate_from_session_store(&self, thread_id: &str, threads_dir: &Path) {
+    fn migrate_from_session_store(&self, thread_id: &ThreadId, threads_dir: &Path) {
         {
             let extras = self.extras.lock().expect("bug: mutex poisoned");
             match extras.get(thread_id) {
@@ -285,7 +286,7 @@ impl PersistentConversationStore {
         let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) else {
             return;
         };
-        let Some(entry) = val.get("sessions").and_then(|s| s.get(thread_id)) else {
+        let Some(entry) = val.get("sessions").and_then(|s| s.get(thread_id.as_str())) else {
             return;
         };
 
@@ -314,7 +315,7 @@ impl PersistentConversationStore {
     }
 
     /// Notify that a session's thread tree changed.
-    fn notify_session(&self, thread_id: &str) {
+    fn notify_session(&self, thread_id: &ThreadId) {
         if let Some(ref tx) = self.change_tx {
             let root = self.get_root_thread_id(thread_id);
             let _ = tx.send(root);
@@ -323,7 +324,7 @@ impl PersistentConversationStore {
 
     /// Combine the core store's info and the daemon extras into the
     /// serialization shape, if the thread exists in both.
-    fn thread_meta(&self, thread_id: &str) -> Option<ThreadMeta> {
+    fn thread_meta(&self, thread_id: &ThreadId) -> Option<ThreadMeta> {
         let info = self.core.thread_info(thread_id)?;
         let extras = self
             .extras
@@ -336,17 +337,17 @@ impl PersistentConversationStore {
 
     /// Restore a thread's metadata from its serialization shape (splitting
     /// it between the core store and the daemon extras).
-    fn restore_thread_meta(&self, thread_id: &str, mut meta: ThreadMeta) {
+    fn restore_thread_meta(&self, thread_id: &ThreadId, mut meta: ThreadMeta) {
         self.backfill_selected_model(&mut meta.extras);
         self.core.set_thread_info(thread_id, meta.info);
         self.extras
             .lock()
             .expect("bug: mutex poisoned")
-            .insert(thread_id.to_owned(), meta.extras);
+            .insert(thread_id.clone(), meta.extras);
     }
 
     /// Write a single thread's metadata to `{dir}/{thread_id}.meta.json`.
-    fn save_thread_metadata(&self, thread_id: &str) {
+    fn save_thread_metadata(&self, thread_id: &ThreadId) {
         let Some(ref dir) = self.dir else { return };
         if let Some(meta) = self.thread_meta(thread_id) {
             let path = dir.join(format!("{}.meta.json", thread_id));
@@ -358,7 +359,7 @@ impl PersistentConversationStore {
 
     /// Write a single thread's data to `{dir}/{thread_id}.json` and metadata to `.meta.json`.
     /// No-op when persistence is disabled.
-    fn save_thread(&self, thread_id: &str) {
+    fn save_thread(&self, thread_id: &ThreadId) {
         let Some(ref dir) = self.dir else { return };
         let snapshot = ThreadSnapshot {
             messages: self.core.thread_messages(thread_id).unwrap_or_default(),
@@ -375,7 +376,7 @@ impl PersistentConversationStore {
     /// Ensure a thread's metadata (core info + extras) is loaded from disk.
     /// Tries `.meta.json` first; falls back to extracting from the full `.json` snapshot
     /// and writes the `.meta.json` for future fast loads.
-    fn ensure_thread_metadata_loaded(&self, thread_id: &str) {
+    fn ensure_thread_metadata_loaded(&self, thread_id: &ThreadId) {
         let Some(ref dir) = self.dir else { return };
 
         let mut meta_loaded = self.metadata_loaded.lock().expect("bug: mutex poisoned");
@@ -413,12 +414,12 @@ impl PersistentConversationStore {
         // Migration: restore title/last_updated from legacy sessions.json
         self.migrate_from_session_store(thread_id, dir);
 
-        meta_loaded.insert(thread_id.to_owned());
+        meta_loaded.insert(thread_id.clone());
     }
 
     /// Ensure a thread's full data (messages, compaction summaries) is loaded.
     /// Calls `ensure_thread_metadata_loaded` first.
-    fn ensure_thread_loaded(&self, thread_id: &str) {
+    fn ensure_thread_loaded(&self, thread_id: &ThreadId) {
         self.ensure_thread_metadata_loaded(thread_id);
 
         let Some(ref dir) = self.dir else { return };
@@ -444,28 +445,28 @@ impl PersistentConversationStore {
             );
         }
 
-        loaded.insert(thread_id.to_owned());
+        loaded.insert(thread_id.clone());
 
         self.load_views(thread_id);
     }
 
     /// Whether metadata exists for this thread (in memory or on disk).
-    pub fn has_thread(&self, thread_id: &str) -> bool {
+    pub fn has_thread(&self, thread_id: &ThreadId) -> bool {
         self.ensure_thread_metadata_loaded(thread_id);
         self.core.thread_info(thread_id).is_some()
     }
 
     /// Resolve a thread ID to its root thread ID (i.e. the session ID).
-    pub fn get_root_thread_id(&self, thread_id: &str) -> String {
+    pub fn get_root_thread_id(&self, thread_id: &ThreadId) -> ThreadId {
         self.ensure_thread_metadata_loaded(thread_id);
         self.core
             .thread_info(thread_id)
             .map(|t| t.root_thread_id)
-            .unwrap_or_else(|| thread_id.to_owned())
+            .unwrap_or_else(|| thread_id.clone())
     }
 
     /// Get the parent thread ID, if any.
-    pub fn get_thread_parent_id(&self, thread_id: &str) -> Option<String> {
+    pub fn get_thread_parent_id(&self, thread_id: &ThreadId) -> Option<ThreadId> {
         self.ensure_thread_metadata_loaded(thread_id);
         self.core
             .thread_info(thread_id)
@@ -473,7 +474,7 @@ impl PersistentConversationStore {
     }
 
     /// Set the title for a thread.
-    pub fn set_thread_title(&self, thread_id: &str, title: &str) {
+    pub fn set_thread_title(&self, thread_id: &ThreadId, title: &str) {
         self.ensure_thread_metadata_loaded(thread_id);
         {
             let mut extras = self.extras.lock().expect("bug: mutex poisoned");
@@ -487,7 +488,7 @@ impl PersistentConversationStore {
 
     /// Get the model selected for this specific thread. Does NOT fall back to
     /// the parent thread — every thread is assigned a model at creation time.
-    pub fn get_thread_model(&self, thread_id: &str) -> ModelRef {
+    pub fn get_thread_model(&self, thread_id: &ThreadId) -> ModelRef {
         self.ensure_thread_metadata_loaded(thread_id);
         let extras = self.extras.lock().expect("bug: mutex poisoned");
         extras
@@ -497,7 +498,7 @@ impl PersistentConversationStore {
     }
 
     /// Set the model selected for a thread.
-    pub fn set_thread_model(&self, thread_id: &str, model: ModelRef) {
+    pub fn set_thread_model(&self, thread_id: &ThreadId, model: ModelRef) {
         self.ensure_thread_metadata_loaded(thread_id);
         {
             let mut extras = self.extras.lock().expect("bug: mutex poisoned");
@@ -512,9 +513,9 @@ impl PersistentConversationStore {
     /// are closed or used for compaction. Session-level state must still account
     /// for those threads even though they are omitted from the visible thread
     /// list.
-    pub fn get_session_thread_ids(&self, root_id: &str) -> Vec<String> {
+    pub fn get_session_thread_ids(&self, root_id: &ThreadId) -> Vec<ThreadId> {
         let mut result = Vec::new();
-        let mut queue = vec![root_id.to_owned()];
+        let mut queue = vec![root_id.clone()];
         let mut visited = HashSet::new();
 
         while let Some(thread_id) = queue.pop() {
@@ -538,10 +539,13 @@ impl PersistentConversationStore {
 
     /// List open (non-closed) subthreads that are descendants of `parent_id`
     /// within the given session. Walks the children tree via metadata.
-    pub fn get_open_subthreads(&self, parent_id: &str) -> Vec<infinity_protocol::SubthreadInfo> {
+    pub fn get_open_subthreads(
+        &self,
+        parent_id: &ThreadId,
+    ) -> Vec<infinity_protocol::SubthreadInfo> {
         self.ensure_thread_metadata_loaded(parent_id);
         let mut result = Vec::new();
-        let mut queue = vec![parent_id.to_owned()];
+        let mut queue = vec![parent_id.clone()];
         while let Some(pid) = queue.pop() {
             let children = {
                 let extras = self.extras.lock().expect("bug: mutex poisoned");
@@ -561,8 +565,8 @@ impl PersistentConversationStore {
                         extras.get(&child_id).and_then(|e| e.title.clone())
                     };
                     result.push(infinity_protocol::SubthreadInfo {
-                        thread_id: child_id.clone(),
-                        parent_thread_id: pid.clone(),
+                        thread_id: child_id.to_string(),
+                        parent_thread_id: pid.to_string(),
                         title,
                     });
                     queue.push(child_id);
@@ -572,7 +576,7 @@ impl PersistentConversationStore {
         result
     }
 
-    pub fn get_total_tokens_used(&self, thread_id: &str) -> usize {
+    pub fn get_total_tokens_used(&self, thread_id: &ThreadId) -> usize {
         self.ensure_thread_metadata_loaded(thread_id);
         self.extras
             .lock()
@@ -582,7 +586,7 @@ impl PersistentConversationStore {
             .unwrap_or(0)
     }
 
-    pub fn set_total_tokens_used(&self, thread_id: &str, tokens: usize) {
+    pub fn set_total_tokens_used(&self, thread_id: &ThreadId, tokens: usize) {
         self.ensure_thread_metadata_loaded(thread_id);
         if let Some(e) = self
             .extras
@@ -596,7 +600,7 @@ impl PersistentConversationStore {
         self.notify_session(thread_id);
     }
 
-    pub fn get_last_updated(&self, thread_id: &str) -> String {
+    pub fn get_last_updated(&self, thread_id: &ThreadId) -> String {
         self.ensure_thread_metadata_loaded(thread_id);
         self.extras
             .lock()
@@ -606,7 +610,7 @@ impl PersistentConversationStore {
             .unwrap_or_default()
     }
 
-    pub fn set_last_updated(&self, thread_id: &str, ts: &str) {
+    pub fn set_last_updated(&self, thread_id: &ThreadId, ts: &str) {
         self.ensure_thread_metadata_loaded(thread_id);
         if let Some(e) = self
             .extras
@@ -620,7 +624,7 @@ impl PersistentConversationStore {
     }
 
     /// Write views to `{dir}/{thread_id}.views.json`.
-    fn save_views(&self, thread_id: &str) {
+    fn save_views(&self, thread_id: &ThreadId) {
         let Some(ref dir) = self.dir else { return };
         let views = self.views.lock().expect("bug: mutex poisoned");
         let path = dir.join(format!("{}.views.json", thread_id));
@@ -637,7 +641,7 @@ impl PersistentConversationStore {
     }
 
     /// Load views from `{dir}/{thread_id}.views.json`.
-    fn load_views(&self, thread_id: &str) {
+    fn load_views(&self, thread_id: &ThreadId) {
         tracing::info!("Loading views for thread {thread_id}");
         let Some(ref dir) = self.dir else { return };
         let path = dir.join(format!("{}.views.json", thread_id));
@@ -647,7 +651,7 @@ impl PersistentConversationStore {
                     self.views
                         .lock()
                         .expect("bug: mutex poisoned")
-                        .insert(thread_id.to_owned(), v);
+                        .insert(thread_id.clone(), v);
                 }
                 Err(e) => {
                     tracing::error!("Failed to deserialize views: {e}");
@@ -661,11 +665,11 @@ impl PersistentConversationStore {
     }
 
     /// Update a view for a thread and persist.
-    pub fn set_view(&self, thread_id: &str, view_type: &str, content: serde_json::Value) {
+    pub fn set_view(&self, thread_id: &ThreadId, view_type: &str, content: serde_json::Value) {
         {
             let mut views = self.views.lock().expect("bug: mutex poisoned");
             views
-                .entry(thread_id.to_owned())
+                .entry(thread_id.clone())
                 .or_default()
                 .insert(view_type.to_owned(), content);
         }
@@ -673,7 +677,7 @@ impl PersistentConversationStore {
     }
 
     /// Get all views for a thread.
-    pub fn get_views(&self, thread_id: &str) -> HashMap<String, serde_json::Value> {
+    pub fn get_views(&self, thread_id: &ThreadId) -> HashMap<String, serde_json::Value> {
         self.ensure_thread_loaded(thread_id);
         self.views
             .lock()
@@ -683,7 +687,7 @@ impl PersistentConversationStore {
             .unwrap_or_default()
     }
 
-    pub fn get_thread_title(&self, thread_id: &str) -> Option<String> {
+    pub fn get_thread_title(&self, thread_id: &ThreadId) -> Option<String> {
         self.ensure_thread_metadata_loaded(thread_id);
         self.extras
             .lock()
@@ -693,9 +697,9 @@ impl PersistentConversationStore {
     }
 
     /// Serialize all threads in a session tree to a JSON string.
-    pub fn serialize_session(&self, root_thread_id: &str) -> String {
-        let mut threads: HashMap<String, SerializedThread> = HashMap::new();
-        let mut queue = vec![root_thread_id.to_owned()];
+    pub fn serialize_session(&self, root_thread_id: &ThreadId) -> String {
+        let mut threads: HashMap<ThreadId, SerializedThread> = HashMap::new();
+        let mut queue = vec![root_thread_id.clone()];
         while let Some(tid) = queue.pop() {
             self.ensure_thread_loaded(&tid);
             let Some(metadata) = self.thread_meta(&tid) else {
@@ -727,7 +731,7 @@ impl PersistentConversationStore {
 
     /// Import a serialized session into the store.
     pub fn import_session(&self, data: &str) -> Result<(), MemoryError> {
-        let threads: HashMap<String, SerializedThread> = serde_json::from_str(data)
+        let threads: HashMap<ThreadId, SerializedThread> = serde_json::from_str(data)
             .map_err(|e| MemoryError(format!("failed to deserialize session: {e}")))?;
         for (tid, st) in threads {
             self.restore_thread_meta(&tid, st.metadata);
@@ -759,13 +763,13 @@ impl PersistentConversationStore {
 impl ConversationStore for PersistentConversationStore {
     type Error = MemoryError;
 
-    async fn ensure_root_thread(&self, thread_id: &str) -> Result<(), MemoryError> {
+    async fn ensure_root_thread(&self, thread_id: &ThreadId) -> Result<(), MemoryError> {
         self.ensure_thread_loaded(thread_id);
         let inserted = self.core.thread_info(thread_id).is_none();
         if inserted {
             self.core.ensure_root_thread(thread_id).await?;
             self.extras.lock().expect("bug: mutex poisoned").insert(
-                thread_id.to_owned(),
+                thread_id.clone(),
                 ThreadExtras::new(self.default_model.clone()),
             );
             self.save_thread(thread_id);
@@ -773,13 +777,13 @@ impl ConversationStore for PersistentConversationStore {
         Ok(())
     }
 
-    async fn thread_exists(&self, thread_id: &str) -> Result<bool, MemoryError> {
+    async fn thread_exists(&self, thread_id: &ThreadId) -> Result<bool, MemoryError> {
         Ok(self.has_thread(thread_id))
     }
 
     async fn load_history_up_to(
         &self,
-        session_id: &str,
+        session_id: &ThreadId,
         start_from: Option<i64>,
         up_to: Option<i64>,
     ) -> Result<Vec<InfinityMessage>, MemoryError> {
@@ -792,7 +796,7 @@ impl ConversationStore for PersistentConversationStore {
 
     async fn append_messages(
         &self,
-        session_id: &str,
+        session_id: &ThreadId,
         messages: Vec<(InfinityMessage, String)>,
     ) -> Result<(), MemoryError> {
         self.ensure_thread_loaded(session_id);
@@ -804,13 +808,13 @@ impl ConversationStore for PersistentConversationStore {
 
     async fn spawn_thread(
         &self,
-        parent_thread_id: &str,
+        parent_thread_id: &ThreadId,
         spawn_tool_call_id: &str,
         is_for_subscription_event: bool,
         spawn_order_override: Option<usize>,
-    ) -> Result<String, MemoryError> {
+    ) -> Result<ThreadId, MemoryError> {
         self.ensure_thread_loaded(parent_thread_id);
-        let new_id = self.id_source.generate();
+        let new_id = ThreadId::from(self.id_source.generate());
         {
             // Hold the load-tracking locks while creating the thread so a
             // concurrent load cannot interleave with the creation.
@@ -851,12 +855,12 @@ impl ConversationStore for PersistentConversationStore {
         Ok(new_id)
     }
 
-    async fn is_thread_closed(&self, thread_id: &str) -> Result<bool, MemoryError> {
+    async fn is_thread_closed(&self, thread_id: &ThreadId) -> Result<bool, MemoryError> {
         self.ensure_thread_metadata_loaded(thread_id);
         Ok(self.core.is_thread_closed(thread_id).await?)
     }
 
-    async fn close_thread(&self, thread_id: &str) -> Result<(), MemoryError> {
+    async fn close_thread(&self, thread_id: &ThreadId) -> Result<(), MemoryError> {
         self.ensure_thread_metadata_loaded(thread_id);
         self.core.close_thread(thread_id).await?;
         self.save_thread_metadata(thread_id);
@@ -864,23 +868,29 @@ impl ConversationStore for PersistentConversationStore {
         Ok(())
     }
 
-    async fn is_subscription_event_thread(&self, thread_id: &str) -> Result<bool, MemoryError> {
+    async fn is_subscription_event_thread(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<bool, MemoryError> {
         self.ensure_thread_metadata_loaded(thread_id);
         Ok(self.core.is_subscription_event_thread(thread_id).await?)
     }
 
     async fn get_thread_parent_info(
         &self,
-        thread_id: &str,
-    ) -> Result<Option<(String, String)>, MemoryError> {
+        thread_id: &ThreadId,
+    ) -> Result<Option<(ThreadId, String)>, MemoryError> {
         self.ensure_thread_metadata_loaded(thread_id);
         Ok(self.core.get_thread_parent_info(thread_id).await?)
     }
 
-    async fn get_ancestor_chain(&self, thread_id: &str) -> Result<Vec<(String, i64)>, MemoryError> {
+    async fn get_ancestor_chain(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<(ThreadId, i64)>, MemoryError> {
         // Lazily load the metadata of every ancestor, then delegate the walk
         // (and its ordering semantics) to the core store.
-        let mut current = thread_id.to_owned();
+        let mut current = thread_id.clone();
         loop {
             self.ensure_thread_metadata_loaded(&current);
             match self
@@ -897,7 +907,7 @@ impl ConversationStore for PersistentConversationStore {
 
     async fn save_compaction_summary(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         summary: &str,
         up_to_order: i64,
     ) -> Result<(), MemoryError> {
@@ -911,7 +921,7 @@ impl ConversationStore for PersistentConversationStore {
 
     async fn load_latest_compaction_summary_up_to(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         up_to_order: Option<i64>,
     ) -> Result<Option<(String, i64)>, MemoryError> {
         self.ensure_thread_loaded(thread_id);
@@ -921,19 +931,22 @@ impl ConversationStore for PersistentConversationStore {
             .await?)
     }
 
-    async fn is_compaction_thread(&self, thread_id: &str) -> Result<bool, MemoryError> {
+    async fn is_compaction_thread(&self, thread_id: &ThreadId) -> Result<bool, MemoryError> {
         self.ensure_thread_metadata_loaded(thread_id);
         Ok(self.core.is_compaction_thread(thread_id).await?)
     }
 
-    async fn mark_thread_as_compaction(&self, thread_id: &str) -> Result<(), MemoryError> {
+    async fn mark_thread_as_compaction(&self, thread_id: &ThreadId) -> Result<(), MemoryError> {
         self.ensure_thread_metadata_loaded(thread_id);
         self.core.mark_thread_as_compaction(thread_id).await?;
         self.save_thread_metadata(thread_id);
         Ok(())
     }
 
-    async fn get_thread_spawn_order(&self, thread_id: &str) -> Result<Option<i64>, MemoryError> {
+    async fn get_thread_spawn_order(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Option<i64>, MemoryError> {
         self.ensure_thread_metadata_loaded(thread_id);
         Ok(self.core.get_thread_spawn_order(thread_id).await?)
     }
@@ -948,7 +961,7 @@ pub struct PersistentStateStore {
     /// Directory where per-thread state JSON files are stored.
     dir: PathBuf,
     /// Tracks which keys have already been loaded (or attempted) from disk.
-    loaded: Arc<Mutex<HashSet<String>>>,
+    loaded: Arc<Mutex<HashSet<ThreadId>>>,
     // Used to resolve child threads for stopped-session policy.
     conversation_store: PersistentConversationStore,
     session_store: Arc<tokio::sync::Mutex<crate::session_store::SessionStore>>,
@@ -971,7 +984,7 @@ impl PersistentStateStore {
         }
     }
 
-    pub fn has_pending_choices(&self, thread_id: &str) -> bool {
+    pub fn has_pending_choices(&self, thread_id: &ThreadId) -> bool {
         self.ensure_loaded(thread_id);
         !self
             .core
@@ -983,14 +996,14 @@ impl PersistentStateStore {
     /// Whether any thread in the session rooted at `session_id` has a pending
     /// user choice. The exact-thread query above remains available for routing
     /// choice responses to the thread that requested them.
-    pub fn has_pending_choices_for_session(&self, session_id: &str) -> bool {
+    pub fn has_pending_choices_for_session(&self, session_id: &ThreadId) -> bool {
         self.conversation_store
             .get_session_thread_ids(session_id)
             .iter()
             .any(|thread_id| self.has_pending_choices(thread_id))
     }
 
-    pub fn pending_choice(&self, thread_id: &str, choice_id: &str) -> Option<UserChoice> {
+    pub fn pending_choice(&self, thread_id: &ThreadId, choice_id: &str) -> Option<UserChoice> {
         self.ensure_loaded(thread_id);
         self.core
             .thread_state(thread_id)
@@ -999,7 +1012,7 @@ impl PersistentStateStore {
             .find(|choice| choice.id == choice_id)
     }
 
-    pub async fn clear_pending_choices(&self, thread_id: &str) -> Result<(), MemoryError> {
+    pub async fn clear_pending_choices(&self, thread_id: &ThreadId) -> Result<(), MemoryError> {
         let choices = self.get_pending_user_choices(thread_id).await?;
         for choice in choices {
             self.remove_pending_user_choice(thread_id, &choice.id)
@@ -1012,7 +1025,7 @@ impl PersistentStateStore {
     /// closed and compaction threads that are not shown in the session UI.
     pub async fn clear_pending_choices_for_session(
         &self,
-        session_id: &str,
+        session_id: &ThreadId,
     ) -> Result<(), MemoryError> {
         for thread_id in self.conversation_store.get_session_thread_ids(session_id) {
             self.clear_pending_choices(&thread_id).await?;
@@ -1022,7 +1035,7 @@ impl PersistentStateStore {
 
     /// Write a single key's state data to `{dir}/{key}.state.json`. The file
     /// is the serialized core [`ThreadState`] snapshot.
-    fn save_key(&self, key: &str) {
+    fn save_key(&self, key: &ThreadId) {
         let snapshot = self.core.thread_state(key);
         let path = self.dir.join(format!("{}.state.json", key));
         if let Ok(json) = serde_json::to_string_pretty(&snapshot) {
@@ -1031,7 +1044,7 @@ impl PersistentStateStore {
     }
 
     /// Ensure a key's data is loaded from disk into the core store.
-    fn ensure_loaded(&self, key: &str) {
+    fn ensure_loaded(&self, key: &ThreadId) {
         let mut loaded = self.loaded.lock().expect("bug: mutex poisoned");
         if loaded.contains(key) {
             return;
@@ -1044,7 +1057,7 @@ impl PersistentStateStore {
             self.core.set_thread_state(key, snapshot);
         }
 
-        loaded.insert(key.to_owned());
+        loaded.insert(key.clone());
     }
 }
 
@@ -1052,14 +1065,17 @@ impl PersistentStateStore {
 impl StateStore for PersistentStateStore {
     type Error = MemoryError;
 
-    async fn get_processed_ids(&self, thread_id: &str) -> Result<HashSet<String>, MemoryError> {
+    async fn get_processed_ids(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<HashSet<String>, MemoryError> {
         self.ensure_loaded(thread_id);
         Ok(self.core.get_processed_ids(thread_id).await?)
     }
 
     async fn add_processed_message_ids(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         message_ids: Vec<String>,
     ) -> Result<(), MemoryError> {
         self.ensure_loaded(thread_id);
@@ -1072,7 +1088,7 @@ impl StateStore for PersistentStateStore {
 
     async fn get_metadata(
         &self,
-        root_thread_id: &str,
+        root_thread_id: &ThreadId,
     ) -> Result<Option<serde_json::Value>, MemoryError> {
         self.ensure_loaded(root_thread_id);
         Ok(self.core.get_metadata(root_thread_id).await?)
@@ -1080,7 +1096,7 @@ impl StateStore for PersistentStateStore {
 
     async fn set_metadata(
         &self,
-        root_thread_id: &str,
+        root_thread_id: &ThreadId,
         metadata: serde_json::Value,
     ) -> Result<(), MemoryError> {
         self.ensure_loaded(root_thread_id);
@@ -1089,14 +1105,17 @@ impl StateStore for PersistentStateStore {
         Ok(())
     }
 
-    async fn get_active_subscriptions(&self, thread_id: &str) -> Result<Vec<String>, MemoryError> {
+    async fn get_active_subscriptions(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<String>, MemoryError> {
         self.ensure_loaded(thread_id);
         Ok(self.core.get_active_subscriptions(thread_id).await?)
     }
 
     async fn add_active_subscription(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         tool_call_id: &str,
     ) -> Result<(), MemoryError> {
         self.ensure_loaded(thread_id);
@@ -1109,7 +1128,7 @@ impl StateStore for PersistentStateStore {
 
     async fn remove_active_subscription(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         tool_call_id: &str,
     ) -> Result<(), MemoryError> {
         self.ensure_loaded(thread_id);
@@ -1122,7 +1141,7 @@ impl StateStore for PersistentStateStore {
 
     async fn add_pending_user_choice(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         choice: UserChoice,
     ) -> Result<(), MemoryError> {
         self.ensure_loaded(thread_id);
@@ -1134,7 +1153,7 @@ impl StateStore for PersistentStateStore {
 
     async fn remove_pending_user_choice(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         choice_id: &str,
     ) -> Result<(), MemoryError> {
         self.ensure_loaded(thread_id);
@@ -1148,13 +1167,13 @@ impl StateStore for PersistentStateStore {
 
     async fn get_pending_user_choices(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
     ) -> Result<Vec<UserChoice>, MemoryError> {
         self.ensure_loaded(thread_id);
         Ok(self.core.get_pending_user_choices(thread_id).await?)
     }
 
-    async fn is_thread_stopped(&self, thread_id: &str) -> Result<bool, MemoryError> {
+    async fn is_thread_stopped(&self, thread_id: &ThreadId) -> Result<bool, MemoryError> {
         let session_id = self.conversation_store.get_root_thread_id(thread_id);
         Ok(self.session_store.lock().await.is_shut_down(&session_id))
     }
@@ -1200,7 +1219,7 @@ mod tests {
         });
         let meta: ThreadMeta =
             serde_json::from_value(old_json.clone()).expect("old flat format parses");
-        assert_eq!(meta.info.root_thread_id, "r");
+        assert_eq!(meta.info.root_thread_id.as_str(), "r");
         assert_eq!(meta.info.spawn_message_order, Some(3));
         assert_eq!(meta.extras.total_tokens_used, 42);
         assert_eq!(meta.extras.selected_model.provider_id, "prov");
@@ -1227,25 +1246,25 @@ mod tests {
             Arc::new(crate::ids::UuidIdSource),
         );
         store
-            .ensure_root_thread("root")
+            .ensure_root_thread(&"root".into())
             .await
             .expect("ensure root thread");
         store
             .append_messages(
-                "root",
+                &"root".into(),
                 vec![(user_msg("p1"), "m1".into()), (asst_msg("p2"), "m2".into())],
             )
             .await
             .expect("append root messages");
 
         let child = store
-            .spawn_thread("root", "tc-1", false, None)
+            .spawn_thread(&"root".into(), "tc-1", false, None)
             .await
             .expect("spawn child thread");
 
         store
             .append_messages(
-                "root",
+                &"root".into(),
                 vec![(user_msg("p3"), "m3".into()), (asst_msg("p4"), "m4".into())],
             )
             .await
@@ -1285,16 +1304,16 @@ mod tests {
             Arc::new(crate::ids::UuidIdSource),
         );
         store
-            .ensure_root_thread("root")
+            .ensure_root_thread(&"root".into())
             .await
             .expect("ensure root thread");
         store
-            .append_messages("root", vec![(user_msg("r1"), "m1".into())])
+            .append_messages(&"root".into(), vec![(user_msg("r1"), "m1".into())])
             .await
             .expect("append root messages");
 
         let child = store
-            .spawn_thread("root", "tc-1", false, None)
+            .spawn_thread(&"root".into(), "tc-1", false, None)
             .await
             .expect("spawn child thread");
         store
@@ -1331,12 +1350,12 @@ mod tests {
             Arc::new(crate::ids::UuidIdSource),
         );
         store
-            .ensure_root_thread("root")
+            .ensure_root_thread(&"root".into())
             .await
             .expect("ensure root thread");
         store
             .append_messages(
-                "root",
+                &"root".into(),
                 vec![
                     (user_msg("old1"), "m1".into()),
                     (asst_msg("old2"), "m2".into()),
@@ -1348,12 +1367,12 @@ mod tests {
             .expect("append root messages");
 
         store
-            .save_compaction_summary("root", "summary of old stuff", 2)
+            .save_compaction_summary(&"root".into(), "summary of old stuff", 2)
             .await
             .expect("save compaction summary");
 
         let (history, compacted_up_to, _) = store
-            .load_history_with_ancestors("root")
+            .load_history_with_ancestors(&"root".into())
             .await
             .expect("load history with ancestors");
         assert_eq!(history.len(), 3);
@@ -1376,12 +1395,12 @@ mod tests {
             Arc::new(crate::ids::UuidIdSource),
         );
         store
-            .ensure_root_thread("root")
+            .ensure_root_thread(&"root".into())
             .await
             .expect("ensure root thread");
         store
             .append_messages(
-                "root",
+                &"root".into(),
                 vec![
                     (user_msg("old1"), "m1".into()),
                     (asst_msg("old2"), "m2".into()),
@@ -1392,12 +1411,12 @@ mod tests {
             .expect("append root messages");
 
         store
-            .save_compaction_summary("root", "compacted root", 2)
+            .save_compaction_summary(&"root".into(), "compacted root", 2)
             .await
             .expect("save compaction summary");
 
         let child = store
-            .spawn_thread("root", "tc-1", false, None)
+            .spawn_thread(&"root".into(), "tc-1", false, None)
             .await
             .expect("spawn child thread");
         store
@@ -1428,12 +1447,12 @@ mod tests {
             Arc::new(crate::ids::UuidIdSource),
         );
         store
-            .ensure_root_thread("root")
+            .ensure_root_thread(&"root".into())
             .await
             .expect("ensure root thread");
         store
             .append_messages(
-                "root",
+                &"root".into(),
                 vec![
                     (user_msg("a"), "m1".into()),
                     (asst_msg("b"), "m2".into()),
@@ -1446,16 +1465,16 @@ mod tests {
             .expect("append root messages");
 
         store
-            .save_compaction_summary("root", "early summary", 2)
+            .save_compaction_summary(&"root".into(), "early summary", 2)
             .await
             .expect("save early compaction summary");
         store
-            .save_compaction_summary("root", "later summary", 4)
+            .save_compaction_summary(&"root".into(), "later summary", 4)
             .await
             .expect("save later compaction summary");
 
         let child = store
-            .spawn_thread("root", "tc-1", false, None)
+            .spawn_thread(&"root".into(), "tc-1", false, None)
             .await
             .expect("spawn child thread");
         store
@@ -1487,23 +1506,23 @@ mod tests {
             Arc::new(crate::ids::UuidIdSource),
         );
         store
-            .ensure_root_thread("root")
+            .ensure_root_thread(&"root".into())
             .await
             .expect("ensure root thread");
         store
             .append_messages(
-                "root",
+                &"root".into(),
                 vec![(user_msg("r1"), "m1".into()), (asst_msg("r2"), "m2".into())],
             )
             .await
             .expect("append root messages");
         store
-            .save_compaction_summary("root", "root compaction", 2)
+            .save_compaction_summary(&"root".into(), "root compaction", 2)
             .await
             .expect("save root compaction summary");
 
         let child = store
-            .spawn_thread("root", "tc-1", false, None)
+            .spawn_thread(&"root".into(), "tc-1", false, None)
             .await
             .expect("spawn child thread");
         store

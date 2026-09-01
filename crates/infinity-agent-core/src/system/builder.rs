@@ -1,5 +1,6 @@
 //! Building an [`AgentSystem`]: the entry point of the high-level API.
 
+use rap_protocol::ThreadId;
 use std::rc::Rc;
 
 use async_trait::async_trait;
@@ -383,7 +384,7 @@ where
     pub fn start_with_observer<O, F>(self, make_observer: F) -> RunningSystem<O::SubscribeRequest>
     where
         O: ThreadObserver + 'static,
-        F: Fn(&str) -> O + 'static,
+        F: Fn(&ThreadId) -> O + 'static,
     {
         self.build_local().start_with_observer(make_observer)
     }
@@ -453,9 +454,9 @@ where
         inputs: Vec<(InputMessage, String)>,
         observer: &O,
         defer: &mut D,
-    ) -> Result<Vec<(String, StepOutcome)>, BoxError> {
+    ) -> Result<Vec<(ThreadId, StepOutcome)>, BoxError> {
         // Partition by thread, preserving arrival order within each thread.
-        let mut groups: Vec<(String, Vec<(InputMessage, String)>)> = Vec::new();
+        let mut groups: Vec<(ThreadId, Vec<(InputMessage, String)>)> = Vec::new();
         for (msg, id) in inputs {
             match groups.iter_mut().find(|(g, _)| *g == msg.group_id) {
                 Some((_, batch)) => batch.push((msg, id)),
@@ -568,11 +569,11 @@ mod tests {
 
                 let (outcomes, events) = step.await.expect("join");
                 assert_eq!(outcomes.len(), 1);
-                assert_eq!(outcomes[0].0, "t1");
+                assert_eq!(outcomes[0].0.as_str(), "t1");
                 assert!(matches!(outcomes[0].1, StepOutcome::Completed { .. }));
-                assert!(events.iter().any(|(t, e)| t == "t1"
+                assert!(events.iter().any(|(t, e)| t.as_str() == "t1"
                     && matches!(e, AgentEvent::UserInput { text } if text == "hello")));
-                assert!(events.iter().any(|(t, e)| t == "t1"
+                assert!(events.iter().any(|(t, e)| t.as_str() == "t1"
                     && matches!(e, AgentEvent::TextChunk { text } if text == "hi there")));
                 assert!(
                     events
@@ -637,9 +638,9 @@ mod tests {
                         .iter()
                         .all(|(_, o)| matches!(o, StepOutcome::Completed { .. }))
                 );
-                assert!(events.iter().any(|(t, e)| t == "t1"
+                assert!(events.iter().any(|(t, e)| t.as_str() == "t1"
                     && matches!(e, AgentEvent::TextChunk { text } if text == "one")));
-                assert!(events.iter().any(|(t, e)| t == "t2"
+                assert!(events.iter().any(|(t, e)| t.as_str() == "t2"
                     && matches!(e, AgentEvent::TextChunk { text } if text == "two")));
             })
             .await;
@@ -701,9 +702,9 @@ mod tests {
             let (outcomes, events) = step.await.expect("join");
             assert_eq!(outcomes.len(), 1);
             assert!(matches!(outcomes[0].1, StepOutcome::Completed { .. }));
-            assert!(events.iter().any(|(t, e)| t == "t1"
+            assert!(events.iter().any(|(t, e)| t.as_str() == "t1"
                 && matches!(e, AgentEvent::OAuthRequired { auth_url } if auth_url == "https://example.com/auth")));
-            assert!(events.iter().any(|(t, e)| t == "t1"
+            assert!(events.iter().any(|(t, e)| t.as_str() == "t1"
                 && matches!(e, AgentEvent::UserInput { text } if text == "hello")));
         })
         .await;

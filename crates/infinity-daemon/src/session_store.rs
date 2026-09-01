@@ -1,3 +1,4 @@
+use infinity_agent_core::ThreadId;
 use std::{collections::HashMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -35,15 +36,15 @@ impl SessionEntry {
 
 #[derive(Serialize, Deserialize)]
 pub struct SessionStore {
-    pub sessions: HashMap<String, SessionEntry>,
+    pub sessions: HashMap<ThreadId, SessionEntry>,
     #[serde(skip)]
     path: String,
     #[serde(skip)]
-    change_tx: Option<mpsc::UnboundedSender<String>>,
+    change_tx: Option<mpsc::UnboundedSender<ThreadId>>,
 }
 
 impl SessionStore {
-    pub fn load(path: &str, change_tx: mpsc::UnboundedSender<String>) -> Self {
+    pub fn load(path: &str, change_tx: mpsc::UnboundedSender<ThreadId>) -> Self {
         let sessions = std::fs::read_to_string(path)
             .ok()
             .and_then(|s| {
@@ -54,7 +55,7 @@ impl SessionStore {
                 // Fall back to legacy Vec format
                 #[derive(Deserialize)]
                 struct LegacyEntry {
-                    thread_id: String,
+                    thread_id: ThreadId,
                 }
                 #[derive(Deserialize)]
                 struct LegacyStore {
@@ -96,15 +97,15 @@ impl SessionStore {
         Ok(())
     }
 
-    pub fn notify(&self, session_id: &str) {
+    pub fn notify(&self, session_id: &ThreadId) {
         if let Some(ref tx) = self.change_tx {
-            let _ = tx.send(session_id.to_owned());
+            let _ = tx.send(session_id.clone());
         }
     }
 
-    pub fn create(&mut self, session_id: &str, cwd: PathBuf) {
+    pub fn create(&mut self, session_id: &ThreadId, cwd: PathBuf) {
         self.sessions.insert(
-            session_id.to_owned(),
+            session_id.clone(),
             SessionEntry {
                 cwd,
                 shut_down: false,
@@ -115,7 +116,7 @@ impl SessionStore {
         self.notify(session_id);
     }
 
-    pub fn get_cwd(&self, session_id: &str) -> &PathBuf {
+    pub fn get_cwd(&self, session_id: &ThreadId) -> &PathBuf {
         &self
             .sessions
             .get(session_id)
@@ -123,14 +124,14 @@ impl SessionStore {
             .cwd
     }
 
-    pub fn mark_shut_down(&mut self, session_id: &str) {
+    pub fn mark_shut_down(&mut self, session_id: &ThreadId) {
         if let Some(entry) = self.sessions.get_mut(session_id) {
             entry.shut_down = true;
             self.notify(session_id);
         }
     }
 
-    pub fn clear_shut_down(&mut self, session_id: &str) -> bool {
+    pub fn clear_shut_down(&mut self, session_id: &ThreadId) -> bool {
         tracing::trace!("Clearing shut down status for {}", session_id);
         if let Some(entry) = self.sessions.get_mut(session_id)
             && entry.shut_down
@@ -142,7 +143,7 @@ impl SessionStore {
         false
     }
 
-    pub fn mark_idle(&mut self, session_id: &str) {
+    pub fn mark_idle(&mut self, session_id: &ThreadId) {
         if let Some(entry) = self.sessions.get_mut(session_id)
             && !entry.idle
         {
@@ -151,7 +152,7 @@ impl SessionStore {
         }
     }
 
-    pub fn clear_idle(&mut self, session_id: &str) -> bool {
+    pub fn clear_idle(&mut self, session_id: &ThreadId) -> bool {
         if let Some(entry) = self.sessions.get_mut(session_id)
             && entry.idle
         {
@@ -162,21 +163,21 @@ impl SessionStore {
         false
     }
 
-    pub fn is_idle(&self, session_id: &str) -> bool {
+    pub fn is_idle(&self, session_id: &ThreadId) -> bool {
         self.sessions
             .get(session_id)
             .map(|e| e.idle)
             .unwrap_or(false)
     }
 
-    pub fn is_shut_down(&self, session_id: &str) -> bool {
+    pub fn is_shut_down(&self, session_id: &ThreadId) -> bool {
         self.sessions
             .get(session_id)
             .map(|e| e.shut_down)
             .unwrap_or(false)
     }
 
-    pub fn mark_archived(&mut self, session_id: &str) {
+    pub fn mark_archived(&mut self, session_id: &ThreadId) {
         if let Some(entry) = self.sessions.get_mut(session_id) {
             entry.archived = true;
             self.notify(session_id);

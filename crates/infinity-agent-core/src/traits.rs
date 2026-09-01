@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use infinity_provider_protocol::message::AssistantContent;
 
+use rap_protocol::ThreadId;
+
 use crate::message::{InfinityMessage, InputMessage};
 use crate::system::UserChoice;
 
@@ -9,17 +11,17 @@ use crate::system::UserChoice;
 pub trait ConversationStore: Send + Sync + Clone {
     type Error: std::error::Error + Send + Sync + 'static;
 
-    async fn ensure_root_thread(&self, thread_id: &str) -> Result<(), Self::Error>;
+    async fn ensure_root_thread(&self, thread_id: &ThreadId) -> Result<(), Self::Error>;
 
     /// Return whether an exact root or child thread record exists without
     /// creating it.
-    async fn thread_exists(&self, thread_id: &str) -> Result<bool, Self::Error>;
+    async fn thread_exists(&self, thread_id: &ThreadId) -> Result<bool, Self::Error>;
 
     /// Load history for a session. `start_from` (exclusive) and `up_to`
     /// (inclusive) are optional bounds on message order. `None` means unbounded.
     async fn load_history_up_to(
         &self,
-        session_id: &str,
+        session_id: &ThreadId,
         start_from: Option<i64>,
         up_to: Option<i64>,
     ) -> Result<Vec<InfinityMessage>, Self::Error>;
@@ -33,7 +35,7 @@ pub trait ConversationStore: Send + Sync + Clone {
     /// history come from ancestors (not this thread's own store).
     async fn load_history_with_ancestors(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
     ) -> Result<(Vec<InfinityMessage>, Option<i64>, usize), Self::Error> {
         // Check the thread itself first
         if let Ok(Some((summary, compacted_up_to))) = self
@@ -105,42 +107,49 @@ pub trait ConversationStore: Send + Sync + Clone {
 
     async fn append_messages(
         &self,
-        session_id: &str,
+        session_id: &ThreadId,
         messages: Vec<(InfinityMessage, String)>,
     ) -> Result<(), Self::Error>;
 
     async fn spawn_thread(
         &self,
-        parent_thread_id: &str,
+        parent_thread_id: &ThreadId,
         spawn_tool_call_id: &str,
         is_for_subscription_event: bool,
         spawn_order_override: Option<usize>,
-    ) -> Result<String, Self::Error>;
+    ) -> Result<ThreadId, Self::Error>;
 
-    async fn is_thread_closed(&self, thread_id: &str) -> Result<bool, Self::Error>;
+    async fn is_thread_closed(&self, thread_id: &ThreadId) -> Result<bool, Self::Error>;
 
-    async fn close_thread(&self, thread_id: &str) -> Result<(), Self::Error>;
+    async fn close_thread(&self, thread_id: &ThreadId) -> Result<(), Self::Error>;
 
-    async fn is_subscription_event_thread(&self, thread_id: &str) -> Result<bool, Self::Error>;
+    async fn is_subscription_event_thread(&self, thread_id: &ThreadId)
+    -> Result<bool, Self::Error>;
 
     async fn get_thread_parent_info(
         &self,
-        thread_id: &str,
-    ) -> Result<Option<(String, String)>, Self::Error>;
+        thread_id: &ThreadId,
+    ) -> Result<Option<(ThreadId, String)>, Self::Error>;
 
-    async fn get_ancestor_chain(&self, thread_id: &str) -> Result<Vec<(String, i64)>, Self::Error>;
+    async fn get_ancestor_chain(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<(ThreadId, i64)>, Self::Error>;
 
     // ── Compaction support ──
 
-    async fn mark_thread_as_compaction(&self, thread_id: &str) -> Result<(), Self::Error>;
+    async fn mark_thread_as_compaction(&self, thread_id: &ThreadId) -> Result<(), Self::Error>;
 
-    async fn is_compaction_thread(&self, thread_id: &str) -> Result<bool, Self::Error>;
+    async fn is_compaction_thread(&self, thread_id: &ThreadId) -> Result<bool, Self::Error>;
 
-    async fn get_thread_spawn_order(&self, thread_id: &str) -> Result<Option<i64>, Self::Error>;
+    async fn get_thread_spawn_order(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Option<i64>, Self::Error>;
 
     async fn save_compaction_summary(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         summary: &str,
         up_to_order: i64,
     ) -> Result<(), Self::Error>;
@@ -149,7 +158,7 @@ pub trait ConversationStore: Send + Sync + Clone {
     /// only return summaries whose `up_to_order` is <= n.
     async fn load_latest_compaction_summary_up_to(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         up_to_order: Option<i64>,
     ) -> Result<Option<(String, i64)>, Self::Error>;
 }
@@ -165,61 +174,64 @@ pub trait StateStore: Send + Sync + Clone {
     /// events); tool results are deduplicated against history itself.
     async fn get_processed_ids(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
     ) -> Result<std::collections::HashSet<String>, Self::Error>;
 
     async fn add_processed_message_ids(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         message_ids: Vec<String>,
     ) -> Result<(), Self::Error>;
 
     async fn get_metadata(
         &self,
-        root_thread_id: &str,
+        root_thread_id: &ThreadId,
     ) -> Result<Option<serde_json::Value>, Self::Error>;
 
     async fn set_metadata(
         &self,
-        root_thread_id: &str,
+        root_thread_id: &ThreadId,
         metadata: serde_json::Value,
     ) -> Result<(), Self::Error>;
 
     /// Return the list of active subscription tool_call_ids for a specific thread.
-    async fn get_active_subscriptions(&self, thread_id: &str) -> Result<Vec<String>, Self::Error>;
+    async fn get_active_subscriptions(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<String>, Self::Error>;
 
     /// Record a new active subscription (tool_call_id) for a specific thread.
     async fn add_active_subscription(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         tool_call_id: &str,
     ) -> Result<(), Self::Error>;
 
     /// Remove an active subscription (tool_call_id) from a specific thread.
     async fn remove_active_subscription(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         tool_call_id: &str,
     ) -> Result<(), Self::Error>;
 
     /// Add or replace a pending user choice for one thread.
     async fn add_pending_user_choice(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         choice: UserChoice,
     ) -> Result<(), Self::Error>;
 
     /// Remove a pending user choice after it is answered or interrupted.
     async fn remove_pending_user_choice(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         choice_id: &str,
     ) -> Result<(), Self::Error>;
 
     /// List choices awaiting a response for one thread.
     async fn get_pending_user_choices(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
     ) -> Result<Vec<UserChoice>, Self::Error>;
 
     /// Whether an existing thread has been explicitly stopped.
@@ -235,7 +247,7 @@ pub trait StateStore: Send + Sync + Clone {
     /// Implementations that track stopped state per conversation may resolve
     /// the root themselves. Stores without stopped-thread policy inherit the
     /// default `false` response.
-    async fn is_thread_stopped(&self, _thread_id: &str) -> Result<bool, Self::Error> {
+    async fn is_thread_stopped(&self, _thread_id: &ThreadId) -> Result<bool, Self::Error> {
         Ok(false)
     }
 }

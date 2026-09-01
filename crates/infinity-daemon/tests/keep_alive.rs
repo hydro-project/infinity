@@ -6,6 +6,7 @@
 //! out and its agent task should exit even though the client is still
 //! connected. A normal (keep-alive) connection must keep the session warm.
 
+use infinity_agent_core::ThreadId;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -97,7 +98,7 @@ async fn wait_for_message(
 
 /// Run one full round: create a session with the given keep-alive flag, send
 /// input, complete a mock model response, and return the session id.
-async fn create_session_and_chat(h: &mut TestHarness, keeps_session_alive: bool) -> String {
+async fn create_session_and_chat(h: &mut TestHarness, keeps_session_alive: bool) -> ThreadId {
     h.client_tx
         .send(ClientMessage::CreateSession {
             cwd: h.cwd.path().to_path_buf(),
@@ -131,12 +132,12 @@ async fn create_session_and_chat(h: &mut TestHarness, keeps_session_alive: bool)
     })
     .await;
 
-    session_id
+    ThreadId::from(session_id)
 }
 
 /// Poll until the session's RAP servers have been stopped (the session-idle
 /// teardown path ran), or time out.
-async fn wait_for_server_teardown(manager: &SharedSessionManager, session_id: &str) -> bool {
+async fn wait_for_server_teardown(manager: &SharedSessionManager, session_id: &ThreadId) -> bool {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
         {
@@ -203,7 +204,7 @@ async fn user_input_restarts_stopped_session() {
 
             h.client_tx
                 .send(ClientMessage::UserInput {
-                    session_id: session_id.clone(),
+                    session_id: session_id.to_string(),
                     text: "resume".to_owned(),
                 })
                 .expect("send user input");
@@ -279,11 +280,12 @@ async fn active_subscription_keeps_rap_servers_warm() {
             let DaemonMessage::Connected { session_id, .. } = connected else {
                 unreachable!()
             };
+            let session_id = ThreadId::from(session_id);
 
             // Round 1 leaves a pending tool call for the subscription setup.
             h.client_tx
                 .send(ClientMessage::UserInput {
-                    session_id: session_id.clone(),
+                    session_id: session_id.to_string(),
                     text: "watch the build".to_owned(),
                 })
                 .expect("send UserInput");

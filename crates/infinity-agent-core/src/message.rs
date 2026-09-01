@@ -1,6 +1,7 @@
 use infinity_provider_protocol::message::{
     AssistantContent, Message, ToolCall, ToolResult, UserContent,
 };
+use rap_protocol::ThreadId;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -59,7 +60,7 @@ pub enum TaggedSyntheticKind {
     #[serde(rename = "thread_report")]
     ThreadReport {
         tool_call_id: String,
-        child_thread_id: String,
+        child_thread_id: ThreadId,
     },
     #[serde(rename = "parent_message")]
     ParentMessage { tool_call_id: String },
@@ -137,7 +138,7 @@ impl SyntheticKind {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct InputMessage {
     pub content: InputMessageContent,
-    pub group_id: String,
+    pub group_id: ThreadId,
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
     #[serde(default)]
@@ -156,7 +157,7 @@ pub struct InputMessage {
 
 impl InputMessage {
     /// A plain (non-synthetic) user text message addressed to `thread_id`.
-    pub fn user_text(thread_id: impl Into<String>, text: impl Into<String>) -> Self {
+    pub fn user_text(thread_id: impl Into<ThreadId>, text: impl Into<String>) -> Self {
         Self {
             content: InputMessageContent::User(UserContent::text(text.into())),
             group_id: thread_id.into(),
@@ -212,7 +213,7 @@ pub enum InfinityMessage {
         tool_call_id: String,
         /// Set when this is a thread report (used to build the display name).
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        child_thread_id: Option<String>,
+        child_thread_id: Option<ThreadId>,
         /// The synthetic `receive_event__injected` tool call. When present,
         /// `into_messages` emits both the tool call and the tool result for
         /// the LLM, but replay only emits the subscription display event.

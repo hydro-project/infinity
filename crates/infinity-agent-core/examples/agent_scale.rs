@@ -32,6 +32,7 @@ use infinity_provider_protocol::message::{
     Message, ToolCall, ToolResult, ToolResultContent, UserContent,
 };
 
+use infinity_agent_core::ThreadId;
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
 use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
 use infinity_agent_core::system::local::ChannelSender;
@@ -156,13 +157,13 @@ struct CountObserver {
 impl ThreadObserver for CountObserver {
     type SubscribeRequest = ();
 
-    fn on_event(&self, _thread_id: &str, event: &AgentEvent) {
+    fn on_event(&self, _thread_id: &ThreadId, event: &AgentEvent) {
         if matches!(event, AgentEvent::CompletionFinished { .. }) {
             self.finished.set(self.finished.get() + 1);
         }
     }
 
-    fn on_subscribe(&self, _thread_id: &str, _request: (), _snapshot: ReplaySnapshot) {}
+    fn on_subscribe(&self, _thread_id: &ThreadId, _request: (), _snapshot: ReplaySnapshot) {}
 }
 
 // ── Measurement helpers ──
@@ -204,7 +205,7 @@ fn user_text(thread_id: &str, turn: usize) -> InputMessage {
             "Turn {turn}: re-run the affected tests for {thread_id} and summarize any failures \
              along with the modules they belong to."
         ))),
-        group_id: thread_id.to_owned(),
+        group_id: thread_id.into(),
         metadata: None,
         synthetic: None,
         display_as: None,

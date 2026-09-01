@@ -1,6 +1,7 @@
 //! The daemon's [`ThreadObserver`]: fans agent events out to attached
 //! clients as [`DaemonMessage`]s and persists derived presentation state.
 
+use infinity_agent_core::ThreadId;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -32,7 +33,7 @@ pub type ThreadSubscribers = Arc<std::sync::Mutex<Vec<Subscriber>>>;
 
 /// Maps thread_id → subscriber list (for inheriting to children and idle
 /// detection).
-pub type SubscriberMap = Arc<std::sync::Mutex<HashMap<String, ThreadSubscribers>>>;
+pub type SubscriberMap = Arc<std::sync::Mutex<HashMap<ThreadId, ThreadSubscribers>>>;
 
 /// Deliver `msg` to every subscriber in the list, pruning subscribers whose
 /// client has disconnected (their channel is closed). This is the single
@@ -65,7 +66,7 @@ pub fn broadcast_pruning(
 /// both locks at once.
 pub fn broadcast_to_thread(
     map: &SubscriberMap,
-    thread_id: &str,
+    thread_id: &ThreadId,
     msg: &DaemonMessage,
     requester: Option<&mpsc::UnboundedSender<DaemonMessage>>,
 ) -> bool {
@@ -102,7 +103,7 @@ impl DaemonObserver {
 impl ThreadObserver for DaemonObserver {
     type SubscribeRequest = SubscribeRequest;
 
-    fn on_event(&self, thread_id: &str, event: &AgentEvent) {
+    fn on_event(&self, thread_id: &ThreadId, event: &AgentEvent) {
         // Persist state derived from the event before broadcasting it, so a
         // client can never observe a message whose session state is missing.
         match event {
@@ -130,7 +131,12 @@ impl ThreadObserver for DaemonObserver {
         self.broadcast(agent_event_to_daemon(thread_id, event));
     }
 
-    fn on_subscribe(&self, thread_id: &str, request: SubscribeRequest, snapshot: ReplaySnapshot) {
+    fn on_subscribe(
+        &self,
+        thread_id: &ThreadId,
+        request: SubscribeRequest,
+        snapshot: ReplaySnapshot,
+    ) {
         if request.wants_replay {
             let mut history: Vec<DaemonMessage> = snapshot
                 .history
@@ -143,10 +149,10 @@ impl ThreadObserver for DaemonObserver {
             // the replay instead of appearing idle.
             if let Some(thinking) = snapshot.current_thinking {
                 history.push(DaemonMessage::ThinkingStart {
-                    thread_id: Some(thread_id.to_owned()),
+                    thread_id: Some(thread_id.to_string()),
                 });
                 history.push(DaemonMessage::ThinkingChunk {
-                    thread_id: Some(thread_id.to_owned()),
+                    thread_id: Some(thread_id.to_string()),
                     chunk: thinking,
                 });
             }
@@ -154,7 +160,7 @@ impl ThreadObserver for DaemonObserver {
                 .pending_choices
                 .iter()
                 .map(|choice| DaemonMessage::UserChoiceRequired {
-                    thread_id: Some(thread_id.to_owned()),
+                    thread_id: Some(thread_id.to_string()),
                     id: choice.id.clone(),
                     prompt: choice.prompt.clone(),
                     choices: choice.choices.clone(),

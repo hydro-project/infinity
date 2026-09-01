@@ -33,7 +33,7 @@ pub(crate) fn convert_callback(cb: RapCallback) -> Option<InputMessage> {
                 call_id: tr.call_id,
                 content: tool_result_content(tr.content, tr.text),
             })),
-            group_id: tr.group_id.into_inner(),
+            group_id: tr.group_id,
             metadata: None,
             synthetic: None,
             display_as: tr.display_as,
@@ -47,7 +47,7 @@ pub(crate) fn convert_callback(cb: RapCallback) -> Option<InputMessage> {
                     call_id: None,
                     content: vec![ToolResultContent::Text(Text { text: se.text })],
                 })),
-                group_id: se.group_id.into_inner(),
+                group_id: se.group_id,
                 metadata: None,
                 synthetic: Some(SyntheticKind::Tagged(
                     TaggedSyntheticKind::SubscriptionEvent {
@@ -67,7 +67,7 @@ pub(crate) fn convert_callback(cb: RapCallback) -> Option<InputMessage> {
                 call_id: oa.call_id,
                 auth_url: oa.auth_url,
             }),
-            group_id: oa.group_id.into_inner(),
+            group_id: oa.group_id,
             metadata: None,
             synthetic: None,
             display_as: None,
@@ -83,7 +83,7 @@ pub(crate) fn convert_callback(cb: RapCallback) -> Option<InputMessage> {
                 default: uc.default,
                 response_url: uc.response_url,
             }),
-            group_id: uc.group_id.into_inner(),
+            group_id: uc.group_id,
             metadata: None,
             synthetic: None,
             display_as: None,
@@ -146,7 +146,7 @@ mod tests {
     fn text_tool_result_converts() {
         let msg = convert_callback(tool_result_cb(None, Some("plain output".to_owned())))
             .expect("tool results convert");
-        assert_eq!(msg.group_id, "t1");
+        assert_eq!(msg.group_id.as_str(), "t1");
         assert!(!msg.subscription);
         assert!(msg.synthetic.is_none());
         match msg.content {

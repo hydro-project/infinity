@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use infinity_agent_core::ThreadId;
 use infinity_agent_core::message::InputMessage;
 use infinity_agent_core::system::AgentSystemBuilder;
 use infinity_agent_core::system::local::{
@@ -33,7 +34,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// is live, and stays active after the driver idles for as long as it holds
 /// active subscriptions (its RAP servers must stay up to deliver the
 /// events). Maintained by the session activity watcher.
-pub type ActiveThreadSet = Arc<std::sync::Mutex<std::collections::HashSet<String>>>;
+pub type ActiveThreadSet = Arc<std::sync::Mutex<std::collections::HashSet<ThreadId>>>;
 
 pub type SessionStoreHandle = Arc<tokio::sync::Mutex<session_store::SessionStore>>;
 
@@ -105,7 +106,7 @@ pub struct SessionManager {
     /// Requests an idle re-evaluation for a session (e.g. after a client
     /// disconnect). Consumed by the session activity watcher alongside the
     /// core thread lifecycle events.
-    idle_eval_tx: mpsc::UnboundedSender<String>,
+    idle_eval_tx: mpsc::UnboundedSender<ThreadId>,
 }
 
 impl SessionManager {
@@ -153,7 +154,7 @@ impl SessionManager {
 
         std::fs::create_dir_all(&state_dir).ok();
         let sessions_path = state_dir.join("sessions.json");
-        let (change_tx, mut change_rx) = mpsc::unbounded_channel::<String>();
+        let (change_tx, mut change_rx) = mpsc::unbounded_channel::<ThreadId>();
         let change_tx_for_conv = change_tx.clone();
         let session_store = Arc::new(tokio::sync::Mutex::new(session_store::SessionStore::load(
             &sessions_path.to_string_lossy(),
@@ -206,7 +207,7 @@ impl SessionManager {
                     };
                     drop(store);
                     let mut sessions = HashMap::new();
-                    sessions.insert(session_id, info);
+                    sessions.insert(session_id.to_string(), info);
                     let msg = DaemonMessage::SessionsUpdated { sessions };
                     bc.lock()
                         .expect("bug: mutex poisoned")
@@ -244,7 +245,7 @@ impl SessionManager {
         let make_observer = {
             let subscriber_map = subscriber_map.clone();
             let conversation_store = conversation_store.clone();
-            move |thread_id: &str| {
+            move |thread_id: &ThreadId| {
                 let parent_subs = {
                     let parent_id = conversation_store.get_thread_parent_id(thread_id);
                     let smap = subscriber_map.lock().expect("bug: mutex poisoned");
@@ -256,7 +257,7 @@ impl SessionManager {
                 let subscribers = subscriber_map
                     .lock()
                     .expect("bug: mutex poisoned")
-                    .entry(thread_id.to_owned())
+                    .entry(thread_id.clone())
                     .or_insert_with(|| Arc::new(std::sync::Mutex::new(parent_subs)))
                     .clone();
                 DaemonObserver {
@@ -283,7 +284,7 @@ impl SessionManager {
         // on the next tool invocation, so there is no teardown/wakeup race
         // to coordinate.
         let active_threads: ActiveThreadSet = Default::default();
-        let (idle_eval_tx, mut idle_eval_rx) = mpsc::unbounded_channel::<String>();
+        let (idle_eval_tx, mut idle_eval_rx) = mpsc::unbounded_channel::<ThreadId>();
         {
             let conversation_store = conversation_store.clone();
             let session_store = session_store.clone();
@@ -296,7 +297,7 @@ impl SessionManager {
                     loop {
                         enum Activity {
                             Lifecycle(ThreadLifecycleEvent),
-                            Reevaluate(String),
+                            Reevaluate(ThreadId),
                         }
                         let event = tokio::select! {
                             event = running.next_lifecycle_event() => match event {
@@ -422,12 +423,17 @@ impl SessionManager {
     }
 
     /// Handle a view_update RAP callback: persist the view and broadcast to subscribers.
-    pub fn handle_view_update(&self, group_id: &str, view_type: &str, content: serde_json::Value) {
+    pub fn handle_view_update(
+        &self,
+        group_id: &ThreadId,
+        view_type: &str,
+        content: serde_json::Value,
+    ) {
         self.conversation_store
             .set_view(group_id, view_type, content.clone());
 
         let msg = DaemonMessage::ViewUpdate {
-            thread_id: Some(group_id.to_owned()),
+            thread_id: Some(group_id.to_string()),
             view_type: view_type.to_owned(),
             content,
         };
@@ -442,8 +448,8 @@ impl SessionManager {
         cwd: &Path,
         model: ModelRef,
         emit: &mut impl AsyncFnMut(DaemonMessage),
-    ) -> Result<String, BoxError> {
-        let session_id = self.id_source.generate();
+    ) -> Result<ThreadId, BoxError> {
+        let session_id = ThreadId::from(self.id_source.generate());
         {
             let mut store = self.session_store.lock().await;
             store.create(&session_id, cwd.to_path_buf());
@@ -471,22 +477,22 @@ impl SessionManager {
     /// via `send_input`. This just emits `Connected` so the client can attach.
     pub async fn resume_session(
         &self,
-        session_id: &str,
-        thread_id: &str,
+        session_id: &ThreadId,
+        thread_id: &ThreadId,
         emit: &mut impl AsyncFnMut(DaemonMessage),
     ) -> Result<(), BoxError> {
         emit(self.build_connected(session_id, thread_id)).await;
         Ok(())
     }
 
-    fn build_connected(&self, session_id: &str, thread_id: &str) -> DaemonMessage {
+    fn build_connected(&self, session_id: &ThreadId, thread_id: &ThreadId) -> DaemonMessage {
         // Resolve the thread's own selected model (falling back to the global
         // default if it is no longer available).
         let selected = self.conversation_store.get_thread_model(thread_id);
         let (model_ref, entry, _) = self.catalog.resolve(&selected);
         DaemonMessage::Connected {
-            session_id: session_id.to_owned(),
-            thread_id: thread_id.to_owned(),
+            session_id: session_id.to_string(),
+            thread_id: thread_id.to_string(),
             model_name: entry.display_name.clone(),
             context_window: entry.context_window,
             title: self.conversation_store.get_thread_title(session_id),
@@ -505,7 +511,7 @@ impl SessionManager {
     /// the session from going idle (and its RAP servers being stopped).
     pub async fn attach_client(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         tx: mpsc::UnboundedSender<DaemonMessage>,
         wants_replay: bool,
         keeps_session_alive: bool,
@@ -566,7 +572,7 @@ impl SessionManager {
     /// attached.
     pub fn switch_model(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId,
         model: ModelRef,
         requester: Option<&mpsc::UnboundedSender<DaemonMessage>>,
     ) -> Result<(), String> {
@@ -586,7 +592,7 @@ impl SessionManager {
             .set_thread_model(thread_id, model.clone());
 
         let msg = DaemonMessage::ModelSwitched {
-            thread_id: thread_id.to_owned(),
+            thread_id: thread_id.to_string(),
             model_name: entry.display_name.clone(),
             context_window: entry.context_window,
             provider_id: model.provider_id.clone(),
@@ -621,7 +627,7 @@ impl SessionManager {
         for (id, entry) in &store.sessions {
             let threads = self.conversation_store.get_open_subthreads(id);
             result.insert(
-                id.clone(),
+                id.to_string(),
                 SessionInfo {
                     title: self.conversation_store.get_thread_title(id),
                     last_updated: self.conversation_store.get_last_updated(id),
@@ -650,7 +656,7 @@ impl SessionManager {
     /// clears the flag and picks the session back up (its servers reboot
     /// lazily); RAP callbacks arriving while shut down are ignored.
     #[tracing::instrument(skip(self))]
-    pub async fn cleanup_session(&self, session_id: &str) {
+    pub async fn cleanup_session(&self, session_id: &ThreadId) {
         if let Err(error) = self
             .state_store
             .clear_pending_choices_for_session(session_id)
@@ -671,15 +677,15 @@ impl SessionManager {
 
     /// Returns true if the session has no active threads: none with a live
     /// driver and none waiting on subscription events.
-    pub fn is_session_idle(&self, session_id: &str) -> bool {
+    pub fn is_session_idle(&self, session_id: &ThreadId) -> bool {
         !session_has_active_threads(&self.active_threads, &self.conversation_store, session_id)
     }
 
     /// Request an idle re-evaluation for a session (e.g. after a client
     /// disconnect): if none of its threads are live and no keep-alive client
     /// remains, its RAP servers are stopped.
-    pub fn send_idle_ping(&self, session_id: &str) {
-        let _ = self.idle_eval_tx.send(session_id.to_owned());
+    pub fn send_idle_ping(&self, session_id: &ThreadId) {
+        let _ = self.idle_eval_tx.send(session_id.clone());
     }
 }
 
@@ -690,13 +696,13 @@ impl SessionManager {
 fn session_has_active_threads(
     active_threads: &ActiveThreadSet,
     conversation_store: &PersistentConversationStore,
-    session_id: &str,
+    session_id: &ThreadId,
 ) -> bool {
     active_threads
         .lock()
         .expect("bug: mutex poisoned")
         .iter()
-        .any(|thread_id| conversation_store.get_root_thread_id(thread_id) == session_id)
+        .any(|thread_id| conversation_store.get_root_thread_id(thread_id) == *session_id)
 }
 
 /// Decide whether `session_id` has gone idle and release its resources.
@@ -709,7 +715,7 @@ fn session_has_active_threads(
 /// moment later simply respawns a driver, and the first tool interaction
 /// boots the servers back up.
 async fn evaluate_session_idle(
-    session_id: &str,
+    session_id: &ThreadId,
     conversation_store: &PersistentConversationStore,
     session_store: &SessionStoreHandle,
     subscriber_map: &SubscriberMap,
@@ -735,7 +741,9 @@ async fn evaluate_session_idle(
     let has_clients = {
         let smap = subscriber_map.lock().expect("bug: mutex poisoned");
         smap.iter()
-            .filter(|(thread_id, _)| conversation_store.get_root_thread_id(thread_id) == session_id)
+            .filter(|(thread_id, _)| {
+                conversation_store.get_root_thread_id(thread_id) == *session_id
+            })
             .any(|(_, subs)| {
                 subs.lock()
                     .expect("bug: mutex poisoned")
