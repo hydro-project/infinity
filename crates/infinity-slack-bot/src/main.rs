@@ -37,7 +37,7 @@ mod dfir {
     include!(concat!(env!("OUT_DIR"), "/slack_bot_dfir.rs"));
 }
 
-fn init_tracing() {
+fn init_tracing() -> Result<(), BoxError> {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
@@ -56,7 +56,7 @@ fn init_tracing() {
             .create(true)
             .append(true)
             .open(&log_path)
-            .unwrap_or_else(|e| panic!("failed to open log file {log_path}: {e}"));
+            .map_err(|e| format!("failed to open log file {log_path}: {e}"))?;
         tracing_subscriber::fmt::layer()
             .with_writer(std::sync::Mutex::new(file))
             .with_ansi(false)
@@ -68,11 +68,16 @@ fn init_tracing() {
         .with(file_layer)
         .try_init()
         .expect("bug: tracing subscriber initialized twice");
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
-    init_tracing();
+    if let Err(e) = init_tracing() {
+        // Tracing isn't up; report directly on stderr.
+        eprintln!("{e}");
+        return std::process::ExitCode::FAILURE;
+    }
     match run().await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
@@ -101,7 +106,11 @@ async fn run() -> Result<(), BoxError> {
         outbound: slack_outbound,
         inbound: slack_inbound,
     } = slack_io::spawn(config).await?;
-    let (daemon_events_rx, daemon_commands_tx) = daemon_io::spawn();
+    let daemon_io::DaemonIo {
+        events: daemon_events_rx,
+        commands: daemon_commands_tx,
+        dispatch: daemon_dispatch,
+    } = daemon_io::spawn();
 
     // Output callbacks fire synchronously while the dataflow ticks; they hand
     // work off to the async I/O tasks through unbounded channels (see
@@ -135,6 +144,7 @@ async fn run() -> Result<(), BoxError> {
                 _ = flow.run() => unreachable!("bug: Dfir::run returns Never"),
                 result = slack_outbound => Err(io_task_exited("Slack outbound", result)),
                 result = slack_inbound => Err(io_task_exited("Slack inbound", result)),
+                result = daemon_dispatch => Err(io_task_exited("daemon dispatch", result)),
                 result = tokio::signal::ctrl_c() => {
                     result.expect("failed to listen for ctrl-c");
                     tracing::info!("shutting down");
@@ -145,12 +155,14 @@ async fn run() -> Result<(), BoxError> {
         .await
 }
 
-/// A Slack I/O task finished, which never happens in normal operation:
-/// either it panicked or hit a bug. Fatal either way -- a bot with dead I/O
-/// must not linger looking healthy.
+/// An I/O task finished while the bot was running. Fatal regardless of how it
+/// finished -- a bot with dead I/O must not linger looking healthy. A clean
+/// exit (`Ok`) means the task's dataflow-side channel closed (theoretically
+/// possible for the Slack inbound task, but not while the dataflow is alive in
+/// the `select!` above); an `Err` means it panicked or was aborted.
 fn io_task_exited(name: &str, result: Result<(), tokio::task::JoinError>) -> BoxError {
     match result {
-        Ok(()) => format!("{name} I/O task exited unexpectedly").into(),
+        Ok(()) => format!("{name} I/O task exited; the bot cannot run without it").into(),
         Err(e) => format!("{name} I/O task failed: {e}").into(),
     }
 }

@@ -10,6 +10,11 @@ use hydro_lang::prelude::*;
 // `crate::...` paths): the embedded include site re-expands the quoted code in
 // a foreign crate where `crate::` does not resolve. These imports are carried
 // into the staged module (forced `pub`) and glob-imported at that site.
+// *Expression* paths are fine either way -- stageleft rewrites them through
+// the staged module (e.g. `crate::runtime::get()` is emitted as
+// `infinity_slack_dataflow::__staged::runtime::get()`); only paths in *type*
+// position (closure parameter annotations, patterns) are pasted verbatim and
+// must therefore come from these imports.
 use crate::daemon::{DaemonCommand, DaemonEvent};
 use crate::slack::{
     SlackAction, SlackEvent, MODEL_PICKER_ACTION_ID, MODEL_PICKER_BLOCK_ID,
