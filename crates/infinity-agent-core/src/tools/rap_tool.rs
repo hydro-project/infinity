@@ -187,7 +187,7 @@ impl<H: HttpClient + 'static, M: InputSender + 'static> Tool<M> for RapTool<H> {
 mod tests {
     use super::*;
     use crate::message::{InputMessage, InputMessageContent};
-    use rig::message::UserContent;
+    use infinity_provider_protocol::message::UserContent;
     use std::sync::{Arc, Mutex};
 
     #[derive(Debug)]
@@ -315,7 +315,9 @@ mod tests {
         };
         assert_eq!(result.id, "tc-1");
         assert_eq!(result.call_id.as_deref(), Some("call-1"));
-        let rig::message::ToolResultContent::Text(text) = result.content.first() else {
+        let Some(infinity_provider_protocol::message::ToolResultContent::Text(text)) =
+            result.content.first()
+        else {
             panic!("expected text content");
         };
         for expected in ["Error:", "lookup", "http://server/invoke", "503"] {

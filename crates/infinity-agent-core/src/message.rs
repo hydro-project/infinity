@@ -1,5 +1,6 @@
-use rig::OneOrMany;
-use rig::message::{AssistantContent, Message, UserContent};
+use infinity_provider_protocol::message::{
+    AssistantContent, Message, ToolCall, ToolResult, UserContent,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -167,12 +168,12 @@ impl InputMessage {
     }
 }
 
-/// Wraps rig message content with optional display metadata that survives
+/// Wraps message content with optional display metadata that survives
 /// serialization. On replay the display metadata is used directly instead of
 /// being reconstructed or stored as sidecar data.
 ///
-/// Each variant stores the type-specific rig struct directly rather than a
-/// full `rig::message::Message`. Use [`into_messages`](Self::into_messages) to
+/// Each variant stores the type-specific content struct directly rather than
+/// a full [`Message`]. Use [`into_messages`](Self::into_messages) to
 /// reconstruct the `Message`s for LLM calls.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
@@ -186,14 +187,14 @@ pub enum InfinityMessage {
     /// Assistant tool call with optional pretty-printed display string.
     #[serde(rename = "tool_call")]
     ToolCall {
-        call: rig::message::ToolCall,
+        call: ToolCall,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         display_as: Option<String>,
     },
     /// User tool result with optional display segments for the UI.
     #[serde(rename = "tool_result")]
     ToolResult {
-        result: rig::message::ToolResult,
+        result: ToolResult,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         display_segments: Option<Vec<rap_protocol::DisplaySegment>>,
     },
@@ -206,7 +207,7 @@ pub enum InfinityMessage {
     /// unchanged.
     #[serde(rename = "subscription_event")]
     SubscriptionEvent {
-        result: Box<rig::message::ToolResult>,
+        result: Box<ToolResult>,
         /// The tool_call_id of the original subscription tool call.
         tool_call_id: String,
         /// Set when this is a thread report (used to build the display name).
@@ -217,29 +218,27 @@ pub enum InfinityMessage {
         /// the LLM, but replay only emits the subscription display event.
         /// `None` for backward-compat with old serialized histories.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        invocation: Option<Box<rig::message::ToolCall>>,
+        invocation: Option<Box<ToolCall>>,
     },
 }
 
 impl InfinityMessage {
-    /// Reconstruct `rig::message::Message`(s) for LLM calls.
+    /// Reconstruct [`Message`]s for LLM calls.
     /// Most variants produce one message; `SubscriptionEvent` with an
     /// `invocation` produces two (tool call + tool result).
     pub fn into_messages(self) -> Vec<Message> {
         match self {
             Self::User { content } => vec![Message::User {
-                content: OneOrMany::one(content),
+                content: vec![content],
             }],
             Self::Assistant { content } => vec![Message::Assistant {
-                id: None,
-                content: OneOrMany::one(content),
+                content: vec![content],
             }],
             Self::ToolCall { call, .. } => vec![Message::Assistant {
-                id: None,
-                content: OneOrMany::one(AssistantContent::ToolCall(call)),
+                content: vec![AssistantContent::ToolCall(call)],
             }],
             Self::ToolResult { result, .. } => vec![Message::User {
-                content: OneOrMany::one(UserContent::ToolResult(result)),
+                content: vec![UserContent::ToolResult(result)],
             }],
             Self::SubscriptionEvent {
                 result, invocation, ..
@@ -247,12 +246,11 @@ impl InfinityMessage {
                 let mut msgs = Vec::new();
                 if let Some(call) = invocation {
                     msgs.push(Message::Assistant {
-                        id: None,
-                        content: OneOrMany::one(AssistantContent::ToolCall(*call)),
+                        content: vec![AssistantContent::ToolCall(*call)],
                     });
                 }
                 msgs.push(Message::User {
-                    content: OneOrMany::one(UserContent::ToolResult(*result)),
+                    content: vec![UserContent::ToolResult(*result)],
                 });
                 msgs
             }
@@ -261,7 +259,7 @@ impl InfinityMessage {
 
     /// The tool result carried by a `ToolResult` or `SubscriptionEvent`
     /// message, if any.
-    pub fn tool_result(&self) -> Option<&rig::message::ToolResult> {
+    pub fn tool_result(&self) -> Option<&ToolResult> {
         match self {
             Self::ToolResult { result, .. } => Some(result),
             Self::SubscriptionEvent { result, .. } => Some(result),
@@ -269,9 +267,9 @@ impl InfinityMessage {
         }
     }
 
-    /// Auto-classify a bare rig Message into the appropriate InfinityMessage variant.
-    /// Display metadata fields are set to `None`/defaults.
-    pub fn from_rig_message(msg: Message) -> Self {
+    /// Auto-classify a bare [`Message`] into the appropriate InfinityMessage
+    /// variant. Display metadata fields are set to `None`/defaults.
+    pub fn from_message(msg: Message) -> Self {
         match msg {
             Message::User { content } => {
                 let first = content.into_iter().next().expect("bug: empty content");
@@ -283,7 +281,7 @@ impl InfinityMessage {
                     other => Self::User { content: other },
                 }
             }
-            Message::Assistant { content, .. } => {
+            Message::Assistant { content } => {
                 let first = content.into_iter().next().expect("bug: empty content");
                 match first {
                     AssistantContent::ToolCall(call) => Self::ToolCall {

@@ -17,11 +17,10 @@ infinity-agent-core = { path = "../infinity-agent-core" }
 infinity-rap-bridge = { path = "../infinity-rap-bridge" }
 infinity-mcp-bridge = { path = "../infinity-mcp-bridge" }
 infinity-protocol = { path = "../infinity-protocol" }
-infinity-provider-protocol = { path = "../infinity-provider-protocol" }
+infinity-provider-protocol = { path = "../infinity-provider-protocol", features = ["remote"] }
 rap-client = { path = "../rap-client" }
 rap-protocol = { path = "../rap-protocol" }
 
-rig-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "io-util", "sync", "process", "net", "signal", "macros", "time"] }
@@ -55,7 +54,7 @@ nix = { version = "0.31", features = ["signal"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 rap-test-servers = { path = "../rap-test-servers" }
 tempfile = { workspace = true }
-rig-mock = { path = "../rig-mock" }
+infinity-provider-protocol = { path = "../infinity-provider-protocol", features = ["mock"] }
 insta = { workspace = true }
 
 [features]

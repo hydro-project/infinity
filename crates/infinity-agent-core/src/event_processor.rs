@@ -5,11 +5,9 @@ use std::{
 };
 
 use futures_util::StreamExt;
-use rig::{
-    OneOrMany,
-    completion::{CompletionRequest, ToolDefinition},
+use infinity_provider_protocol::{
+    CompletionRequest, StreamChunk, ToolCallDeltaContent, ToolDefinition,
     message::{AssistantContent, Message, ToolResult, ToolResultContent, UserContent},
-    streaming::{StreamedAssistantContent, ToolCallDeltaContent},
 };
 use serde::Serialize;
 use tracing;
@@ -20,7 +18,7 @@ use crate::message::{
 use crate::system::AgentEvent;
 use crate::tools::{Tool, ToolContext};
 use crate::traits::{ConversationStore, InputSender, StateStore};
-use infinity_provider_protocol::{ModelProvider, ProviderStreamingResponse};
+use infinity_provider_protocol::{FinalResponse, ModelProvider};
 
 // ── Public types ──
 
@@ -81,9 +79,9 @@ pub enum PrepareResult {
 }
 
 /// What the model wants to do after a completion stream finishes.
-pub enum CompletionAction<R> {
+pub enum CompletionAction {
     /// Model produced text and is done (no tool call).
-    Done(R),
+    Done(FinalResponse),
     /// Model wants to execute a tool call. Under the RAP protocol tools are
     /// fire-and-forget: the agent loop stops after dispatching the call and
     /// the result arrives as a new input message later.
@@ -97,11 +95,11 @@ pub enum CompletionAction<R> {
 }
 
 /// Items yielded by the completion stream.
-pub enum CompletionEvent<R> {
+pub enum CompletionEvent {
     /// A chunk of text from the model.
     TextChunk(String),
     /// The terminal event — what to do next.
-    Action(CompletionAction<R>),
+    Action(CompletionAction),
     /// A tool call that was synchronously processed.
     SyncToolCall {
         tool_name: String,
@@ -318,9 +316,11 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 result: ToolResult {
                     id: tool_call.id.clone(),
                     call_id: tool_call.call_id.clone(),
-                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                        text: "Tool call interrupted by user".to_owned(),
-                    })),
+                    content: vec![ToolResultContent::Text(
+                        infinity_provider_protocol::message::Text {
+                            text: "Tool call interrupted by user".to_owned(),
+                        },
+                    )],
                 },
                 display_segments: None,
             };
@@ -333,9 +333,9 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     /// until the turn reaches a flush point ([`Self::flush_turn`]) or is
     /// discarded on failure ([`Self::discard_turn`]). This keeps partial,
     /// possibly-abandoned turns out of committed history.
-    pub fn handle_completion<R>(
+    pub fn handle_completion(
         &self,
-        completion: &StreamedAssistantContent<R>,
+        completion: &StreamChunk,
         completion_id: String,
         display_as: Option<String>,
     ) {
@@ -345,27 +345,25 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         // Coalesce consecutive streamed text chunks into a single buffer entry
         // so that a multi-chunk assistant response is persisted as one message
         // rather than one row per chunk (which blows up disk usage).
-        if let StreamedAssistantContent::Text(text) = completion
-            && self.try_merge_buffer_text(&text.text)
+        if let StreamChunk::Text(text) = completion
+            && self.try_merge_buffer_text(text)
         {
             return;
         }
         let infinity_message = match completion {
-            StreamedAssistantContent::Text(text) => InfinityMessage::Assistant {
-                content: AssistantContent::Text(text.clone()),
+            StreamChunk::Text(text) => InfinityMessage::Assistant {
+                content: AssistantContent::text(text.clone()),
             },
-            StreamedAssistantContent::Reasoning(r) => InfinityMessage::Assistant {
+            StreamChunk::Reasoning(r) => InfinityMessage::Assistant {
                 content: AssistantContent::Reasoning(r.clone()),
             },
-            StreamedAssistantContent::ToolCall {
-                tool_call: call, ..
-            } => InfinityMessage::ToolCall {
+            StreamChunk::ToolCall(call) => InfinityMessage::ToolCall {
                 call: call.clone(),
                 display_as,
             },
-            StreamedAssistantContent::ToolCallDelta { .. }
-            | StreamedAssistantContent::ReasoningDelta { .. }
-            | StreamedAssistantContent::Final(_) => {
+            StreamChunk::ToolCallDelta { .. }
+            | StreamChunk::ReasoningDelta { .. }
+            | StreamChunk::Final(_) => {
                 return;
             }
         };
@@ -527,21 +525,18 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     /// Build the model-facing chat history. When `supports_image_input` is
     /// `false`, image tool-result content is replaced with a text placeholder
     /// so the history can be sent to models without image support.
-    pub fn get_history(&self, supports_image_input: bool) -> OneOrMany<Message> {
-        OneOrMany::many(
-            self.history
-                .borrow()
-                .iter()
-                .flat_map(|m| m.clone().into_messages())
-                .map(|mut msg| {
-                    if !supports_image_input {
-                        strip_image_tool_results(&mut msg);
-                    }
-                    msg
-                })
-                .collect::<Vec<_>>(),
-        )
-        .expect("bug: history should never be empty")
+    pub fn get_history(&self, supports_image_input: bool) -> Vec<Message> {
+        self.history
+            .borrow()
+            .iter()
+            .flat_map(|m| m.clone().into_messages())
+            .map(|mut msg| {
+                if !supports_image_input {
+                    strip_image_tool_results(&mut msg);
+                }
+                msg
+            })
+            .collect()
     }
 
     /// Returns the full thread stack: `[root, ..ancestors, current_thread]`.
@@ -735,15 +730,13 @@ where
         // because the safe_spawn_point already excludes them from the child's
         // inherited history.
         let spawn_tool_call = InfinityMessage::ToolCall {
-            call: rig::message::ToolCall {
+            call: infinity_provider_protocol::message::ToolCall {
                 id: spawn_call_id.clone(),
                 call_id: None,
-                function: rig::message::ToolFunction {
+                function: infinity_provider_protocol::message::ToolFunction {
                     name: "__harness_begin_compaction__".to_owned(),
                     arguments: serde_json::json!({}),
                 },
-                additional_params: None,
-                signature: None,
             },
             display_as: None,
         };
@@ -763,15 +756,17 @@ where
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                 id: spawn_call_id.clone(),
                 call_id: None,
-                content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                    text: format!(
-                        "This tool call was synthetically injected by the harness. You are now INSIDE a compaction thread. You can see the full conversation history inherited from your parent thread, including all ancestor thread context. \
+                content: vec![ToolResultContent::Text(
+                    infinity_provider_protocol::message::Text {
+                        text: format!(
+                            "This tool call was synthetically injected by the harness. You are now INSIDE a compaction thread. You can see the full conversation history inherited from your parent thread, including all ancestor thread context. \
                         Summarize ALL of this content into a concise but comprehensive summary that preserves: all important context, decisions made, \
                         current task progress, relevant code changes and file paths, and any pending work. \
                         Then call close_thread with your thread ID ({}) and include the summary in report_to_parent.",
-                        sub_thread_id
-                    ),
-                })),
+                            sub_thread_id
+                        ),
+                    },
+                )],
             })),
             group_id: sub_thread_id.clone(),
             metadata: None,
@@ -844,7 +839,7 @@ where
         });
 
     // Will be set to the synthetic invocation ToolCall for inlined subscription events.
-    let mut subscription_invocation: Option<rig::message::ToolCall> = None;
+    let mut subscription_invocation: Option<infinity_provider_protocol::message::ToolCall> = None;
 
     let content = if let Some(synthetic_kind) = input_msg.synthetic {
         let original_tool_call_id = synthetic_kind.tool_call_id().to_owned();
@@ -878,10 +873,10 @@ where
         {
             let new_tool_call_id = uuid::Uuid::new_v4().to_string();
             if let UserContent::ToolResult(mut tool_result) = user_content {
-                subscription_invocation = Some(rig::message::ToolCall {
+                subscription_invocation = Some(infinity_provider_protocol::message::ToolCall {
                     id: new_tool_call_id.clone(),
                     call_id: None,
-                    function: rig::message::ToolFunction {
+                    function: infinity_provider_protocol::message::ToolFunction {
                         name: "receive_event__injected".to_owned(),
                         arguments: serde_json::json!({
                             "original_tool_name": original_call.function.name,
@@ -889,8 +884,6 @@ where
                             "original_args": original_call.function.arguments,
                         }),
                     },
-                    additional_params: None,
-                    signature: None,
                 });
                 tool_result.id = new_tool_call_id;
                 // Remove subscription if this is the final event
@@ -949,10 +942,10 @@ where
 
             // Write event + spawn tool calls directly to child's store
             let event_tool_call = InfinityMessage::ToolCall {
-                call: rig::message::ToolCall {
+                call: infinity_provider_protocol::message::ToolCall {
                     id: event_call_id.clone(),
                     call_id: None,
-                    function: rig::message::ToolFunction {
+                    function: infinity_provider_protocol::message::ToolFunction {
                         name: "receive_event__injected".to_owned(),
                         arguments: serde_json::json!({
                             "original_tool_name": original_call.function.name,
@@ -960,23 +953,19 @@ where
                             "original_args": original_call.function.arguments,
                         }),
                     },
-                    additional_params: None,
-                    signature: None,
                 },
                 display_as: None,
             };
             let spawn_tool_call = InfinityMessage::ToolCall {
-                call: rig::message::ToolCall {
+                call: infinity_provider_protocol::message::ToolCall {
                     id: spawn_call_id.clone(),
                     call_id: None,
-                    function: rig::message::ToolFunction {
+                    function: infinity_provider_protocol::message::ToolFunction {
                         name: "spawn_thread".to_owned(),
                         arguments: serde_json::json!({
                             "instructions": "Spawning thread to process incoming event."
                         }),
                     },
-                    additional_params: None,
-                    signature: None,
                 },
                 display_as: None,
             };
@@ -984,12 +973,14 @@ where
                 result: ToolResult {
                     id: spawn_call_id.clone(),
                     call_id: None,
-                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                        text: format!(
-                            "You are now INSIDE the thread for processing the single event above. Your thread ID is {}, the parent which is still subscribing is {}. Process the single subscription event above, report to the parent if appropriate, then close the thread after processing this event. Your outputs are NOT VISIBLE to the user, if you want to show them something, send a report to your parent.",
-                            sub_thread_id, input_msg.group_id
-                        ),
-                    })),
+                    content: vec![ToolResultContent::Text(
+                        infinity_provider_protocol::message::Text {
+                            text: format!(
+                                "You are now INSIDE the thread for processing the single event above. Your thread ID is {}, the parent which is still subscribing is {}. Process the single subscription event above, report to the parent if appropriate, then close the thread after processing this event. Your outputs are NOT VISIBLE to the user, if you want to show them something, send a report to your parent.",
+                                sub_thread_id, input_msg.group_id
+                            ),
+                        },
+                    )],
                 },
                 display_segments: None,
             };
@@ -1096,11 +1087,11 @@ where
 {
     if let Some(synth) = input_msg.synthetic.as_ref() {
         if let InputMessageContent::User(UserContent::ToolResult(res)) = &input_msg.content
-            && let ToolResultContent::Text(text) = res.content.first()
+            && let Some(ToolResultContent::Text(text)) = res.content.first()
         {
             let orig_call = current_history.get_history(true).into_iter().find(|h| {
                 if let Message::Assistant { content, .. } = h
-                    && let AssistantContent::ToolCall(c) = content.first()
+                    && let Some(AssistantContent::ToolCall(c)) = content.first()
                 {
                     c.id == synth.tool_call_id()
                 } else {
@@ -1109,7 +1100,7 @@ where
             });
 
             if let Some(Message::Assistant { content, .. }) = orig_call
-                && let AssistantContent::ToolCall(c) = content.first()
+                && let Some(AssistantContent::ToolCall(c)) = content.first()
             {
                 let name = if let SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
                     ref child_thread_id,
@@ -1122,13 +1113,13 @@ where
                 };
                 return Some(AgentEvent::SubscriptionEvent {
                     name,
-                    text: text.text,
+                    text: text.text.clone(),
                 });
             }
         }
         None
     } else if let InputMessageContent::User(UserContent::ToolResult(res)) = &input_msg.content
-        && let ToolResultContent::Text(text) = res.content.first()
+        && let Some(ToolResultContent::Text(text)) = res.content.first()
     {
         Some(AgentEvent::ToolResult {
             segments: rap_protocol::build_display_segments(
@@ -1165,9 +1156,10 @@ fn strip_image_tool_results(msg: &mut Message) {
             if let UserContent::ToolResult(result) = c {
                 for item in result.content.iter_mut() {
                     if matches!(item, ToolResultContent::Image(_)) {
-                        *item = ToolResultContent::Text(rig::agent::Text {
-                            text: IMAGE_OMITTED_PLACEHOLDER.to_owned(),
-                        });
+                        *item =
+                            ToolResultContent::Text(infinity_provider_protocol::message::Text {
+                                text: IMAGE_OMITTED_PLACEHOLDER.to_owned(),
+                            });
                     }
                 }
             }
@@ -1195,7 +1187,7 @@ pub fn run_completion<'a: 'b, 'b, P, C, S, M>(
     message_id: &'a str,
     extra_system_prompt: Option<&'a str>,
     cancel_rx: tokio::sync::oneshot::Receiver<()>,
-) -> impl futures_util::Stream<Item = Result<CompletionEvent<ProviderStreamingResponse>, BoxError>> + 'b
+) -> impl futures_util::Stream<Item = Result<CompletionEvent, BoxError>> + 'b
 where
     P: ModelProvider + ?Sized,
     C: ConversationStore,
@@ -1226,16 +1218,11 @@ where
 
             let stream_result = provider
                 .invoke_model(model_id, CompletionRequest {
-                    model: None,
                     preamble: Some(preamble.clone()),
                     chat_history: history.get_history(supports_image_input),
-                    documents: vec![],
                     tools: tools.to_vec(),
-                    temperature: None,
                     max_tokens: None,
-                    tool_choice: None,
                     additional_params: None,
-                    output_schema: None,
                 });
 
             let stream_result = tokio::select! {
@@ -1397,7 +1384,7 @@ where
                 };
 
                 // Skip incomplete reasoning chunks
-                if let StreamedAssistantContent::Reasoning(ref r) = chunk
+                if let StreamChunk::Reasoning(ref r) = chunk
                     && r.first_signature().is_none() { continue; }
 
                 let completion_id = format!("{}-{}-completion-{}", group_id, message_id, completion_counter);
@@ -1418,11 +1405,11 @@ where
                 // the result and stranding the call as unanswered). `Final`
                 // still flows through below to flush the turn and finish
                 // the round.
-                if has_emitted_tool_call && !matches!(chunk, StreamedAssistantContent::Final(_)) {
+                if has_emitted_tool_call && !matches!(chunk, StreamChunk::Final(_)) {
                     tracing::info!("Ignoring post-tool-call stream content: {:?}", chunk);
                 } else {
                     // Compute display_as for tool calls before inserting into history.
-                    let tool_display_as = if let StreamedAssistantContent::ToolCall { tool_call: ref call, .. } = chunk {
+                    let tool_display_as = if let StreamChunk::ToolCall(ref call) = chunk {
                         let ds = tool_registry
                             .get(call.function.name.as_str())
                             .and_then(|t| t.display_script().map(String::from));
@@ -1432,15 +1419,15 @@ where
                     };
                     history.handle_completion(&chunk, completion_id, tool_display_as.clone());
                     match chunk {
-                        StreamedAssistantContent::Text(text) => {
+                        StreamChunk::Text(text) => {
                             if is_thinking {
                                 is_thinking = false;
                                 yield CompletionEvent::ThinkingEnd;
                             }
-                            tracing::info!("[Text] {}", &text.text);
-                            yield CompletionEvent::TextChunk(text.text);
+                            tracing::info!("[Text] {}", &text);
+                            yield CompletionEvent::TextChunk(text);
                         }
-                        StreamedAssistantContent::ToolCall { tool_call: call, .. } => {
+                        StreamChunk::ToolCall(call) => {
                             if is_thinking {
                                 is_thinking = false;
                                 yield CompletionEvent::ThinkingEnd;
@@ -1461,9 +1448,9 @@ where
                                     result: ToolResult {
                                         id: call.id.clone(),
                                         call_id: call.call_id.clone(),
-                                        content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                                        content: vec![ToolResultContent::Text(infinity_provider_protocol::message::Text {
                                             text: format!("Error: you cannot directly invoke {}, invocations will automatically be injected when events arrive.", call.function.name),
-                                        })),
+                                        })],
                                     },
                                     display_segments: None,
                                 };
@@ -1477,9 +1464,9 @@ where
                                     result: ToolResult {
                                         id: call.id.clone(),
                                         call_id: call.call_id.clone(),
-                                        content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                                        content: vec![ToolResultContent::Text(infinity_provider_protocol::message::Text {
                                             text: format!("Error: tool '{}' does not exist", call.function.name),
-                                        })),
+                                        })],
                                     },
                                     display_segments: None,
                                 };
@@ -1531,7 +1518,7 @@ where
                                 });
                             }
                         }
-                        StreamedAssistantContent::ToolCallDelta { content, .. } => {
+                        StreamChunk::ToolCallDelta { content, .. } => {
                             match content {
                                 ToolCallDeltaContent::Name(n) => {
                                     yield CompletionEvent::ThinkingChunk(format!("Invoking tool: {}", n));
@@ -1541,21 +1528,21 @@ where
                                 }
                             }
                         }
-                        StreamedAssistantContent::Reasoning(reasoning) => {
+                        StreamChunk::Reasoning(reasoning) => {
                             if is_thinking {
                                 is_thinking = false;
                                 yield CompletionEvent::ThinkingEnd;
                             }
                             tracing::info!("[Reasoning: {:?}]", reasoning.first_text());
                         }
-                        StreamedAssistantContent::ReasoningDelta { reasoning, .. } => {
+                        StreamChunk::ReasoningDelta { text: reasoning, .. } => {
                             if !is_thinking {
                                 is_thinking = true;
                                 yield CompletionEvent::ThinkingStart;
                             }
                             yield CompletionEvent::ThinkingChunk(reasoning);
                         }
-                        StreamedAssistantContent::Final(r) => {
+                        StreamChunk::Final(r) => {
                             if is_thinking {
                                 yield CompletionEvent::ThinkingEnd;
                             }
@@ -1582,8 +1569,8 @@ where
 //     or emit output).
 // ═══════════════════════════════════════════════════════════════════════
 
-pub async fn execute_action<M, R>(
-    action: CompletionAction<R>,
+pub async fn execute_action<M>(
+    action: CompletionAction,
     tool_registry: &HashMap<String, &dyn Tool<M>>,
     tool_context: &ToolContext<M>,
 ) -> Result<(), BoxError>
@@ -1612,8 +1599,8 @@ where
 /// Dispatch `action`; when asynchronous tool execution fails, enqueue a
 /// generic error `ToolResult` (with the original tool/call IDs) so the agent
 /// can recover instead of waiting forever, then surface the original error.
-pub(crate) async fn execute_action_with_error_result<M, R>(
-    action: CompletionAction<R>,
+pub(crate) async fn execute_action_with_error_result<M>(
+    action: CompletionAction,
     tool_registry: &HashMap<String, &dyn Tool<M>>,
     tool_context: &ToolContext<M>,
 ) -> Result<(), crate::tools::ToolError>
@@ -1664,8 +1651,7 @@ mod tests {
     use crate::stores::{InMemoryConversationStore, InMemoryStateStore};
     use crate::traits::{ConversationStore, InputSender};
     use async_trait::async_trait;
-    use rig::OneOrMany;
-    use rig::message::{
+    use infinity_provider_protocol::message::{
         AssistantContent, Message, ToolCall, ToolFunction, ToolResult, ToolResultContent,
         UserContent,
     };
@@ -1703,7 +1689,7 @@ mod tests {
         .expect("create history manager");
         *hm.history.borrow_mut() = initial_history
             .into_iter()
-            .map(InfinityMessage::from_rig_message)
+            .map(InfinityMessage::from_message)
             .collect();
         hm
     }
@@ -1721,17 +1707,14 @@ mod tests {
 
     fn tool_call_msg(id: &str, name: &str, args: serde_json::Value) -> Message {
         Message::Assistant {
-            id: None,
-            content: OneOrMany::one(AssistantContent::ToolCall(ToolCall {
+            content: vec![AssistantContent::ToolCall(ToolCall {
                 id: id.to_owned(),
                 call_id: None,
                 function: ToolFunction {
                     name: name.to_owned(),
                     arguments: args,
                 },
-                additional_params: None,
-                signature: None,
-            })),
+            })],
         }
     }
 
@@ -1745,9 +1728,11 @@ mod tests {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                 id: tool_call_id.to_owned(),
                 call_id: None,
-                content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                    text: result_text.to_owned(),
-                })),
+                content: vec![ToolResultContent::Text(
+                    infinity_provider_protocol::message::Text {
+                        text: result_text.to_owned(),
+                    },
+                )],
             })),
             group_id: group_id.to_owned(),
             metadata: None,
@@ -1783,9 +1768,7 @@ mod tests {
         let store = InMemoryConversationStore::new();
         let hm = make_history(&store, vec![]).await;
 
-        let text_chunk = |s: &str| {
-            StreamedAssistantContent::<()>::Text(rig::message::Text { text: s.to_owned() })
-        };
+        let text_chunk = |s: &str| StreamChunk::Text(s.to_owned());
 
         hm.handle_completion(&text_chunk("Hello"), "c-1".to_owned(), None);
         hm.handle_completion(&text_chunk(", "), "c-2".to_owned(), None);
@@ -1808,22 +1791,15 @@ mod tests {
         let store = InMemoryConversationStore::new();
         let hm = make_history(&store, vec![]).await;
 
-        let text_chunk = |s: &str| {
-            StreamedAssistantContent::<()>::Text(rig::message::Text { text: s.to_owned() })
-        };
-        let tool_call = StreamedAssistantContent::<()>::ToolCall {
-            tool_call: ToolCall {
-                id: "tc-1".to_owned(),
-                call_id: None,
-                function: ToolFunction {
-                    name: "some_tool".to_owned(),
-                    arguments: serde_json::json!({}),
-                },
-                additional_params: None,
-                signature: None,
+        let text_chunk = |s: &str| StreamChunk::Text(s.to_owned());
+        let tool_call = StreamChunk::ToolCall(ToolCall {
+            id: "tc-1".to_owned(),
+            call_id: None,
+            function: ToolFunction {
+                name: "some_tool".to_owned(),
+                arguments: serde_json::json!({}),
             },
-            internal_call_id: "tc-1".to_owned(),
-        };
+        });
 
         hm.handle_completion(&text_chunk("before"), "c-1".to_owned(), None);
         // A non-text item in between breaks the run of text chunks.
@@ -1844,17 +1820,18 @@ mod tests {
         let hm = make_history(
             &store,
             vec![Message::User {
-                content: OneOrMany::one(UserContent::text("do the thing")),
+                content: vec![UserContent::text("do the thing")],
             }],
         )
         .await;
 
-        let reasoning = StreamedAssistantContent::<()>::Reasoning(
-            rig::message::Reasoning::new_with_signature("thinking", Some("sig".to_owned())),
+        let reasoning = StreamChunk::Reasoning(
+            infinity_provider_protocol::message::Reasoning::new_with_signature(
+                "thinking",
+                Some("sig".to_owned()),
+            ),
         );
-        let text = StreamedAssistantContent::<()>::Text(rig::message::Text {
-            text: "partial answer".to_owned(),
-        });
+        let text = StreamChunk::Text("partial answer".to_owned());
         hm.handle_completion(&reasoning, "c-1".to_owned(), None);
         hm.handle_completion(&text, "c-2".to_owned(), None);
 
@@ -1880,14 +1857,12 @@ mod tests {
         let hm = make_history(
             &store,
             vec![Message::User {
-                content: OneOrMany::one(UserContent::text("do the thing")),
+                content: vec![UserContent::text("do the thing")],
             }],
         )
         .await;
 
-        let text = StreamedAssistantContent::<()>::Text(rig::message::Text {
-            text: "partial answer".to_owned(),
-        });
+        let text = StreamChunk::Text("partial answer".to_owned());
         hm.handle_completion(&text, "c-1".to_owned(), None);
         assert_eq!(hm.turn_buffer.borrow().len(), 1);
 
@@ -1909,18 +1884,19 @@ mod tests {
         let hm = make_history(
             &store,
             vec![Message::User {
-                content: OneOrMany::one(UserContent::text("do the thing")),
+                content: vec![UserContent::text("do the thing")],
             }],
         )
         .await;
 
         // A turn that streamed visible text and then a (complete) reasoning
         // block before being abandoned — e.g. the user interrupted it.
-        let text = StreamedAssistantContent::<()>::Text(rig::message::Text {
-            text: "here is the answer".to_owned(),
-        });
-        let reasoning = StreamedAssistantContent::<()>::Reasoning(
-            rig::message::Reasoning::new_with_signature("still thinking", Some("sig".to_owned())),
+        let text = StreamChunk::Text("here is the answer".to_owned());
+        let reasoning = StreamChunk::Reasoning(
+            infinity_provider_protocol::message::Reasoning::new_with_signature(
+                "still thinking",
+                Some("sig".to_owned()),
+            ),
         );
         hm.handle_completion(&text, "c-1".to_owned(), None);
         hm.handle_completion(&reasoning, "c-2".to_owned(), None);
@@ -1948,7 +1924,7 @@ mod tests {
         let hm = make_history(
             &store,
             vec![Message::User {
-                content: OneOrMany::one(UserContent::text("do the thing")),
+                content: vec![UserContent::text("do the thing")],
             }],
         )
         .await;
@@ -1957,14 +1933,14 @@ mod tests {
         // trimming must remove all three (the empty text must not strand the
         // earlier reasoning block), leaving history ending on the user message.
         let reasoning = |s: &str| {
-            StreamedAssistantContent::<()>::Reasoning(rig::message::Reasoning::new_with_signature(
-                s,
-                Some("sig".to_owned()),
-            ))
+            StreamChunk::Reasoning(
+                infinity_provider_protocol::message::Reasoning::new_with_signature(
+                    s,
+                    Some("sig".to_owned()),
+                ),
+            )
         };
-        let empty_text = StreamedAssistantContent::<()>::Text(rig::message::Text {
-            text: "  ".to_owned(),
-        });
+        let empty_text = StreamChunk::Text("  ".to_owned());
         hm.handle_completion(&reasoning("first"), "c-1".to_owned(), None);
         hm.handle_completion(&empty_text, "c-2".to_owned(), None);
         hm.handle_completion(&reasoning("second"), "c-3".to_owned(), None);
@@ -1983,7 +1959,7 @@ mod tests {
         let hm = make_history(
             &store,
             vec![Message::User {
-                content: OneOrMany::one(UserContent::text("hi")),
+                content: vec![UserContent::text("hi")],
             }],
         )
         .await;
@@ -1991,9 +1967,7 @@ mod tests {
         // With an empty buffer the view equals committed history.
         assert_eq!(hm.current_turn_view().len(), 1);
 
-        let text = StreamedAssistantContent::<()>::Text(rig::message::Text {
-            text: "streaming...".to_owned(),
-        });
+        let text = StreamChunk::Text("streaming...".to_owned());
         hm.handle_completion(&text, "c-1".to_owned(), None);
 
         // Mid-turn the view includes the buffered partial message even though
@@ -2094,7 +2068,7 @@ mod tests {
         // History has a user msg, then an assistant tool call that hasn't been answered
         let initial = vec![
             Message::User {
-                content: OneOrMany::one(UserContent::text("do something")),
+                content: vec![UserContent::text("do something")],
             },
             tool_call_msg("tc-1", "some_tool", serde_json::json!({"x": 1})),
         ];
@@ -2120,7 +2094,7 @@ mod tests {
         let store = InMemoryConversationStore::new();
         let initial = vec![
             Message::User {
-                content: OneOrMany::one(UserContent::text("do something")),
+                content: vec![UserContent::text("do something")],
             },
             tool_call_msg("tc-1", "some_tool", serde_json::json!({"x": 1})),
         ];
@@ -2142,7 +2116,7 @@ mod tests {
         // Tool call already completed before the thread report arrives
         let initial = vec![
             Message::User {
-                content: OneOrMany::one(UserContent::text("subscribe")),
+                content: vec![UserContent::text("subscribe")],
             },
             tool_call_msg(
                 "tc-sub",
@@ -2150,13 +2124,15 @@ mod tests {
                 serde_json::json!({"topic": "events"}),
             ),
             Message::User {
-                content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+                content: vec![UserContent::ToolResult(ToolResult {
                     id: "tc-sub".to_owned(),
                     call_id: None,
-                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                        text: "subscribed successfully".to_owned(),
-                    })),
-                })),
+                    content: vec![ToolResultContent::Text(
+                        infinity_provider_protocol::message::Text {
+                            text: "subscribed successfully".to_owned(),
+                        },
+                    )],
+                })],
             },
         ];
         let hm = make_history(&store, initial).await;
@@ -2189,7 +2165,7 @@ mod tests {
         // Tool call is still pending when the thread report arrives
         let initial = vec![
             Message::User {
-                content: OneOrMany::one(UserContent::text("subscribe")),
+                content: vec![UserContent::text("subscribe")],
             },
             tool_call_msg(
                 "tc-sub",
@@ -2226,7 +2202,7 @@ mod tests {
         // Tool call already completed with a result before the event arrives
         let initial = vec![
             Message::User {
-                content: OneOrMany::one(UserContent::text("subscribe")),
+                content: vec![UserContent::text("subscribe")],
             },
             tool_call_msg(
                 "tc-sub",
@@ -2234,13 +2210,15 @@ mod tests {
                 serde_json::json!({"topic": "events"}),
             ),
             Message::User {
-                content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+                content: vec![UserContent::ToolResult(ToolResult {
                     id: "tc-sub".to_owned(),
                     call_id: None,
-                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                        text: "subscribed successfully".to_owned(),
-                    })),
-                })),
+                    content: vec![ToolResultContent::Text(
+                        infinity_provider_protocol::message::Text {
+                            text: "subscribed successfully".to_owned(),
+                        },
+                    )],
+                })],
             },
         ];
         let hm = make_history(&store, initial).await;
@@ -2272,7 +2250,7 @@ mod tests {
         // Tool call is still pending (no result yet) when the event arrives
         let initial = vec![
             Message::User {
-                content: OneOrMany::one(UserContent::text("subscribe")),
+                content: vec![UserContent::text("subscribe")],
             },
             tool_call_msg(
                 "tc-sub",
@@ -2358,7 +2336,7 @@ mod tests {
         // Tool call already completed with a result before the associative event arrives
         let initial = vec![
             Message::User {
-                content: OneOrMany::one(UserContent::text("run command")),
+                content: vec![UserContent::text("run command")],
             },
             tool_call_msg(
                 "tc-cmd",
@@ -2366,13 +2344,13 @@ mod tests {
                 serde_json::json!({"command": "make build"}),
             ),
             Message::User {
-                content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+                content: vec![UserContent::ToolResult(ToolResult {
                     id: "tc-cmd".to_owned(),
                     call_id: None,
-                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+                    content: vec![ToolResultContent::Text(infinity_provider_protocol::message::Text {
                         text: "Command is still running. Output will be streamed via subscription events.".to_owned(),
-                    })),
-                })),
+                    })],
+                })],
             },
         ];
         let hm = make_history(&store, initial).await;
@@ -2410,7 +2388,7 @@ mod tests {
         // Tool call is still pending (no result yet) when the associative event arrives
         let initial = vec![
             Message::User {
-                content: OneOrMany::one(UserContent::text("run command")),
+                content: vec![UserContent::text("run command")],
             },
             tool_call_msg(
                 "tc-cmd",
@@ -2453,7 +2431,7 @@ mod tests {
     use crate::test_helpers::{mock_provider, mock_provider_with_image_support};
     use crate::tools::{Tool, ToolContext};
     use futures_util::StreamExt;
-    use rig::completion::ToolDefinition;
+    use infinity_provider_protocol::ToolDefinition;
 
     fn tool_context() -> ToolContext<StubSender> {
         ToolContext {
@@ -2485,7 +2463,7 @@ mod tests {
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
-                        content: OneOrMany::one(UserContent::text("hello")),
+                        content: vec![UserContent::text("hello")],
                     }],
                 )
                 .await;
@@ -2547,7 +2525,7 @@ mod tests {
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
-                        content: OneOrMany::one(UserContent::text("hello")),
+                        content: vec![UserContent::text("hello")],
                     }],
                 )
                 .await;
@@ -2611,7 +2589,7 @@ mod tests {
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
-                        content: OneOrMany::one(UserContent::text("do it")),
+                        content: vec![UserContent::text("do it")],
                     }],
                 )
                 .await;
@@ -2663,8 +2641,11 @@ mod tests {
                     .last()
                     .expect("bug: chat history is empty");
                 if let Message::User { content } = &last_msg {
-                    if let UserContent::ToolResult(res) = content.first() {
-                        if let rig::message::ToolResultContent::Text(t) = res.content.first() {
+                    if let Some(UserContent::ToolResult(res)) = content.first() {
+                        if let Some(infinity_provider_protocol::message::ToolResultContent::Text(
+                            t,
+                        )) = res.content.first()
+                        {
                             assert!(
                                 t.text.contains("does not exist"),
                                 "Expected error about nonexistent tool, got: {}",
@@ -2693,7 +2674,7 @@ mod tests {
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
-                        content: OneOrMany::one(UserContent::text("do it")),
+                        content: vec![UserContent::text("do it")],
                     }],
                 )
                 .await;
@@ -2780,9 +2761,11 @@ mod tests {
             Some(ToolResult {
                 id: id.to_owned(),
                 call_id: call_id.map(String::from),
-                content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                    text: format!("echo: {}", text),
-                })),
+                content: vec![ToolResultContent::Text(
+                    infinity_provider_protocol::message::Text {
+                        text: format!("echo: {}", text),
+                    },
+                )],
             })
         }
     }
@@ -2799,7 +2782,7 @@ mod tests {
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
-                        content: OneOrMany::one(UserContent::text("echo something")),
+                        content: vec![UserContent::text("echo something")],
                     }],
                 )
                 .await;
@@ -2839,7 +2822,7 @@ mod tests {
                         match ev.expect("receive stream event") {
                             CompletionEvent::SyncToolCall { tool_name, .. } => sync_calls.push(tool_name),
                             CompletionEvent::SyncToolResult(res) => {
-                                if let ToolResultContent::Text(t) = res.content.first() {
+                                if let Some(ToolResultContent::Text(t)) = res.content.first() {
                                     sync_results.push(t.text.clone());
                                 }
                             }
@@ -2860,8 +2843,8 @@ mod tests {
                 // Verify the tool result is in the history
                 let has_echo = req2.chat_history.into_iter().any(|m| {
                     if let Message::User { content } = &m {
-                        if let UserContent::ToolResult(res) = content.first() {
-                            if let ToolResultContent::Text(t) = res.content.first() {
+                        if let Some(UserContent::ToolResult(res)) = content.first() {
+                            if let Some(ToolResultContent::Text(t)) = res.content.first() {
                                 return t.text.contains("echo: hi");
                             }
                         }
@@ -2886,7 +2869,7 @@ mod tests {
     fn image_tool_result_history() -> Vec<Message> {
         vec![
             Message::User {
-                content: OneOrMany::one(UserContent::text("show me the logo")),
+                content: vec![UserContent::text("show me the logo")],
             },
             tool_call_msg(
                 "tc-img",
@@ -2894,22 +2877,21 @@ mod tests {
                 serde_json::json!({"path": "logo.png"}),
             ),
             Message::User {
-                content: OneOrMany::one(UserContent::ToolResult(ToolResult {
+                content: vec![UserContent::ToolResult(ToolResult {
                     id: "tc-img".to_owned(),
                     call_id: None,
-                    content: OneOrMany::many(vec![
-                        ToolResultContent::Text(rig::agent::Text {
-                            text: "Read image file \"logo.png\"".to_owned(),
+                    content: vec![
+                        ToolResultContent::text("Read image file \"logo.png\""),
+                        ToolResultContent::Image(infinity_provider_protocol::message::Image {
+                            data: infinity_provider_protocol::message::ImageSource::Base64(
+                                "aGVsbG8=".to_owned(),
+                            ),
+                            media_type: Some(
+                                infinity_provider_protocol::message::ImageMediaType::PNG,
+                            ),
                         }),
-                        ToolResultContent::Image(rig::message::Image {
-                            data: rig::message::DocumentSourceKind::Base64("aGVsbG8=".to_owned()),
-                            media_type: Some(rig::message::ImageMediaType::PNG),
-                            detail: None,
-                            additional_params: None,
-                        }),
-                    ])
-                    .expect("bug: nonempty content"),
-                })),
+                    ],
+                })],
             },
         ]
     }
@@ -2921,10 +2903,10 @@ mod tests {
             .iter()
             .find_map(|m| {
                 if let Message::User { content } = m
-                    && let UserContent::ToolResult(res) = content.first_ref()
+                    && let Some(UserContent::ToolResult(res)) = content.first()
                     && res.id == "tc-img"
                 {
-                    Some(res.content.iter().cloned().collect::<Vec<_>>())
+                    Some(res.content.to_vec())
                 } else {
                     None
                 }
@@ -2968,7 +2950,7 @@ mod tests {
                 assert_eq!(content.len(), 2);
                 assert!(
                     matches!(&content[1], ToolResultContent::Image(img)
-                        if img.data == rig::message::DocumentSourceKind::Base64("aGVsbG8=".to_owned())),
+                        if img.data == infinity_provider_protocol::message::ImageSource::Base64("aGVsbG8=".to_owned())),
                     "image content should be passed through unchanged, got {content:?}"
                 );
 
@@ -3042,7 +3024,7 @@ mod tests {
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
-                        content: OneOrMany::one(UserContent::text("think hard")),
+                        content: vec![UserContent::text("think hard")],
                     }],
                 )
                 .await;
@@ -3082,13 +3064,13 @@ mod tests {
                 });
 
                 let _req = ctrl.next_request().await;
-                ctrl.send_chunk(rig::streaming::RawStreamingChoice::ReasoningDelta {
+                ctrl.send_chunk(StreamChunk::ReasoningDelta {
                     id: None,
-                    reasoning: "hmm".into(),
+                    text: "hmm".into(),
                 });
-                ctrl.send_chunk(rig::streaming::RawStreamingChoice::ReasoningDelta {
+                ctrl.send_chunk(StreamChunk::ReasoningDelta {
                     id: None,
-                    reasoning: "...".into(),
+                    text: "...".into(),
                 });
                 ctrl.send_text("answer");
                 ctrl.finish();
@@ -3112,7 +3094,7 @@ mod tests {
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
-                        content: OneOrMany::one(UserContent::text("run tool")),
+                        content: vec![UserContent::text("run tool")],
                     }],
                 )
                 .await;
@@ -3205,7 +3187,7 @@ mod tests {
     /// was dropped and the call stranded as unanswered).
     #[tokio::test(flavor = "current_thread")]
     async fn concurrent_tool_calls_suppress_trailing_stream_content() {
-        use rig::streaming::RawStreamingChoice;
+        use infinity_provider_protocol::StreamChunk;
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
@@ -3214,7 +3196,7 @@ mod tests {
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
-                        content: OneOrMany::one(UserContent::text("run tools")),
+                        content: vec![UserContent::text("run tools")],
                     }],
                 )
                 .await;
@@ -3296,47 +3278,42 @@ mod tests {
                 let _req = ctrl.next_request().await;
                 // Bedrock-style single assistant message with two concurrent
                 // tool calls and interleaved reasoning between them.
-                ctrl.send_chunk(RawStreamingChoice::ReasoningDelta {
+                ctrl.send_chunk(StreamChunk::ReasoningDelta {
                     id: None,
-                    reasoning: "planning the calls".into(),
+                    text: "planning the calls".into(),
                 });
-                ctrl.send_chunk(RawStreamingChoice::Reasoning {
-                    id: None,
-                    content: rig::message::ReasoningContent::Text {
-                        text: "planning the calls".into(),
-                        signature: Some("sig-1".into()),
-                    },
-                });
-                ctrl.send_chunk(RawStreamingChoice::ToolCallDelta {
+                ctrl.send_chunk(StreamChunk::Reasoning(
+                    infinity_provider_protocol::message::Reasoning::new_with_signature(
+                        "planning the calls",
+                        Some("sig-1".to_owned()),
+                    ),
+                ));
+                ctrl.send_chunk(StreamChunk::ToolCallDelta {
                     id: "tc-1".into(),
-                    internal_call_id: "int-1".into(),
                     content: ToolCallDeltaContent::Name("async_tool".into()),
                 });
                 ctrl.send_tool_call("tc-1", "async_tool", serde_json::json!({"x": 1}));
                 // Second concurrent call: its deltas must not leak out as
                 // thinking, and it must not be executed.
-                ctrl.send_chunk(RawStreamingChoice::ToolCallDelta {
+                ctrl.send_chunk(StreamChunk::ToolCallDelta {
                     id: "tc-2".into(),
-                    internal_call_id: "int-2".into(),
                     content: ToolCallDeltaContent::Name("async_tool".into()),
                 });
-                ctrl.send_chunk(RawStreamingChoice::ToolCallDelta {
+                ctrl.send_chunk(StreamChunk::ToolCallDelta {
                     id: "tc-2".into(),
-                    internal_call_id: "int-2".into(),
                     content: ToolCallDeltaContent::Delta("{\"x\":2}".into()),
                 });
                 // Interleaved reasoning after the first call.
-                ctrl.send_chunk(RawStreamingChoice::ReasoningDelta {
+                ctrl.send_chunk(StreamChunk::ReasoningDelta {
                     id: None,
-                    reasoning: "now the second call".into(),
+                    text: "now the second call".into(),
                 });
-                ctrl.send_chunk(RawStreamingChoice::Reasoning {
-                    id: None,
-                    content: rig::message::ReasoningContent::Text {
-                        text: "now the second call".into(),
-                        signature: Some("sig-2".into()),
-                    },
-                });
+                ctrl.send_chunk(StreamChunk::Reasoning(
+                    infinity_provider_protocol::message::Reasoning::new_with_signature(
+                        "now the second call",
+                        Some("sig-2".to_owned()),
+                    ),
+                ));
                 ctrl.send_tool_call("tc-2", "async_tool", serde_json::json!({"x": 2}));
                 ctrl.finish();
 
@@ -3379,7 +3356,7 @@ mod tests {
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
-                        content: OneOrMany::one(UserContent::text("go")),
+                        content: vec![UserContent::text("go")],
                     }],
                 )
                 .await;
@@ -3444,7 +3421,7 @@ mod tests {
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
-                        content: OneOrMany::one(UserContent::text("think")),
+                        content: vec![UserContent::text("think")],
                     }],
                 )
                 .await;
@@ -3481,9 +3458,9 @@ mod tests {
                 });
 
                 let _req = ctrl.next_request().await;
-                ctrl.send_chunk(rig::streaming::RawStreamingChoice::ReasoningDelta {
+                ctrl.send_chunk(StreamChunk::ReasoningDelta {
                     id: None,
-                    reasoning: "deep thought".into(),
+                    text: "deep thought".into(),
                 });
                 tokio::task::yield_now().await;
                 tokio::task::yield_now().await;
@@ -3516,7 +3493,7 @@ mod tests {
                     make_history(
                         &convo_store,
                         vec![Message::User {
-                            content: OneOrMany::one(UserContent::text("do the thing")),
+                            content: vec![UserContent::text("do the thing")],
                         }],
                     )
                     .await,
@@ -3548,13 +3525,12 @@ mod tests {
                 let _req = ctrl.next_request().await;
                 ctrl.send_text("here is the answer");
                 // A complete reasoning block (has a signature, so it is buffered).
-                ctrl.send_chunk(rig::streaming::RawStreamingChoice::Reasoning {
-                    id: None,
-                    content: rig::message::ReasoningContent::Text {
-                        text: "still thinking".to_owned(),
-                        signature: Some("sig".to_owned()),
-                    },
-                });
+                ctrl.send_chunk(StreamChunk::Reasoning(
+                    infinity_provider_protocol::message::Reasoning::new_with_signature(
+                        "still thinking",
+                        Some("sig".to_owned()),
+                    ),
+                ));
                 tokio::task::yield_now().await;
                 tokio::task::yield_now().await;
                 cancel_tx.send(()).expect("send cancel signal");
@@ -3595,7 +3571,7 @@ mod tests {
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
-                        content: OneOrMany::one(UserContent::text("echo twice")),
+                        content: vec![UserContent::text("echo twice")],
                     }],
                 )
                 .await;
@@ -3678,7 +3654,7 @@ mod tests {
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
-                        content: OneOrMany::one(UserContent::text("do the thing")),
+                        content: vec![UserContent::text("do the thing")],
                     }],
                 )
                 .await;
@@ -3758,7 +3734,7 @@ mod tests {
                     make_history(
                         &convo_store,
                         vec![Message::User {
-                            content: OneOrMany::one(UserContent::text("use the tool")),
+                            content: vec![UserContent::text("use the tool")],
                         }],
                     )
                     .await,
@@ -3871,7 +3847,7 @@ mod tests {
                 let hm = make_history(
                     &convo_store,
                     vec![Message::User {
-                        content: OneOrMany::one(UserContent::text("echo something")),
+                        content: vec![UserContent::text("echo something")],
                     }],
                 )
                 .await;
@@ -3917,12 +3893,12 @@ mod tests {
                 let has_tool_call = msgs.iter().any(|m| matches!(
                     m,
                     Message::Assistant { content, .. }
-                        if matches!(content.first(), AssistantContent::ToolCall(_))
+                        if matches!(content.first(), Some(AssistantContent::ToolCall(_)))
                 ));
                 let has_tool_result = msgs.iter().any(|m| matches!(
                     m,
                     Message::User { content }
-                        if matches!(content.first(), UserContent::ToolResult(_))
+                        if matches!(content.first(), Some(UserContent::ToolResult(_)))
                 ));
                 assert!(has_tool_call, "loop-back must include the assistant tool call");
                 assert!(has_tool_result, "loop-back must include the injected tool result");
@@ -4023,10 +3999,10 @@ mod tests {
         let InputMessageContent::User(UserContent::ToolResult(result)) = message.content else {
             panic!("expected a tool result");
         };
-        let ToolResultContent::Text(text) = result.content.first() else {
+        let Some(ToolResultContent::Text(text)) = result.content.first() else {
             panic!("expected text content");
         };
-        (result.id, result.call_id, text.text)
+        (result.id.clone(), result.call_id.clone(), text.text.clone())
     }
 
     /// A tool's own argument validation failure comes back to the agent as an
@@ -4062,7 +4038,7 @@ mod tests {
         let tool = FailingTool;
         let tools: HashMap<String, &dyn Tool<CapturingSender>> =
             HashMap::from([("failing_tool".into(), &tool as &dyn Tool<CapturingSender>)]);
-        let action = CompletionAction::<ProviderStreamingResponse>::ExecuteToolCall {
+        let action = CompletionAction::ExecuteToolCall {
             tool_name: "failing_tool".into(),
             tool_args: serde_json::json!({}),
             tool_call_id: "tc-1".into(),

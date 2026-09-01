@@ -4,7 +4,7 @@ use infinity_agent_core::message::{
     InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind,
 };
 use infinity_protocol::{ClientMessage, DaemonMessage, length_delimited_codec};
-use rig::message::UserContent;
+use infinity_provider_protocol::message::UserContent;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio_util::codec::Framed;

@@ -6,8 +6,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use futures_util::StreamExt;
-use rig::completion::{GetTokenUsage, ToolDefinition, Usage};
-use rig::message::{ToolResultContent, UserContent};
+use infinity_provider_protocol::message::{ToolResultContent, UserContent};
+use infinity_provider_protocol::{ToolDefinition, Usage};
 use tokio::sync::oneshot;
 
 use crate::event_processor::{self, CompletionAction, CompletionEvent, HistoryManager};
@@ -585,12 +585,10 @@ where
 
     fn handle_completion_event(
         &self,
-        event: CompletionEvent<infinity_provider_protocol::ProviderStreamingResponse>,
+        event: CompletionEvent,
         observer: &impl ThreadObserver,
         thread_id: &str,
-        action: &mut Option<
-            CompletionAction<infinity_provider_protocol::ProviderStreamingResponse>,
-        >,
+        action: &mut Option<CompletionAction>,
         usage: &mut Option<Usage>,
     ) {
         match event {
@@ -633,11 +631,11 @@ where
             }
             CompletionEvent::SyncToolResult(res) => {
                 *self.current_thinking.borrow_mut() = None;
-                if let ToolResultContent::Text(text) = res.content.first() {
+                if let Some(ToolResultContent::Text(text)) = res.content.first() {
                     observer.on_event(
                         thread_id,
                         &AgentEvent::ToolResult {
-                            segments: vec![rap_protocol::DisplaySegment::Text(text.text)],
+                            segments: vec![rap_protocol::DisplaySegment::Text(text.text.clone())],
                         },
                     );
                 }
@@ -646,7 +644,7 @@ where
                 // There may be multiple `Done` if the agent synchronously
                 // loops back; the last one carries the round's final usage.
                 *self.current_thinking.borrow_mut() = None;
-                if let Some(u) = r.token_usage() {
+                if let Some(u) = r.usage {
                     *usage = Some(u);
                 }
             }

@@ -2,7 +2,8 @@
 //! routing, replay, and auto-compaction.
 
 use async_trait::async_trait;
-use rig::message::UserContent;
+use infinity_provider_protocol::StreamChunk;
+use infinity_provider_protocol::message::UserContent;
 use tokio::sync::mpsc;
 
 use super::events::AgentEvent;
@@ -190,8 +191,8 @@ async fn user_text_interrupts_active_completion() {
             running.send_user_text("t1", "stop that").await;
             let req2 = ctrl.next_request().await;
             let has_interrupt = req2.chat_history.into_iter().any(|m| {
-                if let rig::message::Message::User { content } = &m
-                    && let UserContent::Text(t) = content.first()
+                if let infinity_provider_protocol::message::Message::User { content } = &m
+                    && let Some(UserContent::Text(t)) = content.first()
                 {
                     return t.text.contains("<interrupt>");
                 }
@@ -369,14 +370,17 @@ async fn thread_report_deferred_during_async_tool_wait() {
                 .send(
                     InputMessage {
                         content: InputMessageContent::User(UserContent::ToolResult(
-                            rig::message::ToolResult {
+                            infinity_provider_protocol::message::ToolResult {
                                 id: String::new(),
                                 call_id: None,
-                                content: rig::OneOrMany::one(
-                                    rig::message::ToolResultContent::Text(rig::agent::Text {
-                                        text: "Report from child thread: progress update".into(),
-                                    }),
-                                ),
+                                content: vec![
+                                    infinity_provider_protocol::message::ToolResultContent::Text(
+                                        infinity_provider_protocol::message::Text {
+                                            text: "Report from child thread: progress update"
+                                                .into(),
+                                        },
+                                    ),
+                                ],
                             },
                         )),
                         group_id: "t1".into(),
@@ -465,7 +469,8 @@ async fn shutdown_persists_in_flight_tool_result() {
                 .expect("load history");
             let has_tool_result = history.iter().any(|m| {
                 if let crate::message::InfinityMessage::ToolResult { result, .. } = m
-                    && let rig::message::ToolResultContent::Text(t) = result.content.first()
+                    && let Some(infinity_provider_protocol::message::ToolResultContent::Text(t)) =
+                        result.content.first()
                 {
                     result.id == "tc-1" && t.text.contains("tool execution result")
                 } else {
@@ -587,13 +592,13 @@ async fn subscribe_mid_thinking_replays_current_thinking() {
             let (running, mut rx, mut ctrl, _conv) = start_system(vec![], None);
             running.send_user_text("t1", "think hard").await;
             let _req = ctrl.next_request().await;
-            ctrl.send_chunk(rig::streaming::RawStreamingChoice::ReasoningDelta {
+            ctrl.send_chunk(StreamChunk::ReasoningDelta {
                 id: None,
-                reasoning: "deep ".into(),
+                text: "deep ".into(),
             });
-            ctrl.send_chunk(rig::streaming::RawStreamingChoice::ReasoningDelta {
+            ctrl.send_chunk(StreamChunk::ReasoningDelta {
                 id: None,
-                reasoning: "thought".into(),
+                text: "thought".into(),
             });
             // Wait until both chunks have been observed.
             let mut seen = String::new();
@@ -682,8 +687,8 @@ async fn respawns_driver_after_idle() {
             running.send_user_text("t1", "again").await;
             let req2 = ctrl.next_request().await;
             assert!(req2.chat_history.into_iter().any(|m| {
-                if let rig::message::Message::User { content } = &m
-                    && let UserContent::Text(t) = content.first()
+                if let infinity_provider_protocol::message::Message::User { content } = &m
+                    && let Some(UserContent::Text(t)) = content.first()
                 {
                     return t.text.contains("hello");
                 }
@@ -752,15 +757,15 @@ async fn compaction_during_tool_call_corrupts_history() {
 
             let history: Vec<_> = req_final.chat_history.into_iter().collect();
             let has_orphaned_tool_result = history.iter().enumerate().any(|(i, m)| {
-                if let rig::message::Message::User { content } = m
-                    && let UserContent::ToolResult(r) = content.first()
-                    && let rig::message::ToolResultContent::Text(t) = r.content.first()
+                if let infinity_provider_protocol::message::Message::User { content } = m
+                    && let Some(UserContent::ToolResult(r)) = content.first()
+                    && let Some(infinity_provider_protocol::message::ToolResultContent::Text(t)) = r.content.first()
                     && t.text.contains("tool execution result")
                 {
                     !history[..i].iter().any(|prev| {
-                        if let rig::message::Message::Assistant { content, .. } = prev {
+                        if let infinity_provider_protocol::message::Message::Assistant { content, .. } = prev {
                             content.iter().any(|c| {
-                                matches!(c, rig::message::AssistantContent::ToolCall(tc) if tc.id == "tc-1")
+                                matches!(c, infinity_provider_protocol::message::AssistantContent::ToolCall(tc) if tc.id == "tc-1")
                             })
                         } else {
                             false

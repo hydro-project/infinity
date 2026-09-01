@@ -8,7 +8,7 @@ license = "Apache-2.0"
 infinity-agent-core = { path = "../infinity-agent-core" }
 rap-client = { path = "../rap-client" }
 rap-protocol = { path = "../rap-protocol" }
-rig-core = { workspace = true }
+infinity-provider-protocol = { path = "../infinity-provider-protocol" }
 
 serde_json = { workspace = true }
 tracing = { workspace = true }

@@ -1,9 +1,5 @@
 use async_trait::async_trait;
-use rig::{
-    OneOrMany,
-    agent::Text,
-    message::{ToolResult, ToolResultContent, UserContent},
-};
+use infinity_provider_protocol::message::{Text, ToolResult, ToolResultContent, UserContent};
 use tracing;
 
 use super::{Tool, ToolContext};
@@ -107,9 +103,9 @@ impl<M: InputSender + 'static> Tool<M> for TokioSleepTool {
                 content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                     id: id.clone(),
                     call_id,
-                    content: OneOrMany::one(ToolResultContent::Text(Text {
+                    content: vec![ToolResultContent::Text(Text {
                         text: format!("Slept for {} seconds", seconds),
-                    })),
+                    })],
                 })),
                 group_id: group_id.clone(),
                 metadata: None,
@@ -214,7 +210,7 @@ impl<M: InputSender + 'static> Tool<M> for TokioSleepUntilTool {
                 content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                     id: id.clone(),
                     call_id,
-                    content: OneOrMany::one(ToolResultContent::Text(Text { text: result_text })),
+                    content: vec![ToolResultContent::Text(Text { text: result_text })],
                 })),
                 group_id: group_id.clone(),
                 metadata: None,

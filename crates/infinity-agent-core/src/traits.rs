@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use rig::message::AssistantContent;
+use infinity_provider_protocol::message::AssistantContent;
 
 use crate::message::{InfinityMessage, InputMessage};
 use crate::system::UserChoice;

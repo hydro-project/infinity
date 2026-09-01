@@ -2,11 +2,7 @@ use async_trait::async_trait;
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
 use infinity_agent_core::tools::{Tool, ToolContext};
 use infinity_agent_core::traits::InputSender;
-use rig::{
-    OneOrMany,
-    agent::Text,
-    message::{ToolResult, ToolResultContent, UserContent},
-};
+use infinity_provider_protocol::message::{Text, ToolResult, ToolResultContent, UserContent};
 
 use crate::memory_store::PersistentConversationStore;
 
@@ -57,9 +53,9 @@ impl<M: InputSender + 'static> Tool<M> for SetTitleTool {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                 id: id.clone(),
                 call_id,
-                content: OneOrMany::one(ToolResultContent::Text(Text {
+                content: vec![ToolResultContent::Text(Text {
                     text: format!("Title set to: {}", title),
-                })),
+                })],
             })),
             group_id: context.group_id.clone(),
             metadata: None,

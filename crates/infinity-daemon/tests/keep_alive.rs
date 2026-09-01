@@ -13,8 +13,8 @@ use infinity_daemon::client_handler::handle_client_channels;
 use infinity_daemon::ids::SequentialIdSource;
 use infinity_daemon::session::{SessionManager, SessionManagerConfig, SharedSessionManager};
 use infinity_protocol::{ClientMessage, DaemonMessage};
+use infinity_provider_protocol::mock::{MockModelController, mock_model};
 use infinity_provider_protocol::{ModelEntry, ModelProvider, SingleModelProvider};
-use rig_mock::{MockModelController, mock_model};
 use tokio::sync::{Mutex, mpsc};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -257,7 +257,7 @@ async fn keep_alive_client_keeps_session_warm() {
 #[tokio::test(flavor = "current_thread")]
 async fn active_subscription_keeps_rap_servers_warm() {
     use infinity_agent_core::message::{InputMessage, InputMessageContent};
-    use rig::message::{ToolResult, ToolResultContent, UserContent};
+    use infinity_provider_protocol::message::{ToolResult, ToolResultContent, UserContent};
 
     let local = tokio::task::LocalSet::new();
     local
@@ -298,9 +298,11 @@ async fn active_subscription_keeps_rap_servers_warm() {
                 content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                     id: "tc-sub".to_owned(),
                     call_id: None,
-                    content: rig::OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                        text: "subscribed to build events".to_owned(),
-                    })),
+                    content: vec![ToolResultContent::Text(
+                        infinity_provider_protocol::message::Text {
+                            text: "subscribed to build events".to_owned(),
+                        },
+                    )],
                 })),
                 group_id: session_id.clone(),
                 metadata: None,

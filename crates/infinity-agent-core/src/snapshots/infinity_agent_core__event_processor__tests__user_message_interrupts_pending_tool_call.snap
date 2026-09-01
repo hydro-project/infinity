@@ -14,15 +14,12 @@ expression: hm.history.into_inner()
     "kind": "tool_call",
     "call": {
       "id": "tc-1",
-      "call_id": null,
       "function": {
         "name": "some_tool",
         "arguments": {
           "x": 1
         }
-      },
-      "signature": null,
-      "additional_params": null
+      }
     }
   },
   {

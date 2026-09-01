@@ -13,9 +13,9 @@ use infinity_agent_core::system::{AgentSystemBuilder, UserChoice};
 use infinity_agent_core::tools::Tool;
 use infinity_agent_core::traits::{ConversationStore, StateStore};
 use infinity_protocol::{DaemonMessage, SessionStatus};
+use infinity_provider_protocol::message::UserContent;
+use infinity_provider_protocol::mock::mock_model;
 use infinity_provider_protocol::{ModelEntry, ModelProvider, SingleModelProvider};
-use rig::message::UserContent;
-use rig_mock::mock_model;
 use tokio::sync::mpsc;
 
 use super::observer::{DaemonObserver, SubscribeRequest, Subscriber, SubscriberMap};
@@ -39,8 +39,8 @@ fn model2_ref() -> infinity_protocol::ModelRef {
 }
 
 async fn two_model_catalog(
-    model1: rig_mock::MockCompletionModel,
-    model2: rig_mock::MockCompletionModel,
+    model1: infinity_provider_protocol::mock::MockCompletionModel,
+    model2: infinity_provider_protocol::mock::MockCompletionModel,
 ) -> Arc<ModelCatalog> {
     let entry = |id: &str| ModelEntry {
         model_id: id.to_owned(),
@@ -161,13 +161,17 @@ async fn collect_until_done(rx: &mut mpsc::UnboundedReceiver<DaemonMessage>) -> 
 
 fn tool_result_input(group_id: &str, id: &str, text: &str) -> InputMessage {
     InputMessage {
-        content: InputMessageContent::User(UserContent::ToolResult(rig::message::ToolResult {
-            id: id.into(),
-            call_id: None,
-            content: rig::OneOrMany::one(rig::message::ToolResultContent::Text(rig::agent::Text {
-                text: text.into(),
-            })),
-        })),
+        content: InputMessageContent::User(UserContent::ToolResult(
+            infinity_provider_protocol::message::ToolResult {
+                id: id.into(),
+                call_id: None,
+                content: vec![
+                    infinity_provider_protocol::message::ToolResultContent::Text(
+                        infinity_provider_protocol::message::Text { text: text.into() },
+                    ),
+                ],
+            },
+        )),
         group_id: group_id.into(),
         metadata: None,
         synthetic: None,
@@ -351,9 +355,10 @@ async fn spawned_thread_inherits_parent_model() {
             // After spawn_thread, the parent loops back on ctrl2.
             let parent_followup = ctrl2.next_request().await;
             let is_parent = parent_followup.chat_history.iter().any(|m| {
-                if let rig::message::Message::User { content } = m
-                    && let UserContent::ToolResult(r) = content.first()
-                    && let rig::message::ToolResultContent::Text(t) = r.content.first()
+                if let infinity_provider_protocol::message::Message::User { content } = m
+                    && let Some(UserContent::ToolResult(r)) = content.first()
+                    && let Some(infinity_provider_protocol::message::ToolResultContent::Text(t)) =
+                        r.content.first()
                 {
                     return t.text.contains("successfully spawned");
                 }
@@ -374,9 +379,10 @@ async fn spawned_thread_inherits_parent_model() {
                         "child thread should use model2 (parent's model), not model1 (default)",
                     );
             let has_instructions = child_req.chat_history.iter().any(|m| {
-                if let rig::message::Message::User { content } = m
-                    && let UserContent::ToolResult(r) = content.first()
-                    && let rig::message::ToolResultContent::Text(t) = r.content.first()
+                if let infinity_provider_protocol::message::Message::User { content } = m
+                    && let Some(UserContent::ToolResult(r)) = content.first()
+                    && let Some(infinity_provider_protocol::message::ToolResultContent::Text(t)) =
+                        r.content.first()
                 {
                     return t.text.contains("do something");
                 }
@@ -414,7 +420,7 @@ async fn observer_persists_usage_and_resets_on_compaction() {
     observer.on_event(
         "t1",
         &AgentEvent::CompletionFinished {
-            usage: Some(rig::completion::Usage {
+            usage: Some(infinity_provider_protocol::Usage {
                 input_tokens: 40,
                 output_tokens: 2,
                 total_tokens: 42,

@@ -13,8 +13,8 @@ mod common;
 use common::TuiHarness;
 use infinity_agent_cli::display::DisplayEvent;
 use infinity_agent_cli::terminal::{DetachResult, SessionChanged};
+use infinity_provider_protocol::Usage;
 use ratatui::crossterm::event::{Event, KeyCode, KeyModifiers};
-use rig::completion::Usage;
 
 type Evt = DisplayEvent;
 

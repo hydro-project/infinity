@@ -1,6 +1,6 @@
 //! End-to-end tests: the real daemon session machinery ([`SessionManager`] +
 //! `handle_client_channels`) running with a deterministic mock model
-//! provider (rig-mock), driven through the real TUI client loop
+//! provider (the protocol crate's `mock` feature), driven through the real TUI client loop
 //! (`daemon_client::run_client`) rendered into a vt100 virtual terminal.
 //!
 //! Everything runs in-process on a single current-thread runtime with a
@@ -25,10 +25,10 @@ use infinity_daemon::client_handler::handle_client_channels;
 use infinity_daemon::ids::SequentialIdSource;
 use infinity_daemon::session::{SessionManager, SessionManagerConfig};
 use infinity_protocol::{ClientMessage, DaemonMessage};
+use infinity_provider_protocol::message::UserContent;
+use infinity_provider_protocol::mock::{MockModelController, mock_model};
 use infinity_provider_protocol::{ModelEntry, ModelProvider, SingleModelProvider};
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use rig::message::UserContent;
-use rig_mock::{MockModelController, mock_model};
 use tokio::sync::mpsc;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -172,16 +172,21 @@ impl E2eHarness {
 
 /// Wait for the next model request. The generous timeout fails fast when the
 /// pipeline is stuck (paused clock auto-advances) instead of hanging.
-async fn next_request(ctrl: &mut MockModelController) -> rig::completion::CompletionRequest {
+async fn next_request(
+    ctrl: &mut MockModelController,
+) -> infinity_provider_protocol::CompletionRequest {
     tokio::time::timeout(Duration::from_secs(120), ctrl.next_request())
         .await
         .expect("timed out waiting for a model request")
 }
 
 /// True if any user message in the chat history contains `needle`.
-fn history_contains_user_text(req: &rig::completion::CompletionRequest, needle: &str) -> bool {
+fn history_contains_user_text(
+    req: &infinity_provider_protocol::CompletionRequest,
+    needle: &str,
+) -> bool {
     req.chat_history.iter().any(|m| {
-        if let rig::message::Message::User { content } = m {
+        if let infinity_provider_protocol::message::Message::User { content } = m {
             content.iter().any(|c| {
                 if let UserContent::Text(t) = c {
                     t.text.contains(needle)
@@ -196,13 +201,17 @@ fn history_contains_user_text(req: &rig::completion::CompletionRequest, needle: 
 }
 
 /// True if any tool result in the chat history contains `needle`.
-fn history_contains_tool_result(req: &rig::completion::CompletionRequest, needle: &str) -> bool {
+fn history_contains_tool_result(
+    req: &infinity_provider_protocol::CompletionRequest,
+    needle: &str,
+) -> bool {
     req.chat_history.iter().any(|m| {
-        if let rig::message::Message::User { content } = m {
+        if let infinity_provider_protocol::message::Message::User { content } = m {
             content.iter().any(|c| {
                 if let UserContent::ToolResult(tr) = c {
                     tr.content.iter().any(|seg| {
-                        if let rig::message::ToolResultContent::Text(t) = seg {
+                        if let infinity_provider_protocol::message::ToolResultContent::Text(t) = seg
+                        {
                             t.text.contains(needle)
                         } else {
                             false
@@ -345,13 +354,13 @@ async fn switch_back_mid_thinking_revives_spinner() {
             );
 
             // Stream reasoning deltas; the completion stays in flight.
-            ctrl.send_chunk(rig::streaming::RawStreamingChoice::ReasoningDelta {
+            ctrl.send_chunk(infinity_provider_protocol::StreamChunk::ReasoningDelta {
                 id: None,
-                reasoning: "Deep thought ".into(),
+                text: "Deep thought ".into(),
             });
-            ctrl.send_chunk(rig::streaming::RawStreamingChoice::ReasoningDelta {
+            ctrl.send_chunk(infinity_provider_protocol::StreamChunk::ReasoningDelta {
                 id: None,
-                reasoning: "in progress".into(),
+                text: "in progress".into(),
             });
             h.settle().await;
             assert_screen!("e2e_mid_thinking_live", h.screen());

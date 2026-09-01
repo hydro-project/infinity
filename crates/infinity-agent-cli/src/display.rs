@@ -26,7 +26,7 @@ pub enum DisplayEvent {
     /// A completion round finished. Carries the usage the daemon reported,
     /// when any: a usage-less `ResponseDone` (e.g. the marker appended after
     /// a session replay) must not reset the context indicator.
-    ResponseDone(Option<rig::completion::Usage>),
+    ResponseDone(Option<infinity_provider_protocol::Usage>),
     UserInput(String),
     SubscriptionEvent {
         name: String,

@@ -1,9 +1,5 @@
 use async_trait::async_trait;
-use rig::{
-    OneOrMany,
-    agent::Text,
-    message::{ToolResult, ToolResultContent},
-};
+use infinity_provider_protocol::message::{Text, ToolResult, ToolResultContent};
 use tracing;
 
 use super::{Tool, ToolContext};
@@ -130,9 +126,9 @@ impl<M: InputSender + 'static, S: StateStore + 'static, H: HttpClient + 'static>
         Some(ToolResult {
             id: id.to_owned(),
             call_id: call_id.map(String::from),
-            content: OneOrMany::one(ToolResultContent::Text(Text {
+            content: vec![ToolResultContent::Text(Text {
                 text: format!("Subscription '{}' cancelled successfully.", tool_call_id),
-            })),
+            })],
         })
     }
 }
@@ -141,8 +137,8 @@ fn error_result(id: &str, call_id: Option<&str>, text: &str) -> ToolResult {
     ToolResult {
         id: id.to_owned(),
         call_id: call_id.map(String::from),
-        content: OneOrMany::one(ToolResultContent::Text(Text {
+        content: vec![ToolResultContent::Text(Text {
             text: text.to_owned(),
-        })),
+        })],
     }
 }

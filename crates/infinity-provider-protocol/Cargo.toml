@@ -5,22 +5,38 @@ edition = "2024"
 license = "Apache-2.0"
 
 [dependencies]
-rig-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-schemars = { workspace = true }
+thiserror = { workspace = true }
 async-trait = { workspace = true }
-async-stream = "0.3"
 futures-util = { workspace = true }
-tracing = { workspace = true }
+# Everything below is only pulled in by the `mock` / `remote` features.
+async-stream = { version = "0.3", optional = true }
+tokio = { workspace = true, optional = true }
+tokio-util = { version = "0.7", features = ["codec"], optional = true }
+uuid = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 
-[target.'cfg(unix)'.dependencies]
-tokio = { workspace = true, features = ["net", "rt", "time"] }
-tokio-util = { version = "0.7", features = ["codec"] }
-uuid = { workspace = true }
+[features]
+# Channel-driven mock completion model for tests (see the `mock` module).
+mock = ["dep:tokio", "dep:async-stream"]
+# Unix-socket transport for out-of-process providers (see the `remote`
+# module). Currently unix-only; a Windows transport may join it later.
+remote = [
+    "dep:tokio",
+    "tokio/net",
+    "tokio/rt",
+    "tokio/time",
+    "dep:tokio-util",
+    "dep:uuid",
+    "dep:async-stream",
+    "dep:tracing",
+    "futures-util/sink",
+]
 
 [dev-dependencies]
-rig-mock = { path = "../rig-mock" }
+# Self-dependency so this crate's own tests cover the feature-gated modules.
+infinity-provider-protocol = { path = ".", features = ["mock", "remote"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]

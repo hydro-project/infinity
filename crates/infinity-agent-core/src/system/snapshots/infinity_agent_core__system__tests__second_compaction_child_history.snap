@@ -1,12 +1,10 @@
 ---
 source: crates/infinity-agent-core/src/system/tests.rs
-assertion_line: 1342
 expression: compaction_child_req.chat_history
 ---
 [
   {
     "role": "assistant",
-    "id": null,
     "content": [
       {
         "text": "[Compacted conversation summary]\nSummary of first round"
@@ -24,7 +22,6 @@ expression: compaction_child_req.chat_history
   },
   {
     "role": "assistant",
-    "id": null,
     "content": [
       {
         "text": "second response"
@@ -42,7 +39,6 @@ expression: compaction_child_req.chat_history
   },
   {
     "role": "assistant",
-    "id": null,
     "content": [
       {
         "text": "third response"
@@ -60,17 +56,13 @@ expression: compaction_child_req.chat_history
   },
   {
     "role": "assistant",
-    "id": null,
     "content": [
       {
         "id": "[id]",
-        "call_id": null,
         "function": {
           "name": "__harness_begin_compaction__",
           "arguments": {}
-        },
-        "signature": null,
-        "additional_params": null
+        }
       }
     ]
   },

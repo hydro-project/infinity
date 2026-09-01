@@ -1,7 +1,7 @@
 //! End-to-end tests of the bundled web UI, driven through a real browser.
 //!
 //! The daemon's session machinery runs in-process with a deterministic mock
-//! LLM provider (`rig-mock`), serving the bundled web assets and WebSocket
+//! LLM provider (the protocol crate's `mock` feature), serving the bundled web assets and WebSocket
 //! protocol on an OS-assigned port (so concurrent tests don't collide). A
 //! headless Chromium instance driven by Playwright interacts with the UI,
 //! while the test controls every model "response" through the mock's
@@ -37,12 +37,12 @@ use infinity_daemon::ids::SequentialIdSource;
 use infinity_daemon::rap_callback;
 use infinity_daemon::session::{SessionManager, SessionManagerConfig, SharedSessionManager};
 use infinity_daemon::ws_handler;
+use infinity_provider_protocol::mock::{MockCompletionModel, MockModelController, mock_model};
 use infinity_provider_protocol::{ModelEntry, ModelProvider, SingleModelProvider};
 use playwright_rs::{
     Animations, Browser, BrowserContext, Page, Playwright, ScreenshotAssertionOptions, expect,
     expect_page,
 };
-use rig_mock::{MockCompletionModel, MockModelController, mock_model};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -289,13 +289,13 @@ async fn assert_screenshot_with_tolerance(
 /// fails the test instead of hanging it.
 async fn next_request(
     ctrl: &mut MockModelController,
-) -> Result<rig::completion::CompletionRequest, BoxError> {
+) -> Result<infinity_provider_protocol::CompletionRequest, BoxError> {
     tokio::time::timeout(Duration::from_secs(30), ctrl.next_request())
         .await
         .map_err(|_| "timed out waiting for the UI to trigger a model request".into())
 }
 
-fn history_json(req: &rig::completion::CompletionRequest) -> String {
+fn history_json(req: &infinity_provider_protocol::CompletionRequest) -> String {
     serde_json::to_string(&req.chat_history).expect("bug: chat history should serialize")
 }
 
@@ -505,9 +505,9 @@ async fn reload_mid_thinking_keeps_spinner() -> Result<(), BoxError> {
             // (reasoning deltas stream, the completion never finishes).
             send_chat_message(&page, "Think hard about this").await?;
             let _req = next_request(&mut ctrl).await?;
-            ctrl.send_chunk(rig::streaming::RawStreamingChoice::ReasoningDelta {
+            ctrl.send_chunk(infinity_provider_protocol::StreamChunk::ReasoningDelta {
                 id: None,
-                reasoning: "Pondering the imponderable".into(),
+                text: "Pondering the imponderable".into(),
             });
             expect(page.get_by_text("Pondering the imponderable", false).await)
                 .to_be_visible()

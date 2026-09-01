@@ -1,6 +1,6 @@
 //! Shared helpers for unit tests within this crate.
 
-use rig_mock::{MockCompletionModel, MockModelController, mock_model};
+use infinity_provider_protocol::mock::{MockCompletionModel, MockModelController, mock_model};
 
 use infinity_provider_protocol::{ModelEntry, SingleModelProvider};
 

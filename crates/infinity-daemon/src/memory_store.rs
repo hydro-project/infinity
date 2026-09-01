@@ -20,7 +20,7 @@ use infinity_agent_core::stores::{
 use infinity_agent_core::system::UserChoice;
 use infinity_agent_core::traits::{ConversationStore, StateStore};
 use infinity_protocol::ModelRef;
-use rig::message::Message;
+use infinity_provider_protocol::message::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -144,7 +144,7 @@ struct NewThreadSnapshot {
     compaction_summaries: Vec<CompactionSummary>,
 }
 
-/// Helper struct for deserializing the old format (bare rig Messages + display_as sidecar).
+/// Helper struct for deserializing the old format (legacy bare Messages + display_as sidecar).
 #[derive(Deserialize)]
 struct OldThreadSnapshot {
     #[serde(default)]
@@ -156,7 +156,7 @@ struct OldThreadSnapshot {
 }
 
 /// Custom deserializer for ThreadSnapshot that handles both old format
-/// (bare rig Messages + display_as map) and new format (InfinityMessage).
+/// (legacy bare Messages + display_as map) and new format (InfinityMessage).
 impl<'de> Deserialize<'de> for ThreadSnapshot {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -179,7 +179,7 @@ impl<'de> Deserialize<'de> for ThreadSnapshot {
             .messages
             .into_iter()
             .map(|(msg, id)| {
-                let mut inf = InfinityMessage::from_rig_message(msg);
+                let mut inf = InfinityMessage::from_message(msg);
                 if let InfinityMessage::ToolResult {
                     ref result,
                     ref mut display_segments,
@@ -1164,8 +1164,7 @@ impl StateStore for PersistentStateStore {
 mod tests {
     use super::*;
     use infinity_agent_core::traits::ConversationStore;
-    use rig::OneOrMany;
-    use rig::message::{AssistantContent, Message, UserContent};
+    use infinity_provider_protocol::message::{AssistantContent, Message, UserContent};
 
     fn test_model() -> ModelRef {
         ModelRef {
@@ -1175,8 +1174,8 @@ mod tests {
     }
 
     fn user_msg(text: &str) -> InfinityMessage {
-        InfinityMessage::from_rig_message(Message::User {
-            content: OneOrMany::one(UserContent::text(text)),
+        InfinityMessage::from_message(Message::User {
+            content: vec![UserContent::text(text)],
         })
     }
 
@@ -1212,9 +1211,8 @@ mod tests {
         );
     }
     fn asst_msg(text: &str) -> InfinityMessage {
-        InfinityMessage::from_rig_message(Message::Assistant {
-            id: None,
-            content: OneOrMany::one(AssistantContent::text(text)),
+        InfinityMessage::from_message(Message::Assistant {
+            content: vec![AssistantContent::text(text)],
         })
     }
 

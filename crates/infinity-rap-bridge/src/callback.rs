@@ -7,11 +7,10 @@
 //! results, subscription events, OAuth challenges, and user choices enter
 //! the input queue.
 
-use rap_protocol::{RapCallback, RapToolResultContent};
-use rig::OneOrMany;
-use rig::message::{
-    DocumentSourceKind, Image, ImageMediaType, MimeType, ToolResult, ToolResultContent, UserContent,
+use infinity_provider_protocol::message::{
+    Image, ImageMediaType, ImageSource, Text, ToolResult, ToolResultContent, UserContent,
 };
+use rap_protocol::{RapCallback, RapToolResultContent};
 
 use infinity_agent_core::message::{
     InputMessage, InputMessageContent, OAuthRequired, SyntheticKind, TaggedSyntheticKind,
@@ -46,9 +45,7 @@ pub(crate) fn convert_callback(cb: RapCallback) -> Option<InputMessage> {
                 content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                     id: se.tool_call_id.clone(),
                     call_id: None,
-                    content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
-                        text: se.text,
-                    })),
+                    content: vec![ToolResultContent::Text(Text { text: se.text })],
                 })),
                 group_id: se.group_id,
                 metadata: None,
@@ -96,37 +93,30 @@ pub(crate) fn convert_callback(cb: RapCallback) -> Option<InputMessage> {
     })
 }
 
-/// Build the rig tool-result content from a RAP tool result. A tool provides
+/// Build the tool-result content from a RAP tool result. A tool provides
 /// either `text` or `content`: when `content` is present (and non-empty) it is
 /// used (images become image blocks); otherwise the plain `text` becomes a
 /// single text block. An absent/empty result degrades to an empty text block.
 fn tool_result_content(
     content: Option<Vec<RapToolResultContent>>,
     text: Option<String>,
-) -> OneOrMany<ToolResultContent> {
+) -> Vec<ToolResultContent> {
     match content {
-        Some(items) if !items.is_empty() => {
-            let items: Vec<ToolResultContent> = items
-                .into_iter()
-                .map(|item| match item {
-                    RapToolResultContent::Text { text } => {
-                        ToolResultContent::Text(rig::agent::Text { text })
-                    }
-                    RapToolResultContent::Image { data, media_type } => {
-                        ToolResultContent::Image(Image {
-                            data: DocumentSourceKind::Base64(data),
-                            media_type: ImageMediaType::from_mime_type(&media_type),
-                            detail: None,
-                            additional_params: None,
-                        })
-                    }
-                })
-                .collect();
-            OneOrMany::many(items).expect("bug: content checked non-empty above")
-        }
-        _ => OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+        Some(items) if !items.is_empty() => items
+            .into_iter()
+            .map(|item| match item {
+                RapToolResultContent::Text { text } => ToolResultContent::Text(Text { text }),
+                RapToolResultContent::Image { data, media_type } => {
+                    ToolResultContent::Image(Image {
+                        data: ImageSource::Base64(data),
+                        media_type: ImageMediaType::from_mime_type(&media_type),
+                    })
+                }
+            })
+            .collect(),
+        _ => vec![ToolResultContent::Text(Text {
             text: text.unwrap_or_default(),
-        })),
+        })],
     }
 }
 
@@ -164,7 +154,7 @@ mod tests {
                 assert_eq!(tr.id, "call-1");
                 assert_eq!(tr.call_id.as_deref(), Some("prov-1"));
                 match tr.content.first() {
-                    ToolResultContent::Text(t) => assert_eq!(t.text, "plain output"),
+                    Some(ToolResultContent::Text(t)) => assert_eq!(t.text, "plain output"),
                     other => panic!("expected text content, got {other:?}"),
                 }
             }
@@ -269,7 +259,7 @@ mod tests {
         let content = tool_result_content(None, Some("plain output".to_owned()));
         assert_eq!(content.len(), 1);
         match content.first() {
-            ToolResultContent::Text(t) => assert_eq!(t.text, "plain output"),
+            Some(ToolResultContent::Text(t)) => assert_eq!(t.text, "plain output"),
             other => panic!("expected text content, got {other:?}"),
         }
     }
@@ -279,7 +269,7 @@ mod tests {
         let content = tool_result_content(Some(vec![]), Some("fallback".to_owned()));
         assert_eq!(content.len(), 1);
         match content.first() {
-            ToolResultContent::Text(t) => assert_eq!(t.text, "fallback"),
+            Some(ToolResultContent::Text(t)) => assert_eq!(t.text, "fallback"),
             other => panic!("expected text content, got {other:?}"),
         }
     }
@@ -289,7 +279,7 @@ mod tests {
         let content = tool_result_content(None, None);
         assert_eq!(content.len(), 1);
         match content.first() {
-            ToolResultContent::Text(t) => assert_eq!(t.text, ""),
+            Some(ToolResultContent::Text(t)) => assert_eq!(t.text, ""),
             other => panic!("expected empty text content, got {other:?}"),
         }
     }
@@ -310,12 +300,12 @@ mod tests {
         );
         assert_eq!(content.len(), 2);
         match content.first() {
-            ToolResultContent::Text(t) => assert_eq!(t.text, "Read image file"),
+            Some(ToolResultContent::Text(t)) => assert_eq!(t.text, "Read image file"),
             other => panic!("expected text content, got {other:?}"),
         }
         match content.last() {
-            ToolResultContent::Image(img) => {
-                assert_eq!(img.data, DocumentSourceKind::Base64("aGVsbG8=".to_owned()));
+            Some(ToolResultContent::Image(img)) => {
+                assert_eq!(img.data, ImageSource::Base64("aGVsbG8=".to_owned()));
                 assert_eq!(img.media_type, Some(ImageMediaType::PNG));
             }
             other => panic!("expected image content, got {other:?}"),
@@ -332,7 +322,7 @@ mod tests {
             None,
         );
         match content.first() {
-            ToolResultContent::Image(img) => assert_eq!(img.media_type, None),
+            Some(ToolResultContent::Image(img)) => assert_eq!(img.media_type, None),
             other => panic!("expected image content, got {other:?}"),
         }
     }

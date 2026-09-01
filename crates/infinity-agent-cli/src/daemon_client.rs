@@ -20,12 +20,12 @@ use crate::terminal::{DetachResult, SessionChanged};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// Convert the daemon's token-usage report into the rig usage shape the
+/// Convert the daemon's token-usage report into the usage shape the
 /// terminal's context indicator consumes.
-fn convert_token_usage(u: &TokenUsage) -> rig::completion::Usage {
+fn convert_token_usage(u: &TokenUsage) -> infinity_provider_protocol::Usage {
     let input = u.input_tokens.unwrap_or(0);
     let output = u.output_tokens.unwrap_or(0);
-    rig::completion::Usage {
+    infinity_provider_protocol::Usage {
         input_tokens: input,
         output_tokens: output,
         total_tokens: u.total_tokens.unwrap_or(input + output),

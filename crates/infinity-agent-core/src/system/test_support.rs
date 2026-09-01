@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rig::message::UserContent;
+use infinity_provider_protocol::message::UserContent;
 use tokio::sync::mpsc;
 
 use crate::message::{InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind};
@@ -11,7 +11,7 @@ use crate::stores::{InMemoryConversationStore, InMemoryStateStore};
 use crate::tools::{Tool, ToolContext};
 use crate::traits::InputSender;
 use infinity_provider_protocol::ModelEntry;
-use rig_mock::{MockModelController, mock_model};
+use infinity_provider_protocol::mock::{MockModelController, mock_model};
 
 use super::builder::AgentSystemBuilder;
 use super::events::{AgentEvent, ReplaySnapshot};
@@ -85,13 +85,17 @@ pub(crate) fn user_text_input(group_id: &str, text: &str) -> (InputMessage, Stri
 pub(crate) fn tool_result_input(group_id: &str, id: &str, text: &str) -> (InputMessage, String) {
     (
         InputMessage {
-            content: InputMessageContent::User(UserContent::ToolResult(rig::message::ToolResult {
-                id: id.into(),
-                call_id: None,
-                content: rig::OneOrMany::one(rig::message::ToolResultContent::Text(
-                    rig::agent::Text { text: text.into() },
-                )),
-            })),
+            content: InputMessageContent::User(UserContent::ToolResult(
+                infinity_provider_protocol::message::ToolResult {
+                    id: id.into(),
+                    call_id: None,
+                    content: vec![
+                        infinity_provider_protocol::message::ToolResultContent::Text(
+                            infinity_provider_protocol::message::Text { text: text.into() },
+                        ),
+                    ],
+                },
+            )),
             group_id: group_id.into(),
             metadata: None,
             synthetic: None,
@@ -109,13 +113,17 @@ pub(crate) fn subscription_event_input(
 ) -> (InputMessage, String) {
     (
         InputMessage {
-            content: InputMessageContent::User(UserContent::ToolResult(rig::message::ToolResult {
-                id: tool_call_id.into(),
-                call_id: None,
-                content: rig::OneOrMany::one(rig::message::ToolResultContent::Text(
-                    rig::agent::Text { text: text.into() },
-                )),
-            })),
+            content: InputMessageContent::User(UserContent::ToolResult(
+                infinity_provider_protocol::message::ToolResult {
+                    id: tool_call_id.into(),
+                    call_id: None,
+                    content: vec![
+                        infinity_provider_protocol::message::ToolResultContent::Text(
+                            infinity_provider_protocol::message::Text { text: text.into() },
+                        ),
+                    ],
+                },
+            )),
             group_id: group_id.into(),
             metadata: None,
             synthetic: Some(SyntheticKind::Tagged(
@@ -252,15 +260,18 @@ pub(crate) async fn wait_idle<Sub: Send + 'static>(running: &mut RunningSystem<S
 }
 
 /// The tool-result texts in a completion request's chat history.
-pub(crate) fn tool_result_texts(req: &rig::completion::CompletionRequest) -> Vec<String> {
+pub(crate) fn tool_result_texts(
+    req: &infinity_provider_protocol::CompletionRequest,
+) -> Vec<String> {
     req.chat_history
         .iter()
         .filter_map(|m| {
-            if let rig::message::Message::User { content } = m
-                && let UserContent::ToolResult(r) = content.first()
-                && let rig::message::ToolResultContent::Text(t) = r.content.first()
+            if let infinity_provider_protocol::message::Message::User { content } = m
+                && let Some(UserContent::ToolResult(r)) = content.first()
+                && let Some(infinity_provider_protocol::message::ToolResultContent::Text(t)) =
+                    r.content.first()
             {
-                Some(t.text)
+                Some(t.text.clone())
             } else {
                 None
             }
@@ -269,14 +280,16 @@ pub(crate) fn tool_result_texts(req: &rig::completion::CompletionRequest) -> Vec
 }
 
 /// Whether a model request is the seed of a compaction child thread.
-pub(crate) fn is_compaction_req(req: &rig::completion::CompletionRequest) -> bool {
+pub(crate) fn is_compaction_req(req: &infinity_provider_protocol::CompletionRequest) -> bool {
     tool_result_texts(req)
         .iter()
         .any(|t| t.contains("compaction thread"))
 }
 
 /// Extract the compaction child's thread id from its seed instruction.
-pub(crate) fn find_compaction_child_id(req: &rig::completion::CompletionRequest) -> String {
+pub(crate) fn find_compaction_child_id(
+    req: &infinity_provider_protocol::CompletionRequest,
+) -> String {
     tool_result_texts(req)
         .iter()
         .find_map(|t| {
@@ -289,7 +302,7 @@ pub(crate) fn find_compaction_child_id(req: &rig::completion::CompletionRequest)
 /// Answer a compaction child's request by closing it with a summary report.
 pub(crate) fn handle_compaction_child(
     ctrl: &mut MockModelController,
-    req: &rig::completion::CompletionRequest,
+    req: &infinity_provider_protocol::CompletionRequest,
     summary: &str,
 ) {
     let child_thread_id = find_compaction_child_id(req);
@@ -304,8 +317,8 @@ pub(crate) fn handle_compaction_child(
     ctrl.finish();
 }
 
-pub(crate) fn high_usage() -> Option<rig::completion::Usage> {
-    Some(rig::completion::Usage {
+pub(crate) fn high_usage() -> Option<infinity_provider_protocol::Usage> {
+    Some(infinity_provider_protocol::Usage {
         input_tokens: 76,
         output_tokens: 10,
         total_tokens: 86,
@@ -345,15 +358,19 @@ impl Tool<ChannelSender> for SubscribeTool {
         ctx: &ToolContext<ChannelSender>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let msg = InputMessage {
-            content: InputMessageContent::User(UserContent::ToolResult(rig::message::ToolResult {
-                id: id.clone(),
-                call_id,
-                content: rig::OneOrMany::one(rig::message::ToolResultContent::Text(
-                    rig::agent::Text {
-                        text: "subscribed".into(),
-                    },
-                )),
-            })),
+            content: InputMessageContent::User(UserContent::ToolResult(
+                infinity_provider_protocol::message::ToolResult {
+                    id: id.clone(),
+                    call_id,
+                    content: vec![
+                        infinity_provider_protocol::message::ToolResultContent::Text(
+                            infinity_provider_protocol::message::Text {
+                                text: "subscribed".into(),
+                            },
+                        ),
+                    ],
+                },
+            )),
             group_id: ctx.group_id.clone(),
             metadata: None,
             synthetic: None,
@@ -428,6 +445,6 @@ pub(crate) fn start_launcher_system(
     (system, ctrl)
 }
 
-pub(crate) fn tool_names(req: &rig::completion::CompletionRequest) -> Vec<String> {
+pub(crate) fn tool_names(req: &infinity_provider_protocol::CompletionRequest) -> Vec<String> {
     req.tools.iter().map(|t| t.name.clone()).collect()
 }

@@ -1,9 +1,5 @@
 use async_trait::async_trait;
-use rig::{
-    OneOrMany,
-    agent::Text,
-    message::{ToolResult, ToolResultContent, UserContent},
-};
+use infinity_provider_protocol::message::{Text, ToolResult, ToolResultContent, UserContent};
 use tracing;
 
 use super::{Tool, ToolContext, send_tool_error};
@@ -76,12 +72,12 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             return Some(ToolResult {
                 id: id.to_owned(),
                 call_id: call_id.map(|c| c.to_owned()),
-                content: OneOrMany::one(ToolResultContent::Text(Text {
+                content: vec![ToolResultContent::Text(Text {
                     text: format!(
                         "Error: child_of {:?} does not match the actual thread stack {:?}. You may be confused and think you are in the parent thread, but you are not. You are in thread {}. Do NOT spawn threads — focus on your assigned task.",
                         child_of, context.thread_stack, context.group_id
                     ),
-                })),
+                })],
             });
         }
 
@@ -96,9 +92,9 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
                 return Some(ToolResult {
                     id: id.to_owned(),
                     call_id: call_id.map(|c| c.to_owned()),
-                    content: OneOrMany::one(ToolResultContent::Text(Text {
+                    content: vec![ToolResultContent::Text(Text {
                         text: format!("Error: failed to spawn thread: {e}"),
-                    })),
+                    })],
                 });
             }
         };
@@ -112,12 +108,12 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
         let parent_result = ToolResult {
             id: id.to_owned(),
             call_id: call_id.map(|c| c.to_owned()),
-            content: OneOrMany::one(ToolResultContent::Text(Text {
+            content: vec![ToolResultContent::Text(Text {
                 text: format!(
                     "Child thread is successfully spawned and has ID: {}. You will be notified automatically when the child has anything to report. Make sure that you **do not** do the task assigned to the child thread.",
                     new_thread_id
                 ),
-            })),
+            })],
         };
 
         let instructions = args
@@ -130,12 +126,12 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                 id: id.to_owned(),
                 call_id: call_id.map(|c| c.to_owned()),
-                content: OneOrMany::one(ToolResultContent::Text(Text {
+                content: vec![ToolResultContent::Text(Text {
                     text: format!(
                         "You are now INSIDE the thread that you requested to create. Your thread ID is {}. Your next task is to exactly follow these instructions: {}\n. Start by repeating to yourself the instructions, ignoring thinking from the parent context. Make sure to not be confused by the parent context. If the parent was planning to spawn more threads, you should not.",
                         new_thread_id, instructions
                     ),
-                })),
+                })],
             })),
             group_id: new_thread_id,
             metadata: None,
@@ -234,9 +230,9 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Repor
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                 id: String::new(),
                 call_id: None,
-                content: OneOrMany::one(ToolResultContent::Text(Text {
+                content: vec![ToolResultContent::Text(Text {
                     text: formatted_report,
-                })),
+                })],
             })),
             group_id: parent_id,
             metadata: None,
@@ -257,9 +253,9 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Repor
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                 id: id.clone(),
                 call_id,
-                content: OneOrMany::one(ToolResultContent::Text(Text {
+                content: vec![ToolResultContent::Text(Text {
                     text: "Report sent to parent thread.".to_owned(),
-                })),
+                })],
             })),
             group_id: context.group_id.clone(),
             metadata: None,
@@ -394,9 +390,9 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
                 content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                     id: String::new(),
                     call_id: None,
-                    content: OneOrMany::one(ToolResultContent::Text(Text {
+                    content: vec![ToolResultContent::Text(Text {
                         text: "Compaction complete".to_owned(),
-                    })),
+                    })],
                 })),
                 group_id: parent_id,
                 metadata: None,
@@ -448,7 +444,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
                 content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                     id: String::new(),
                     call_id: None,
-                    content: OneOrMany::one(ToolResultContent::Text(Text { text: report_text })),
+                    content: vec![ToolResultContent::Text(Text { text: report_text })],
                 })),
                 group_id: parent_id,
                 metadata: None,
@@ -563,9 +559,9 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M>
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                 id: String::new(),
                 call_id: None,
-                content: OneOrMany::one(ToolResultContent::Text(Text {
+                content: vec![ToolResultContent::Text(Text {
                     text: format!("Message from parent thread: {}", message_text),
-                })),
+                })],
             })),
             group_id: child_thread_id.to_owned(),
             metadata: None,
@@ -585,9 +581,9 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M>
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                 id: id.clone(),
                 call_id,
-                content: OneOrMany::one(ToolResultContent::Text(Text {
+                content: vec![ToolResultContent::Text(Text {
                     text: "Message sent to child thread.".to_owned(),
-                })),
+                })],
             })),
             group_id: context.group_id.clone(),
             metadata: None,

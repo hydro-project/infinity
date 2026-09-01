@@ -1,0 +1,15 @@
+[package]
+name = "infinity-provider-rig"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+infinity-provider-protocol = { path = "../infinity-provider-protocol" }
+rig-core = { workspace = true }
+async-trait = { workspace = true }
+async-stream = "0.3"
+futures-util = { workspace = true }
+
+[lints]
+workspace = true

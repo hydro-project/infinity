@@ -17,7 +17,7 @@ members = [
     "crates/infinity-provider-protocol",
     "crates/infinity-daemon",
     "crates/infinity-provider-bedrock",
-    "crates/rig-mock",
+    "crates/infinity-provider-rig",
     "crates/infinity-slack-bot",
 ]
 resolver = "2"
@@ -25,7 +25,6 @@ resolver = "2"
 [workspace.dependencies]
 # Shared
 rig-core = { version = "0.31", default-features = false }
-rig-bedrock = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "1"
@@ -84,6 +83,3 @@ try_err = "warn"
 uninlined_format_args = "allow"
 unused_async = "warn"
 unwrap_used = "warn"
-
-[patch.crates-io]
-rig-bedrock = { path = "crates/rig-bedrock-patched" }
