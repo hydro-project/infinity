@@ -250,11 +250,11 @@ async fn async_main(cli: Cli) -> Result<(), BoxError> {
                                 );
                             }
                         };
-                    if remotes.iter().any(|r| r.name == name) {
+                    if remotes.iter().any(|r| r.name.as_str() == name) {
                         return Err(format!("remote '{name}' already exists").into());
                     }
                     remotes.push(infinity_daemon::remote::RemoteConfig {
-                        name: name.clone(),
+                        name: name.clone().into(),
                         ssh_args: ssh_args.to_vec(),
                     });
                     if let Some(parent) = path.parent() {

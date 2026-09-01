@@ -28,7 +28,7 @@ fn usage(total: u64) -> Usage {
 fn send_session(h: &TuiHarness, id: &str, title: &str, tokens: usize) {
     h.session_tx
         .send(SessionChanged {
-            session_id: id.to_owned(),
+            session_id: id.into(),
             title: Some(title.to_owned()),
             total_tokens_used: tokens,
             model_name: "mock-model".to_owned(),
@@ -353,7 +353,7 @@ async fn queued_choices_and_external_complete() {
 async fn sessions_updated_while_picker_open() {
     let mut sessions = std::collections::HashMap::new();
     sessions.insert(
-        "session-aaaa".to_owned(),
+        "session-aaaa".into(),
         infinity_protocol::SessionInfo {
             title: Some("Old title".to_owned()),
             last_updated: "2025-01-01T00:00:00Z".to_owned(),
@@ -378,7 +378,7 @@ async fn sessions_updated_while_picker_open() {
 
     let mut updates = std::collections::HashMap::new();
     updates.insert(
-        "session-aaaa".to_owned(),
+        "session-aaaa".into(),
         infinity_protocol::SessionInfo {
             title: Some("Renamed title".to_owned()),
             last_updated: "2025-01-02T00:00:00Z".to_owned(),
@@ -389,7 +389,7 @@ async fn sessions_updated_while_picker_open() {
         },
     );
     updates.insert(
-        "session-bbbb".to_owned(),
+        "session-bbbb".into(),
         infinity_protocol::SessionInfo {
             title: Some("Brand new session".to_owned()),
             last_updated: "2025-01-03T00:00:00Z".to_owned(),

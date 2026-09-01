@@ -12,20 +12,23 @@ pub const MAX_VISIBLE_ROWS: u16 = 5;
 
 pub enum SessionPickerResult {
     /// User selected a session (id).
-    Selected(String),
+    Selected(infinity_protocol::ThreadRef),
     Cancelled,
 }
 
 pub struct SessionPicker {
-    pub sessions: Vec<(String, SessionInfo)>,
+    pub sessions: Vec<(infinity_protocol::ThreadRef, SessionInfo)>,
     pub selected: usize,
     scroll_offset: usize,
     result: Option<SessionPickerResult>,
-    pub current_session_id: Option<String>,
+    pub current_session_id: Option<infinity_protocol::ThreadRef>,
 }
 
 impl SessionPicker {
-    pub fn new(sessions: Vec<(String, SessionInfo)>, current_session_id: Option<String>) -> Self {
+    pub fn new(
+        sessions: Vec<(infinity_protocol::ThreadRef, SessionInfo)>,
+        current_session_id: Option<infinity_protocol::ThreadRef>,
+    ) -> Self {
         let selected = current_session_id
             .as_ref()
             .and_then(|cid| sessions.iter().position(|s| &s.0 == cid))
@@ -131,7 +134,7 @@ impl SessionPicker {
                 (Color::DarkGray, Color::Reset, Modifier::empty())
             };
 
-            let is_current = self.current_session_id.as_deref() == Some(id.as_str());
+            let is_current = self.current_session_id.as_ref() == Some(id);
             let current_suffix = if is_current { " (current)" } else { "" };
             let suffix_len = current_suffix.len();
             let remote_label = info
@@ -149,11 +152,14 @@ impl SessionPicker {
                 } else {
                     format!("{}{}{}", title, remote_label, current_suffix)
                 }
-            } else if id.len() + extra_len > name_width {
-                let trunc = name_width.saturating_sub(extra_len + 1);
-                format!("{}…{}{}", &id[..trunc], remote_label, current_suffix)
             } else {
-                format!("{}{}{}", id, remote_label, current_suffix)
+                let id = id.to_string();
+                if id.len() + extra_len > name_width {
+                    let trunc = name_width.saturating_sub(extra_len + 1);
+                    format!("{}…{}{}", &id[..trunc], remote_label, current_suffix)
+                } else {
+                    format!("{}{}{}", id, remote_label, current_suffix)
+                }
             };
             // Column ranges for the "(current)" and "[remote]" labels (1 for leading space)
             let name_char_len = name.chars().count();

@@ -70,7 +70,7 @@ export type DaemonMessage =
     }
   | {
       Connected: {
-        session_id: string;
+        root_thread_id: string;
         model_name: string;
         context_window: number;
         title: string | null;
@@ -147,10 +147,10 @@ export type DaemonMessage =
   | { RemotesUpdated: { remotes: RemoteInfo[] } }
   | "DisconnectNotIdle"
   | "DetachedIdle"
-  | { EmigrateResult: { session_id: string; session_data: string } }
-  | { MigrateStarted: { session_id: string } }
-  | { MigrateComplete: { session_id: string; new_session_id: string } }
-  | { MigrateError: { session_id: string; error: string } }
+  | { EmigrateResult: { root_thread_id: string; session_data: string } }
+  | { MigrateStarted: { root_thread_id: string } }
+  | { MigrateComplete: { root_thread_id: string; new_root_thread_id: string } }
+  | { MigrateError: { root_thread_id: string; error: string } }
   | {
       DirectoryListing: {
         request_path: string;
@@ -169,25 +169,30 @@ export type ClientMessage =
         model?: ModelRef | null;
       };
     }
-  | { Connect: { session_id: string; thread_id: string | null } }
-  | { UserInput: { session_id: string; text: string } }
+  | { Connect: { root_thread_id: string; thread_id: string | null } }
+  | { UserInput: { root_thread_id: string; text: string } }
   | "Disconnect"
-  | { SoftDetach: { session_id: string } }
-  | { ShutdownSession: { session_id: string } }
+  | { SoftDetach: { root_thread_id: string } }
+  | { ShutdownSession: { root_thread_id: string } }
   | { LoadSession: { target_session_id: string } }
-  | { SwitchModel: { session_id: string; model: ModelRef } }
+  | { SwitchModel: { thread_id: string; model: ModelRef } }
   | { UserChoiceAnswered: { choice_id: string; selected: number } }
-  | { TriggerCompaction: { session_id: string } }
+  | { TriggerCompaction: { root_thread_id: string } }
   | {
       RequestMigrate: {
-        session_id: string;
+        root_thread_id: string;
         to: string | null;
         dest_cwd: string;
       };
     }
-  | { Emigrate: { session_id: string; dest_rap_urls: Record<string, string> } }
-  | { EmigrateDone: { session_id: string } }
-  | { ArchiveSession: { session_id: string } }
+  | {
+      Emigrate: {
+        root_thread_id: string;
+        dest_rap_urls: Record<string, string>;
+      };
+    }
+  | { EmigrateDone: { root_thread_id: string } }
+  | { ArchiveSession: { root_thread_id: string } }
   | { ListDirectory: { path: string; on: string | null } };
 
 /* ── Connection status ── */

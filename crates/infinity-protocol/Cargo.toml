@@ -13,6 +13,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 dirs = "6"
 rap-protocol = { path = "../rap-protocol", version = "^0.1.0" }
+strkind = { workspace = true }
 tokio-util = { version = "0.7", features = ["codec"] }
 
 [lints]

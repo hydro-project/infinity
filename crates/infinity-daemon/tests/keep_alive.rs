@@ -112,13 +112,17 @@ async fn create_session_and_chat(h: &mut TestHarness, keeps_session_alive: bool)
         matches!(m, DaemonMessage::Connected { .. })
     })
     .await;
-    let DaemonMessage::Connected { session_id, .. } = connected else {
+    let DaemonMessage::Connected {
+        root_thread_id: session_id,
+        ..
+    } = connected
+    else {
         unreachable!()
     };
 
     h.client_tx
         .send(ClientMessage::UserInput {
-            session_id: session_id.clone(),
+            root_thread_id: session_id.clone(),
             text: "hello".to_owned(),
         })
         .expect("send UserInput");
@@ -132,7 +136,7 @@ async fn create_session_and_chat(h: &mut TestHarness, keeps_session_alive: bool)
     })
     .await;
 
-    ThreadId::from(session_id)
+    session_id.id
 }
 
 /// Poll until the session's RAP servers have been stopped (the session-idle
@@ -207,7 +211,7 @@ async fn user_input_restarts_stopped_session() {
 
             h.client_tx
                 .send(ClientMessage::UserInput {
-                    session_id: session_id.to_string(),
+                    root_thread_id: infinity_protocol::ThreadRef::local(session_id.clone()),
                     text: "resume".to_owned(),
                 })
                 .expect("send user input");
@@ -280,15 +284,19 @@ async fn active_subscription_keeps_rap_servers_warm() {
                 matches!(m, DaemonMessage::Connected { .. })
             })
             .await;
-            let DaemonMessage::Connected { session_id, .. } = connected else {
+            let DaemonMessage::Connected {
+                root_thread_id: session_id,
+                ..
+            } = connected
+            else {
                 unreachable!()
             };
-            let session_id = ThreadId::from(session_id);
+            let session_id = session_id.id;
 
             // Round 1 leaves a pending tool call for the subscription setup.
             h.client_tx
                 .send(ClientMessage::UserInput {
-                    session_id: session_id.to_string(),
+                    root_thread_id: infinity_protocol::ThreadRef::local(session_id.clone()),
                     text: "watch the build".to_owned(),
                 })
                 .expect("send UserInput");

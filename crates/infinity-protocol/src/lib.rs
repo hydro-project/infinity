@@ -3,6 +3,128 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio_util::codec::LengthDelimitedCodec;
 
+/// The thread identifier used throughout the runtime (re-exported from
+/// `rap-protocol`).
+pub use rap_protocol::ThreadId;
+
+strkind::strkind! {
+    /// The name of a configured remote daemon (from `remotes.json`), e.g.
+    /// `"devbox"`. Remote names must not contain `/` (they are joined with
+    /// thread IDs in [`ThreadRef`]'s wire encoding).
+    pub RemoteName;
+}
+
+/// A client-facing reference to a thread: which daemon it lives on
+/// (`remote: None` means the local daemon) plus its thread ID there.
+///
+/// On the wire this serializes as the historical composite string —
+/// `"{remote}/{id}"` for remote threads, bare `"{id}"` for local ones — so
+/// clients see a plain string and the daemon parses it back losslessly.
+/// A session is identified by its root thread's `ThreadRef`.
+///
+/// Ordering is `(remote, id)`: local threads sort before remote ones, then
+/// by thread ID. (This differs from lexicographic ordering of the composite
+/// string, which would interleave remotes with local IDs.)
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ThreadRef {
+    /// The remote daemon hosting the thread; `None` for the local daemon.
+    pub remote: Option<RemoteName>,
+    /// The thread's ID on its home daemon.
+    pub id: ThreadId,
+}
+
+impl ThreadRef {
+    /// A reference to a thread on the local daemon.
+    pub fn local(id: ThreadId) -> Self {
+        Self { remote: None, id }
+    }
+
+    /// A reference to a thread on the named remote daemon.
+    pub fn remote(remote: RemoteName, id: ThreadId) -> Self {
+        Self {
+            remote: Some(remote),
+            id,
+        }
+    }
+
+    /// Re-home this reference onto `remote` (used when a daemon proxies a
+    /// remote daemon's messages to its own clients).
+    pub fn prefixed(self, remote: &RemoteName) -> Self {
+        Self {
+            remote: Some(remote.clone()),
+            id: self.id,
+        }
+    }
+
+    /// Strip the given remote, yielding the thread's ID on its home daemon.
+    /// References to other remotes (or local ones) are returned unchanged.
+    pub fn strip(self, remote: &RemoteName) -> Self {
+        match self.remote {
+            Some(ref r) if r == remote => Self {
+                remote: None,
+                id: self.id,
+            },
+            _ => self,
+        }
+    }
+}
+
+impl std::fmt::Display for ThreadRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.remote {
+            Some(remote) => write!(f, "{}/{}", remote, self.id),
+            None => write!(f, "{}", self.id),
+        }
+    }
+}
+
+impl std::str::FromStr for ThreadRef {
+    type Err = std::convert::Infallible;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.split_once('/') {
+            Some((remote, id)) => Self {
+                remote: Some(remote.into()),
+                id: id.into(),
+            },
+            None => Self {
+                remote: None,
+                id: s.into(),
+            },
+        })
+    }
+}
+
+impl From<&str> for ThreadRef {
+    fn from(s: &str) -> Self {
+        s.parse().expect("bug: ThreadRef parsing is infallible")
+    }
+}
+
+impl From<String> for ThreadRef {
+    fn from(s: String) -> Self {
+        s.as_str().into()
+    }
+}
+
+impl From<ThreadId> for ThreadRef {
+    fn from(id: ThreadId) -> Self {
+        Self::local(id)
+    }
+}
+
+impl Serialize for ThreadRef {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for ThreadRef {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Ok(s.as_str().into())
+    }
+}
+
 /// Maximum frame size for daemon ↔ client communication (256 MiB).
 ///
 /// The default `LengthDelimitedCodec` limit is 8 MiB, which is too small for
@@ -65,7 +187,7 @@ pub enum ClientMessage {
         /// Optional target location. `None` means local.
         /// Otherwise, the name of a remote.
         #[serde(default)]
-        location: Option<String>,
+        location: Option<RemoteName>,
         /// Optional model to use for the new session. `None` uses the
         /// daemon's default model.
         #[serde(default)]
@@ -78,8 +200,8 @@ pub enum ClientMessage {
     },
     /// Connect to an existing session (optionally a specific thread).
     Connect {
-        session_id: String,
-        thread_id: Option<String>,
+        root_thread_id: ThreadRef,
+        thread_id: Option<ThreadRef>,
         /// When `false`, this connection will not prevent the session from
         /// going idle and being shut down by the daemon. Defaults to `true`
         /// so that normal interactive clients keep sessions alive.
@@ -87,7 +209,7 @@ pub enum ClientMessage {
         keeps_session_alive: bool,
     },
     UserInput {
-        session_id: String,
+        root_thread_id: ThreadRef,
         text: String,
     },
     /// Disconnect from the session while letting the agent continue to run in the background.
@@ -95,72 +217,57 @@ pub enum ClientMessage {
     /// Immediately attempt to detach. If the agent is idle, the daemon shuts
     /// down the session (closing the display channel). If not idle, the daemon
     /// responds with `DisconnectNotIdle` so the client can show a picker.
-    SoftDetach {
-        session_id: String,
-    },
+    SoftDetach { root_thread_id: ThreadRef },
     /// Disconnects from the session and shuts down the agent so that it can only be woken bu
     /// new user inputs.
-    ShutdownSession {
-        session_id: String,
-    },
+    ShutdownSession { root_thread_id: ThreadRef },
     /// Archive a session (shut it down and hide from the main list).
-    ArchiveSession {
-        session_id: String,
-    },
-    /// Switch the model used for future requests on a thread. `session_id`
-    /// may be any thread id (root or subthread); the switch affects only that
+    ArchiveSession { root_thread_id: ThreadRef },
+    /// Switch the model used for future requests on a thread. `thread_id`
+    /// may be any thread (root or subthread); the switch affects only that
     /// specific thread — it does not propagate to child threads. If a
     /// completion is currently in flight on the thread, it finishes on the
     /// old model and the switch applies to subsequent requests.
     SwitchModel {
-        session_id: String,
+        thread_id: ThreadRef,
         model: ModelRef,
     },
     /// Notify the daemon that a user choice was answered so it can be
     /// removed from the pending replay list.
-    UserChoiceAnswered {
-        choice_id: String,
-        selected: usize,
-    },
+    UserChoiceAnswered { choice_id: String, selected: usize },
     /// Trigger compaction for the given session.
-    TriggerCompaction {
-        session_id: String,
-    },
+    TriggerCompaction { root_thread_id: ThreadRef },
     /// Request migration of a session to a different host.
     RequestMigrate {
-        session_id: String,
+        root_thread_id: ThreadRef,
         /// `None` means local, `Some(name)` means a remote.
         #[serde(default)]
-        to: Option<String>,
+        to: Option<RemoteName>,
         dest_cwd: PathBuf,
     },
     /// Daemon-to-daemon: request a session to emigrate. Includes destination RAP URLs
     /// so source RAP servers can migrate their state.
     Emigrate {
-        session_id: String,
+        root_thread_id: ThreadId,
         /// config_id → destination URL
         dest_rap_urls: HashMap<String, String>,
     },
     /// Daemon-to-daemon: immigration is complete, source can clean up.
-    EmigrateDone {
-        session_id: String,
-    },
+    EmigrateDone { root_thread_id: ThreadId },
     /// Daemon-to-daemon: import a serialized session at the given cwd.
     ImportSession {
-        session_id: String,
+        root_thread_id: ThreadId,
         cwd: PathBuf,
         session_data: String,
     },
     /// Daemon-to-daemon: boot RAP servers at the given cwd and return their ports.
-    BootRapServers {
-        cwd: PathBuf,
-    },
+    BootRapServers { cwd: PathBuf },
     /// Request directory listing for path completion.
     ListDirectory {
         path: String,
         /// Target remote name. `None` means list on the local filesystem.
         #[serde(default)]
-        on: Option<String>,
+        on: Option<RemoteName>,
     },
 }
 
@@ -169,8 +276,8 @@ pub enum ClientMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DaemonMessage {
     Connected {
-        session_id: String,
-        thread_id: String,
+        root_thread_id: ThreadRef,
+        thread_id: ThreadRef,
         model_name: String,
         context_window: usize,
         title: Option<String>,
@@ -179,46 +286,46 @@ pub enum DaemonMessage {
         provider_id: String,
     },
     StartOutput {
-        thread_id: Option<String>,
+        thread_id: Option<ThreadRef>,
     },
     TextChunk {
-        thread_id: Option<String>,
+        thread_id: Option<ThreadRef>,
         chunk: String,
     },
     ToolCall {
         name: String,
         args: String,
-        thread_id: Option<String>,
+        thread_id: Option<ThreadRef>,
         display_as: Option<String>,
     },
     ToolResult {
         /// Prioritized display segments. Clients use the first type they support.
         segments: Vec<rap_protocol::DisplaySegment>,
-        thread_id: Option<String>,
+        thread_id: Option<ThreadRef>,
     },
     Info {
-        thread_id: Option<String>,
+        thread_id: Option<ThreadRef>,
         text: String,
     },
     ResponseDone {
-        thread_id: Option<String>,
+        thread_id: Option<ThreadRef>,
         token_usage: Option<TokenUsage>,
     },
     UserInputEcho {
-        thread_id: Option<String>,
+        thread_id: Option<ThreadRef>,
         text: String,
     },
     SubscriptionEvent {
         name: String,
         text: String,
-        thread_id: Option<String>,
+        thread_id: Option<ThreadRef>,
     },
     OAuthRequired {
-        thread_id: Option<String>,
+        thread_id: Option<ThreadRef>,
         auth_url: String,
     },
     UserChoiceRequired {
-        thread_id: Option<String>,
+        thread_id: Option<ThreadRef>,
         id: String,
         prompt: String,
         choices: Vec<String>,
@@ -228,35 +335,35 @@ pub enum DaemonMessage {
         choice_id: String,
     },
     ThinkingStart {
-        thread_id: Option<String>,
+        thread_id: Option<ThreadRef>,
     },
     ThinkingEnd {
-        thread_id: Option<String>,
+        thread_id: Option<ThreadRef>,
     },
     ThinkingChunk {
-        thread_id: Option<String>,
+        thread_id: Option<ThreadRef>,
         chunk: String,
     },
     CompactionApplied {
-        thread_id: Option<String>,
+        thread_id: Option<ThreadRef>,
     },
     /// Confirmation that a thread's model was switched (via
     /// [`ClientMessage::SwitchModel`]). Sent to the requesting client and
     /// broadcast to the thread's subscribers so every attached UI can update
     /// its model indicator.
     ModelSwitched {
-        thread_id: String,
+        thread_id: ThreadRef,
         model_name: String,
         context_window: usize,
         provider_id: String,
     },
     Error {
-        thread_id: Option<String>,
+        thread_id: Option<ThreadRef>,
         text: String,
     },
     /// A view update pushed by a RAP tool server.
     ViewUpdate {
-        thread_id: Option<String>,
+        thread_id: Option<ThreadRef>,
         view_type: String,
         content: serde_json::Value,
     },
@@ -277,7 +384,7 @@ pub enum DaemonMessage {
     },
     /// Sent immediately on socket connection with session list and default model info.
     Welcome {
-        sessions: HashMap<String, SessionInfo>,
+        sessions: HashMap<ThreadRef, SessionInfo>,
         available_models: Vec<ModelInfo>,
         default_model_name: String,
         default_context_window: usize,
@@ -287,7 +394,7 @@ pub enum DaemonMessage {
     },
     /// Broadcast: one or more sessions were created or updated.
     SessionsUpdated {
-        sessions: HashMap<String, SessionInfo>,
+        sessions: HashMap<ThreadRef, SessionInfo>,
     },
     /// Broadcast: remote connection statuses changed.
     RemotesUpdated {
@@ -300,23 +407,23 @@ pub enum DaemonMessage {
     DetachedIdle,
     /// Response to Emigrate: serialized session data (thread tree as JSON).
     EmigrateResult {
-        session_id: String,
+        root_thread_id: ThreadId,
         session_data: String,
     },
     MigrateStarted {
-        session_id: String,
+        root_thread_id: ThreadRef,
     },
     MigrateComplete {
-        session_id: String,
-        new_session_id: String,
+        root_thread_id: ThreadRef,
+        new_root_thread_id: ThreadRef,
     },
     MigrateError {
-        session_id: String,
+        root_thread_id: ThreadRef,
         error: String,
     },
     /// Response to ImportSession.
     ImportComplete {
-        session_id: String,
+        root_thread_id: ThreadId,
     },
     /// Response to BootRapServers: maps config ID → local port for servers needing migration.
     RapServersBooted {
@@ -331,7 +438,7 @@ pub enum DaemonMessage {
         entries: Vec<String>,
         /// The remote that was queried, if any.
         #[serde(default)]
-        on: Option<String>,
+        on: Option<RemoteName>,
     },
 }
 
@@ -357,13 +464,13 @@ pub struct SessionInfo {
     pub threads: Vec<SubthreadInfo>,
     /// If set, this session lives on a remote daemon with this name.
     #[serde(default)]
-    pub remote: Option<String>,
+    pub remote: Option<RemoteName>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubthreadInfo {
-    pub thread_id: String,
-    pub parent_thread_id: String,
+    pub thread_id: ThreadRef,
+    pub parent_thread_id: ThreadRef,
     pub title: Option<String>,
 }
 
@@ -399,6 +506,6 @@ pub struct ModelRef {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteInfo {
-    pub name: String,
+    pub name: RemoteName,
     pub status: String,
 }

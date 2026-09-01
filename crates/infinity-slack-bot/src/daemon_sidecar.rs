@@ -25,12 +25,12 @@ pub enum DaemonCommand {
     /// Connect to an existing session.
     ConnectSession {
         thread_ts: String,
-        session_id: String,
+        session_id: infinity_protocol::ThreadRef,
     },
     /// Send user input on the connection for this thread.
     SendInput {
         thread_ts: String,
-        session_id: String,
+        session_id: infinity_protocol::ThreadRef,
         text: String,
     },
     /// Answer a choice prompt on the connection for this thread.
@@ -212,7 +212,11 @@ fn spawn_receiver(
                 );
             } else {
                 // Not a Welcome — forward it normally.
-                if let DaemonMessage::Connected { ref session_id, .. } = first_msg {
+                if let DaemonMessage::Connected {
+                    root_thread_id: ref session_id,
+                    ..
+                } = first_msg
+                {
                     let rt = crate::runtime::get();
                     let pending_text = {
                         let mut pending = rt.pending_input.lock().expect("bug: lock poisoned");
@@ -221,7 +225,7 @@ fn spawn_receiver(
                     if let Some(text) = pending_text {
                         let _ = tx_for_input
                             .send(infinity_protocol::ClientMessage::UserInput {
-                                session_id: session_id.clone(),
+                                root_thread_id: session_id.clone(),
                                 text,
                             })
                             .await;
@@ -243,7 +247,11 @@ fn spawn_receiver(
 
         while let Some(msg) = rx.recv().await {
             // On Connected, send pending input automatically.
-            if let DaemonMessage::Connected { ref session_id, .. } = msg {
+            if let DaemonMessage::Connected {
+                root_thread_id: ref session_id,
+                ..
+            } = msg
+            {
                 let rt = crate::runtime::get();
                 let pending_text = {
                     let mut pending = rt.pending_input.lock().expect("bug: lock poisoned");
@@ -252,7 +260,7 @@ fn spawn_receiver(
                 if let Some(text) = pending_text {
                     let _ = tx_for_input
                         .send(infinity_protocol::ClientMessage::UserInput {
-                            session_id: session_id.clone(),
+                            root_thread_id: session_id.clone(),
                             text,
                         })
                         .await;

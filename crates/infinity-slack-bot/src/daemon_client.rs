@@ -77,10 +77,14 @@ impl DaemonClient {
         Ok(())
     }
 
-    pub async fn send_input(&self, session_id: &str, text: &str) -> Result<(), BoxError> {
+    pub async fn send_input(
+        &self,
+        session_id: &infinity_protocol::ThreadRef,
+        text: &str,
+    ) -> Result<(), BoxError> {
         self.tx
             .send(ClientMessage::UserInput {
-                session_id: session_id.to_owned(),
+                root_thread_id: session_id.clone(),
                 text: text.to_owned(),
             })
             .await?;
@@ -89,12 +93,12 @@ impl DaemonClient {
 
     pub async fn connect_session(
         &self,
-        session_id: &str,
-        thread_id: Option<String>,
+        session_id: &infinity_protocol::ThreadRef,
+        thread_id: Option<infinity_protocol::ThreadRef>,
     ) -> Result<(), BoxError> {
         self.tx
             .send(ClientMessage::Connect {
-                session_id: session_id.to_owned(),
+                root_thread_id: session_id.clone(),
                 thread_id,
                 keeps_session_alive: false,
             })

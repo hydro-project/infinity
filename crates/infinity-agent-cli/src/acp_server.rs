@@ -36,7 +36,7 @@ struct SessionConnection {
     /// ACP session ID (what the client sees).
     acp_id: String,
     /// Daemon session ID (what the daemon sees). None until Connected arrives.
-    daemon_id: Option<String>,
+    daemon_id: Option<infinity_protocol::ThreadRef>,
     /// ACP connection for sending notifications.
     cx: ConnectionTo<Client>,
     /// Pending prompt responder.
@@ -60,7 +60,7 @@ impl SessionConnection {
 /// Global state shared across all ACP request handlers.
 struct GlobalState {
     /// Sessions known from the daemon Welcome/SessionsUpdated.
-    sessions: HashMap<String, SessionInfo>,
+    sessions: HashMap<infinity_protocol::ThreadRef, SessionInfo>,
     /// Maps daemon session ID → ACP session ID.
     daemon_to_acp: HashMap<String, String>,
     /// Maps ACP session ID → daemon session ID.
@@ -165,7 +165,9 @@ pub async fn run() -> Result<(), BoxError> {
                                 info.status != infinity_protocol::SessionStatus::Archived
                             })
                             .map(|(id, info)| {
-                                let acp_id = s.daemon_to_acp.get(id).unwrap_or(id).clone();
+                                let rendered = id.to_string();
+                                let acp_id =
+                                    s.daemon_to_acp.get(&rendered).unwrap_or(&rendered).clone();
                                 agent_client_protocol::schema::SessionInfo::new(
                                     acp_id,
                                     std::env::current_dir().unwrap_or_default(),
@@ -202,19 +204,23 @@ pub async fn run() -> Result<(), BoxError> {
                                 cx: ConnectionTo<Client>| {
                         let mut s = state.lock().expect("bug: lock poisoned");
                         let acp_id = req.session_id.0.to_string();
-                        let daemon_id = s
+                        let daemon_id: infinity_protocol::ThreadRef = s
                             .acp_to_daemon
                             .get(&acp_id)
                             .cloned()
-                            .unwrap_or_else(|| acp_id.clone());
+                            .unwrap_or_else(|| acp_id.clone())
+                            .as_str()
+                            .into();
                         if !s.sessions.contains_key(&daemon_id) {
                             return responder.respond_with_error(
                                 agent_client_protocol::schema::Error::invalid_params()
                                     .data(format!("session '{}' not found", acp_id)),
                             );
                         }
-                        s.daemon_to_acp.insert(daemon_id.clone(), acp_id.clone());
-                        s.acp_to_daemon.insert(acp_id.clone(), daemon_id.clone());
+                        s.daemon_to_acp
+                            .insert(daemon_id.to_string(), acp_id.clone());
+                        s.acp_to_daemon
+                            .insert(acp_id.clone(), daemon_id.to_string());
                         save_session_mappings(&s);
 
                         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -309,11 +315,13 @@ pub async fn run() -> Result<(), BoxError> {
                         }
 
                         // Unknown session — try connecting by daemon ID.
-                        let daemon_id = s
+                        let daemon_id: infinity_protocol::ThreadRef = s
                             .acp_to_daemon
                             .get(&acp_id)
                             .cloned()
-                            .unwrap_or_else(|| acp_id.clone());
+                            .unwrap_or_else(|| acp_id.clone())
+                            .as_str()
+                            .into();
                         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
                         s.session_connections.insert(acp_id.clone(), cmd_tx);
                         drop(s);
@@ -384,7 +392,8 @@ pub async fn run() -> Result<(), BoxError> {
                             s.sessions = sessions;
                             // Notify all active sessions of info updates.
                             for (daemon_id, info) in &s.sessions {
-                                let acp_id = s.daemon_to_acp.get(daemon_id).unwrap_or(daemon_id);
+                                let rendered = daemon_id.to_string();
+                                let acp_id = s.daemon_to_acp.get(&rendered).unwrap_or(&rendered);
                                 if let Some(ref cx) = s.cx {
                                     let notif = SessionNotification::new(
                                         acp_id.clone(),
@@ -416,7 +425,7 @@ pub async fn run() -> Result<(), BoxError> {
 /// How a session connection starts.
 enum SessionStart {
     Load {
-        daemon_id: String,
+        daemon_id: infinity_protocol::ThreadRef,
         responder: Responder<LoadSessionResponse>,
     },
     Create {
@@ -425,7 +434,7 @@ enum SessionStart {
         responder: Responder<PromptResponse>,
     },
     ConnectAndPrompt {
-        daemon_id: String,
+        daemon_id: infinity_protocol::ThreadRef,
         text: String,
         responder: Responder<PromptResponse>,
     },
@@ -462,7 +471,7 @@ async fn run_session_connection(
             responder,
         } => {
             let msg = ClientMessage::Connect {
-                session_id: daemon_id.clone(),
+                root_thread_id: daemon_id.clone(),
                 thread_id: None,
                 keeps_session_alive: true,
             };
@@ -518,18 +527,25 @@ async fn run_session_connection(
                 let msg = recv(&mut framed).await?;
                 match msg {
                     DaemonMessage::Connected {
-                        session_id, title, ..
+                        root_thread_id: session_id,
+                        title,
+                        ..
                     } => {
                         conn.daemon_id = Some(session_id.clone());
                         // Register mapping.
                         {
                             let mut g = global.lock().expect("bug: lock poisoned");
-                            g.daemon_to_acp.insert(session_id.clone(), acp_id.clone());
-                            g.acp_to_daemon.insert(acp_id.clone(), session_id.clone());
+                            g.daemon_to_acp
+                                .insert(session_id.to_string(), acp_id.clone());
+                            g.acp_to_daemon
+                                .insert(acp_id.clone(), session_id.to_string());
                             save_session_mappings(&g);
                         }
 
-                        let input_msg = ClientMessage::UserInput { session_id, text };
+                        let input_msg = ClientMessage::UserInput {
+                            root_thread_id: session_id,
+                            text,
+                        };
                         send(&mut framed, &input_msg).await?;
                         conn.pending_prompt = Some(responder);
 
@@ -559,7 +575,7 @@ async fn run_session_connection(
             responder,
         } => {
             let msg = ClientMessage::Connect {
-                session_id: daemon_id.clone(),
+                root_thread_id: daemon_id.clone(),
                 thread_id: None,
                 keeps_session_alive: true,
             };
@@ -571,7 +587,7 @@ async fn run_session_connection(
                 match msg {
                     DaemonMessage::Connected { .. } => {
                         let input_msg = ClientMessage::UserInput {
-                            session_id: daemon_id,
+                            root_thread_id: daemon_id,
                             text,
                         };
                         send(&mut framed, &input_msg).await?;
@@ -615,7 +631,7 @@ async fn run_session_connection(
                 }
                 if let Some(ref daemon_id) = conn.daemon_id {
                     let msg = ClientMessage::UserInput {
-                        session_id: daemon_id.clone(),
+                        root_thread_id: daemon_id.clone(),
                         text,
                     };
                     if let Err(e) = send(&mut framed, &msg).await {
