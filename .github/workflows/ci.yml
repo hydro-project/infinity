@@ -89,7 +89,9 @@ jobs:
       - uses: ./.github/actions/use-sccache
 
       - name: Install jj
-        run: cargo install --locked --bin jj jj-cli
+        uses: taiki-e/install-action@0758d235715de2f3551eacc980d9ae8fce9342c3 # v2
+        with:
+          tool: jj-cli
 
       - name: Run tests
         run: cargo test --all-targets
