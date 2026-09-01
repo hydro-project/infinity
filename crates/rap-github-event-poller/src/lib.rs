@@ -24,8 +24,8 @@ pub struct SubscribeArgs {
 
 #[derive(Debug, Clone)]
 pub struct Subscription {
-    pub tool_call_id: String,
-    pub call_id: Option<String>,
+    pub tool_call_id: rap_protocol::ToolCallId,
+    pub call_id: Option<rap_protocol::ProviderCallId>,
     pub callback_url: String,
     pub group_id: rap_protocol::ThreadId,
     pub filters: Filters,
@@ -61,7 +61,7 @@ impl Filters {
 #[derive(Debug)]
 struct RepoState {
     /// Subscriptions keyed by tool_call_id
-    subscriptions: HashMap<String, Subscription>,
+    subscriptions: HashMap<rap_protocol::ToolCallId, Subscription>,
     /// ETag from last poll (for conditional requests)
     etag: Option<String>,
     /// Poll interval from GitHub's X-Poll-Interval header (default 60s)
@@ -167,7 +167,7 @@ impl<C: CallbackClient> Poller<C> {
     }
 
     /// Remove a subscription by tool_call_id.
-    pub async fn cancel(&self, tool_call_id: &str) {
+    pub async fn cancel(&self, tool_call_id: &rap_protocol::ToolCallId<str>) {
         let mut repos = self.repos.write().await;
         for state in repos.values_mut() {
             state.subscriptions.remove(tool_call_id);

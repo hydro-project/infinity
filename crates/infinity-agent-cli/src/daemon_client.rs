@@ -552,7 +552,8 @@ where
         mpsc::unbounded_channel::<HashMap<ThreadRef, SessionInfo>>();
     let (soft_detach_tx, soft_detach_rx) = mpsc::unbounded_channel::<()>();
     let (detach_result_tx, detach_result_rx) = mpsc::unbounded_channel::<DetachResult>();
-    let (choice_answered_tx, choice_answered_rx) = mpsc::unbounded_channel::<(String, usize)>();
+    let (choice_answered_tx, choice_answered_rx) =
+        mpsc::unbounded_channel::<(infinity_protocol::ChoiceId, usize)>();
 
     if let Some(info) = startup_info {
         let _ = display_tx.send((None, DisplayEvent::Info(info)));

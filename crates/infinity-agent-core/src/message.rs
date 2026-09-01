@@ -1,7 +1,7 @@
 use infinity_provider_protocol::message::{
     AssistantContent, Message, ToolCall, ToolResult, UserContent,
 };
-use rap_protocol::ThreadId;
+use rap_protocol::{ChoiceId, ProviderCallId, ThreadId, ToolCallId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -16,8 +16,8 @@ pub enum InputMessageContent {
 pub struct OAuthRequired {
     #[serde(rename = "type")]
     pub content_type: String,
-    pub id: String,
-    pub call_id: Option<String>,
+    pub id: ToolCallId,
+    pub call_id: Option<ProviderCallId>,
     pub auth_url: String,
 }
 
@@ -25,8 +25,8 @@ pub struct OAuthRequired {
 pub struct UserChoiceRequired {
     #[serde(rename = "type")]
     pub content_type: String,
-    pub id: String,
-    pub call_id: Option<String>,
+    pub id: ChoiceId,
+    pub call_id: Option<ProviderCallId>,
     pub prompt: String,
     pub choices: Vec<String>,
     pub default: usize,
@@ -41,7 +41,7 @@ pub struct UserChoiceRequired {
 pub enum SyntheticKind {
     Tagged(TaggedSyntheticKind),
     /// Backward compat: a bare string is treated as a subscription event
-    SubscriptionEvent(String),
+    SubscriptionEvent(ToolCallId),
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -49,7 +49,7 @@ pub enum SyntheticKind {
 pub enum TaggedSyntheticKind {
     #[serde(rename = "subscription_event")]
     SubscriptionEvent {
-        tool_call_id: String,
+        tool_call_id: ToolCallId,
         #[serde(default)]
         associative: bool,
         /// When true, this is the final event — the runtime removes the
@@ -59,11 +59,11 @@ pub enum TaggedSyntheticKind {
     },
     #[serde(rename = "thread_report")]
     ThreadReport {
-        tool_call_id: String,
+        tool_call_id: ToolCallId,
         child_thread_id: ThreadId,
     },
     #[serde(rename = "parent_message")]
-    ParentMessage { tool_call_id: String },
+    ParentMessage { tool_call_id: ToolCallId },
     #[serde(rename = "compaction")]
     Compaction,
     #[serde(rename = "compaction_complete")]
@@ -71,7 +71,7 @@ pub enum TaggedSyntheticKind {
 }
 
 impl SyntheticKind {
-    pub fn tool_call_id(&self) -> &str {
+    pub fn tool_call_id(&self) -> &ToolCallId<str> {
         match self {
             SyntheticKind::Tagged(TaggedSyntheticKind::SubscriptionEvent {
                 tool_call_id, ..
@@ -82,8 +82,10 @@ impl SyntheticKind {
             SyntheticKind::Tagged(TaggedSyntheticKind::ParentMessage { tool_call_id }) => {
                 tool_call_id
             }
-            SyntheticKind::Tagged(TaggedSyntheticKind::Compaction) => "",
-            SyntheticKind::Tagged(TaggedSyntheticKind::CompactionComplete) => "",
+            SyntheticKind::Tagged(TaggedSyntheticKind::Compaction) => ToolCallId::from_ref(""),
+            SyntheticKind::Tagged(TaggedSyntheticKind::CompactionComplete) => {
+                ToolCallId::from_ref("")
+            }
             SyntheticKind::SubscriptionEvent(id) => id,
         }
     }
@@ -210,7 +212,7 @@ pub enum InfinityMessage {
     SubscriptionEvent {
         result: Box<ToolResult>,
         /// The tool_call_id of the original subscription tool call.
-        tool_call_id: String,
+        tool_call_id: ToolCallId,
         /// Set when this is a thread report (used to build the display name).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         child_thread_id: Option<ThreadId>,

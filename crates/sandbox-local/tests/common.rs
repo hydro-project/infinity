@@ -88,7 +88,8 @@ pub async fn invoke_raw(
         id: format!(
             "call-{operation}-{}",
             CALL_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ),
+        )
+        .into(),
         call_id: None,
         callback_url: callback_url.to_owned(),
         group_id: group_id.into(),
@@ -173,7 +174,8 @@ pub async fn invoke_collecting_views(
         id: format!(
             "call-{operation}-{}",
             CALL_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ),
+        )
+        .into(),
         call_id: None,
         callback_url: callback_url.to_owned(),
         group_id: group_id.into(),

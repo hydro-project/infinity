@@ -122,7 +122,9 @@ async fn cancel_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CancelRequest>,
 ) -> StatusCode {
-    state.cancel(&req.tool_call_id).await;
+    state
+        .cancel(rap_protocol::ToolCallId::from_ref(&req.tool_call_id))
+        .await;
     StatusCode::OK
 }
 

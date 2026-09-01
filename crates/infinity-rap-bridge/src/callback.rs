@@ -29,8 +29,8 @@ pub(crate) fn convert_callback(cb: RapCallback) -> Option<InputMessage> {
     Some(match cb {
         RapCallback::ToolResult(tr) => InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                id: tr.id,
-                call_id: tr.call_id,
+                id: tr.id.into_inner(),
+                call_id: tr.call_id.map(|c| c.into_inner()),
                 content: tool_result_content(tr.content, tr.text),
             })),
             group_id: tr.group_id,
@@ -43,7 +43,7 @@ pub(crate) fn convert_callback(cb: RapCallback) -> Option<InputMessage> {
             let is_final = se.r#final.unwrap_or(false);
             InputMessage {
                 content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                    id: se.tool_call_id.clone(),
+                    id: se.tool_call_id.clone().into_inner(),
                     call_id: None,
                     content: vec![ToolResultContent::Text(Text { text: se.text })],
                 })),
@@ -133,8 +133,8 @@ mod tests {
     ) -> RapCallback {
         RapCallback::ToolResult(RapToolResult {
             group_id: "t1".into(),
-            id: "call-1".to_owned(),
-            call_id: Some("prov-1".to_owned()),
+            id: "call-1".into(),
+            call_id: Some("prov-1".into()),
             text,
             content,
             display_as: None,
@@ -166,7 +166,7 @@ mod tests {
     fn display_as_and_subscription_flag_pass_through() {
         let cb = RapCallback::ToolResult(RapToolResult {
             group_id: "t1".into(),
-            id: "call-1".to_owned(),
+            id: "call-1".into(),
             call_id: None,
             text: Some("done".to_owned()),
             content: None,
@@ -184,7 +184,7 @@ mod tests {
     fn subscription_event_converts_with_flags() {
         let cb = RapCallback::SubscriptionEvent(RapSubscriptionEvent {
             group_id: "t1".into(),
-            tool_call_id: "sub-1".to_owned(),
+            tool_call_id: "sub-1".into(),
             text: "tick".to_owned(),
             associative: true,
             r#final: Some(true),
@@ -196,7 +196,7 @@ mod tests {
                 associative,
                 r#final,
             })) => {
-                assert_eq!(tool_call_id, "sub-1");
+                assert_eq!(tool_call_id.as_str(), "sub-1");
                 assert!(associative);
                 assert!(r#final);
             }
@@ -208,7 +208,7 @@ mod tests {
     fn oauth_converts() {
         let cb = RapCallback::OAuth(RapOAuth {
             group_id: "t1".into(),
-            id: "call-1".to_owned(),
+            id: "call-1".into(),
             call_id: None,
             auth_url: "https://auth".to_owned(),
         });
@@ -226,7 +226,7 @@ mod tests {
     fn user_choice_converts() {
         let cb = RapCallback::UserChoice(RapUserChoice {
             group_id: "t1".into(),
-            id: "choice-1".to_owned(),
+            id: "choice-1".into(),
             call_id: None,
             prompt: "pick one".to_owned(),
             choices: vec!["a".to_owned(), "b".to_owned()],

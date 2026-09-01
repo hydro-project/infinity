@@ -650,8 +650,8 @@ impl Tool<ChannelSender> for McpTool {
     async fn execute(
         &self,
         arguments: serde_json::Value,
-        id: String,
-        call_id: Option<String>,
+        id: rap_protocol::ToolCallId,
+        call_id: Option<rap_protocol::ProviderCallId>,
         context: &ToolContext<ChannelSender>,
     ) -> Result<(), BoxError> {
         let client = self.client.clone();
@@ -662,8 +662,8 @@ impl Tool<ChannelSender> for McpTool {
             let (text, display_as) = client.dispatch(&tool_name, &arguments).await;
             let message = InputMessage {
                 content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                    id: id.clone(),
-                    call_id,
+                    id: id.clone().into_inner(),
+                    call_id: call_id.map(|c| c.into_inner()),
                     content: vec![ToolResultContent::Text(Text { text })],
                 })),
                 group_id: group_id.clone(),
@@ -672,7 +672,7 @@ impl Tool<ChannelSender> for McpTool {
                 display_as,
                 subscription: false,
             };
-            if let Err(error) = sender.send_to_input_queue(message, &id).await {
+            if let Err(error) = sender.send_to_input_queue(message, id.as_str()).await {
                 tracing::warn!(%error, "failed to deliver MCP tool result");
             }
         });

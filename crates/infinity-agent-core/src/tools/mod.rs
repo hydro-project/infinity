@@ -15,8 +15,8 @@ pub(crate) type ToolError = Box<dyn std::error::Error + Send + Sync>;
 /// Enqueue an error as the result of a tool call so the agent can recover.
 pub(crate) async fn send_tool_error<M: InputSender>(
     context: &ToolContext<M>,
-    id: &str,
-    call_id: Option<String>,
+    id: &rap_protocol::ToolCallId<str>,
+    call_id: Option<rap_protocol::ProviderCallId>,
     error: impl Into<String>,
 ) -> Result<(), ToolError>
 where
@@ -24,8 +24,8 @@ where
 {
     let message = InputMessage {
         content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-            id: id.to_owned(),
-            call_id,
+            id: id.as_str().to_owned(),
+            call_id: call_id.map(|c| c.into_inner()),
             content: vec![ToolResultContent::Text(Text {
                 text: format!("Error: {}", error.into()),
             })],
@@ -39,7 +39,7 @@ where
 
     context
         .message_sender
-        .send_to_input_queue(message, id)
+        .send_to_input_queue(message, id.as_str())
         .await
         .map_err(|error| Box::new(error) as ToolError)
 }
@@ -63,8 +63,8 @@ pub trait Tool<M: InputSender>: Send + Sync {
     async fn execute(
         &self,
         args: serde_json::Value,
-        id: String,
-        call_id: Option<String>,
+        id: rap_protocol::ToolCallId,
+        call_id: Option<rap_protocol::ProviderCallId>,
         context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -95,8 +95,8 @@ pub trait Tool<M: InputSender>: Send + Sync {
     async fn execute_synchronous(
         &self,
         _args: &serde_json::Value,
-        _id: &str,
-        _call_id: Option<&str>,
+        _id: &rap_protocol::ToolCallId<str>,
+        _call_id: Option<&rap_protocol::ProviderCallId<str>>,
         _context: &ToolContext<M>,
     ) -> Option<ToolResult> {
         None

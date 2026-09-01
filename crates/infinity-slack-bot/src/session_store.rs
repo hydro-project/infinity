@@ -8,7 +8,7 @@ use crate::BoxError;
 /// A pending approval/choice waiting for user response.
 #[derive(Clone)]
 pub struct PendingChoice {
-    pub choice_id: String,
+    pub choice_id: infinity_protocol::ChoiceId,
     pub choices: Vec<String>,
 }
 

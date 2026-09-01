@@ -8,7 +8,7 @@ use crate::message::InfinityMessage;
 /// `response_url`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UserChoice {
-    pub id: String,
+    pub id: rap_protocol::ChoiceId,
     pub prompt: String,
     pub choices: Vec<String>,
     pub default: usize,
@@ -63,7 +63,7 @@ pub enum AgentEvent {
     UserChoiceRequired { choice: UserChoice },
     /// A pending user choice became moot and has already been removed from
     /// persistent state.
-    UserChoiceDismissed { choice_id: String },
+    UserChoiceDismissed { choice_id: rap_protocol::ChoiceId },
     /// Human-readable progress/diagnostic information (retries, warnings).
     Info { text: String },
 }

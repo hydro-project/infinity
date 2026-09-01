@@ -36,7 +36,7 @@ pub enum DaemonCommand {
     /// Answer a choice prompt on the connection for this thread.
     AnswerChoice {
         thread_ts: String,
-        choice_id: String,
+        choice_id: infinity_protocol::ChoiceId,
         selected: usize,
     },
 }

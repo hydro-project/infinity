@@ -315,14 +315,14 @@ async fn queued_choices_and_external_complete() {
     let mut h = TuiHarness::spawn(80, 16).await;
 
     h.display(Evt::UserChoiceRequired {
-        id: "choice-1".to_owned(),
+        id: "choice-1".into(),
         prompt: "First question?".to_owned(),
         choices: vec!["Yes".to_owned(), "No".to_owned()],
         default: 0,
         response_url: String::new(),
     });
     h.display(Evt::UserChoiceRequired {
-        id: "choice-2".to_owned(),
+        id: "choice-2".into(),
         prompt: "Second question?".to_owned(),
         choices: vec!["Red".to_owned(), "Green".to_owned(), "Blue".to_owned()],
         default: 1,
@@ -341,7 +341,7 @@ async fn queued_choices_and_external_complete() {
     insta::assert_snapshot!("second_choice_shown", h.screen());
 
     h.display(Evt::UserChoiceComplete {
-        choice_id: "choice-2".to_owned(),
+        choice_id: "choice-2".into(),
     });
     h.settle().await;
     insta::assert_snapshot!("choices_all_dismissed", h.screen());

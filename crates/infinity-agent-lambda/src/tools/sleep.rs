@@ -20,15 +20,15 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Build the tool-result message a sleep delivers when it wakes.
 fn wakeup_message(
-    id: &str,
-    call_id: Option<String>,
+    id: &rap_protocol::ToolCallId<str>,
+    call_id: Option<rap_protocol::ProviderCallId>,
     text: String,
     group_id: &ThreadId<str>,
 ) -> InputMessage {
     InputMessage {
         content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-            id: id.to_owned(),
-            call_id,
+            id: id.as_str().to_owned(),
+            call_id: call_id.map(|c| c.into_inner()),
             content: vec![ToolResultContent::Text(Text { text })],
         })),
         group_id: group_id.to_owned(),
@@ -150,8 +150,8 @@ impl Tool<SqsMessageSender> for SleepTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        id: String,
-        call_id: Option<String>,
+        id: rap_protocol::ToolCallId,
+        call_id: Option<rap_protocol::ProviderCallId>,
         context: &ToolContext<SqsMessageSender>,
     ) -> Result<(), BoxError> {
         let seconds = args["seconds"].as_f64().unwrap_or(0.0) as i64;
@@ -163,11 +163,14 @@ impl Tool<SqsMessageSender> for SleepTool {
         );
 
         if seconds <= 0 {
-            context.message_sender.send_to_input_queue(msg, &id).await?;
+            context
+                .message_sender
+                .send_to_input_queue(msg, id.as_str())
+                .await?;
         } else {
             let target = Utc::now() + Duration::seconds(seconds);
             self.scheduler
-                .deliver_at(context, &msg, seconds, target, "sleep", &id)
+                .deliver_at(context, &msg, seconds, target, "sleep", id.as_str())
                 .await?;
         }
 
@@ -215,8 +218,8 @@ impl Tool<SqsMessageSender> for SleepUntilTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        id: String,
-        call_id: Option<String>,
+        id: rap_protocol::ToolCallId,
+        call_id: Option<rap_protocol::ProviderCallId>,
         context: &ToolContext<SqsMessageSender>,
     ) -> Result<(), BoxError> {
         let date_str = args["date"].as_str().unwrap_or("");
@@ -252,7 +255,10 @@ impl Tool<SqsMessageSender> for SleepUntilTool {
         let msg = wakeup_message(&id, call_id, text, &context.group_id);
 
         if target_utc <= now {
-            context.message_sender.send_to_input_queue(msg, &id).await?;
+            context
+                .message_sender
+                .send_to_input_queue(msg, id.as_str())
+                .await?;
             return Ok(());
         }
 
