@@ -1,6 +1,7 @@
 //! Runtime state accessible from dataflow `q!()` closures.
 //!
-//! Initialized by the Slack sidecar's `create()` function.
+//! Initialized at startup by the bot binary (or by [`ensure_test_init`] in
+//! tests).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::AtomicU64;
@@ -48,7 +49,7 @@ pub struct Runtime {
 
 static RUNTIME: std::sync::OnceLock<Runtime> = std::sync::OnceLock::new();
 
-/// Initialize runtime state. Called once from the Slack sidecar's `create()`.
+/// Initialize runtime state. Called once at startup by the bot binary.
 pub fn init(config: &'static Config, sessions: Arc<Mutex<SessionStore>>) {
     let default_model = config.default_model.clone();
     let _ = RUNTIME.set(Runtime {

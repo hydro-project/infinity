@@ -1,7 +1,7 @@
 //! Deterministic simulation tests for the Slack bot dataflow.
 //!
 //! These drive the dataflow through Hydro's simulator (`flow.sim()`) via
-//! `sim_input`/`sim_output` ports — no sidecars are run. The simulator
+//! `sim_input`/`sim_output` ports — no I/O tasks are run. The simulator
 //! compiles the flow into a dylib and explores batching/interleaving
 //! schedules, so the tests below follow three rules:
 //!

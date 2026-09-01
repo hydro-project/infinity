@@ -12,30 +12,35 @@ use tokio::sync::mpsc;
 
 use crate::daemon_client::DaemonClient;
 
+/// Endpoints and task handle returned by [`spawn`].
+pub struct DaemonIo {
+    /// Daemon messages from all active connections; the bot wraps this in a
+    /// stream and feeds it to the embedded dataflow.
+    pub events: mpsc::Receiver<DaemonEvent>,
+    /// Commands produced by the dataflow; the dispatch task acts on them. The
+    /// channel is unbounded because the dataflow emits commands from a
+    /// synchronous callback during a tick (it cannot await backpressure), and
+    /// command volume is bounded by human-scale chat traffic.
+    pub commands: mpsc::UnboundedSender<DaemonCommand>,
+    /// Handle of the command-dispatch task. This task never finishes during
+    /// normal operation (the command channel stays open for the bot's
+    /// lifetime); completion means a panic or bug and should be treated as
+    /// fatal by the caller.
+    pub dispatch: tokio::task::JoinHandle<()>,
+}
+
 /// Spawns the daemon I/O task and returns the dataflow-facing endpoints.
-///
-/// - The returned `Receiver<DaemonEvent>` emits daemon messages from all
-///   active connections; the CLI wraps it in a stream and feeds it to the
-///   embedded dataflow.
-/// - The returned `UnboundedSender<DaemonCommand>` accepts commands produced
-///   by the dataflow; the spawned task acts on them. The channel is unbounded
-///   because the dataflow emits commands from a synchronous callback during a
-///   tick (it cannot await backpressure), and command volume is bounded by
-///   human-scale chat traffic.
-pub fn spawn() -> (
-    mpsc::Receiver<DaemonEvent>,
-    mpsc::UnboundedSender<DaemonCommand>,
-) {
+pub fn spawn() -> DaemonIo {
     let (to_df_tx, to_df_rx) = mpsc::channel::<DaemonEvent>(1024);
     let (from_df_tx, mut from_df_rx) = mpsc::unbounded_channel::<DaemonCommand>();
 
-    tokio::spawn(async move {
+    let dispatch = tokio::spawn(async move {
         // Map of thread_ts → sender half of the daemon client.
         // Each connection's receiver is forwarded to `to_df_tx` by a spawned task.
         let mut connections: HashMap<String, DaemonClient> = HashMap::new();
 
         while let Some(cmd) = from_df_rx.recv().await {
-            tracing::info!("daemon sidecar received command: {cmd:?}");
+            tracing::info!("daemon I/O task received command: {cmd:?}");
             match cmd {
                 DaemonCommand::CreateSession {
                     thread_ts,
@@ -148,7 +153,11 @@ pub fn spawn() -> (
         }
     });
 
-    (to_df_rx, from_df_tx)
+    DaemonIo {
+        events: to_df_rx,
+        commands: from_df_tx,
+        dispatch,
+    }
 }
 
 /// Spawn a task that forwards DaemonMessages from a connection into the dataflow.

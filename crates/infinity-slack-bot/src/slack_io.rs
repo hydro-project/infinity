@@ -138,7 +138,7 @@ struct SlashCommandPayload {
 
 /// Endpoints and task handles returned by [`spawn`].
 pub struct SlackIo {
-    /// Parsed Slack events; the CLI wraps this in a stream and feeds it to
+    /// Parsed Slack events; the bot wraps this in a stream and feeds it to
     /// the embedded dataflow.
     pub events: mpsc::Receiver<SlackEvent>,
     /// Actions produced by the dataflow; a spawned task executes them against
@@ -151,7 +151,10 @@ pub struct SlackIo {
     /// should be treated as fatal by the caller.
     pub outbound: tokio::task::JoinHandle<()>,
     /// Handle of the inbound (Socket Mode) task. Same liveness contract as
-    /// `outbound`.
+    /// `outbound`, with one nuance: it also returns cleanly if the
+    /// dataflow-side event channel closes -- which only happens once the
+    /// dataflow itself is gone, so the caller should still treat completion
+    /// as fatal.
     pub inbound: tokio::task::JoinHandle<()>,
 }
 
@@ -722,7 +725,7 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                         "received Slack event"
                     );
                     if to_df_tx.send(event).await.is_err() {
-                        tracing::warn!("dataflow channel closed, stopping sidecar inbound");
+                        tracing::warn!("dataflow channel closed, stopping Slack inbound task");
                         return;
                     }
                 }
