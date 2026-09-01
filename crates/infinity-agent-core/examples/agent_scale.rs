@@ -118,15 +118,15 @@ impl Tool<ChannelSender> for RunCommand {
     async fn execute(
         &self,
         _args: serde_json::Value,
-        id: String,
-        call_id: Option<String>,
+        id: rap_protocol::ToolCallId,
+        call_id: Option<rap_protocol::ProviderCallId>,
         context: &ToolContext<ChannelSender>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let result =
             InputMessage {
                 content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                    id,
-                    call_id,
+                    id: id.into_inner(),
+                    call_id: call_id.map(|c| c.into_inner()),
                     content:
                         vec![ToolResultContent::Text(infinity_provider_protocol::message::Text {
                     text: "test result: ok. 148 passed; 0 failed; 3 ignored; finished in 21.38s"

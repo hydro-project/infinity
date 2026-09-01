@@ -104,7 +104,7 @@ enum SoftDetachAction {
 
 /// A queued user choice request waiting to be shown in the TUI.
 struct PendingChoice {
-    id: String,
+    id: infinity_protocol::ChoiceId,
     prompt: String,
     choices: Vec<String>,
     default: usize,
@@ -134,7 +134,7 @@ pub async fn run<T, E>(
     >,
     soft_detach_tx: mpsc::UnboundedSender<()>,
     mut detach_result_rx: mpsc::UnboundedReceiver<DetachResult>,
-    choice_answered_tx: mpsc::UnboundedSender<(String, usize)>,
+    choice_answered_tx: mpsc::UnboundedSender<(infinity_protocol::ChoiceId, usize)>,
 ) -> Result<bool, BoxError>
 where
     T: TermOut,

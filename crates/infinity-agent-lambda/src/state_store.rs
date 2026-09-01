@@ -128,7 +128,7 @@ impl StateStore for DynamoDbStateStore {
     async fn get_active_subscriptions(
         &self,
         thread_id: &ThreadId<str>,
-    ) -> Result<Vec<String>, DynamoError> {
+    ) -> Result<Vec<rap_protocol::ToolCallId>, DynamoError> {
         let result = self
             .client
             .get_item()
@@ -142,7 +142,12 @@ impl StateStore for DynamoDbStateStore {
             .item
             .and_then(|item| {
                 if let Some(AttributeValue::Ss(ids)) = item.get("active_subscriptions") {
-                    Some(ids.clone())
+                    Some(
+                        ids.iter()
+                            .cloned()
+                            .map(rap_protocol::ToolCallId::from)
+                            .collect(),
+                    )
                 } else {
                     None
                 }
@@ -153,14 +158,17 @@ impl StateStore for DynamoDbStateStore {
     async fn add_active_subscription(
         &self,
         thread_id: &ThreadId<str>,
-        tool_call_id: &str,
+        tool_call_id: &rap_protocol::ToolCallId<str>,
     ) -> Result<(), DynamoError> {
         self.client
             .update_item()
             .table_name(&self.table_name)
             .key("session", AttributeValue::S(thread_id.as_str().to_owned()))
             .update_expression("ADD active_subscriptions :id")
-            .expression_attribute_values(":id", AttributeValue::Ss(vec![tool_call_id.to_owned()]))
+            .expression_attribute_values(
+                ":id",
+                AttributeValue::Ss(vec![tool_call_id.as_str().to_owned()]),
+            )
             .send()
             .await
             .map_err(|e| DynamoError(format!("Failed to add active subscription: {}", e)))?;
@@ -208,13 +216,13 @@ impl StateStore for DynamoDbStateStore {
     async fn remove_pending_user_choice(
         &self,
         thread_id: &ThreadId<str>,
-        choice_id: &str,
+        choice_id: &rap_protocol::ChoiceId<str>,
     ) -> Result<(), DynamoError> {
         let Some(choice) = self
             .get_pending_user_choices(thread_id)
             .await?
             .into_iter()
-            .find(|choice| choice.id == choice_id)
+            .find(|choice| choice.id == *choice_id)
         else {
             return Ok(());
         };
@@ -266,14 +274,17 @@ impl StateStore for DynamoDbStateStore {
     async fn remove_active_subscription(
         &self,
         thread_id: &ThreadId<str>,
-        tool_call_id: &str,
+        tool_call_id: &rap_protocol::ToolCallId<str>,
     ) -> Result<(), DynamoError> {
         self.client
             .update_item()
             .table_name(&self.table_name)
             .key("session", AttributeValue::S(thread_id.as_str().to_owned()))
             .update_expression("DELETE active_subscriptions :id")
-            .expression_attribute_values(":id", AttributeValue::Ss(vec![tool_call_id.to_owned()]))
+            .expression_attribute_values(
+                ":id",
+                AttributeValue::Ss(vec![tool_call_id.as_str().to_owned()]),
+            )
             .send()
             .await
             .map_err(|e| DynamoError(format!("Failed to remove active subscription: {}", e)))?;

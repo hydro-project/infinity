@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use infinity_provider_protocol::message::AssistantContent;
 
-use rap_protocol::ThreadId;
+use rap_protocol::{ChoiceId, ThreadId, ToolCallId};
 
 use crate::message::{InfinityMessage, InputMessage};
 use crate::system::UserChoice;
@@ -114,7 +114,7 @@ pub trait ConversationStore: Send + Sync + Clone {
     async fn spawn_thread(
         &self,
         parent_thread_id: &ThreadId<str>,
-        spawn_tool_call_id: &str,
+        spawn_tool_call_id: &ToolCallId<str>,
         is_for_subscription_event: bool,
         spawn_order_override: Option<usize>,
     ) -> Result<ThreadId, Self::Error>;
@@ -131,7 +131,7 @@ pub trait ConversationStore: Send + Sync + Clone {
     async fn get_thread_parent_info(
         &self,
         thread_id: &ThreadId<str>,
-    ) -> Result<Option<(ThreadId, String)>, Self::Error>;
+    ) -> Result<Option<(ThreadId, ToolCallId)>, Self::Error>;
 
     async fn get_ancestor_chain(
         &self,
@@ -201,20 +201,20 @@ pub trait StateStore: Send + Sync + Clone {
     async fn get_active_subscriptions(
         &self,
         thread_id: &ThreadId<str>,
-    ) -> Result<Vec<String>, Self::Error>;
+    ) -> Result<Vec<ToolCallId>, Self::Error>;
 
     /// Record a new active subscription (tool_call_id) for a specific thread.
     async fn add_active_subscription(
         &self,
         thread_id: &ThreadId<str>,
-        tool_call_id: &str,
+        tool_call_id: &ToolCallId<str>,
     ) -> Result<(), Self::Error>;
 
     /// Remove an active subscription (tool_call_id) from a specific thread.
     async fn remove_active_subscription(
         &self,
         thread_id: &ThreadId<str>,
-        tool_call_id: &str,
+        tool_call_id: &ToolCallId<str>,
     ) -> Result<(), Self::Error>;
 
     /// Add or replace a pending user choice for one thread.
@@ -228,7 +228,7 @@ pub trait StateStore: Send + Sync + Clone {
     async fn remove_pending_user_choice(
         &self,
         thread_id: &ThreadId<str>,
-        choice_id: &str,
+        choice_id: &ChoiceId<str>,
     ) -> Result<(), Self::Error>;
 
     /// List choices awaiting a response for one thread.

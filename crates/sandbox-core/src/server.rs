@@ -76,7 +76,7 @@ type PendingTasks = Arc<Mutex<Vec<JoinHandle<()>>>>;
 /// is spawned) and the receiver is passed into the command handler.  The
 /// `cancel_tool_call_handler` removes the sender and sends `()` to signal
 /// cancellation; the handler receives it and sends SIGTERM to the process.
-type InFlightMap = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>>;
+type InFlightMap = Arc<Mutex<HashMap<rap_protocol::ToolCallId, tokio::sync::oneshot::Sender<()>>>>;
 
 /// Send SIGTERM to a process group by PID.
 ///
@@ -101,7 +101,8 @@ struct AppState<B: SandboxBackend, M: MetadataStore, C: CallbackClient> {
     in_flight: InFlightMap,
     /// Pending user choice responses, keyed by tool call ID.
     /// The sender delivers the user's selected index.
-    pending_choices: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<usize>>>>,
+    pending_choices:
+        Arc<Mutex<HashMap<rap_protocol::ToolCallId, tokio::sync::oneshot::Sender<usize>>>>,
     /// Server base URL, set from the first request's Host header.
     server_base_url: std::sync::OnceLock<String>,
     /// Whether this server advertises migration support.
@@ -393,7 +394,11 @@ async fn cancel_tool_call_handler<
         "received cancel_tool_call notification"
     );
 
-    let sender = state.in_flight.lock().await.remove(&request.tool_call_id);
+    let sender = state
+        .in_flight
+        .lock()
+        .await
+        .remove(rap_protocol::ToolCallId::from_ref(&request.tool_call_id));
 
     if let Some(sender) = sender {
         // Signal the command handler to SIGTERM the process and clean up.
@@ -434,7 +439,11 @@ async fn user_choice_response_handler<
         "received user_choice_response"
     );
 
-    let sender = state.pending_choices.lock().await.remove(&response.id);
+    let sender = state
+        .pending_choices
+        .lock()
+        .await
+        .remove(rap_protocol::ToolCallId::from_ref(&response.id));
 
     if let Some(sender) = sender {
         let _ = sender.send(response.selected);

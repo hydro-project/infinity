@@ -49,8 +49,8 @@ impl<M: InputSender + 'static, S: StateStore + 'static, H: HttpClient + 'static>
     async fn execute(
         &self,
         _args: serde_json::Value,
-        _id: String,
-        _call_id: Option<String>,
+        _id: rap_protocol::ToolCallId,
+        _call_id: Option<rap_protocol::ProviderCallId>,
         _context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Synchronous-only tool; execute is a no-op.
@@ -64,11 +64,15 @@ impl<M: InputSender + 'static, S: StateStore + 'static, H: HttpClient + 'static>
     async fn execute_synchronous(
         &self,
         args: &serde_json::Value,
-        id: &str,
-        call_id: Option<&str>,
+        id: &rap_protocol::ToolCallId<str>,
+        call_id: Option<&rap_protocol::ProviderCallId<str>>,
         context: &ToolContext<M>,
     ) -> Option<ToolResult> {
-        let Some(tool_call_id) = args.get("tool_call_id").and_then(|v| v.as_str()) else {
+        let Some(tool_call_id) = args
+            .get("tool_call_id")
+            .and_then(|v| v.as_str())
+            .map(rap_protocol::ToolCallId::from_ref)
+        else {
             return Some(error_result(id, call_id, "Error: tool_call_id is required"));
         };
 
@@ -124,8 +128,8 @@ impl<M: InputSender + 'static, S: StateStore + 'static, H: HttpClient + 'static>
         );
 
         Some(ToolResult {
-            id: id.to_owned(),
-            call_id: call_id.map(String::from),
+            id: id.as_str().to_owned(),
+            call_id: call_id.map(|c| c.as_str().to_owned()),
             content: vec![ToolResultContent::Text(Text {
                 text: format!("Subscription '{}' cancelled successfully.", tool_call_id),
             })],
@@ -133,10 +137,14 @@ impl<M: InputSender + 'static, S: StateStore + 'static, H: HttpClient + 'static>
     }
 }
 
-fn error_result(id: &str, call_id: Option<&str>, text: &str) -> ToolResult {
+fn error_result(
+    id: &rap_protocol::ToolCallId<str>,
+    call_id: Option<&rap_protocol::ProviderCallId<str>>,
+    text: &str,
+) -> ToolResult {
     ToolResult {
-        id: id.to_owned(),
-        call_id: call_id.map(String::from),
+        id: id.as_str().to_owned(),
+        call_id: call_id.map(|c| c.as_str().to_owned()),
         content: vec![ToolResultContent::Text(Text {
             text: text.to_owned(),
         })],

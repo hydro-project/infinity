@@ -36,14 +36,14 @@ pub enum DisplayEvent {
         auth_url: String,
     },
     UserChoiceRequired {
-        id: String,
+        id: infinity_protocol::ChoiceId,
         prompt: String,
         choices: Vec<String>,
         default: usize,
         response_url: String,
     },
     UserChoiceComplete {
-        choice_id: String,
+        choice_id: infinity_protocol::ChoiceId,
     },
     ThinkingStart,
     ThinkingEnd,

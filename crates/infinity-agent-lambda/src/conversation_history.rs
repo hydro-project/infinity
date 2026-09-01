@@ -280,7 +280,7 @@ impl ConversationStore for DsqlConversationStore {
     async fn spawn_thread(
         &self,
         parent_thread_id: &ThreadId<str>,
-        spawn_tool_call_id: &str,
+        spawn_tool_call_id: &rap_protocol::ToolCallId<str>,
         is_for_subscription_event: bool,
         spawn_order_override: Option<usize>,
     ) -> Result<ThreadId, DsqlError> {
@@ -316,7 +316,7 @@ impl ConversationStore for DsqlConversationStore {
         .bind(parent_thread_id.as_str())
         .bind(&root_thread_id)
         .bind(spawn_message_order)
-        .bind(spawn_tool_call_id)
+        .bind(spawn_tool_call_id.as_str())
         .bind(is_for_subscription_event)
         .execute(&self.pool)
         .await
@@ -361,7 +361,7 @@ impl ConversationStore for DsqlConversationStore {
     async fn get_thread_parent_info(
         &self,
         thread_id: &ThreadId<str>,
-    ) -> Result<Option<(ThreadId, String)>, DsqlError> {
+    ) -> Result<Option<(ThreadId, rap_protocol::ToolCallId)>, DsqlError> {
         let row = sqlx::query(
             r#"SELECT parent_thread_id, spawn_tool_call_id FROM thread_hierarchy WHERE thread_id = $1"#,
         )
@@ -373,7 +373,7 @@ impl ConversationStore for DsqlConversationStore {
         let parent: Option<String> = row.get("parent_thread_id");
         let tool_call_id: Option<String> = row.get("spawn_tool_call_id");
         match (parent, tool_call_id) {
-            (Some(p), Some(t)) => Ok(Some((ThreadId::from(p), t))),
+            (Some(p), Some(t)) => Ok(Some((ThreadId::from(p), rap_protocol::ToolCallId::from(t)))),
             _ => Ok(None),
         }
     }

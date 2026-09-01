@@ -45,8 +45,8 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
     async fn execute(
         &self,
         _args: serde_json::Value,
-        _id: String,
-        _call_id: Option<String>,
+        _id: rap_protocol::ToolCallId,
+        _call_id: Option<rap_protocol::ProviderCallId>,
         _context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(())
@@ -59,8 +59,8 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
     async fn execute_synchronous(
         &self,
         args: &serde_json::Value,
-        id: &str,
-        call_id: Option<&str>,
+        id: &rap_protocol::ToolCallId<str>,
+        call_id: Option<&rap_protocol::ProviderCallId<str>>,
         context: &ToolContext<M>,
     ) -> Option<ToolResult> {
         // Validate child_of matches the actual thread stack
@@ -71,8 +71,8 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
 
         if child_of != context.thread_stack {
             return Some(ToolResult {
-                id: id.to_owned(),
-                call_id: call_id.map(|c| c.to_owned()),
+                id: id.as_str().to_owned(),
+                call_id: call_id.map(|c| c.as_str().to_owned()),
                 content: vec![ToolResultContent::Text(Text {
                     text: format!(
                         "Error: child_of {:?} does not match the actual thread stack {:?}. You may be confused and think you are in the parent thread, but you are not. You are in thread {}. Do NOT spawn threads — focus on your assigned task.",
@@ -91,8 +91,8 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             Err(e) => {
                 tracing::error!("failed to spawn thread in conversation store: {e}");
                 return Some(ToolResult {
-                    id: id.to_owned(),
-                    call_id: call_id.map(|c| c.to_owned()),
+                    id: id.as_str().to_owned(),
+                    call_id: call_id.map(|c| c.as_str().to_owned()),
                     content: vec![ToolResultContent::Text(Text {
                         text: format!("Error: failed to spawn thread: {e}"),
                     })],
@@ -107,8 +107,8 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
         );
 
         let parent_result = ToolResult {
-            id: id.to_owned(),
-            call_id: call_id.map(|c| c.to_owned()),
+            id: id.as_str().to_owned(),
+            call_id: call_id.map(|c| c.as_str().to_owned()),
             content: vec![ToolResultContent::Text(Text {
                 text: format!(
                     "Child thread is successfully spawned and has ID: {}. You will be notified automatically when the child has anything to report. Make sure that you **do not** do the task assigned to the child thread.",
@@ -125,8 +125,8 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
 
         let child_result = InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                id: id.to_owned(),
-                call_id: call_id.map(|c| c.to_owned()),
+                id: id.as_str().to_owned(),
+                call_id: call_id.map(|c| c.as_str().to_owned()),
                 content: vec![ToolResultContent::Text(Text {
                     text: format!(
                         "You are now INSIDE the thread that you requested to create. Your thread ID is {}. Your next task is to exactly follow these instructions: {}\n. Start by repeating to yourself the instructions, ignoring thinking from the parent context. Make sure to not be confused by the parent context. If the parent was planning to spawn more threads, you should not.",
@@ -143,7 +143,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
 
         context
             .message_sender
-            .send_to_input_queue(child_result, id)
+            .send_to_input_queue(child_result, id.as_str())
             .await
             .expect("failed to send child thread message to input queue");
 
@@ -182,8 +182,8 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Repor
     async fn execute(
         &self,
         args: serde_json::Value,
-        id: String,
-        call_id: Option<String>,
+        id: rap_protocol::ToolCallId,
+        call_id: Option<rap_protocol::ProviderCallId>,
         context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let Some(report_text) = args["report"].as_str() else {
@@ -247,13 +247,13 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Repor
 
         context
             .message_sender
-            .send_to_input_queue(report_message, &id)
+            .send_to_input_queue(report_message, id.as_str())
             .await?;
 
         let tool_result = InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                id: id.clone(),
-                call_id,
+                id: id.clone().into_inner(),
+                call_id: call_id.map(|c| c.into_inner()),
                 content: vec![ToolResultContent::Text(Text {
                     text: "Report sent to parent thread.".to_owned(),
                 })],
@@ -267,7 +267,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Repor
 
         context
             .message_sender
-            .send_to_input_queue(tool_result, &id)
+            .send_to_input_queue(tool_result, id.as_str())
             .await?;
 
         Ok(())
@@ -314,8 +314,8 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
     async fn execute(
         &self,
         args: serde_json::Value,
-        id: String,
-        call_id: Option<String>,
+        id: rap_protocol::ToolCallId,
+        call_id: Option<rap_protocol::ProviderCallId>,
         context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let Some(thread_id) = args["thread_id"].as_str() else {
@@ -406,7 +406,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
             };
             context
                 .message_sender
-                .send_to_input_queue(notify_msg, &id)
+                .send_to_input_queue(notify_msg, id.as_str())
                 .await?;
             if let Some(ref notifier) = self.rap_notifier {
                 notifier.notify_thread_closed(&thread_id).await;
@@ -460,7 +460,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
 
             context
                 .message_sender
-                .send_to_input_queue(report_message, &id)
+                .send_to_input_queue(report_message, id.as_str())
                 .await?;
         }
 
@@ -511,8 +511,8 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M>
     async fn execute(
         &self,
         args: serde_json::Value,
-        id: String,
-        call_id: Option<String>,
+        id: rap_protocol::ToolCallId,
+        call_id: Option<rap_protocol::ProviderCallId>,
         context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let Some(child_thread_id) = args["thread_id"].as_str().map(ThreadId::from) else {
@@ -576,13 +576,13 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M>
 
         context
             .message_sender
-            .send_to_input_queue(child_message, &id)
+            .send_to_input_queue(child_message, id.as_str())
             .await?;
 
         let tool_result = InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                id: id.clone(),
-                call_id,
+                id: id.clone().into_inner(),
+                call_id: call_id.map(|c| c.into_inner()),
                 content: vec![ToolResultContent::Text(Text {
                     text: "Message sent to child thread.".to_owned(),
                 })],
@@ -596,7 +596,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M>
 
         context
             .message_sender
-            .send_to_input_queue(tool_result, &id)
+            .send_to_input_queue(tool_result, id.as_str())
             .await?;
 
         Ok(())

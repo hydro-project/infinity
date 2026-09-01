@@ -48,7 +48,7 @@ async fn list_tools_callback_deserializes() {
     let inv = RapInvocation {
         operation: "mock_list_tools".to_owned(),
         arguments: serde_json::json!({}),
-        id: "test-1".to_owned(),
+        id: "test-1".into(),
         call_id: None,
         callback_url,
         group_id: "g1".into(),

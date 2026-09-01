@@ -40,8 +40,8 @@ impl<M: InputSender + 'static> Tool<M> for SetTitleTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        id: String,
-        call_id: Option<String>,
+        id: rap_protocol::ToolCallId,
+        call_id: Option<rap_protocol::ProviderCallId>,
         context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let title = args["title"].as_str().unwrap_or("").to_owned();
@@ -51,8 +51,8 @@ impl<M: InputSender + 'static> Tool<M> for SetTitleTool {
 
         let msg = InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                id: id.clone(),
-                call_id,
+                id: id.clone().into_inner(),
+                call_id: call_id.map(|c| c.into_inner()),
                 content: vec![ToolResultContent::Text(Text {
                     text: format!("Title set to: {}", title),
                 })],
@@ -64,7 +64,10 @@ impl<M: InputSender + 'static> Tool<M> for SetTitleTool {
             subscription: false,
         };
 
-        context.message_sender.send_to_input_queue(msg, &id).await?;
+        context
+            .message_sender
+            .send_to_input_queue(msg, id.as_str())
+            .await?;
 
         Ok(())
     }

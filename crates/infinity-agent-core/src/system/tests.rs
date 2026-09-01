@@ -40,7 +40,7 @@ async fn pending_choices_are_thread_local_and_replayed() {
                     InputMessage {
                         content: InputMessageContent::UserChoice(UserChoiceRequired {
                             content_type: "user_choice_required".to_owned(),
-                            id: choice_id.to_owned(),
+                            id: choice_id.into(),
                             call_id: None,
                             prompt: "Pick one".to_owned(),
                             choices: vec!["A".to_owned(), "B".to_owned()],
@@ -74,7 +74,8 @@ async fn pending_choices_are_thread_local_and_replayed() {
                     .get_pending_user_choices(ThreadId::from_ref("t1"))
                     .await
                     .expect("load first thread choices")[0]
-                    .id,
+                    .id
+                    .as_str(),
                 "choice-1"
             );
             assert_eq!(
@@ -82,7 +83,8 @@ async fn pending_choices_are_thread_local_and_replayed() {
                     .get_pending_user_choices(ThreadId::from_ref("t2"))
                     .await
                     .expect("load second thread choices")[0]
-                    .id,
+                    .id
+                    .as_str(),
                 "choice-2"
             );
 
@@ -101,7 +103,7 @@ async fn pending_choices_are_thread_local_and_replayed() {
                 panic!("expected replay");
             };
             assert_eq!(snapshot.pending_choices.len(), 1);
-            assert_eq!(snapshot.pending_choices[0].id, "choice-1");
+            assert_eq!(snapshot.pending_choices[0].id.as_str(), "choice-1");
         })
         .await;
 }
@@ -342,8 +344,8 @@ async fn driver_idles_after_close_thread_tool_call() {
                 async fn execute(
                     &self,
                     _: serde_json::Value,
-                    _: String,
-                    _: Option<String>,
+                    _: rap_protocol::ToolCallId,
+                    _: Option<rap_protocol::ProviderCallId>,
                     _: &ToolContext<ChannelSender>,
                 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     Ok(())
