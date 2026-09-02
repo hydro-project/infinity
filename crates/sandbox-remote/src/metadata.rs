@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use aws_sdk_dynamodb::Client;
 use aws_sdk_dynamodb::types::AttributeValue;
 
+use sandbox_core::ThreadId;
 use sandbox_core::error::SandboxError;
 use sandbox_core::metadata::MetadataStore;
 use sandbox_core::types::{RepoState, SandboxMode};
@@ -19,12 +20,12 @@ impl DynamoMetadataStore {
 
 #[async_trait]
 impl MetadataStore for DynamoMetadataStore {
-    async fn get(&self, group_id: &str) -> Result<Option<RepoState>, SandboxError> {
+    async fn get(&self, group_id: &ThreadId<str>) -> Result<Option<RepoState>, SandboxError> {
         let result = self
             .client
             .get_item()
             .table_name(&self.table_name)
-            .key("group_id", AttributeValue::S(group_id.to_owned()))
+            .key("group_id", AttributeValue::S(group_id.as_str().to_owned()))
             .send()
             .await
             .map_err(|e| SandboxError::MetadataError(format!("DynamoDB get failed: {e}")))?;
@@ -68,7 +69,10 @@ impl MetadataStore for DynamoMetadataStore {
             .client
             .put_item()
             .table_name(&self.table_name)
-            .item("group_id", AttributeValue::S(state.group_id.clone()))
+            .item(
+                "group_id",
+                AttributeValue::S(state.group_id.as_str().to_owned()),
+            )
             .item("remote_uri", AttributeValue::S(state.remote_uri.clone()))
             .item("bookmark", AttributeValue::S(state.bookmark.clone()));
 
@@ -83,11 +87,11 @@ impl MetadataStore for DynamoMetadataStore {
         Ok(())
     }
 
-    async fn delete(&self, group_id: &str) -> Result<(), SandboxError> {
+    async fn delete(&self, group_id: &ThreadId<str>) -> Result<(), SandboxError> {
         self.client
             .delete_item()
             .table_name(&self.table_name)
-            .key("group_id", AttributeValue::S(group_id.to_owned()))
+            .key("group_id", AttributeValue::S(group_id.as_str().to_owned()))
             .send()
             .await
             .map_err(|e| SandboxError::MetadataError(format!("DynamoDB delete failed: {e}")))?;

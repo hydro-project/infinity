@@ -27,7 +27,7 @@ pub struct Subscription {
     pub tool_call_id: String,
     pub call_id: Option<String>,
     pub callback_url: String,
-    pub group_id: String,
+    pub group_id: rap_protocol::ThreadId,
     pub filters: Filters,
 }
 

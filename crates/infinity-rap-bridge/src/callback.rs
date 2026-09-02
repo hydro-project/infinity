@@ -132,7 +132,7 @@ mod tests {
         text: Option<String>,
     ) -> RapCallback {
         RapCallback::ToolResult(RapToolResult {
-            group_id: "t1".to_owned(),
+            group_id: "t1".into(),
             id: "call-1".to_owned(),
             call_id: Some("prov-1".to_owned()),
             text,
@@ -146,7 +146,7 @@ mod tests {
     fn text_tool_result_converts() {
         let msg = convert_callback(tool_result_cb(None, Some("plain output".to_owned())))
             .expect("tool results convert");
-        assert_eq!(msg.group_id, "t1");
+        assert_eq!(msg.group_id.as_str(), "t1");
         assert!(!msg.subscription);
         assert!(msg.synthetic.is_none());
         match msg.content {
@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn display_as_and_subscription_flag_pass_through() {
         let cb = RapCallback::ToolResult(RapToolResult {
-            group_id: "t1".to_owned(),
+            group_id: "t1".into(),
             id: "call-1".to_owned(),
             call_id: None,
             text: Some("done".to_owned()),
@@ -183,7 +183,7 @@ mod tests {
     #[test]
     fn subscription_event_converts_with_flags() {
         let cb = RapCallback::SubscriptionEvent(RapSubscriptionEvent {
-            group_id: "t1".to_owned(),
+            group_id: "t1".into(),
             tool_call_id: "sub-1".to_owned(),
             text: "tick".to_owned(),
             associative: true,
@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn oauth_converts() {
         let cb = RapCallback::OAuth(RapOAuth {
-            group_id: "t1".to_owned(),
+            group_id: "t1".into(),
             id: "call-1".to_owned(),
             call_id: None,
             auth_url: "https://auth".to_owned(),
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn user_choice_converts() {
         let cb = RapCallback::UserChoice(RapUserChoice {
-            group_id: "t1".to_owned(),
+            group_id: "t1".into(),
             id: "choice-1".to_owned(),
             call_id: None,
             prompt: "pick one".to_owned(),
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn view_update_is_not_agent_input() {
         let cb = RapCallback::ViewUpdate(RapViewUpdate {
-            group_id: "t1".to_owned(),
+            group_id: "t1".into(),
             view_type: "diff".to_owned(),
             content: serde_json::json!({}),
         });

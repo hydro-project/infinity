@@ -1,6 +1,7 @@
 //! The [`ThreadObserver`] trait: how embeddings observe thread execution.
 
 use async_trait::async_trait;
+use rap_protocol::ThreadId;
 use std::cell::RefCell;
 
 use super::events::{AgentEvent, ReplaySnapshot};
@@ -34,7 +35,7 @@ pub trait ThreadObserver {
 
     /// A display event was emitted. Called synchronously at the emission
     /// point; keep this fast (fan-out, buffering).
-    fn on_event(&self, thread_id: &str, event: &AgentEvent);
+    fn on_event(&self, thread_id: &ThreadId<str>, event: &AgentEvent);
 
     /// A subscriber attached to a running thread (local driver mode only;
     /// step-mode embeddings never receive this call).
@@ -62,7 +63,7 @@ pub trait ThreadObserver {
     /// race.
     fn on_subscribe(
         &self,
-        _thread_id: &str,
+        _thread_id: &ThreadId<str>,
         _request: Self::SubscribeRequest,
         _snapshot: ReplaySnapshot,
     ) {
@@ -75,7 +76,7 @@ pub trait ThreadObserver {
 /// multiple threads.
 #[derive(Default)]
 pub struct EventCollector {
-    events: RefCell<Vec<(String, AgentEvent)>>,
+    events: RefCell<Vec<(ThreadId, AgentEvent)>>,
 }
 
 impl EventCollector {
@@ -85,7 +86,7 @@ impl EventCollector {
 
     /// Take the buffered `(thread_id, event)` pairs, leaving the collector
     /// empty.
-    pub fn take(&self) -> Vec<(String, AgentEvent)> {
+    pub fn take(&self) -> Vec<(ThreadId, AgentEvent)> {
         std::mem::take(&mut *self.events.borrow_mut())
     }
 }
@@ -94,7 +95,7 @@ impl EventCollector {
 impl ThreadObserver for EventCollector {
     type SubscribeRequest = ();
 
-    fn on_event(&self, thread_id: &str, event: &AgentEvent) {
+    fn on_event(&self, thread_id: &ThreadId<str>, event: &AgentEvent) {
         self.events
             .borrow_mut()
             .push((thread_id.to_owned(), event.clone()));

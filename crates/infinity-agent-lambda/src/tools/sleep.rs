@@ -5,6 +5,7 @@ use aws_sdk_scheduler::{
 };
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use chrono_tz::Tz;
+use infinity_agent_core::ThreadId;
 use infinity_agent_core::tools::{Tool, ToolContext};
 use infinity_agent_core::{
     message::{InputMessage, InputMessageContent},
@@ -18,7 +19,12 @@ use super::sqs_sender::SqsMessageSender;
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Build the tool-result message a sleep delivers when it wakes.
-fn wakeup_message(id: &str, call_id: Option<String>, text: String, group_id: &str) -> InputMessage {
+fn wakeup_message(
+    id: &str,
+    call_id: Option<String>,
+    text: String,
+    group_id: &ThreadId<str>,
+) -> InputMessage {
     InputMessage {
         content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
             id: id.to_owned(),
@@ -94,7 +100,7 @@ impl WakeupScheduler {
                         .input(serde_json::to_string(msg)?)
                         .sqs_parameters(
                             SqsParameters::builder()
-                                .message_group_id(context.group_id.clone())
+                                .message_group_id(context.group_id.clone().into_inner())
                                 .build(),
                         )
                         .build()?,

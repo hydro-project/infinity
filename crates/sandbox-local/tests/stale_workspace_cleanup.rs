@@ -68,7 +68,7 @@ async fn workspace_forget_succeeds_when_child_is_stale() {
         "clone_repo",
         serde_json::json!({ "repo": repo_str, "base_thread_id": parent_id }),
         &mut rx,
-        Some(vec![parent_id.to_owned()]),
+        Some(vec![parent_id.into()]),
     )
     .await;
     assert!(text.contains("Repository initialized"), "got: {text}");
@@ -81,7 +81,7 @@ async fn workspace_forget_succeeds_when_child_is_stale() {
         "create_file",
         serde_json::json!({ "path": "child.txt", "content": "from child\n" }),
         &mut rx,
-        Some(vec![parent_id.to_owned()]),
+        Some(vec![parent_id.into()]),
     )
     .await;
     assert!(text.contains("Created file"), "got: {text}");

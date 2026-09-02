@@ -20,7 +20,7 @@ impl<H: HttpClient> RapNotifier<H> {
     }
 
     /// Best-effort notification that a thread has been closed.
-    pub async fn notify_thread_closed(&self, thread_id: &str) {
+    pub async fn notify_thread_closed(&self, thread_id: &rap_protocol::ThreadId) {
         let payload = serde_json::json!({ "thread_id": thread_id }).to_string();
         for url in &self.server_urls {
             let endpoint = format!("{}/close_thread", url.trim_end_matches('/'));
@@ -36,7 +36,11 @@ impl<H: HttpClient> RapNotifier<H> {
     }
 
     /// Best-effort notification that a tool call has been cancelled.
-    pub async fn notify_tool_cancelled(&self, thread_id: &str, tool_call_id: &str) {
+    pub async fn notify_tool_cancelled(
+        &self,
+        thread_id: &rap_protocol::ThreadId,
+        tool_call_id: &str,
+    ) {
         let payload = serde_json::json!({
             "thread_id": thread_id,
             "tool_call_id": tool_call_id,

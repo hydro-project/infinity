@@ -10,6 +10,7 @@ use aws_sdk_sqs::Client as SqsClient;
 use infinity_provider_bedrock::BedrockProvider;
 use lambda_runtime::{Error, LambdaEvent, tracing};
 
+use infinity_agent_core::ThreadId;
 use infinity_agent_core::event_processor;
 use infinity_agent_core::message::InputMessage;
 use infinity_agent_core::system::{
@@ -184,7 +185,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         required_choices: Vec<infinity_agent_core::system::UserChoice>,
         completed_choices: Vec<String>,
     }
-    let mut per_thread: BTreeMap<String, ThreadOutput> = BTreeMap::new();
+    let mut per_thread: BTreeMap<ThreadId, ThreadOutput> = BTreeMap::new();
     for (thread_id, event) in collector.take() {
         let entry = per_thread.entry(thread_id).or_default();
         match event {
@@ -319,7 +320,7 @@ impl LambdaThreadConfig {
 impl ThreadConfigSource<SqsMessageSender, RapHttpClient> for LambdaThreadConfig {
     async fn resolve(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId<str>,
     ) -> Result<
         ThreadConfig<SqsMessageSender, RapHttpClient>,
         Box<dyn std::error::Error + Send + Sync>,
@@ -330,7 +331,7 @@ impl ThreadConfigSource<SqsMessageSender, RapHttpClient> for LambdaThreadConfig 
         if !self.toolset_server_urls.is_empty() {
             match self
                 .toolset_loader
-                .load_toolsets(&self.toolset_server_urls, thread_id)
+                .load_toolsets(&self.toolset_server_urls, thread_id.as_str())
                 .await
             {
                 Ok(loaded) => {

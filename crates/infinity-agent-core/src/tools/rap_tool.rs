@@ -269,10 +269,13 @@ mod tests {
             message_sender: CapturingSender {
                 messages: Arc::new(Mutex::new(Vec::new())),
             },
-            group_id: "thread-1".to_owned(),
+            group_id: "thread-1".into(),
             callback_url: "http://context-callback".to_owned(),
             user_id: Some("user-1".to_owned()),
-            thread_stack: thread_stack.into_iter().map(str::to_owned).collect(),
+            thread_stack: thread_stack
+                .into_iter()
+                .map(rap_protocol::ThreadId::from)
+                .collect(),
         }
     }
 
@@ -309,7 +312,7 @@ mod tests {
         assert_eq!(sent.len(), 1, "exactly one error result is enqueued");
         let (message, dedup_id) = &sent[0];
         assert_eq!(dedup_id, "tc-1", "dedup ID is the tool-call ID");
-        assert_eq!(message.group_id, "thread-1");
+        assert_eq!(message.group_id.as_str(), "thread-1");
         let InputMessageContent::User(UserContent::ToolResult(result)) = &message.content else {
             panic!("expected a tool result, got {:?}", message.content);
         };
@@ -359,7 +362,7 @@ mod tests {
             serde_json::from_str(&posts[0].1).expect("posted body is a RapInvocation");
         assert_eq!(
             invocation.thread_ancestors,
-            Some(vec!["root".to_owned(), "middle".to_owned()]),
+            Some(vec!["root".into(), "middle".into()]),
             "ancestors exclude the current thread"
         );
         assert_eq!(invocation.callback_url, "http://bridge-listener");

@@ -21,6 +21,7 @@
 //! servers by config id and consulting each manifest's `needsMigration`
 //! flag.
 
+use infinity_agent_core::ThreadId;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -104,13 +105,13 @@ enum ServerState {
 pub struct ManagedRapServer {
     /// Config id (for migration bookkeeping), when present.
     pub config_id: Option<String>,
-    session_id: String,
+    session_id: ThreadId,
     spec: ServerSpec,
     state: tokio::sync::Mutex<ServerState>,
 }
 
 impl ManagedRapServer {
-    fn new(session_id: String, config_id: Option<String>, spec: ServerSpec) -> Self {
+    fn new(session_id: ThreadId, config_id: Option<String>, spec: ServerSpec) -> Self {
         Self {
             config_id,
             session_id,
@@ -272,7 +273,8 @@ pub async fn boot_migration_servers(
     cwd: &Path,
     user_config_path: Option<&Path>,
 ) -> Result<Vec<MigrationServer>, BoxError> {
-    let (_source_info, specs) = collect_server_specs("migration", cwd, user_config_path)?;
+    let (_source_info, specs) =
+        collect_server_specs(&ThreadId::from("migration"), cwd, user_config_path)?;
     let mut servers = Vec::new();
     for server in specs {
         let manifest = match server.ensure_up().await {
@@ -428,7 +430,7 @@ struct SessionToolset {
 /// session's toolset.
 #[derive(Clone)]
 pub struct SessionRapManager {
-    toolsets: Rc<tokio::sync::Mutex<HashMap<String, Rc<SessionToolset>>>>,
+    toolsets: Rc<tokio::sync::Mutex<HashMap<ThreadId, Rc<SessionToolset>>>>,
     conversation_store: PersistentConversationStore,
     session_store: SessionStoreHandle,
     user_rap_config: Option<PathBuf>,
@@ -436,7 +438,7 @@ pub struct SessionRapManager {
     subscriber_map: SubscriberMap,
     /// Sessions whose servers have been shut down at least once (observable
     /// for tests and diagnostics).
-    shutdown_log: Rc<std::cell::RefCell<Vec<String>>>,
+    shutdown_log: Rc<std::cell::RefCell<Vec<ThreadId>>>,
 }
 
 impl SessionRapManager {
@@ -457,9 +459,9 @@ impl SessionRapManager {
     }
 
     /// Send an informational message to the session's subscribers.
-    fn info(&self, session_id: &str, text: String) {
+    fn info(&self, session_id: &ThreadId<str>, text: String) {
         let msg = DaemonMessage::Info {
-            thread_id: Some(session_id.to_owned()),
+            thread_id: Some(session_id.to_string()),
             text,
         };
         crate::session::observer::broadcast_to_thread(&self.subscriber_map, session_id, &msg, None);
@@ -468,7 +470,10 @@ impl SessionRapManager {
     /// Get (or lazily build) the toolset for a session: read the RAP config
     /// for the session's cwd, boot the servers, fetch their manifests, and
     /// build the tool instances.
-    async fn get_or_init(&self, session_id: &str) -> Result<Rc<SessionToolset>, BoxError> {
+    async fn get_or_init(
+        &self,
+        session_id: &ThreadId<str>,
+    ) -> Result<Rc<SessionToolset>, BoxError> {
         let mut toolsets = self.toolsets.lock().await;
         if let Some(ts) = toolsets.get(session_id) {
             return Ok(ts.clone());
@@ -546,7 +551,7 @@ impl SessionRapManager {
 
     /// Stop the session's RAP servers (keeping the cached toolset, so a later
     /// tool invocation reboots them transparently). Safe to call at any time.
-    pub async fn shutdown_session(&self, session_id: &str) {
+    pub async fn shutdown_session(&self, session_id: &ThreadId<str>) {
         let toolset = {
             let toolsets = self.toolsets.lock().await;
             toolsets.get(session_id).cloned()
@@ -562,14 +567,14 @@ impl SessionRapManager {
     /// Stop the session's servers and drop its cached toolset entirely, so
     /// the next use re-reads the RAP config and re-fetches manifests. Used
     /// when a session is explicitly shut down.
-    pub async fn evict_session(&self, session_id: &str) {
+    pub async fn evict_session(&self, session_id: &ThreadId<str>) {
         self.shutdown_session(session_id).await;
         self.toolsets.lock().await.remove(session_id);
     }
 
     /// Stop every managed server (daemon exit).
     pub async fn shutdown_all(&self) {
-        let session_ids: Vec<String> = self.toolsets.lock().await.keys().cloned().collect();
+        let session_ids: Vec<ThreadId> = self.toolsets.lock().await.keys().cloned().collect();
         for session_id in session_ids {
             self.shutdown_session(&session_id).await;
         }
@@ -577,11 +582,11 @@ impl SessionRapManager {
 
     /// How many times [`shutdown_session`](Self::shutdown_session) has been
     /// invoked for `session_id` (diagnostics / tests).
-    pub fn times_shut_down(&self, session_id: &str) -> usize {
+    pub fn times_shut_down(&self, session_id: &ThreadId<str>) -> usize {
         self.shutdown_log
             .borrow()
             .iter()
-            .filter(|s| s.as_str() == session_id)
+            .filter(|s| *s == session_id)
             .count()
     }
 }
@@ -590,7 +595,7 @@ impl SessionRapManager {
 impl ThreadConfigSource<ChannelSender, SimpleHttpClient> for SessionRapManager {
     async fn resolve(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId<str>,
     ) -> Result<ThreadConfig<ChannelSender, SimpleHttpClient>, BoxError> {
         let session_id = self.conversation_store.get_root_thread_id(thread_id);
         let toolset = self.get_or_init(&session_id).await?;
@@ -615,7 +620,7 @@ impl ThreadConfigSource<ChannelSender, SimpleHttpClient> for SessionRapManager {
 /// handles. Also returns a human-readable line describing which config
 /// source(s) were used, for display to the session's subscribers.
 fn collect_server_specs(
-    session_id: &str,
+    session_id: &ThreadId<str>,
     cwd: &Path,
     user_config_path: Option<&Path>,
 ) -> Result<(String, Vec<ManagedRapServer>), BoxError> {

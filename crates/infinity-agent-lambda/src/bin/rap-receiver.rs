@@ -68,7 +68,7 @@ async fn handle(
         .send_message()
         .queue_url(input_queue_url)
         .message_body(enqueue.message_body)
-        .message_group_id(enqueue.group_id)
+        .message_group_id(enqueue.group_id.into_inner())
         .message_deduplication_id(enqueue.dedup_id)
         .send()
         .await
@@ -84,7 +84,7 @@ async fn handle(
 /// group (the target thread), and the deduplication ID.
 struct PreparedEnqueue {
     message_body: String,
-    group_id: String,
+    group_id: infinity_agent_core::ThreadId,
     dedup_id: String,
 }
 

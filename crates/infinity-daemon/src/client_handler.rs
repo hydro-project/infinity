@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
+use infinity_agent_core::ThreadId;
 use infinity_agent_core::message::{
     InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind,
 };
@@ -301,8 +302,8 @@ pub async fn handle_client_channels(
     session_manager: SharedSessionManager,
 ) {
     let (mut client_tx, mut client_tx_rx) = mpsc::unbounded_channel::<DaemonMessage>();
-    let mut attached_session_id: Option<String> = None;
-    let mut attached_thread_id: Option<String> = None;
+    let mut attached_session_id: Option<ThreadId> = None;
+    let mut attached_thread_id: Option<ThreadId> = None;
     let mut remote_proxy_tx: Option<mpsc::UnboundedSender<ClientMessage>> = None;
     let mut remote_proxy_rx: Option<mpsc::UnboundedReceiver<DaemonMessage>> = None;
     let mut active_remote_name: Option<String> = None;
@@ -472,7 +473,7 @@ pub async fn handle_client_channels(
                                         remote_proxy_tx = Some(tx);
                                         remote_proxy_rx = Some(rx);
                                         active_remote_name = Some(rname);
-                                        attached_session_id = Some(session_id);
+                                        attached_session_id = Some(ThreadId::from(session_id));
                                     }
                                     Err(e) => {
                                         let _ = daemon_tx.send(DaemonMessage::Error {
@@ -492,12 +493,13 @@ pub async fn handle_client_channels(
                             let mut emit = async |msg: DaemonMessage| {
                                 let _ = daemon_tx.send(msg);
                             };
-                            let target = thread_id.as_deref().unwrap_or(&session_id);
-                            match mgr.resume_session(&session_id, target, &mut emit).await {
+                            let session_tid = ThreadId::from(session_id.as_str());
+                            let target = thread_id.as_deref().map(ThreadId::from).unwrap_or_else(|| session_tid.clone());
+                            match mgr.resume_session(&session_tid, &target, &mut emit).await {
                                 Ok(()) => {
-                                    mgr.attach_client(target, client_tx.clone(), true, keeps_session_alive).await;
-                                    attached_thread_id = Some(target.to_owned());
-                                    attached_session_id = Some(session_id);
+                                    mgr.attach_client(&target, client_tx.clone(), true, keeps_session_alive).await;
+                                    attached_thread_id = Some(target);
+                                    attached_session_id = Some(session_tid);
                                 }
                                 Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error { thread_id: Some(session_id), text: format!("failed to resume session: {e}") }); }
                             }
@@ -513,7 +515,7 @@ pub async fn handle_client_channels(
                             .send_input((
                                 InputMessage {
                                     content: InputMessageContent::User(UserContent::text(&text)),
-                                    group_id: thread_id.clone(),
+                                    group_id: thread_id.clone().into(),
                                     metadata: None,
                                     synthetic: None,
                                     display_as: None,
@@ -541,6 +543,7 @@ pub async fn handle_client_channels(
                         attached_thread_id = None;
                     }
                     ClientMessage::SoftDetach { session_id } => {
+                        let session_id = ThreadId::from(session_id);
                         let mgr = session_manager.lock().await;
                         let do_cleanup = mgr.is_session_idle(&session_id);
                         tracing::debug!(do_cleanup, "Handling SoftDetach");
@@ -557,12 +560,14 @@ pub async fn handle_client_channels(
                         }
                     }
                     ClientMessage::ShutdownSession { session_id } => {
+                        let session_id = ThreadId::from(session_id);
                         let mgr = session_manager.lock().await;
                         mgr.cleanup_session(&session_id).await;
                         attached_session_id = None;
                         attached_thread_id = None;
                     }
                     ClientMessage::ArchiveSession { session_id } => {
+                        let session_id = ThreadId::from(session_id);
                         let mgr = session_manager.lock().await;
                         mgr.cleanup_session(&session_id).await;
                         let mut store = mgr.session_store.lock().await;
@@ -578,7 +583,7 @@ pub async fn handle_client_channels(
                         mgr.send_input((
                             InputMessage {
                                 content: InputMessageContent::User(UserContent::text("")),
-                                group_id: session_id.clone(),
+                                group_id: session_id.clone().into(),
                                 metadata: None,
                                 synthetic: Some(SyntheticKind::Tagged(
                                     TaggedSyntheticKind::Compaction,
@@ -595,7 +600,7 @@ pub async fn handle_client_channels(
                         // `switch_model` delivers the confirmation to this
                         // client exactly once: via its subscription when
                         // attached, directly otherwise.
-                        if let Err(e) = mgr.switch_model(&thread_id, model, Some(&client_tx)) {
+                        if let Err(e) = mgr.switch_model(&ThreadId::from(thread_id.as_str()), model, Some(&client_tx)) {
                             let _ = daemon_tx.send(DaemonMessage::Error {
                                 thread_id: Some(thread_id),
                                 text: format!("failed to switch model: {e}"),
@@ -632,7 +637,7 @@ pub async fn handle_client_channels(
                     ClientMessage::Emigrate { session_id, dest_rap_urls } => {
                         // Daemon-to-daemon: shut down session, migrate RAP servers, serialize, return data
                         let mgr = session_manager.clone();
-                        match crate::migrate::handle_emigrate(&session_id, dest_rap_urls, &mgr).await {
+                        match crate::migrate::handle_emigrate(&ThreadId::from(session_id.as_str()), dest_rap_urls, &mgr).await {
                             Ok(data) => {
                                 let _ = daemon_tx.send(DaemonMessage::EmigrateResult {
                                     session_id,
@@ -649,6 +654,7 @@ pub async fn handle_client_channels(
                     }
                     ClientMessage::EmigrateDone { session_id } => {
                         // Daemon-to-daemon: immigration complete, archive local session
+                        let session_id = ThreadId::from(session_id);
                         let mgr = session_manager.lock().await;
                         let mut store = mgr.session_store.lock().await;
                         store.mark_archived(&session_id);
@@ -660,8 +666,9 @@ pub async fn handle_client_channels(
                         match mgr.conversation_store().import_session(&session_data) {
                             Ok(()) => {
                                 let mut store = mgr.session_store.lock().await;
-                                store.create(&session_id, cwd);
-                                store.mark_shut_down(&session_id);
+                                let session_tid = ThreadId::from(session_id.as_str());
+                                store.create(&session_tid, cwd);
+                                store.mark_shut_down(&session_tid);
                                 let _ = store.save();
                                 let _ = daemon_tx.send(DaemonMessage::ImportComplete { session_id });
                             }

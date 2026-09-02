@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
+use sandbox_core::ThreadId;
 use sandbox_core::error::SandboxError;
 use sandbox_core::sandbox::{CloneContext, ModeInit, ModeProvider, SandboxBackend, SpawnedCommand};
 use sandbox_core::types::{ChangedFile, RepoState, SandboxMode};
@@ -33,7 +34,7 @@ struct CachedSandbox {
 /// Sandbox temp directories are created under `{remote_uri}/.infinity/.sandboxes/`.
 pub struct LocalBackend {
     /// group_id -> cached sandbox
-    cache: Mutex<HashMap<String, CachedSandbox>>,
+    cache: Mutex<HashMap<ThreadId, CachedSandbox>>,
     /// Whether to use platform-specific sandboxing for command execution
     /// (macOS sandbox-exec or Linux bubblewrap).
     sandbox_enabled: bool,
@@ -445,7 +446,7 @@ impl SandboxBackend for LocalBackend {
     async fn push_sandbox(
         &self,
         sandbox_dir: &Path,
-        group_id: &str,
+        group_id: &ThreadId<str>,
         description: Option<&str>,
     ) -> Result<(), SandboxError> {
         let state = {
@@ -477,7 +478,10 @@ impl SandboxBackend for LocalBackend {
     ///
     /// Delegates to the mode's provider (e.g. `jj workspace forget` and
     /// deleting the sandbox directory for jj mode).
-    async fn cleanup_sandbox_permanently(&self, group_id: &str) -> Result<(), SandboxError> {
+    async fn cleanup_sandbox_permanently(
+        &self,
+        group_id: &ThreadId<str>,
+    ) -> Result<(), SandboxError> {
         let entry = {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             cache.remove(group_id)

@@ -11,6 +11,7 @@ async-trait = { workspace = true }
 reqwest = { workspace = true }
 tracing = { workspace = true }
 futures-util = { workspace = true }
+strkind = { workspace = true }
 
 [lints]
 workspace = true

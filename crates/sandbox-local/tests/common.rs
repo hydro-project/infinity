@@ -10,6 +10,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rap_protocol::{RapCallback, RapInvocation, RapToolResult, RapViewUpdate};
+use sandbox_core::ThreadId;
 use sandbox_core::callback::PlainCallbackClient;
 use sandbox_core::server::build_router;
 use sandbox_local::backend::LocalBackend;
@@ -55,7 +56,7 @@ pub async fn invoke(
     operation: &str,
     arguments: serde_json::Value,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<RapCallback>,
-    thread_ancestors: Option<Vec<String>>,
+    thread_ancestors: Option<Vec<ThreadId>>,
 ) -> String {
     invoke_raw(
         server_url,
@@ -79,7 +80,7 @@ pub async fn invoke_raw(
     operation: &str,
     arguments: serde_json::Value,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<RapCallback>,
-    thread_ancestors: Option<Vec<String>>,
+    thread_ancestors: Option<Vec<ThreadId>>,
 ) -> RapToolResult {
     let invocation = RapInvocation {
         operation: operation.to_owned(),
@@ -90,7 +91,7 @@ pub async fn invoke_raw(
         ),
         call_id: None,
         callback_url: callback_url.to_owned(),
-        group_id: group_id.to_owned(),
+        group_id: group_id.into(),
         user_id: None,
         thread_ancestors,
     };
@@ -175,7 +176,7 @@ pub async fn invoke_collecting_views(
         ),
         call_id: None,
         callback_url: callback_url.to_owned(),
-        group_id: group_id.to_owned(),
+        group_id: group_id.into(),
         user_id: None,
         thread_ancestors: None,
     };

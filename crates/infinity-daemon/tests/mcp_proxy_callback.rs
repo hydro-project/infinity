@@ -51,7 +51,7 @@ async fn list_tools_callback_deserializes() {
         id: "test-1".to_owned(),
         call_id: None,
         callback_url,
-        group_id: "g1".to_owned(),
+        group_id: "g1".into(),
         user_id: None,
         thread_ancestors: None,
     };

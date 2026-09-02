@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use infinity_provider_protocol::message::{Text, ToolResult, ToolResultContent, UserContent};
+use rap_protocol::ThreadId;
 use tracing;
 
 use super::{Tool, ToolContext, send_tool_error};
@@ -63,7 +64,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
         context: &ToolContext<M>,
     ) -> Option<ToolResult> {
         // Validate child_of matches the actual thread stack
-        let child_of: Vec<String> = args
+        let child_of: Vec<ThreadId> = args
             .get("child_of")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
@@ -320,6 +321,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
         let Some(thread_id) = args["thread_id"].as_str() else {
             return send_tool_error(context, &id, call_id, "thread_id is required").await;
         };
+        let thread_id = ThreadId::from(thread_id);
 
         if thread_id != context.group_id {
             return send_tool_error(
@@ -337,7 +339,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
         // Prevent closing the root thread
         let Some((parent_id, spawn_tool_call_id)) = self
             .conversation_store
-            .get_thread_parent_info(thread_id)
+            .get_thread_parent_info(&thread_id)
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
         else {
@@ -353,7 +355,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
         let report = args.get("report_to_parent").and_then(|v| v.as_str());
 
         self.conversation_store
-            .close_thread(thread_id)
+            .close_thread(&thread_id)
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
@@ -362,7 +364,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
         // Handle compaction threads: store summary and skip normal parent reporting
         let is_compaction = self
             .conversation_store
-            .is_compaction_thread(thread_id)
+            .is_compaction_thread(&thread_id)
             .await
             .unwrap_or(false);
 
@@ -370,7 +372,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
             if let Some(report_text) = report {
                 let up_to_order = self
                     .conversation_store
-                    .get_thread_spawn_order(thread_id)
+                    .get_thread_spawn_order(&thread_id)
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
                     .unwrap_or(0);
@@ -407,14 +409,14 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
                 .send_to_input_queue(notify_msg, &id)
                 .await?;
             if let Some(ref notifier) = self.rap_notifier {
-                notifier.notify_thread_closed(thread_id).await;
+                notifier.notify_thread_closed(&thread_id).await;
             }
             return Ok(());
         }
 
         let is_subscription = self
             .conversation_store
-            .is_subscription_event_thread(thread_id)
+            .is_subscription_event_thread(&thread_id)
             .await
             .unwrap_or(false);
 
@@ -450,7 +452,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
                 metadata: None,
                 synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
                     tool_call_id: spawn_tool_call_id,
-                    child_thread_id: thread_id.to_owned(),
+                    child_thread_id: thread_id.clone(),
                 })),
                 display_as: None,
                 subscription: false,
@@ -465,7 +467,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static, H: HttpClient + '
         // Best-effort: notify RAP tool servers that this thread has been closed
         // so they can clean up thread-specific resources (e.g. sandboxes).
         if let Some(ref notifier) = self.rap_notifier {
-            notifier.notify_thread_closed(thread_id).await;
+            notifier.notify_thread_closed(&thread_id).await;
         }
 
         Ok(())
@@ -513,7 +515,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M>
         call_id: Option<String>,
         context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let Some(child_thread_id) = args["thread_id"].as_str() else {
+        let Some(child_thread_id) = args["thread_id"].as_str().map(ThreadId::from) else {
             return send_tool_error(context, &id, call_id, "thread_id is required").await;
         };
         let Some(message_text) = args["message"].as_str() else {
@@ -522,7 +524,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M>
 
         let Some((parent_id, spawn_tool_call_id)) = self
             .conversation_store
-            .get_thread_parent_info(child_thread_id)
+            .get_thread_parent_info(&child_thread_id)
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
         else {
@@ -563,7 +565,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M>
                     text: format!("Message from parent thread: {}", message_text),
                 })],
             })),
-            group_id: child_thread_id.to_owned(),
+            group_id: child_thread_id.clone(),
             metadata: None,
             synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::ParentMessage {
                 tool_call_id: spawn_tool_call_id,

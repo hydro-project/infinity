@@ -289,7 +289,7 @@ mod tests {
     /// An [`InputSender`] that records deliveries for assertions.
     #[derive(Clone, Default)]
     struct RecordingSender {
-        sent: Arc<Mutex<Vec<(String, String)>>>,
+        sent: Arc<Mutex<Vec<(rap_protocol::ThreadId, String)>>>,
     }
 
     #[derive(Debug)]
@@ -351,7 +351,7 @@ mod tests {
                 .lock()
                 .expect("bug: test mutex poisoned")
                 .as_slice(),
-            &[("t1".to_owned(), "rap-tool-result-call-1".to_owned())]
+            &[("t1".into(), "rap-tool-result-call-1".to_owned())]
         );
 
         let view = serde_json::to_string(&RapCallback::ViewUpdate(RapViewUpdate {

@@ -1,10 +1,11 @@
+use infinity_agent_core::ThreadId;
 use infinity_agent_core::message::InfinityMessage;
 use infinity_agent_core::system::AgentEvent;
 use infinity_protocol::{DaemonMessage, TokenUsage};
 use infinity_provider_protocol::message::{AssistantContent, ToolResultContent, UserContent};
 
-pub(crate) fn agent_event_to_daemon(thread_id: &str, evt: &AgentEvent) -> DaemonMessage {
-    let tid = Some(thread_id.to_owned());
+pub(crate) fn agent_event_to_daemon(thread_id: &ThreadId<str>, evt: &AgentEvent) -> DaemonMessage {
+    let tid = Some(thread_id.to_string());
     match evt {
         AgentEvent::CompletionStarted => DaemonMessage::StartOutput { thread_id: tid },
         AgentEvent::TextChunk { text } => DaemonMessage::TextChunk {
@@ -75,10 +76,10 @@ pub(crate) fn agent_event_to_daemon(thread_id: &str, evt: &AgentEvent) -> Daemon
 
 pub(crate) fn history_message_to_daemon(
     msg: &InfinityMessage,
-    tid: &str,
+    tid: &ThreadId<str>,
     history: &[InfinityMessage],
 ) -> Option<DaemonMessage> {
-    let thread_id = Some(tid.to_owned());
+    let thread_id = Some(tid.to_string());
     match msg {
         InfinityMessage::SubscriptionEvent {
             result,

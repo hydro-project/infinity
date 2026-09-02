@@ -48,11 +48,11 @@ where
 #[derive(Clone)]
 pub struct ToolContext<M: InputSender> {
     pub message_sender: M,
-    pub group_id: String,
+    pub group_id: rap_protocol::ThreadId,
     pub callback_url: String,
     pub user_id: Option<String>,
     /// Full thread stack: [root, ..ancestors, current_thread].
-    pub thread_stack: Vec<String>,
+    pub thread_stack: Vec<rap_protocol::ThreadId>,
 }
 
 #[async_trait]

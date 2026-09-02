@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use aws_sdk_dynamodb::{Client as DynamoDbClient, types::AttributeValue};
+use infinity_agent_core::ThreadId;
 use infinity_agent_core::system::UserChoice;
 use infinity_agent_core::traits::StateStore;
 use std::collections::HashSet;
@@ -29,12 +30,15 @@ impl DynamoDbStateStore {
 impl StateStore for DynamoDbStateStore {
     type Error = DynamoError;
 
-    async fn get_processed_ids(&self, thread_id: &str) -> Result<HashSet<String>, DynamoError> {
+    async fn get_processed_ids(
+        &self,
+        thread_id: &ThreadId<str>,
+    ) -> Result<HashSet<String>, DynamoError> {
         let result = self
             .client
             .get_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(thread_id.to_owned()))
+            .key("session", AttributeValue::S(thread_id.as_str().to_owned()))
             .send()
             .await
             .map_err(|e| DynamoError(format!("Failed to get processed IDs: {}", e)))?;
@@ -54,7 +58,7 @@ impl StateStore for DynamoDbStateStore {
 
     async fn add_processed_message_ids(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId<str>,
         message_ids: Vec<String>,
     ) -> Result<(), DynamoError> {
         if message_ids.is_empty() {
@@ -63,7 +67,7 @@ impl StateStore for DynamoDbStateStore {
         self.client
             .update_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(thread_id.to_owned()))
+            .key("session", AttributeValue::S(thread_id.as_str().to_owned()))
             .update_expression("ADD processed_message_ids :ids")
             .expression_attribute_values(":ids", AttributeValue::Ss(message_ids))
             .send()
@@ -74,13 +78,16 @@ impl StateStore for DynamoDbStateStore {
 
     async fn get_metadata(
         &self,
-        root_thread_id: &str,
+        root_thread_id: &ThreadId<str>,
     ) -> Result<Option<serde_json::Value>, DynamoError> {
         let result = self
             .client
             .get_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(root_thread_id.to_owned()))
+            .key(
+                "session",
+                AttributeValue::S(root_thread_id.as_str().to_owned()),
+            )
             .send()
             .await
             .map_err(|e| DynamoError(format!("Failed to get metadata: {}", e)))?;
@@ -98,7 +105,7 @@ impl StateStore for DynamoDbStateStore {
 
     async fn set_metadata(
         &self,
-        root_thread_id: &str,
+        root_thread_id: &ThreadId<str>,
         metadata: serde_json::Value,
     ) -> Result<(), DynamoError> {
         let json = serde_json::to_string(&metadata)
@@ -106,7 +113,10 @@ impl StateStore for DynamoDbStateStore {
         self.client
             .update_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(root_thread_id.to_owned()))
+            .key(
+                "session",
+                AttributeValue::S(root_thread_id.as_str().to_owned()),
+            )
             .update_expression("SET metadata = :metadata")
             .expression_attribute_values(":metadata", AttributeValue::S(json))
             .send()
@@ -115,12 +125,15 @@ impl StateStore for DynamoDbStateStore {
         Ok(())
     }
 
-    async fn get_active_subscriptions(&self, thread_id: &str) -> Result<Vec<String>, DynamoError> {
+    async fn get_active_subscriptions(
+        &self,
+        thread_id: &ThreadId<str>,
+    ) -> Result<Vec<String>, DynamoError> {
         let result = self
             .client
             .get_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(thread_id.to_owned()))
+            .key("session", AttributeValue::S(thread_id.as_str().to_owned()))
             .send()
             .await
             .map_err(|e| DynamoError(format!("Failed to get active subscriptions: {}", e)))?;
@@ -139,13 +152,13 @@ impl StateStore for DynamoDbStateStore {
 
     async fn add_active_subscription(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId<str>,
         tool_call_id: &str,
     ) -> Result<(), DynamoError> {
         self.client
             .update_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(thread_id.to_owned()))
+            .key("session", AttributeValue::S(thread_id.as_str().to_owned()))
             .update_expression("ADD active_subscriptions :id")
             .expression_attribute_values(":id", AttributeValue::Ss(vec![tool_call_id.to_owned()]))
             .send()
@@ -156,7 +169,7 @@ impl StateStore for DynamoDbStateStore {
 
     async fn add_pending_user_choice(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId<str>,
         choice: UserChoice,
     ) -> Result<(), DynamoError> {
         let json = serde_json::to_string(&choice)
@@ -173,7 +186,7 @@ impl StateStore for DynamoDbStateStore {
             self.client
                 .update_item()
                 .table_name(&self.table_name)
-                .key("session", AttributeValue::S(thread_id.to_owned()))
+                .key("session", AttributeValue::S(thread_id.as_str().to_owned()))
                 .update_expression("DELETE pending_user_choices :old")
                 .expression_attribute_values(":old", AttributeValue::Ss(vec![existing]))
                 .send()
@@ -183,7 +196,7 @@ impl StateStore for DynamoDbStateStore {
         self.client
             .update_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(thread_id.to_owned()))
+            .key("session", AttributeValue::S(thread_id.as_str().to_owned()))
             .update_expression("ADD pending_user_choices :new")
             .expression_attribute_values(":new", AttributeValue::Ss(vec![json]))
             .send()
@@ -194,7 +207,7 @@ impl StateStore for DynamoDbStateStore {
 
     async fn remove_pending_user_choice(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId<str>,
         choice_id: &str,
     ) -> Result<(), DynamoError> {
         let Some(choice) = self
@@ -210,7 +223,7 @@ impl StateStore for DynamoDbStateStore {
         self.client
             .update_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(thread_id.to_owned()))
+            .key("session", AttributeValue::S(thread_id.as_str().to_owned()))
             .update_expression("DELETE pending_user_choices :choice")
             .expression_attribute_values(":choice", AttributeValue::Ss(vec![json]))
             .send()
@@ -221,13 +234,13 @@ impl StateStore for DynamoDbStateStore {
 
     async fn get_pending_user_choices(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId<str>,
     ) -> Result<Vec<UserChoice>, DynamoError> {
         let result = self
             .client
             .get_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(thread_id.to_owned()))
+            .key("session", AttributeValue::S(thread_id.as_str().to_owned()))
             .send()
             .await
             .map_err(|e| DynamoError(format!("Failed to get pending user choices: {e}")))?;
@@ -252,13 +265,13 @@ impl StateStore for DynamoDbStateStore {
 
     async fn remove_active_subscription(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId<str>,
         tool_call_id: &str,
     ) -> Result<(), DynamoError> {
         self.client
             .update_item()
             .table_name(&self.table_name)
-            .key("session", AttributeValue::S(thread_id.to_owned()))
+            .key("session", AttributeValue::S(thread_id.as_str().to_owned()))
             .update_expression("DELETE active_subscriptions :id")
             .expression_attribute_values(":id", AttributeValue::Ss(vec![tool_call_id.to_owned()]))
             .send()

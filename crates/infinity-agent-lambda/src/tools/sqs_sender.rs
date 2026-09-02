@@ -55,7 +55,7 @@ impl InputSender for SqsMessageSender {
             .send_message()
             .queue_url(&self.input_queue_url)
             .message_body(body)
-            .message_group_id(group_id)
+            .message_group_id(group_id.into_inner())
             .message_deduplication_id(format!("{}-{}", dedup_id, now))
             .send()
             .await

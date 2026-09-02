@@ -7,6 +7,7 @@
 //! [`ThreadBuilder`]: super::ThreadBuilder
 //! [`LaunchingSystem`]: super::LaunchingSystem
 
+use rap_protocol::ThreadId;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -33,14 +34,14 @@ pub(crate) struct HandleSubscribeRequest {
 /// shared across driver instances so handles survive driver idle and respawn.
 #[derive(Clone)]
 pub(crate) struct HandleObserver {
-    subscribers: Rc<RefCell<HashMap<String, Vec<mpsc::UnboundedSender<AgentEvent>>>>>,
+    subscribers: Rc<RefCell<HashMap<ThreadId, Vec<mpsc::UnboundedSender<AgentEvent>>>>>,
 }
 
 #[async_trait(?Send)]
 impl ThreadObserver for HandleObserver {
     type SubscribeRequest = HandleSubscribeRequest;
 
-    fn on_event(&self, thread_id: &str, event: &AgentEvent) {
+    fn on_event(&self, thread_id: &ThreadId<str>, event: &AgentEvent) {
         let mut subs = self.subscribers.borrow_mut();
         if let Some(list) = subs.get_mut(thread_id) {
             // Prune handles that have been dropped.
@@ -53,7 +54,7 @@ impl ThreadObserver for HandleObserver {
 
     fn on_subscribe(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId<str>,
         request: HandleSubscribeRequest,
         snapshot: ReplaySnapshot,
     ) {
@@ -73,7 +74,7 @@ impl ThreadObserver for HandleObserver {
 ///
 /// Dropping the handle detaches it; the thread itself is unaffected.
 pub struct ThreadHandle {
-    thread_id: String,
+    thread_id: ThreadId,
     sender: ChannelSender,
     /// The thread's events, in emission order, starting from the moment the
     /// handle attached. Every event is either reflected in
@@ -84,7 +85,7 @@ pub struct ThreadHandle {
 
 impl ThreadHandle {
     /// The thread this handle is attached to.
-    pub fn thread_id(&self) -> &str {
+    pub fn thread_id(&self) -> &ThreadId<str> {
         &self.thread_id
     }
 
@@ -125,7 +126,7 @@ impl ThreadHandle {
 /// down requires owning it, so a borrowed system's router is alive.
 pub(crate) async fn attach(
     running: &RunningSystem<HandleSubscribeRequest>,
-    thread_id: &str,
+    thread_id: &ThreadId<str>,
 ) -> ThreadHandle {
     let (events_tx, events) = mpsc::unbounded_channel();
     let (replay_tx, replay_rx) = oneshot::channel();
@@ -149,8 +150,8 @@ pub(crate) async fn attach(
 
 /// A per-system factory for [`HandleObserver`]s sharing one subscriber
 /// registry (so subscriptions survive driver respawns).
-pub(crate) fn handle_observer_factory() -> impl Fn(&str) -> HandleObserver + 'static {
-    let subscribers: Rc<RefCell<HashMap<String, Vec<mpsc::UnboundedSender<AgentEvent>>>>> =
+pub(crate) fn handle_observer_factory() -> impl Fn(&ThreadId<str>) -> HandleObserver + 'static {
+    let subscribers: Rc<RefCell<HashMap<ThreadId, Vec<mpsc::UnboundedSender<AgentEvent>>>>> =
         Default::default();
     move |_thread_id| HandleObserver {
         subscribers: subscribers.clone(),
@@ -333,7 +334,7 @@ mod tests {
                 // starts round 2.
                 handle
                     .send(
-                        tool_result_input(&thread_id, "tc-1", "tool done").0,
+                        tool_result_input(thread_id.as_str(), "tc-1", "tool done").0,
                         "res-1",
                     )
                     .await

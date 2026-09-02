@@ -4,6 +4,7 @@
 //! `FuturesUnordered` pool rather than one spawned task per thread), so a
 //! driver's memory is fully released the moment it goes idle.
 
+use rap_protocol::ThreadId;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -25,7 +26,7 @@ use crate::system::thread::is_user_text_input;
 /// A subscribe request routed through the local system: the target thread,
 /// the observer-specific request, and an ack fired once the subscriber has
 /// been installed (its replay sent and its registration completed).
-pub(crate) type SubscribeMessage<Sub> = (String, Sub, oneshot::Sender<()>);
+pub(crate) type SubscribeMessage<Sub> = (ThreadId, Sub, oneshot::Sender<()>);
 
 /// A clonable handle for attaching subscribers to a running system's threads.
 pub struct SubscribeHandle<Sub: Send + 'static> {
@@ -51,7 +52,7 @@ impl<Sub: Send + 'static> SubscribeHandle<Sub> {
     /// message's events. A driver that exits while requests race in hands
     /// them back to the router, so installation is reliable; `false` is
     /// returned only if the whole system was shut down.
-    pub async fn subscribe(&self, thread_id: &str, request: Sub) -> bool {
+    pub async fn subscribe(&self, thread_id: &ThreadId<str>, request: Sub) -> bool {
         let (ack_tx, ack_rx) = oneshot::channel();
         if self
             .tx
@@ -101,14 +102,14 @@ impl<Sub: Send + 'static> RunningSystem<Sub> {
     }
 
     /// Convenience: send plain user text to a thread.
-    pub async fn send_user_text(&self, thread_id: &str, text: impl Into<String>) {
-        let msg = InputMessage::user_text(thread_id, text);
+    pub async fn send_user_text(&self, thread_id: &ThreadId<str>, text: impl Into<String>) {
+        let msg = InputMessage::user_text(thread_id.to_owned(), text);
         self.send(msg, &uuid::Uuid::new_v4().to_string()).await
     }
 
     /// Attach a subscriber to a thread; resolves once the subscriber is
     /// installed. See [`SubscribeHandle::subscribe`].
-    pub async fn subscribe(&self, thread_id: &str, request: Sub) {
+    pub async fn subscribe(&self, thread_id: &ThreadId<str>, request: Sub) {
         assert!(
             self.subscribe_handle().subscribe(thread_id, request).await,
             "bug: router exited while the system was alive"
@@ -179,7 +180,7 @@ where
     pub fn start_with_observer<O, F>(self, make_observer: F) -> RunningSystem<O::SubscribeRequest>
     where
         O: ThreadObserver + 'static,
-        F: Fn(&str) -> O + 'static,
+        F: Fn(&ThreadId<str>) -> O + 'static,
     {
         self.start_inner(make_observer)
     }
@@ -196,7 +197,7 @@ where
     pub(crate) fn start_inner<O, F>(self, make_observer: F) -> RunningSystem<O::SubscribeRequest>
     where
         O: ThreadObserver + 'static,
-        F: Fn(&str) -> O + 'static,
+        F: Fn(&ThreadId<str>) -> O + 'static,
     {
         let sender = self.system.inner.sender.clone();
         let (subscribe_tx, subscribe_rx) = mpsc::unbounded_channel();
@@ -232,7 +233,7 @@ struct WorkerChannels<Sub> {
 
 enum RoutedMessage<Sub> {
     Input(Box<InputMessage>, String),
-    Subscribe(String, Sub, oneshot::Sender<()>),
+    Subscribe(ThreadId, Sub, oneshot::Sender<()>),
 }
 
 async fn route_loop<C, S, H, O, F>(
@@ -248,9 +249,9 @@ async fn route_loop<C, S, H, O, F>(
     S: StateStore + 'static,
     H: HttpClient + 'static,
     O: ThreadObserver + 'static,
-    F: Fn(&str) -> O + 'static,
+    F: Fn(&ThreadId<str>) -> O + 'static,
 {
-    let mut workers: HashMap<String, WorkerChannels<O::SubscribeRequest>> = HashMap::new();
+    let mut workers: HashMap<ThreadId, WorkerChannels<O::SubscribeRequest>> = HashMap::new();
     let mut subscribe_closed = false;
     // The router owns the driver futures directly (instead of spawning each
     // as its own task): a completed driver yields its thread ID and its
@@ -264,7 +265,7 @@ async fn route_loop<C, S, H, O, F>(
             biased;
             _ = shutdown.cancelled() => None,
             exited = drivers.next(), if !drivers.is_empty() => {
-                let exited: String = exited.expect("bug: drivers is empty");
+                let exited: ThreadId = exited.expect("bug: drivers is empty");
                 // Only remove the exited driver's own entry: if the thread
                 // already respawned, the new entry's channel is still open.
                 if workers.get(&exited).is_some_and(|w| w.input_tx.is_closed()) {
@@ -419,7 +420,9 @@ mod tests {
                 let (mut running, mut rx, mut ctrl, conv) = start_system(vec![], None);
 
                 // Create a real thread so the system is not trivially empty.
-                running.send_user_text("t1", "hello").await;
+                running
+                    .send_user_text(rap_protocol::ThreadId::from_ref("t1"), "hello")
+                    .await;
                 let _req = ctrl.next_request().await;
                 ctrl.send_text("hi");
                 ctrl.finish();
@@ -452,12 +455,14 @@ mod tests {
                 // never appear is any transition for the ghost thread.
                 while let Ok(event) = running.try_next_lifecycle_event() {
                     assert_ne!(
-                        event.thread_id, "ghost",
+                        event.thread_id.as_str(),
+                        "ghost",
                         "no lifecycle transition may be reported for a dropped event"
                     );
                 }
                 assert!(
-                    conv.thread_info("ghost").is_none(),
+                    conv.thread_info(rap_protocol::ThreadId::from_ref("ghost"))
+                        .is_none(),
                     "a dropped event must not create thread records"
                 );
             })
@@ -472,12 +477,17 @@ mod tests {
         local
             .run_until(async {
                 let (running, mut rx, mut ctrl, conv) = start_system(vec![], None);
-                running.send_user_text("brand-new", "hello").await;
+                running
+                    .send_user_text(rap_protocol::ThreadId::from_ref("brand-new"), "hello")
+                    .await;
                 let _req = ctrl.next_request().await;
                 ctrl.send_text("created");
                 ctrl.finish();
                 collect_until_finished(&mut rx).await;
-                assert!(conv.thread_info("brand-new").is_some());
+                assert!(
+                    conv.thread_info(rap_protocol::ThreadId::from_ref("brand-new"))
+                        .is_some()
+                );
             })
             .await;
     }
@@ -493,7 +503,9 @@ mod tests {
             .run_until(async {
                 let (mut running, mut rx, mut ctrl, _conv) = start_system(vec![], None);
 
-                running.send_user_text("t1", "hello").await;
+                running
+                    .send_user_text(rap_protocol::ThreadId::from_ref("t1"), "hello")
+                    .await;
                 let _req = ctrl.next_request().await;
                 ctrl.send_text("hi");
                 ctrl.finish();
@@ -519,7 +531,7 @@ mod tests {
                 assert_eq!(
                     live,
                     ThreadLifecycleEvent {
-                        thread_id: "t1".to_owned(),
+                        thread_id: "t1".into(),
                         state: ThreadLifecycleState::Live,
                     },
                     "the existing thread's driver must wake"
@@ -534,7 +546,7 @@ mod tests {
                 assert_eq!(
                     idle,
                     ThreadLifecycleEvent {
-                        thread_id: "t1".to_owned(),
+                        thread_id: "t1".into(),
                         state: ThreadLifecycleState::Idle,
                     },
                     "the respawned driver must idle back out"
@@ -549,7 +561,9 @@ mod tests {
         local
             .run_until(async {
                 let (running, mut rx, mut ctrl, conv) = start_system(vec![], None);
-                running.send_user_text("t1", "hello").await;
+                running
+                    .send_user_text(rap_protocol::ThreadId::from_ref("t1"), "hello")
+                    .await;
                 let _req = ctrl.next_request().await;
                 ctrl.send_text("partial answer");
                 loop {
@@ -563,7 +577,7 @@ mod tests {
 
                 use crate::traits::ConversationStore;
                 let history = conv
-                    .load_history_up_to("t1", None, None)
+                    .load_history_up_to(rap_protocol::ThreadId::from_ref("t1"), None, None)
                     .await
                     .expect("load history");
                 assert!(

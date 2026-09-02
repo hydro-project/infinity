@@ -3,6 +3,7 @@
 //! Handles migrating a session between local and remote daemons.
 //! The local daemon always acts as the orchestrator.
 
+use infinity_agent_core::ThreadId;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -28,11 +29,13 @@ pub async fn orchestrate_migration(
         session_id: session_id.clone(),
     });
 
-    let real_session_id = session_id
-        .split_once('/')
-        .map_or(session_id.as_str(), |(_, s)| s);
+    let real_session_id = ThreadId::from(
+        session_id
+            .split_once('/')
+            .map_or(session_id.as_str(), |(_, s)| s),
+    );
     let new_session_id = match &to {
-        None => real_session_id.to_owned(),
+        None => real_session_id.to_string(),
         Some(remote) => format!("{remote}/{real_session_id}"),
     };
 
@@ -60,12 +63,12 @@ async fn run_migration(
 ) -> Result<(), BoxError> {
     let source_is_local = !session_id.contains('/');
     let (source_remote, real_session_id) = if source_is_local {
-        (None, session_id.to_owned())
+        (None, ThreadId::from(session_id))
     } else {
         let (r, s) = session_id
             .split_once('/')
             .ok_or("invalid remote session id")?;
-        (Some(r.to_owned()), s.to_owned())
+        (Some(r.to_owned()), ThreadId::from(s))
     };
     let dest_is_local = to.is_none();
 
@@ -104,7 +107,7 @@ async fn run_migration(
             rap_client::http::SimpleHttpClient::new(),
         );
         if let Err(errors) = notifier
-            .request_migration(&real_session_id, &migration_servers, &dest_rap_urls)
+            .request_migration(real_session_id.as_str(), &migration_servers, &dest_rap_urls)
             .await
         {
             return Err(format!("RAP migration failed: {}", errors.join("; ")).into());
@@ -127,7 +130,7 @@ async fn run_migration(
             source_remote
                 .as_deref()
                 .expect("bug: source remote but no name"),
-            &real_session_id,
+            real_session_id.as_str(),
             dest_rap_urls,
         )
         .await?
@@ -155,7 +158,7 @@ async fn run_migration(
         immigrate_to_remote(
             &rd,
             to.expect("bug: dest is remote"),
-            &real_session_id,
+            real_session_id.as_str(),
             dest_cwd,
             &session_data,
         )
@@ -180,7 +183,7 @@ async fn run_migration(
                 source_remote
                     .as_deref()
                     .expect("bug: source remote but no name"),
-                &real_session_id,
+                real_session_id.as_str(),
             )
             .await?;
         }
@@ -214,7 +217,7 @@ async fn boot_source_rap_servers(
 /// Handle an Emigrate request: shut down session, boot fresh RAP servers,
 /// migrate state, serialize, and return the session data.
 pub async fn handle_emigrate(
-    session_id: &str,
+    session_id: &ThreadId<str>,
     dest_rap_urls: HashMap<String, String>,
     session_manager: &SharedSessionManager,
 ) -> Result<String, BoxError> {
@@ -239,7 +242,7 @@ pub async fn handle_emigrate(
             rap_client::http::SimpleHttpClient::new(),
         );
         if let Err(errors) = notifier
-            .request_migration(session_id, &migration_servers, &dest_rap_urls)
+            .request_migration(session_id.as_str(), &migration_servers, &dest_rap_urls)
             .await
         {
             return Err(format!("RAP migration failed: {}", errors.join("; ")).into());

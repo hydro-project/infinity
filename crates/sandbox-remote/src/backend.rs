@@ -3,6 +3,7 @@ use std::process::Stdio;
 
 use async_trait::async_trait;
 
+use sandbox_core::ThreadId;
 use sandbox_core::error::SandboxError;
 use sandbox_core::jj::{self, run_jj};
 use sandbox_core::sandbox::{CloneContext, ModeInit, SandboxBackend, SpawnedCommand};
@@ -64,7 +65,11 @@ impl EfsBackend {
     }
     /// Mirror the source repo into a bare repo on EFS, named by the normalized URI.
     /// If the bare repo already exists, fetch latest changes from the upstream remote.
-    async fn mirror_repo(&self, repo: &str, group_id: &str) -> Result<PathBuf, SandboxError> {
+    async fn mirror_repo(
+        &self,
+        repo: &str,
+        group_id: &ThreadId<str>,
+    ) -> Result<PathBuf, SandboxError> {
         let bare_path = self.bare_repo_path(repo);
 
         if bare_path.exists() {
@@ -165,7 +170,7 @@ impl SandboxBackend for EfsBackend {
     async fn push_sandbox(
         &self,
         sandbox_dir: &Path,
-        group_id: &str,
+        group_id: &ThreadId<str>,
         _description: Option<&str>,
     ) -> Result<(), SandboxError> {
         let bookmark = format!("sandbox-{group_id}");

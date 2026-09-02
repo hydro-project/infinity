@@ -9,6 +9,7 @@ use infinity_provider_protocol::{
     CompletionRequest, StreamChunk, ToolCallDeltaContent, ToolDefinition,
     message::{AssistantContent, Message, ToolResult, ToolResultContent, UserContent},
 };
+use rap_protocol::ThreadId;
 use serde::Serialize;
 use tracing;
 
@@ -140,9 +141,9 @@ enum ToolResultMatch {
 pub struct HistoryManager<C: ConversationStore, S: StateStore> {
     conversation_store: C,
     state_store: S,
-    pub thread_id: String,
-    pub root_thread_id: String,
-    ancestor_chain: Vec<String>,
+    pub thread_id: ThreadId,
+    pub root_thread_id: ThreadId,
+    ancestor_chain: Vec<ThreadId>,
     pub history: RefCell<Vec<InfinityMessage>>,
     processed_message_ids: RefCell<HashSet<String>>,
     metadata: RefCell<Option<serde_json::Value>>,
@@ -170,11 +171,11 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     pub async fn new_with_history(
         conversation_store: C,
         state_store: S,
-        thread_id: String,
+        thread_id: ThreadId,
     ) -> Result<Self, BoxError> {
         let _ = conversation_store.ensure_root_thread(&thread_id).await;
 
-        let ancestor_chain: Vec<String> = conversation_store
+        let ancestor_chain: Vec<ThreadId> = conversation_store
             .get_ancestor_chain(&thread_id)
             .await
             .map(|links| links.iter().map(|(tid, _)| tid.clone()).collect())
@@ -541,7 +542,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
 
     /// Returns the full thread stack: `[root, ..ancestors, current_thread]`.
     /// For the root thread this is just the root thread ID.
-    pub fn get_thread_stack(&self) -> Vec<String> {
+    pub fn get_thread_stack(&self) -> Vec<ThreadId> {
         let mut stack = self.ancestor_chain.clone();
         stack.push(self.thread_id.clone());
         stack
@@ -820,7 +821,7 @@ where
 
     // Handle synthetic tool results (subscription events / thread reports)
     // Capture metadata for SubscriptionEvent variant before synthetic_kind is consumed.
-    let subscription_event_meta: Option<(String, Option<String>)> =
+    let subscription_event_meta: Option<(String, Option<ThreadId>)> =
         input_msg.synthetic.as_ref().and_then(|s| {
             if s.is_thread_report() || s.is_associative() || s.is_parent_message() {
                 let child_id = if let SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
@@ -1183,7 +1184,7 @@ pub fn run_completion<'a: 'b, 'b, P, C, S, M>(
     tools: &'a [ToolDefinition],
     tool_registry: &'a HashMap<String, &'a dyn Tool<M>>,
     tool_context: &'a ToolContext<M>,
-    group_id: &'a str,
+    group_id: &'a ThreadId,
     message_id: &'a str,
     extra_system_prompt: Option<&'a str>,
     cancel_rx: tokio::sync::oneshot::Receiver<()>,
@@ -1683,7 +1684,7 @@ mod tests {
         let hm = HistoryManager::new_with_history(
             store.clone(),
             InMemoryStateStore::new(),
-            "thread-1".to_owned(),
+            "thread-1".into(),
         )
         .await
         .expect("create history manager");
@@ -1697,7 +1698,7 @@ mod tests {
     fn user_text_msg(group_id: &str, text: &str) -> InputMessage {
         InputMessage {
             content: InputMessageContent::User(UserContent::text(text)),
-            group_id: group_id.to_owned(),
+            group_id: group_id.into(),
             metadata: None,
             synthetic: None,
             display_as: None,
@@ -1734,7 +1735,7 @@ mod tests {
                     },
                 )],
             })),
-            group_id: group_id.to_owned(),
+            group_id: group_id.into(),
             metadata: None,
             synthetic,
             display_as: None,
@@ -1984,8 +1985,14 @@ mod tests {
     #[tokio::test]
     async fn closed_thread_ignores() {
         let store = InMemoryConversationStore::new();
-        store.ensure_root_thread("thread-1").await.expect("testing");
-        store.close_thread("thread-1").await.expect("testing");
+        store
+            .ensure_root_thread(ThreadId::from_ref("thread-1"))
+            .await
+            .expect("testing");
+        store
+            .close_thread(ThreadId::from_ref("thread-1"))
+            .await
+            .expect("testing");
         let hm = make_history(&store, vec![]).await;
 
         let result = prepare_input(
@@ -2014,7 +2021,7 @@ mod tests {
                 call_id: None,
                 auth_url: "https://example.com/auth".to_owned(),
             }),
-            group_id: "thread-1".to_owned(),
+            group_id: "thread-1".into(),
             metadata: None,
             synthetic: None,
             display_as: None,
@@ -2143,7 +2150,7 @@ mod tests {
             "thread report data",
             Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
                 tool_call_id: "tc-sub".to_owned(),
-                child_thread_id: "thread-1".to_owned(),
+                child_thread_id: "thread-1".into(),
             })),
         );
 
@@ -2181,7 +2188,7 @@ mod tests {
             "thread report data",
             Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
                 tool_call_id: "tc-sub".to_owned(),
-                child_thread_id: "thread-1".to_owned(),
+                child_thread_id: "thread-1".into(),
             })),
         );
 
@@ -2241,7 +2248,7 @@ mod tests {
             .expect("prepare input");
 
         assert_eq!(result, PrepareResult::Handled);
-        assert_eq!(hm.thread_id, "thread-1");
+        assert_eq!(hm.thread_id.as_str(), "thread-1");
     }
 
     #[tokio::test]
@@ -2278,7 +2285,7 @@ mod tests {
             .expect("prepare input");
 
         assert_eq!(result, PrepareResult::Handled);
-        assert_eq!(hm.thread_id, "thread-1");
+        assert_eq!(hm.thread_id.as_str(), "thread-1");
     }
 
     #[tokio::test]
@@ -2316,7 +2323,7 @@ mod tests {
 
         let input = InputMessage {
             content: InputMessageContent::User(UserContent::text("hi")),
-            group_id: "thread-1".to_owned(),
+            group_id: "thread-1".into(),
             metadata: Some(serde_json::json!({"user_id": "u-123"})),
             synthetic: None,
             display_as: None,
@@ -2374,7 +2381,7 @@ mod tests {
 
         assert_eq!(result, PrepareResult::Ready);
         // Should NOT spawn a subthread — stays in the same thread
-        assert_eq!(hm.thread_id, "thread-1");
+        assert_eq!(hm.thread_id.as_str(), "thread-1");
         // Should have: original user, tool call, original result, subscription event (with embedded invocation)
         insta::assert_json_snapshot!(
             hm.history.into_inner(),
@@ -2417,7 +2424,7 @@ mod tests {
 
         assert_eq!(result, PrepareResult::Ready);
         // Should NOT spawn a subthread — stays in the same thread
-        assert_eq!(hm.thread_id, "thread-1");
+        assert_eq!(hm.thread_id.as_str(), "thread-1");
         insta::assert_json_snapshot!(
             hm.history.into_inner(),
             { "[3].result.id" => "[uuid]", "[3].invocation.id" => "[uuid]" }
@@ -2432,6 +2439,7 @@ mod tests {
     use crate::tools::{Tool, ToolContext};
     use futures_util::StreamExt;
     use infinity_provider_protocol::ToolDefinition;
+    use rap_protocol::ThreadId;
 
     fn tool_context() -> ToolContext<StubSender> {
         ToolContext {
@@ -2473,6 +2481,7 @@ mod tests {
 
                 // Spawn the stream consumer
                 let handle = tokio::task::spawn_local(async move {
+                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -2482,7 +2491,7 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        "thread-1",
+                        &thread_id,
                         "msg-1",
                         None,
                         cancel_rx,
@@ -2534,6 +2543,7 @@ mod tests {
                 let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
+                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -2543,7 +2553,7 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        "thread-1",
+                        &thread_id,
                         "msg-1",
                         None,
                         cancel_rx,
@@ -2598,6 +2608,7 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
+                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -2607,7 +2618,7 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        "thread-1",
+                        &thread_id,
                         "msg-1",
                         None,
                         cancel_rx,
@@ -2683,6 +2694,7 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
+                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -2692,7 +2704,7 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        "thread-1",
+                        &thread_id,
                         "msg-1",
                         None,
                         cancel_rx,
@@ -2800,6 +2812,7 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
+                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -2809,7 +2822,7 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        "thread-1",
+                        &thread_id,
                         "msg-1",
                         None,
                         cancel_rx,
@@ -2926,6 +2939,7 @@ mod tests {
                 let ctx = tool_context();
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
+                let thread_id_owned = ThreadId::from("thread-1");
                 let handle = tokio::task::spawn_local(async move {
                     let stream = run_completion(
                         &provider,
@@ -2936,7 +2950,7 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        "thread-1",
+                        &thread_id_owned,
                         "msg-1",
                         None,
                         cancel_rx,
@@ -2975,6 +2989,7 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
+                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -2984,7 +2999,7 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        "thread-1",
+                        &thread_id,
                         "msg-1",
                         None,
                         cancel_rx,
@@ -3033,6 +3048,7 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
+                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -3042,7 +3058,7 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        "thread-1",
+                        &thread_id,
                         "msg-1",
                         None,
                         cancel_rx,
@@ -3136,6 +3152,7 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
+                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -3145,7 +3162,7 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        "thread-1",
+                        &thread_id,
                         "msg-1",
                         None,
                         cancel_rx,
@@ -3238,6 +3255,7 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
+                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -3247,7 +3265,7 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        "thread-1",
+                        &thread_id,
                         "msg-1",
                         None,
                         cancel_rx,
@@ -3365,6 +3383,7 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
+                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -3374,7 +3393,7 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        "thread-1",
+                        &thread_id,
                         "msg-1",
                         None,
                         cancel_rx,
@@ -3430,6 +3449,7 @@ mod tests {
                 let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
+                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -3439,7 +3459,7 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        "thread-1",
+                        &thread_id,
                         "msg-1",
                         None,
                         cancel_rx,
@@ -3503,6 +3523,7 @@ mod tests {
                 let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let hm_task = hm.clone();
+                let thread_id_owned = ThreadId::from("thread-1");
                 let handle = tokio::task::spawn_local(async move {
                     let stream = run_completion(
                         &provider,
@@ -3513,7 +3534,7 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        "thread-1",
+                        &thread_id_owned,
                         "msg-1",
                         None,
                         cancel_rx,
@@ -3589,6 +3610,7 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
+                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -3598,7 +3620,7 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        "thread-1",
+                        &thread_id,
                         "msg-1",
                         None,
                         cancel_rx,
@@ -3663,6 +3685,7 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
+                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -3672,7 +3695,7 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        "thread-1",
+                        &thread_id,
                         "msg-1",
                         None,
                         cancel_rx,
@@ -3777,6 +3800,7 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let hm_task = hm.clone();
+                let thread_id_owned = ThreadId::from("thread-1");
                 let handle = tokio::task::spawn_local(async move {
                     let stream = run_completion(
                         &provider,
@@ -3787,7 +3811,7 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        "thread-1",
+                        &thread_id_owned,
                         "msg-1",
                         None,
                         cancel_rx,
@@ -3865,9 +3889,10 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
+                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider, "mock", false, &hm, &tool_names, &tool_defs, &tool_registry,
-                        &ctx, "thread-1", "msg-1", None, cancel_rx,
+                        &ctx, &thread_id, "msg-1", None, cancel_rx,
                     );
                     tokio::pin!(stream);
                     let mut got_done = false;
@@ -3973,7 +3998,7 @@ mod tests {
 
     fn capturing_ctx(
         group_id: &str,
-        thread_stack: Vec<String>,
+        thread_stack: Vec<ThreadId>,
     ) -> (
         ToolContext<CapturingSender>,
         tokio::sync::mpsc::UnboundedReceiver<InputMessage>,
@@ -3982,7 +4007,7 @@ mod tests {
         (
             ToolContext {
                 message_sender: CapturingSender(tx),
-                group_id: group_id.to_owned(),
+                group_id: group_id.into(),
                 callback_url: String::new(),
                 user_id: None,
                 thread_stack,
@@ -4074,7 +4099,7 @@ mod tests {
                 default: 0,
                 response_url: "https://example.com/choice".to_owned(),
             }),
-            group_id: "thread-1".to_owned(),
+            group_id: "thread-1".into(),
             metadata: None,
             synthetic: None,
             display_as: None,
