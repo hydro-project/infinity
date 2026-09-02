@@ -25,11 +25,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use rig::OneOrMany;
-use rig::completion::{CompletionError, CompletionRequest, CompletionResponse, Usage};
-use rig::message::{AssistantContent, Message, ToolResult, ToolResultContent, UserContent};
-use rig::streaming::{
-    RawStreamingChoice, RawStreamingToolCall, StreamingCompletionResponse, StreamingResult,
+use infinity_provider_protocol::completion::{
+    CompletionError, CompletionRequest, FinalResponse, ModelStream, StreamChunk, Usage,
+};
+use infinity_provider_protocol::message::{
+    Message, ToolCall, ToolResult, ToolResultContent, UserContent,
 };
 
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
@@ -41,7 +41,6 @@ use infinity_agent_core::system::{
 use infinity_agent_core::tools::{Tool, ToolContext};
 use infinity_agent_core::traits::InputSender;
 use infinity_provider_protocol::{ModelEntry, SingleModelProvider};
-use rig_mock::MockStreamingResponse;
 
 /// ~100 characters of assistant text per streamed chunk.
 const CHUNK_TEXT: &str = "Reviewed the module and updated the failing case; the assertion now covers the boundary path. ";
@@ -59,59 +58,33 @@ const CHUNKS_PER_COMPLETION: usize = 12;
 #[derive(Clone)]
 struct ScriptedModel;
 
-impl rig::completion::CompletionModel for ScriptedModel {
-    type Response = serde_json::Value;
-    type StreamingResponse = MockStreamingResponse;
-    type Client = ();
-
-    fn make(_client: &Self::Client, _model: impl Into<String>) -> Self {
-        panic!("bug: construct ScriptedModel directly");
-    }
-
-    async fn completion(
-        &self,
-        _request: CompletionRequest,
-    ) -> Result<CompletionResponse<Self::Response>, CompletionError> {
-        Ok(CompletionResponse {
-            choice: OneOrMany::one(AssistantContent::text("")),
-            usage: Usage::new(),
-            raw_response: serde_json::Value::Null,
-            message_id: None,
-        })
-    }
-
-    async fn stream(
-        &self,
-        request: CompletionRequest,
-    ) -> Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError> {
+#[async_trait]
+impl infinity_provider_protocol::CompletionModel for ScriptedModel {
+    async fn stream(&self, request: CompletionRequest) -> Result<ModelStream, CompletionError> {
         let after_tool_result = matches!(
             request.chat_history.last(),
-            Message::User { content } if content
+            Some(Message::User { content }) if content
                 .iter()
                 .any(|c| matches!(c, UserContent::ToolResult(_)))
         );
 
-        let mut chunks: Vec<Result<RawStreamingChoice<MockStreamingResponse>, CompletionError>> =
+        let mut chunks: Vec<Result<StreamChunk, CompletionError>> =
             Vec::with_capacity(CHUNKS_PER_COMPLETION + 2);
         for _ in 0..CHUNKS_PER_COMPLETION {
-            chunks.push(Ok(RawStreamingChoice::Message(CHUNK_TEXT.to_owned())));
+            chunks.push(Ok(StreamChunk::Text(CHUNK_TEXT.to_owned())));
         }
         if !after_tool_result {
-            chunks.push(Ok(RawStreamingChoice::ToolCall(RawStreamingToolCall::new(
+            chunks.push(Ok(StreamChunk::ToolCall(ToolCall::new(
                 uuid::Uuid::new_v4().to_string(),
-                "run_command".to_owned(),
+                "run_command",
                 serde_json::json!({"command": "cargo test --workspace"}),
             ))));
         }
-        chunks.push(Ok(RawStreamingChoice::FinalResponse(
-            MockStreamingResponse {
-                usage: Some(Usage::new()),
-            },
-        )));
+        chunks.push(Ok(StreamChunk::Final(FinalResponse {
+            usage: Some(Usage::default()),
+        })));
 
-        let pinned: StreamingResult<MockStreamingResponse> =
-            Box::pin(futures_util::stream::iter(chunks));
-        Ok(StreamingCompletionResponse::stream(pinned))
+        Ok(Box::pin(futures_util::stream::iter(chunks)))
     }
 }
 
@@ -148,21 +121,23 @@ impl Tool<ChannelSender> for RunCommand {
         call_id: Option<String>,
         context: &ToolContext<ChannelSender>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let result = InputMessage {
-            content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                id,
-                call_id,
-                content: OneOrMany::one(ToolResultContent::Text(rig::agent::Text {
+        let result =
+            InputMessage {
+                content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
+                    id,
+                    call_id,
+                    content:
+                        vec![ToolResultContent::Text(infinity_provider_protocol::message::Text {
                     text: "test result: ok. 148 passed; 0 failed; 3 ignored; finished in 21.38s"
                         .repeat(5),
+                })],
                 })),
-            })),
-            group_id: context.group_id.clone(),
-            metadata: None,
-            synthetic: None,
-            display_as: None,
-            subscription: false,
-        };
+                group_id: context.group_id.clone(),
+                metadata: None,
+                synthetic: None,
+                display_as: None,
+                subscription: false,
+            };
         context
             .message_sender
             .send_to_input_queue(result, &uuid::Uuid::new_v4().to_string())

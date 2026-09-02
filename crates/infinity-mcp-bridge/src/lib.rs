@@ -16,10 +16,9 @@ use infinity_agent_core::message::{InputMessage, InputMessageContent};
 use infinity_agent_core::system::local::ChannelSender;
 use infinity_agent_core::tools::{Tool, ToolContext};
 use infinity_agent_core::traits::InputSender;
+use infinity_provider_protocol::message::Text;
+use infinity_provider_protocol::message::{ToolResult, ToolResultContent, UserContent};
 use rap_protocol::DisplaySegment;
-use rig::OneOrMany;
-use rig::agent::Text;
-use rig::message::{ToolResult, ToolResultContent, UserContent};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
@@ -665,7 +664,7 @@ impl Tool<ChannelSender> for McpTool {
                 content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                     id: id.clone(),
                     call_id,
-                    content: OneOrMany::one(ToolResultContent::Text(Text { text })),
+                    content: vec![ToolResultContent::Text(Text { text })],
                 })),
                 group_id: group_id.clone(),
                 metadata: None,

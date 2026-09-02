@@ -1,30 +1,17 @@
-//! Channel-based mock implementation of rig's `CompletionModel` for testing.
+//! Channel-based mock completion model for testing (feature `mock`).
 //!
-//! Call [`mock_model()`] to get a `(MockCompletionModel, MockModelController)` pair.
-//! The model is passed to production code; the controller drives it from the test.
+//! Call [`mock_model()`] to get a `(MockCompletionModel, MockModelController)`
+//! pair. The model is passed to production code (usually wrapped in a
+//! [`SingleModelProvider`](crate::SingleModelProvider)); the controller
+//! drives it from the test.
 
-use rig::OneOrMany;
-use rig::completion::{
-    CompletionError, CompletionRequest, CompletionResponse, GetTokenUsage, Usage,
-};
-use rig::message::AssistantContent;
-use rig::streaming::{RawStreamingChoice, StreamingCompletionResponse, StreamingResult};
-use serde::{Deserialize, Serialize};
+use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-// ── MockStreamingResponse ──
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MockStreamingResponse {
-    #[serde(default)]
-    pub usage: Option<Usage>,
-}
-
-impl GetTokenUsage for MockStreamingResponse {
-    fn token_usage(&self) -> Option<Usage> {
-        self.usage
-    }
-}
+use crate::{
+    CompletionError, CompletionModel, CompletionRequest, FinalResponse, ModelStream, StreamChunk,
+    ToolCall, Usage,
+};
 
 // ── Internal handshake ──
 
@@ -32,8 +19,7 @@ impl GetTokenUsage for MockStreamingResponse {
 struct StreamRound {
     request: CompletionRequest,
     /// Controller sends chunks through here; model reads them.
-    chunk_tx:
-        mpsc::UnboundedSender<Result<RawStreamingChoice<MockStreamingResponse>, CompletionError>>,
+    chunk_tx: mpsc::UnboundedSender<Result<StreamChunk, CompletionError>>,
 }
 
 // ── MockCompletionModel ──
@@ -43,32 +29,9 @@ pub struct MockCompletionModel {
     round_tx: mpsc::UnboundedSender<StreamRound>,
 }
 
-impl rig::completion::CompletionModel for MockCompletionModel {
-    type Response = serde_json::Value;
-    type StreamingResponse = MockStreamingResponse;
-    type Client = ();
-
-    fn make(_client: &Self::Client, _model: impl Into<String>) -> Self {
-        panic!("Use mock_model() instead");
-    }
-
-    async fn completion(
-        &self,
-        _request: CompletionRequest,
-    ) -> Result<CompletionResponse<Self::Response>, CompletionError> {
-        // Non-streaming not needed for agent-core tests.
-        Ok(CompletionResponse {
-            choice: OneOrMany::one(AssistantContent::text("")),
-            usage: Usage::new(),
-            raw_response: serde_json::Value::Null,
-            message_id: None,
-        })
-    }
-
-    async fn stream(
-        &self,
-        request: CompletionRequest,
-    ) -> Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError> {
+#[async_trait]
+impl CompletionModel for MockCompletionModel {
+    async fn stream(&self, request: CompletionRequest) -> Result<ModelStream, CompletionError> {
         let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel();
 
         // Notify controller of this round.
@@ -81,8 +44,7 @@ impl rig::completion::CompletionModel for MockCompletionModel {
             }
         };
 
-        let pinned: StreamingResult<MockStreamingResponse> = Box::pin(stream);
-        Ok(StreamingCompletionResponse::stream(pinned))
+        Ok(Box::pin(stream))
     }
 }
 
@@ -92,9 +54,7 @@ impl rig::completion::CompletionModel for MockCompletionModel {
 pub struct MockModelController {
     round_rx: mpsc::UnboundedReceiver<StreamRound>,
     /// Sender for the current active round (set after `next_request`).
-    current_tx: Option<
-        mpsc::UnboundedSender<Result<RawStreamingChoice<MockStreamingResponse>, CompletionError>>,
-    >,
+    current_tx: Option<mpsc::UnboundedSender<Result<StreamChunk, CompletionError>>>,
 }
 
 impl MockModelController {
@@ -118,23 +78,18 @@ impl MockModelController {
     }
 
     /// Send a raw streaming chunk.
-    pub fn send_chunk(&self, chunk: RawStreamingChoice<MockStreamingResponse>) {
+    pub fn send_chunk(&self, chunk: StreamChunk) {
         self.tx().send(Ok(chunk)).ok();
     }
 
     /// Send a text chunk.
     pub fn send_text(&self, text: &str) {
-        self.send_chunk(RawStreamingChoice::Message(text.to_owned()));
+        self.send_chunk(StreamChunk::Text(text.to_owned()));
     }
 
     /// Send a complete tool call.
     pub fn send_tool_call(&self, id: &str, name: &str, args: serde_json::Value) {
-        use rig::streaming::RawStreamingToolCall;
-        self.send_chunk(RawStreamingChoice::ToolCall(RawStreamingToolCall::new(
-            id.to_owned(),
-            name.to_owned(),
-            args,
-        )));
+        self.send_chunk(StreamChunk::ToolCall(ToolCall::new(id, name, args)));
     }
 
     /// Send the final response marker and drop the sender to close the stream.
@@ -144,9 +99,7 @@ impl MockModelController {
 
     /// Send the final response marker with custom token usage and drop the sender.
     pub fn finish_with_usage(&mut self, usage: Option<Usage>) {
-        self.send_chunk(RawStreamingChoice::FinalResponse(MockStreamingResponse {
-            usage,
-        }));
+        self.send_chunk(StreamChunk::Final(FinalResponse { usage }));
         self.current_tx.take(); // drop closes the channel
     }
 
@@ -161,10 +114,7 @@ impl MockModelController {
         self.tx().send(Err(err)).ok();
     }
 
-    fn tx(
-        &self,
-    ) -> &mpsc::UnboundedSender<Result<RawStreamingChoice<MockStreamingResponse>, CompletionError>>
-    {
+    fn tx(&self) -> &mpsc::UnboundedSender<Result<StreamChunk, CompletionError>> {
         self.current_tx.as_ref().expect("call next_request() first")
     }
 }

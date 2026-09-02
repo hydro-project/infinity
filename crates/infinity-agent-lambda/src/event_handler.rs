@@ -37,7 +37,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
     let payload = event.payload;
     tracing::info!("Payload: {:?}", payload);
 
-    let config = aws_config::load_from_env().await;
+    let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
     let dynamodb_client = DynamoDbClient::new(&config);
     let dsql_client = DsqlClient::new(&config);
     let sqs_client = SqsClient::new(&config);

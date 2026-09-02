@@ -1,12 +1,10 @@
 ---
 source: crates/infinity-agent-core/src/system/tests.rs
-assertion_line: 1487
 expression: post_compaction_req.chat_history
 ---
 [
   {
     "role": "assistant",
-    "id": null,
     "content": [
       {
         "text": "[Compacted conversation summary]\nSummary of child work"
@@ -15,17 +13,13 @@ expression: post_compaction_req.chat_history
   },
   {
     "role": "assistant",
-    "id": null,
     "content": [
       {
         "id": "[id]",
-        "call_id": null,
         "function": {
           "name": "async_tool",
           "arguments": {}
-        },
-        "signature": null,
-        "additional_params": null
+        }
       }
     ]
   },
@@ -46,7 +40,6 @@ expression: post_compaction_req.chat_history
   },
   {
     "role": "assistant",
-    "id": null,
     "content": [
       {
         "text": "processed tool result"

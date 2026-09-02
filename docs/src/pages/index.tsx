@@ -120,16 +120,16 @@ export default function Home(): React.JSX.Element {
   return (
     <Layout
       title="Infinity"
-      description="An open-source Rust framework for building agents, on a runtime efficient enough to fit seventy thousand of them in the memory of a Raspberry Pi."
+      description="A Rust framework for building massively concurrent agentic systems, light enough to fit 75k agents in the memory of a Raspberry Pi."
     >
       <main className="landing-page">
         <section className="hero-section">
           <div className="hero-copy">
             <h1>Infinity</h1>
             <p className="hero-tagline">
-              An open-source <b>Rust framework for building agents</b>, on a
-              runtime efficient enough to fit{" "}
-              <b>seventy thousand of them in the memory of a Raspberry Pi</b>.
+              A Rust framework for building <b>massively concurrent</b> agentic
+              systems, light enough to fit{" "}
+              <b>75k agents in the memory of a Raspberry Pi</b>.
             </p>
             <p className="hero-subline">
               Infinity does for agents what async did for threads. Instead of
@@ -161,15 +161,15 @@ export default function Home(): React.JSX.Element {
           <Chapter
             id="scale"
             kicker="Scale"
-            title="Seventy thousand agents on a Raspberry Pi"
+            title="75k agents on a Raspberry Pi"
             prose={
               <>
                 <p>
                   In Infinity, an idle agent is pure data: between turns, an
                   agent is just its conversation history, with no task, no
                   stack, and no open connection. After twenty tool-calling
-                  turns, an agent occupies about 108 KB, so seventy thousand of
-                  them fit in 8 GB of RAM.
+                  turns, an agent occupies about 103 KB, so 75k of them fit in 8
+                  GB of RAM.
                 </p>
                 <p>
                   Agents spend most of their lives waiting: builds run for

@@ -14,15 +14,12 @@ expression: hm.history.into_inner()
     "kind": "tool_call",
     "call": {
       "id": "tc-sub",
-      "call_id": null,
       "function": {
         "name": "subscribe_tool",
         "arguments": {
           "topic": "events"
         }
-      },
-      "signature": null,
-      "additional_params": null
+      }
     }
   },
   {
@@ -52,7 +49,6 @@ expression: hm.history.into_inner()
     "child_thread_id": "thread-1",
     "invocation": {
       "id": "[uuid]",
-      "call_id": null,
       "function": {
         "name": "receive_event__injected",
         "arguments": {
@@ -62,9 +58,7 @@ expression: hm.history.into_inner()
           "original_tool_call_id": "tc-sub",
           "original_tool_name": "subscribe_tool"
         }
-      },
-      "signature": null,
-      "additional_params": null
+      }
     }
   }
 ]

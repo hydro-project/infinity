@@ -1,6 +1,6 @@
 # [Infinity](https://infinity.hydro.run)
 
-Infinity is an open-source Rust framework for building agents, on a runtime efficient enough to fit fifty thousand of them in the memory of a Raspberry Pi. Infinity does for agents what async did for threads: instead of blocking on slow tools, Infinity agents run them concurrently, yield while they wait, and cost nothing until the next event arrives.
+Infinity is a Rust framework for building massively concurrent agentic systems, light enough to fit 75k agents in the memory of a Raspberry Pi. Infinity does for agents what async did for threads: instead of blocking on slow tools, Infinity agents run them concurrently, yield while they wait, and cost nothing until the next event arrives.
 
 ```rust
 let system = AgentSystemBuilder::new_local(

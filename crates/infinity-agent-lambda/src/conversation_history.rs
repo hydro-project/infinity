@@ -7,8 +7,8 @@ use aws_sdk_dsql::{
 use aws_types::region::Region;
 use infinity_agent_core::message::InfinityMessage;
 use infinity_agent_core::traits::ConversationStore;
+use infinity_provider_protocol::message::Message;
 use lambda_runtime::Error;
-use rig::message::Message;
 use sqlx::{Pool, Postgres, Row, postgres::PgConnectOptions};
 
 #[derive(Clone)]
@@ -207,11 +207,11 @@ impl ConversationStore for DsqlConversationStore {
         let mut messages = Vec::new();
         for row in rows {
             let json_str: String = row.get("message_data");
-            // Try new InfinityMessage format first, fall back to old rig Message
+            // Try new InfinityMessage format first, fall back to the legacy bare Message
             if let Ok(msg) = serde_json::from_str::<InfinityMessage>(&json_str) {
                 messages.push(msg);
             } else if let Ok(msg) = serde_json::from_str::<Message>(&json_str) {
-                messages.push(InfinityMessage::from_rig_message(msg));
+                messages.push(InfinityMessage::from_message(msg));
             }
         }
         Ok(messages)

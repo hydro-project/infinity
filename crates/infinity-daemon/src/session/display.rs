@@ -1,7 +1,7 @@
 use infinity_agent_core::message::InfinityMessage;
 use infinity_agent_core::system::AgentEvent;
 use infinity_protocol::{DaemonMessage, TokenUsage};
-use rig::message::{AssistantContent, ToolResultContent, UserContent};
+use infinity_provider_protocol::message::{AssistantContent, ToolResultContent, UserContent};
 
 pub(crate) fn agent_event_to_daemon(thread_id: &str, evt: &AgentEvent) -> DaemonMessage {
     let tid = Some(thread_id.to_owned());
@@ -86,8 +86,8 @@ pub(crate) fn history_message_to_daemon(
             child_thread_id,
             ..
         } => {
-            let text = if let ToolResultContent::Text(t) = result.content.first() {
-                t.text
+            let text = if let Some(ToolResultContent::Text(t)) = result.content.first() {
+                t.text.clone()
             } else {
                 String::new()
             };
@@ -126,7 +126,7 @@ pub(crate) fn history_message_to_daemon(
             result,
             display_segments,
         } => {
-            if let ToolResultContent::Text(t) = result.content.first() {
+            if let Some(ToolResultContent::Text(t)) = result.content.first() {
                 // Same prioritized-segments shape the live path emits (see
                 // `AgentEvent::ToolResult` emission in the runtime).
                 Some(DaemonMessage::ToolResult {

@@ -18,27 +18,22 @@
 //! * `ListModels` → exactly one response: `Models` or `Error`.
 //! * `InvokeModel` → either a single `Error` (the invocation failed), or
 //!   `InvokeStarted` followed by zero or more `Chunk`s and a final
-//!   `StreamEnd`. Mid-stream provider errors are forwarded as
-//!   [`WireStreamItem::Error`] chunks without ending the stream, mirroring
-//!   the in-process behavior where a stream may yield `Err` items.
+//!   `StreamEnd`. Mid-stream provider errors are forwarded as `Chunk(Err)`
+//!   lines without ending the stream, mirroring the in-process behavior
+//!   where a stream may yield `Err` items.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
-use rig::OneOrMany;
-use rig::completion::{CompletionError, CompletionRequest, Document, ToolDefinition};
-use rig::message::{Message, ReasoningContent, ToolChoice};
-use rig::streaming::{
-    RawStreamingChoice, RawStreamingToolCall, StreamedAssistantContent,
-    StreamingCompletionResponse, ToolCallDeltaContent,
-};
 use serde::{Deserialize, Serialize};
 use tokio::net::{UnixListener, UnixStream};
 use tokio_util::codec::{Framed, LinesCodec};
 
-use crate::{ModelEntry, ModelProvider, ProviderCompletionResponse, ProviderStreamingResponse};
+use crate::{
+    CompletionError, CompletionRequest, ModelEntry, ModelProvider, ModelStream, StreamChunk,
+};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -57,7 +52,7 @@ pub enum ProviderRequest {
     /// [`ProviderResponse::Chunk`]s.
     InvokeModel {
         model_id: String,
-        request: Box<WireCompletionRequest>,
+        request: Box<CompletionRequest>,
     },
 }
 
@@ -68,186 +63,13 @@ pub enum ProviderResponse {
     Models(Vec<ModelEntry>),
     /// The invocation succeeded; `Chunk`s follow.
     InvokeStarted,
-    /// One streamed item of an invocation.
-    Chunk(WireStreamItem),
+    /// One streamed item of an invocation. `Err` carries a mid-stream
+    /// provider error (stringified) and does not end the stream.
+    Chunk(Result<StreamChunk, String>),
     /// The invocation stream finished; the connection will close.
     StreamEnd,
     /// The request failed (sent in place of `Models` / `InvokeStarted`).
     Error(String),
-}
-
-/// Serializable mirror of rig's [`CompletionRequest`] (which doesn't derive
-/// serde itself, although all of its fields are serializable).
-#[derive(Debug, Serialize, Deserialize)]
-pub struct WireCompletionRequest {
-    pub model: Option<String>,
-    pub preamble: Option<String>,
-    pub chat_history: OneOrMany<Message>,
-    pub documents: Vec<Document>,
-    pub tools: Vec<ToolDefinition>,
-    pub temperature: Option<f64>,
-    pub max_tokens: Option<u64>,
-    pub tool_choice: Option<ToolChoice>,
-    pub additional_params: Option<serde_json::Value>,
-    pub output_schema: Option<schemars::Schema>,
-}
-
-impl From<CompletionRequest> for WireCompletionRequest {
-    fn from(r: CompletionRequest) -> Self {
-        Self {
-            model: r.model,
-            preamble: r.preamble,
-            chat_history: r.chat_history,
-            documents: r.documents,
-            tools: r.tools,
-            temperature: r.temperature,
-            max_tokens: r.max_tokens,
-            tool_choice: r.tool_choice,
-            additional_params: r.additional_params,
-            output_schema: r.output_schema,
-        }
-    }
-}
-
-impl From<WireCompletionRequest> for CompletionRequest {
-    fn from(r: WireCompletionRequest) -> Self {
-        Self {
-            model: r.model,
-            preamble: r.preamble,
-            chat_history: r.chat_history,
-            documents: r.documents,
-            tools: r.tools,
-            temperature: r.temperature,
-            max_tokens: r.max_tokens,
-            tool_choice: r.tool_choice,
-            additional_params: r.additional_params,
-            output_schema: r.output_schema,
-        }
-    }
-}
-
-/// Serializable mirror of [`RawStreamingChoice<ProviderStreamingResponse>`],
-/// plus an `Error` variant carrying mid-stream provider errors.
-#[derive(Debug, Serialize, Deserialize)]
-pub enum WireStreamItem {
-    /// A text chunk.
-    Message(String),
-    /// A complete tool call.
-    ToolCall {
-        id: String,
-        internal_call_id: String,
-        call_id: Option<String>,
-        name: String,
-        arguments: serde_json::Value,
-        signature: Option<String>,
-        additional_params: Option<serde_json::Value>,
-    },
-    /// A tool call partial/delta.
-    ToolCallDelta {
-        id: String,
-        internal_call_id: String,
-        content: ToolCallDeltaContent,
-    },
-    /// A reasoning block (in its entirety).
-    Reasoning {
-        id: Option<String>,
-        content: ReasoningContent,
-    },
-    /// A reasoning partial/delta.
-    ReasoningDelta {
-        id: Option<String>,
-        reasoning: String,
-    },
-    /// The final response carrying token usage.
-    Final(ProviderStreamingResponse),
-    /// A mid-stream error from the underlying provider.
-    Error(String),
-}
-
-/// Convert one streamed item from the server-side provider into wire items.
-/// `Reasoning` fans out into one item per content block, mirroring
-/// [`crate::erase_streaming_response`].
-fn content_to_wire(
-    item: Result<StreamedAssistantContent<ProviderStreamingResponse>, CompletionError>,
-) -> Vec<WireStreamItem> {
-    match item {
-        Ok(StreamedAssistantContent::Text(t)) => vec![WireStreamItem::Message(t.text)],
-        Ok(StreamedAssistantContent::ToolCall {
-            tool_call,
-            internal_call_id,
-        }) => vec![WireStreamItem::ToolCall {
-            id: tool_call.id,
-            internal_call_id,
-            call_id: tool_call.call_id,
-            name: tool_call.function.name,
-            arguments: tool_call.function.arguments,
-            signature: tool_call.signature,
-            additional_params: tool_call.additional_params,
-        }],
-        Ok(StreamedAssistantContent::ToolCallDelta {
-            id,
-            internal_call_id,
-            content,
-        }) => vec![WireStreamItem::ToolCallDelta {
-            id,
-            internal_call_id,
-            content,
-        }],
-        Ok(StreamedAssistantContent::Reasoning(reasoning)) => reasoning
-            .content
-            .into_iter()
-            .map(|content| WireStreamItem::Reasoning {
-                id: reasoning.id.clone(),
-                content,
-            })
-            .collect(),
-        Ok(StreamedAssistantContent::ReasoningDelta { id, reasoning }) => {
-            vec![WireStreamItem::ReasoningDelta { id, reasoning }]
-        }
-        Ok(StreamedAssistantContent::Final(r)) => vec![WireStreamItem::Final(r)],
-        Err(e) => vec![WireStreamItem::Error(e.to_string())],
-    }
-}
-
-/// Convert a wire item back into a client-side streaming choice.
-fn wire_to_choice(
-    item: WireStreamItem,
-) -> Result<RawStreamingChoice<ProviderStreamingResponse>, CompletionError> {
-    Ok(match item {
-        WireStreamItem::Message(text) => RawStreamingChoice::Message(text),
-        WireStreamItem::ToolCall {
-            id,
-            internal_call_id,
-            call_id,
-            name,
-            arguments,
-            signature,
-            additional_params,
-        } => RawStreamingChoice::ToolCall(RawStreamingToolCall {
-            id,
-            internal_call_id,
-            call_id,
-            name,
-            arguments,
-            signature,
-            additional_params,
-        }),
-        WireStreamItem::ToolCallDelta {
-            id,
-            internal_call_id,
-            content,
-        } => RawStreamingChoice::ToolCallDelta {
-            id,
-            internal_call_id,
-            content,
-        },
-        WireStreamItem::Reasoning { id, content } => RawStreamingChoice::Reasoning { id, content },
-        WireStreamItem::ReasoningDelta { id, reasoning } => {
-            RawStreamingChoice::ReasoningDelta { id, reasoning }
-        }
-        WireStreamItem::Final(r) => RawStreamingChoice::FinalResponse(r),
-        WireStreamItem::Error(e) => return Err(CompletionError::ProviderError(e)),
-    })
 }
 
 // ── Framing ──
@@ -348,7 +170,7 @@ async fn handle_connection(
             send_json(&mut framed, &response).await?;
         }
         ProviderRequest::InvokeModel { model_id, request } => {
-            handle_invoke(provider, &model_id, (*request).into(), &mut framed).await?;
+            handle_invoke(provider, &model_id, *request, &mut framed).await?;
         }
     }
     Ok(())
@@ -361,18 +183,17 @@ async fn handle_invoke(
     request: CompletionRequest,
     framed: &mut JsonLines,
 ) -> std::io::Result<()> {
-    let mut response = match provider.invoke_model(model_id, request).await {
-        Ok(response) => response,
+    let mut stream = match provider.invoke_model(model_id, request).await {
+        Ok(stream) => stream,
         Err(e) => {
             send_json(framed, &ProviderResponse::Error(e.to_string())).await?;
             return Ok(());
         }
     };
     send_json(framed, &ProviderResponse::InvokeStarted).await?;
-    while let Some(item) = response.next().await {
-        for wire in content_to_wire(item) {
-            send_json(framed, &ProviderResponse::Chunk(wire)).await?;
-        }
+    while let Some(item) = stream.next().await {
+        let wire = item.map_err(|e| e.to_string());
+        send_json(framed, &ProviderResponse::Chunk(wire)).await?;
     }
     send_json(framed, &ProviderResponse::StreamEnd).await
 }
@@ -421,11 +242,11 @@ impl ModelProvider for RemoteModelProvider {
         &self,
         model_id: &str,
         request: CompletionRequest,
-    ) -> Result<ProviderCompletionResponse, CompletionError> {
+    ) -> Result<ModelStream, CompletionError> {
         let mut framed = self
             .connect_and_send(&ProviderRequest::InvokeModel {
                 model_id: model_id.to_owned(),
-                request: Box::new(request.into()),
+                request: Box::new(request),
             })
             .await
             .map_err(|e| {
@@ -457,7 +278,9 @@ impl ModelProvider for RemoteModelProvider {
         let stream = async_stream::stream! {
             loop {
                 match recv_json::<ProviderResponse>(&mut framed).await {
-                    Ok(Some(ProviderResponse::Chunk(item))) => yield wire_to_choice(item),
+                    Ok(Some(ProviderResponse::Chunk(item))) => {
+                        yield item.map_err(CompletionError::ProviderError);
+                    }
                     Ok(Some(ProviderResponse::StreamEnd)) => break,
                     Ok(Some(_)) => {
                         yield Err(CompletionError::ResponseError(
@@ -480,17 +303,15 @@ impl ModelProvider for RemoteModelProvider {
                 }
             }
         };
-        Ok(StreamingCompletionResponse::stream(Box::pin(stream)))
+        Ok(Box::pin(stream))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SingleModelProvider;
-    use rig::completion::Usage;
-    use rig::message::UserContent;
-    use rig_mock::mock_model;
+    use crate::mock::mock_model;
+    use crate::{SingleModelProvider, Usage};
 
     fn test_entry() -> ModelEntry {
         ModelEntry {
@@ -504,18 +325,11 @@ mod tests {
 
     fn test_request(prompt: &str) -> CompletionRequest {
         CompletionRequest {
-            model: None,
             preamble: Some("system prompt".to_owned()),
-            chat_history: OneOrMany::one(Message::User {
-                content: OneOrMany::one(UserContent::text(prompt)),
-            }),
-            documents: vec![],
+            chat_history: vec![crate::Message::user(prompt)],
             tools: vec![],
-            temperature: None,
             max_tokens: Some(42),
-            tool_choice: None,
             additional_params: None,
-            output_schema: None,
         }
     }
 
@@ -550,15 +364,15 @@ mod tests {
         ctrl.finish_with_usage(Some(Usage {
             input_tokens: 7,
             output_tokens: 3,
-            ..Usage::new()
+            ..Usage::default()
         }));
 
         let mut text = String::new();
         let mut usage = None;
         while let Some(item) = response.next().await {
             match item.expect("stream item") {
-                StreamedAssistantContent::Text(t) => text.push_str(&t.text),
-                StreamedAssistantContent::Final(r) => usage = r.usage,
+                StreamChunk::Text(t) => text.push_str(&t),
+                StreamChunk::Final(r) => usage = r.usage,
                 other => panic!("unexpected stream item: {other:?}"),
             }
         }

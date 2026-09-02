@@ -11,8 +11,8 @@ use infinity_daemon::ids::SequentialIdSource;
 use infinity_daemon::rap_callback;
 use infinity_daemon::session::{SessionManager, SessionManagerConfig, SharedSessionManager};
 use infinity_protocol::{ClientMessage, DaemonMessage, SessionStatus};
+use infinity_provider_protocol::mock::{MockModelController, mock_model};
 use infinity_provider_protocol::{ModelEntry, ModelProvider, SingleModelProvider};
-use rig_mock::{MockModelController, mock_model};
 use tokio::sync::mpsc;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;

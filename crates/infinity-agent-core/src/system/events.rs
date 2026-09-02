@@ -1,6 +1,6 @@
 //! Events emitted by the high-level agent system.
 
-use rig::completion::Usage;
+use infinity_provider_protocol::Usage;
 
 use crate::message::InfinityMessage;
 

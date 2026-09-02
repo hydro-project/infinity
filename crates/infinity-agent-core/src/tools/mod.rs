@@ -7,9 +7,8 @@ pub mod thread;
 use crate::message::{InputMessage, InputMessageContent};
 use crate::traits::InputSender;
 use async_trait::async_trait;
-use rig::OneOrMany;
-use rig::agent::Text;
-use rig::message::{ToolResult, ToolResultContent, UserContent};
+use infinity_provider_protocol::message::Text;
+use infinity_provider_protocol::message::{ToolResult, ToolResultContent, UserContent};
 
 pub(crate) type ToolError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -27,9 +26,9 @@ where
         content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
             id: id.to_owned(),
             call_id,
-            content: OneOrMany::one(ToolResultContent::Text(Text {
+            content: vec![ToolResultContent::Text(Text {
                 text: format!("Error: {}", error.into()),
-            })),
+            })],
         })),
         group_id: context.group_id.clone(),
         metadata: None,

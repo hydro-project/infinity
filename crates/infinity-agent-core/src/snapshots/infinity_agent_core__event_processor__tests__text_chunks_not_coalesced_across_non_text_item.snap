@@ -17,13 +17,10 @@ expression: hm.pending_items.borrow().clone()
       "kind": "tool_call",
       "call": {
         "id": "tc-1",
-        "call_id": null,
         "function": {
           "name": "some_tool",
           "arguments": {}
-        },
-        "signature": null,
-        "additional_params": null
+        }
       }
     },
     "message_id": "c-2"

@@ -10,11 +10,7 @@ use infinity_agent_core::{
     message::{InputMessage, InputMessageContent},
     traits::InputSender,
 };
-use rig::{
-    OneOrMany,
-    agent::Text,
-    message::{ToolResult, ToolResultContent, UserContent},
-};
+use infinity_provider_protocol::message::{Text, ToolResult, ToolResultContent, UserContent};
 use tracing;
 
 use super::sqs_sender::SqsMessageSender;
@@ -27,7 +23,7 @@ fn wakeup_message(id: &str, call_id: Option<String>, text: String, group_id: &st
         content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
             id: id.to_owned(),
             call_id,
-            content: OneOrMany::one(ToolResultContent::Text(Text { text })),
+            content: vec![ToolResultContent::Text(Text { text })],
         })),
         group_id: group_id.to_owned(),
         metadata: None,

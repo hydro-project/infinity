@@ -25,7 +25,7 @@ use rap_protocol::RapCallback;
 async fn main() -> Result<(), Error> {
     tracing::init_default_subscriber();
 
-    let config = aws_config::load_from_env().await;
+    let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
     let sqs_client = SqsClient::new(&config);
     let input_queue_url =
         std::env::var("INPUT_QUEUE_URL").expect("INPUT_QUEUE_URL environment variable must be set");

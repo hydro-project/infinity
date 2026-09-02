@@ -17,8 +17,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::message::{InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind};
 use crate::traits::{ConversationStore, StateStore};
+use infinity_provider_protocol::message::UserContent;
 use rap_client::http::HttpClient;
-use rig::message::UserContent;
 
 use super::sender::ChannelSender;
 use crate::system::builder::SystemInner;
