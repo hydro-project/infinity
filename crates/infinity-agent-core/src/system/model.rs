@@ -30,7 +30,7 @@ pub struct ResolvedModel {
 /// completion always finishes on the model it started with.
 #[async_trait(?Send)]
 pub trait ModelSource {
-    async fn resolve(&self, thread_id: &ThreadId) -> Result<ResolvedModel, BoxError>;
+    async fn resolve(&self, thread_id: &ThreadId<str>) -> Result<ResolvedModel, BoxError>;
 }
 
 /// A fixed model used for every thread and every round.
@@ -65,7 +65,7 @@ impl StaticModel {
 
 #[async_trait(?Send)]
 impl ModelSource for StaticModel {
-    async fn resolve(&self, _thread_id: &ThreadId) -> Result<ResolvedModel, BoxError> {
+    async fn resolve(&self, _thread_id: &ThreadId<str>) -> Result<ResolvedModel, BoxError> {
         Ok(self.resolved.clone())
     }
 }

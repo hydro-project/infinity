@@ -4,7 +4,7 @@ use infinity_agent_core::system::AgentEvent;
 use infinity_protocol::{DaemonMessage, TokenUsage};
 use infinity_provider_protocol::message::{AssistantContent, ToolResultContent, UserContent};
 
-pub(crate) fn agent_event_to_daemon(thread_id: &ThreadId, evt: &AgentEvent) -> DaemonMessage {
+pub(crate) fn agent_event_to_daemon(thread_id: &ThreadId<str>, evt: &AgentEvent) -> DaemonMessage {
     let tid = Some(thread_id.to_string());
     match evt {
         AgentEvent::CompletionStarted => DaemonMessage::StartOutput { thread_id: tid },
@@ -76,7 +76,7 @@ pub(crate) fn agent_event_to_daemon(thread_id: &ThreadId, evt: &AgentEvent) -> D
 
 pub(crate) fn history_message_to_daemon(
     msg: &InfinityMessage,
-    tid: &ThreadId,
+    tid: &ThreadId<str>,
     history: &[InfinityMessage],
 ) -> Option<DaemonMessage> {
     let thread_id = Some(tid.to_string());

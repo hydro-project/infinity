@@ -446,7 +446,7 @@ impl SandboxBackend for LocalBackend {
     async fn push_sandbox(
         &self,
         sandbox_dir: &Path,
-        group_id: &ThreadId,
+        group_id: &ThreadId<str>,
         description: Option<&str>,
     ) -> Result<(), SandboxError> {
         let state = {
@@ -478,7 +478,10 @@ impl SandboxBackend for LocalBackend {
     ///
     /// Delegates to the mode's provider (e.g. `jj workspace forget` and
     /// deleting the sandbox directory for jj mode).
-    async fn cleanup_sandbox_permanently(&self, group_id: &ThreadId) -> Result<(), SandboxError> {
+    async fn cleanup_sandbox_permanently(
+        &self,
+        group_id: &ThreadId<str>,
+    ) -> Result<(), SandboxError> {
         let entry = {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             cache.remove(group_id)

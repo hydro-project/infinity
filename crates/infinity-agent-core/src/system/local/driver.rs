@@ -100,7 +100,7 @@ pub(crate) async fn drive_thread<C, S, H, O>(
     active_threads
         .lock()
         .expect("bug: mutex poisoned")
-        .insert(thread_id.clone());
+        .insert(thread_id.to_owned());
     // Report liveness transitions at the same two points where
     // `active_threads` changes, so the channel and the set can never
     // disagree about a driver's state.
@@ -333,7 +333,7 @@ fn check_before_idle<C, S, H, O>(
     subscribe_rx: &mut mpsc::UnboundedReceiver<(O::SubscribeRequest, oneshot::Sender<()>)>,
     observer: &O,
     thread: &Thread<C, S, ChannelSender, H>,
-    thread_id: &ThreadId,
+    thread_id: &ThreadId<str>,
 ) -> IdleDecision
 where
     C: ConversationStore + 'static,
@@ -365,7 +365,7 @@ where
 fn handle_step_result(
     res: Result<StepOutcome, BoxError>,
     observer: &impl ThreadObserver,
-    thread_id: &ThreadId,
+    thread_id: &ThreadId<str>,
     total_tokens: &mut u64,
     compaction_triggered: &mut bool,
     pending_batch: &mut Vec<(InputMessage, String)>,
@@ -401,7 +401,7 @@ fn handle_step_result(
                 pending_batch.push((
                     InputMessage {
                         content: InputMessageContent::User(UserContent::text("")),
-                        group_id: thread_id.clone(),
+                        group_id: thread_id.to_owned(),
                         metadata: None,
                         synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::Compaction)),
                         display_as: None,
@@ -458,7 +458,9 @@ mod tests {
             .run_until(async {
                 let (mut running, mut rx, mut ctrl, _conv) =
                     start_system(vec![Box::new(SubscribeTool)], None);
-                running.send_user_text(&"t1".into(), "subscribe").await;
+                running
+                    .send_user_text(rap_protocol::ThreadId::from_ref("t1"), "subscribe")
+                    .await;
                 let _req = ctrl.next_request().await;
                 ctrl.send_tool_call("tc-sub", "subscribe_tool", serde_json::json!({}));
                 ctrl.finish();
@@ -507,7 +509,9 @@ mod tests {
                 // Tiny context window so the usage report crosses the threshold.
                 let (mut running, mut rx, mut ctrl, _conv) =
                     start_system(vec![], Some(small_context_entry()));
-                running.send_user_text(&"t1".into(), "hello").await;
+                running
+                    .send_user_text(rap_protocol::ThreadId::from_ref("t1"), "hello")
+                    .await;
                 let _req = ctrl.next_request().await;
                 ctrl.send_text("hi there");
                 ctrl.finish_with_usage(high_usage());

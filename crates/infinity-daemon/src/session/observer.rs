@@ -66,7 +66,7 @@ pub fn broadcast_pruning(
 /// both locks at once.
 pub fn broadcast_to_thread(
     map: &SubscriberMap,
-    thread_id: &ThreadId,
+    thread_id: &ThreadId<str>,
     msg: &DaemonMessage,
     requester: Option<&mpsc::UnboundedSender<DaemonMessage>>,
 ) -> bool {
@@ -103,7 +103,7 @@ impl DaemonObserver {
 impl ThreadObserver for DaemonObserver {
     type SubscribeRequest = SubscribeRequest;
 
-    fn on_event(&self, thread_id: &ThreadId, event: &AgentEvent) {
+    fn on_event(&self, thread_id: &ThreadId<str>, event: &AgentEvent) {
         // Persist state derived from the event before broadcasting it, so a
         // client can never observe a message whose session state is missing.
         match event {
@@ -133,7 +133,7 @@ impl ThreadObserver for DaemonObserver {
 
     fn on_subscribe(
         &self,
-        thread_id: &ThreadId,
+        thread_id: &ThreadId<str>,
         request: SubscribeRequest,
         snapshot: ReplaySnapshot,
     ) {

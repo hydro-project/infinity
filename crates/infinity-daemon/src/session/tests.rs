@@ -88,7 +88,7 @@ fn tmp_stores(
 /// [`DaemonObserver`] per thread. Returns the running handle and a subscriber
 /// channel receiving the root thread's `DaemonMessage`s.
 fn start_daemon_system(
-    root: &ThreadId,
+    root: &ThreadId<str>,
     conv: PersistentConversationStore,
     state: impl StateStore + 'static,
     catalog: Arc<ModelCatalog>,
@@ -112,7 +112,7 @@ fn start_daemon_system(
     let (client_tx, client_rx) = mpsc::unbounded_channel();
     let subscriber_map: SubscriberMap = Default::default();
     subscriber_map.lock().expect("bug: mutex poisoned").insert(
-        root.clone(),
+        root.to_owned(),
         Arc::new(std::sync::Mutex::new(vec![Subscriber {
             tx: client_tx,
             keeps_session_alive: true,
@@ -121,11 +121,11 @@ fn start_daemon_system(
 
     let make_observer = {
         let subscriber_map = subscriber_map.clone();
-        move |thread_id: &ThreadId| {
+        move |thread_id: &ThreadId<str>| {
             let parent_subs = {
                 let parent_id = conv.get_thread_parent_id(thread_id);
                 let smap = subscriber_map.lock().expect("bug: mutex poisoned");
-                let source = parent_id.as_ref().unwrap_or(thread_id);
+                let source = parent_id.as_deref().unwrap_or(thread_id);
                 smap.get(source)
                     .map(|arc| arc.lock().expect("bug: mutex poisoned").clone())
                     .unwrap_or_default()
@@ -160,7 +160,7 @@ async fn collect_until_done(rx: &mut mpsc::UnboundedReceiver<DaemonMessage>) -> 
     texts
 }
 
-fn tool_result_input(group_id: &ThreadId, id: &str, text: &str) -> InputMessage {
+fn tool_result_input(group_id: &ThreadId<str>, id: &str, text: &str) -> InputMessage {
     InputMessage {
         content: InputMessageContent::User(UserContent::ToolResult(
             infinity_provider_protocol::message::ToolResult {
@@ -173,7 +173,7 @@ fn tool_result_input(group_id: &ThreadId, id: &str, text: &str) -> InputMessage 
                 ],
             },
         )),
-        group_id: group_id.clone(),
+        group_id: group_id.to_owned(),
         metadata: None,
         synthetic: None,
         display_as: None,
@@ -218,12 +218,12 @@ async fn model_switch_applies_to_next_completion() {
             let (model1, mut ctrl1) = mock_model();
             let (model2, mut ctrl2) = mock_model();
             let catalog = two_model_catalog(model1, model2).await;
-            conv.ensure_root_thread(&"t1".into())
+            conv.ensure_root_thread(ThreadId::from_ref("t1"))
                 .await
                 .expect("ensure root");
 
             let (running, mut display_rx, _smap) = start_daemon_system(
-                &"t1".into(),
+                ThreadId::from_ref("t1"),
                 conv.clone(),
                 state,
                 catalog,
@@ -232,7 +232,9 @@ async fn model_switch_applies_to_next_completion() {
 
             // First round runs on model1 and leaves an async tool call
             // pending (so the driver stays alive).
-            running.send_user_text(&"t1".into(), "use the tool").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "use the tool")
+                .await;
             let _req = ctrl1.next_request().await;
             ctrl1.send_tool_call("tc-1", "async_tool", serde_json::json!({}));
             ctrl1.finish();
@@ -240,12 +242,12 @@ async fn model_switch_applies_to_next_completion() {
 
             // Switch while the driver waits for the tool result. (The session
             // manager persists the selection; each round resolves it fresh.)
-            conv.set_thread_model(&"t1".into(), model2_ref());
+            conv.set_thread_model(ThreadId::from_ref("t1"), model2_ref());
 
             // The tool result triggers the next round — on model2.
             running
                 .send(
-                    tool_result_input(&"t1".into(), "tc-1", "tool done"),
+                    tool_result_input(ThreadId::from_ref("t1"), "tc-1", "tool done"),
                     "res-1",
                 )
                 .await;
@@ -273,12 +275,12 @@ async fn model_switch_during_completion_applies_to_next_round() {
             let (model1, mut ctrl1) = mock_model();
             let (model2, mut ctrl2) = mock_model();
             let catalog = two_model_catalog(model1, model2).await;
-            conv.ensure_root_thread(&"t1".into())
+            conv.ensure_root_thread(ThreadId::from_ref("t1"))
                 .await
                 .expect("ensure root");
 
             let (running, mut display_rx, _smap) = start_daemon_system(
-                &"t1".into(),
+                ThreadId::from_ref("t1"),
                 conv.clone(),
                 state,
                 catalog,
@@ -286,7 +288,9 @@ async fn model_switch_during_completion_applies_to_next_round() {
             );
 
             // Start a completion on model1 and leave it in flight.
-            running.send_user_text(&"t1".into(), "start").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "start")
+                .await;
             let _req = ctrl1.next_request().await;
             ctrl1.send_text("streaming on model1...");
             loop {
@@ -301,7 +305,7 @@ async fn model_switch_during_completion_applies_to_next_round() {
 
             // Switch mid-completion: the in-flight round keeps streaming on
             // model1 (it resolved its model at round start).
-            conv.set_thread_model(&"t1".into(), model2_ref());
+            conv.set_thread_model(ThreadId::from_ref("t1"), model2_ref());
 
             // The in-flight completion finishes undisturbed on model1
             // (ending with an async tool call so the driver stays alive).
@@ -312,7 +316,7 @@ async fn model_switch_during_completion_applies_to_next_round() {
             // The next round (tool result) goes to model2.
             running
                 .send(
-                    tool_result_input(&"t1".into(), "tc-1", "tool done"),
+                    tool_result_input(ThreadId::from_ref("t1"), "tc-1", "tool done"),
                     "res-1",
                 )
                 .await;
@@ -340,19 +344,24 @@ async fn spawned_thread_inherits_parent_model() {
             let (model2, mut ctrl2) = mock_model();
             let catalog = two_model_catalog(model1, model2).await;
 
-            conv.ensure_root_thread(&"root".into())
+            conv.ensure_root_thread(ThreadId::from_ref("root"))
                 .await
                 .expect("ensure root");
             // Set root thread to use the non-default model (provider2/model2).
-            conv.set_thread_model(&"root".into(), model2_ref());
+            conv.set_thread_model(ThreadId::from_ref("root"), model2_ref());
 
             // The built-in spawn_thread tool comes from the system builder.
-            let (running, mut display_rx, _smap) =
-                start_daemon_system(&"root".into(), conv.clone(), state, catalog, vec![]);
+            let (running, mut display_rx, _smap) = start_daemon_system(
+                ThreadId::from_ref("root"),
+                conv.clone(),
+                state,
+                catalog,
+                vec![],
+            );
 
             // Send user input to root thread (which uses model2).
             running
-                .send_user_text(&"root".into(), "spawn a child")
+                .send_user_text(ThreadId::from_ref("root"), "spawn a child")
                 .await;
 
             // Root thread uses model2, so ctrl2 gets the request.
@@ -426,7 +435,7 @@ async fn observer_persists_usage_and_resets_on_compaction() {
     use infinity_agent_core::system::{AgentEvent, ThreadObserver};
 
     let (conv, _state, _dir) = tmp_stores(model1_ref());
-    conv.ensure_root_thread(&"t1".into())
+    conv.ensure_root_thread(ThreadId::from_ref("t1"))
         .await
         .expect("ensure root");
     let observer = DaemonObserver {
@@ -435,7 +444,7 @@ async fn observer_persists_usage_and_resets_on_compaction() {
     };
 
     observer.on_event(
-        &"t1".into(),
+        ThreadId::from_ref("t1"),
         &AgentEvent::CompletionFinished {
             usage: Some(infinity_provider_protocol::Usage {
                 input_tokens: 40,
@@ -445,18 +454,18 @@ async fn observer_persists_usage_and_resets_on_compaction() {
             }),
         },
     );
-    assert_eq!(conv.get_total_tokens_used(&"t1".into()), 42);
+    assert_eq!(conv.get_total_tokens_used(ThreadId::from_ref("t1")), 42);
 
     // A usage-less response must not reset the stored total.
     observer.on_event(
-        &"t1".into(),
+        ThreadId::from_ref("t1"),
         &AgentEvent::CompletionFinished { usage: None },
     );
-    assert_eq!(conv.get_total_tokens_used(&"t1".into()), 42);
+    assert_eq!(conv.get_total_tokens_used(ThreadId::from_ref("t1")), 42);
 
     // Compaction resets the stale pre-compaction total.
-    observer.on_event(&"t1".into(), &AgentEvent::CompactionApplied);
-    assert_eq!(conv.get_total_tokens_used(&"t1".into()), 0);
+    observer.on_event(ThreadId::from_ref("t1"), &AgentEvent::CompactionApplied);
+    assert_eq!(conv.get_total_tokens_used(ThreadId::from_ref("t1")), 0);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -467,18 +476,20 @@ async fn answered_user_choice_emits_complete_and_disappears_from_replay() {
             let (conv, state, _dir) = tmp_stores(model1_ref());
             let (model, mut ctrl) = mock_model();
             let catalog = two_model_catalog(model.clone(), model).await;
-            conv.ensure_root_thread(&"t1".into())
+            conv.ensure_root_thread(ThreadId::from_ref("t1"))
                 .await
                 .expect("ensure root");
             let (running, mut display_rx, _) = start_daemon_system(
-                &"t1".into(),
+                ThreadId::from_ref("t1"),
                 conv,
                 state.clone(),
                 catalog,
                 vec![Box::new(AsyncStubTool)],
             );
 
-            running.send_user_text(&"t1".into(), "use the tool").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "use the tool")
+                .await;
             let _request = ctrl.next_request().await;
             ctrl.send_tool_call("tc-choice", "async_tool", serde_json::json!({}));
             ctrl.finish();
@@ -512,7 +523,7 @@ async fn answered_user_choice_emits_complete_and_disappears_from_replay() {
 
             running
                 .send(
-                    tool_result_input(&"t1".into(), "tc-choice", "selected A"),
+                    tool_result_input(ThreadId::from_ref("t1"), "tc-choice", "selected A"),
                     "choice-result",
                 )
                 .await;
@@ -536,7 +547,7 @@ async fn answered_user_choice_emits_complete_and_disappears_from_replay() {
             }
             assert!(
                 state
-                    .get_pending_user_choices(&"t1".into())
+                    .get_pending_user_choices(ThreadId::from_ref("t1"))
                     .await
                     .expect("load choices")
                     .is_empty()
@@ -545,7 +556,7 @@ async fn answered_user_choice_emits_complete_and_disappears_from_replay() {
             let (replay_tx, mut replay_rx) = mpsc::unbounded_channel();
             running
                 .subscribe(
-                    &"t1".into(),
+                    ThreadId::from_ref("t1"),
                     SubscribeRequest {
                         tx: replay_tx,
                         wants_replay: true,
@@ -684,10 +695,10 @@ async fn shut_down_session_events_do_not_wake_threads() {
             let (model2, _ctrl2) = mock_model();
             let catalog = two_model_catalog(model, model2).await;
             let (conv, _state, dir) = tmp_stores(model1_ref());
-            conv.ensure_root_thread(&"live".into())
+            conv.ensure_root_thread(ThreadId::from_ref("live"))
                 .await
                 .expect("ensure root");
-            conv.ensure_root_thread(&"stopped".into())
+            conv.ensure_root_thread(ThreadId::from_ref("stopped"))
                 .await
                 .expect("ensure root");
 
@@ -701,28 +712,35 @@ async fn shut_down_session_events_do_not_wake_threads() {
             ));
             {
                 let mut store = session_store.lock().await;
-                store.create(&"live".into(), dir.path().to_path_buf());
-                store.create(&"stopped".into(), dir.path().to_path_buf());
-                store.mark_shut_down(&"stopped".into());
+                store.create(ThreadId::from_ref("live"), dir.path().to_path_buf());
+                store.create(ThreadId::from_ref("stopped"), dir.path().to_path_buf());
+                store.mark_shut_down(ThreadId::from_ref("stopped"));
             }
             let state =
                 PersistentStateStore::new(dir.path().join("state"), conv.clone(), session_store);
 
-            let (mut running, mut display_rx, _smap) =
-                start_daemon_system(&"live".into(), conv.clone(), state, catalog, vec![]);
+            let (mut running, mut display_rx, _smap) = start_daemon_system(
+                ThreadId::from_ref("live"),
+                conv.clone(),
+                state,
+                catalog,
+                vec![],
+            );
 
             // The stopped session's event is dropped: no driver wakes, so no
             // thread exit is ever reported for it.
             running
                 .send(
-                    tool_result_input(&"stopped".into(), "tc-stale", "late result"),
+                    tool_result_input(ThreadId::from_ref("stopped"), "tc-stale", "late result"),
                     "cb-stale",
                 )
                 .await;
 
             // The live session processes user text normally afterwards,
             // proving the router did not stall on the dropped event.
-            running.send_user_text(&"live".into(), "hello").await;
+            running
+                .send_user_text(ThreadId::from_ref("live"), "hello")
+                .await;
             let _req = ctrl.next_request().await;
             ctrl.send_text("hi");
             ctrl.finish();

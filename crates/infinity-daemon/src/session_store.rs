@@ -97,15 +97,15 @@ impl SessionStore {
         Ok(())
     }
 
-    pub fn notify(&self, session_id: &ThreadId) {
+    pub fn notify(&self, session_id: &ThreadId<str>) {
         if let Some(ref tx) = self.change_tx {
-            let _ = tx.send(session_id.clone());
+            let _ = tx.send(session_id.to_owned());
         }
     }
 
-    pub fn create(&mut self, session_id: &ThreadId, cwd: PathBuf) {
+    pub fn create(&mut self, session_id: &ThreadId<str>, cwd: PathBuf) {
         self.sessions.insert(
-            session_id.clone(),
+            session_id.to_owned(),
             SessionEntry {
                 cwd,
                 shut_down: false,
@@ -116,7 +116,7 @@ impl SessionStore {
         self.notify(session_id);
     }
 
-    pub fn get_cwd(&self, session_id: &ThreadId) -> &PathBuf {
+    pub fn get_cwd(&self, session_id: &ThreadId<str>) -> &PathBuf {
         &self
             .sessions
             .get(session_id)
@@ -124,14 +124,14 @@ impl SessionStore {
             .cwd
     }
 
-    pub fn mark_shut_down(&mut self, session_id: &ThreadId) {
+    pub fn mark_shut_down(&mut self, session_id: &ThreadId<str>) {
         if let Some(entry) = self.sessions.get_mut(session_id) {
             entry.shut_down = true;
             self.notify(session_id);
         }
     }
 
-    pub fn clear_shut_down(&mut self, session_id: &ThreadId) -> bool {
+    pub fn clear_shut_down(&mut self, session_id: &ThreadId<str>) -> bool {
         tracing::trace!("Clearing shut down status for {}", session_id);
         if let Some(entry) = self.sessions.get_mut(session_id)
             && entry.shut_down
@@ -143,7 +143,7 @@ impl SessionStore {
         false
     }
 
-    pub fn mark_idle(&mut self, session_id: &ThreadId) {
+    pub fn mark_idle(&mut self, session_id: &ThreadId<str>) {
         if let Some(entry) = self.sessions.get_mut(session_id)
             && !entry.idle
         {
@@ -152,7 +152,7 @@ impl SessionStore {
         }
     }
 
-    pub fn clear_idle(&mut self, session_id: &ThreadId) -> bool {
+    pub fn clear_idle(&mut self, session_id: &ThreadId<str>) -> bool {
         if let Some(entry) = self.sessions.get_mut(session_id)
             && entry.idle
         {
@@ -163,21 +163,21 @@ impl SessionStore {
         false
     }
 
-    pub fn is_idle(&self, session_id: &ThreadId) -> bool {
+    pub fn is_idle(&self, session_id: &ThreadId<str>) -> bool {
         self.sessions
             .get(session_id)
             .map(|e| e.idle)
             .unwrap_or(false)
     }
 
-    pub fn is_shut_down(&self, session_id: &ThreadId) -> bool {
+    pub fn is_shut_down(&self, session_id: &ThreadId<str>) -> bool {
         self.sessions
             .get(session_id)
             .map(|e| e.shut_down)
             .unwrap_or(false)
     }
 
-    pub fn mark_archived(&mut self, session_id: &ThreadId) {
+    pub fn mark_archived(&mut self, session_id: &ThreadId<str>) {
         if let Some(entry) = self.sessions.get_mut(session_id) {
             entry.archived = true;
             self.notify(session_id);

@@ -32,7 +32,7 @@ impl StateStore for DynamoDbStateStore {
 
     async fn get_processed_ids(
         &self,
-        thread_id: &ThreadId,
+        thread_id: &ThreadId<str>,
     ) -> Result<HashSet<String>, DynamoError> {
         let result = self
             .client
@@ -58,7 +58,7 @@ impl StateStore for DynamoDbStateStore {
 
     async fn add_processed_message_ids(
         &self,
-        thread_id: &ThreadId,
+        thread_id: &ThreadId<str>,
         message_ids: Vec<String>,
     ) -> Result<(), DynamoError> {
         if message_ids.is_empty() {
@@ -78,7 +78,7 @@ impl StateStore for DynamoDbStateStore {
 
     async fn get_metadata(
         &self,
-        root_thread_id: &ThreadId,
+        root_thread_id: &ThreadId<str>,
     ) -> Result<Option<serde_json::Value>, DynamoError> {
         let result = self
             .client
@@ -105,7 +105,7 @@ impl StateStore for DynamoDbStateStore {
 
     async fn set_metadata(
         &self,
-        root_thread_id: &ThreadId,
+        root_thread_id: &ThreadId<str>,
         metadata: serde_json::Value,
     ) -> Result<(), DynamoError> {
         let json = serde_json::to_string(&metadata)
@@ -127,7 +127,7 @@ impl StateStore for DynamoDbStateStore {
 
     async fn get_active_subscriptions(
         &self,
-        thread_id: &ThreadId,
+        thread_id: &ThreadId<str>,
     ) -> Result<Vec<String>, DynamoError> {
         let result = self
             .client
@@ -152,7 +152,7 @@ impl StateStore for DynamoDbStateStore {
 
     async fn add_active_subscription(
         &self,
-        thread_id: &ThreadId,
+        thread_id: &ThreadId<str>,
         tool_call_id: &str,
     ) -> Result<(), DynamoError> {
         self.client
@@ -169,7 +169,7 @@ impl StateStore for DynamoDbStateStore {
 
     async fn add_pending_user_choice(
         &self,
-        thread_id: &ThreadId,
+        thread_id: &ThreadId<str>,
         choice: UserChoice,
     ) -> Result<(), DynamoError> {
         let json = serde_json::to_string(&choice)
@@ -207,7 +207,7 @@ impl StateStore for DynamoDbStateStore {
 
     async fn remove_pending_user_choice(
         &self,
-        thread_id: &ThreadId,
+        thread_id: &ThreadId<str>,
         choice_id: &str,
     ) -> Result<(), DynamoError> {
         let Some(choice) = self
@@ -234,7 +234,7 @@ impl StateStore for DynamoDbStateStore {
 
     async fn get_pending_user_choices(
         &self,
-        thread_id: &ThreadId,
+        thread_id: &ThreadId<str>,
     ) -> Result<Vec<UserChoice>, DynamoError> {
         let result = self
             .client
@@ -265,7 +265,7 @@ impl StateStore for DynamoDbStateStore {
 
     async fn remove_active_subscription(
         &self,
-        thread_id: &ThreadId,
+        thread_id: &ThreadId<str>,
         tool_call_id: &str,
     ) -> Result<(), DynamoError> {
         self.client

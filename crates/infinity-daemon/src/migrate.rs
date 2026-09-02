@@ -217,7 +217,7 @@ async fn boot_source_rap_servers(
 /// Handle an Emigrate request: shut down session, boot fresh RAP servers,
 /// migrate state, serialize, and return the session data.
 pub async fn handle_emigrate(
-    session_id: &ThreadId,
+    session_id: &ThreadId<str>,
     dest_rap_urls: HashMap<String, String>,
     session_manager: &SharedSessionManager,
 ) -> Result<String, BoxError> {

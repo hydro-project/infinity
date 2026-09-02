@@ -20,7 +20,7 @@ impl DynamoMetadataStore {
 
 #[async_trait]
 impl MetadataStore for DynamoMetadataStore {
-    async fn get(&self, group_id: &ThreadId) -> Result<Option<RepoState>, SandboxError> {
+    async fn get(&self, group_id: &ThreadId<str>) -> Result<Option<RepoState>, SandboxError> {
         let result = self
             .client
             .get_item()
@@ -53,7 +53,7 @@ impl MetadataStore for DynamoMetadataStore {
             .unwrap_or_default();
 
         Ok(Some(RepoState {
-            group_id: group_id.clone(),
+            group_id: group_id.to_owned(),
             remote_uri,
             bookmark,
             mode: SandboxMode::Jj { base_revision },
@@ -87,7 +87,7 @@ impl MetadataStore for DynamoMetadataStore {
         Ok(())
     }
 
-    async fn delete(&self, group_id: &ThreadId) -> Result<(), SandboxError> {
+    async fn delete(&self, group_id: &ThreadId<str>) -> Result<(), SandboxError> {
         self.client
             .delete_item()
             .table_name(&self.table_name)

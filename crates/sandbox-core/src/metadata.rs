@@ -8,9 +8,9 @@ use crate::types::RepoState;
 /// In-memory for local, DynamoDB for remote.
 #[async_trait]
 pub trait MetadataStore: Send + Sync {
-    async fn get(&self, group_id: &ThreadId) -> Result<Option<RepoState>, SandboxError>;
+    async fn get(&self, group_id: &ThreadId<str>) -> Result<Option<RepoState>, SandboxError>;
     async fn put(&self, state: &RepoState) -> Result<(), SandboxError>;
-    async fn delete(&self, group_id: &ThreadId) -> Result<(), SandboxError>;
+    async fn delete(&self, group_id: &ThreadId<str>) -> Result<(), SandboxError>;
     async fn list_all(&self) -> Result<Vec<RepoState>, SandboxError> {
         Ok(Vec::new())
     }

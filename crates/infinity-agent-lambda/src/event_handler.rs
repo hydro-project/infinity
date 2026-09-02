@@ -320,7 +320,7 @@ impl LambdaThreadConfig {
 impl ThreadConfigSource<SqsMessageSender, RapHttpClient> for LambdaThreadConfig {
     async fn resolve(
         &self,
-        thread_id: &ThreadId,
+        thread_id: &ThreadId<str>,
     ) -> Result<
         ThreadConfig<SqsMessageSender, RapHttpClient>,
         Box<dyn std::error::Error + Send + Sync>,

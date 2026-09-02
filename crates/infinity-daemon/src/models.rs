@@ -386,7 +386,7 @@ pub struct CatalogModelSource {
 impl infinity_agent_core::system::ModelSource for CatalogModelSource {
     async fn resolve(
         &self,
-        thread_id: &ThreadId,
+        thread_id: &ThreadId<str>,
     ) -> Result<infinity_agent_core::system::ResolvedModel, BoxError> {
         let selected = self.conversation_store.get_thread_model(thread_id);
         let (model_ref, entry, fell_back) = self.catalog.resolve(&selected);

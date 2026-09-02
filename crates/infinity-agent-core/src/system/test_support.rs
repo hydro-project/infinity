@@ -40,13 +40,13 @@ pub(crate) struct TestObserver {
 impl ThreadObserver for TestObserver {
     type SubscribeRequest = mpsc::UnboundedSender<Evt>;
 
-    fn on_event(&self, _thread_id: &ThreadId, event: &AgentEvent) {
+    fn on_event(&self, _thread_id: &ThreadId<str>, event: &AgentEvent) {
         let _ = self.tx.send(Evt::E(event.clone()));
     }
 
     fn on_subscribe(
         &self,
-        _thread_id: &ThreadId,
+        _thread_id: &ThreadId<str>,
         request: Self::SubscribeRequest,
         snapshot: ReplaySnapshot,
     ) {

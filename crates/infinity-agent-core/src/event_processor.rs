@@ -1986,11 +1986,11 @@ mod tests {
     async fn closed_thread_ignores() {
         let store = InMemoryConversationStore::new();
         store
-            .ensure_root_thread(&"thread-1".into())
+            .ensure_root_thread(ThreadId::from_ref("thread-1"))
             .await
             .expect("testing");
         store
-            .close_thread(&"thread-1".into())
+            .close_thread(ThreadId::from_ref("thread-1"))
             .await
             .expect("testing");
         let hm = make_history(&store, vec![]).await;

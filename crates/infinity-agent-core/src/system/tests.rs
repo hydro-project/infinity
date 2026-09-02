@@ -4,6 +4,7 @@
 use async_trait::async_trait;
 use infinity_provider_protocol::StreamChunk;
 use infinity_provider_protocol::message::UserContent;
+use rap_protocol::ThreadId;
 use tokio::sync::mpsc;
 
 use super::events::AgentEvent;
@@ -25,10 +26,10 @@ async fn pending_choices_are_thread_local_and_replayed() {
 
             let (model, _ctrl) = model_source(None);
             let conv = InMemoryConversationStore::new();
-            conv.ensure_root_thread(&"t1".into())
+            conv.ensure_root_thread(ThreadId::from_ref("t1"))
                 .await
                 .expect("ensure root");
-            conv.ensure_root_thread(&"t2".into())
+            conv.ensure_root_thread(ThreadId::from_ref("t2"))
                 .await
                 .expect("ensure root");
             let state = InMemoryStateStore::new();
@@ -70,7 +71,7 @@ async fn pending_choices_are_thread_local_and_replayed() {
 
             assert_eq!(
                 state
-                    .get_pending_user_choices(&"t1".into())
+                    .get_pending_user_choices(ThreadId::from_ref("t1"))
                     .await
                     .expect("load first thread choices")[0]
                     .id,
@@ -78,7 +79,7 @@ async fn pending_choices_are_thread_local_and_replayed() {
             );
             assert_eq!(
                 state
-                    .get_pending_user_choices(&"t2".into())
+                    .get_pending_user_choices(ThreadId::from_ref("t2"))
                     .await
                     .expect("load second thread choices")[0]
                     .id,
@@ -88,14 +89,14 @@ async fn pending_choices_are_thread_local_and_replayed() {
             let (sub_tx, mut sub_rx) = mpsc::unbounded_channel();
             let replay_conv = InMemoryConversationStore::new();
             replay_conv
-                .ensure_root_thread(&"t1".into())
+                .ensure_root_thread(ThreadId::from_ref("t1"))
                 .await
                 .expect("ensure replay root");
             let running = AgentSystemBuilder::new_local(replay_conv, state, model_source(None).0)
                 .start_with_observer(|_| TestObserver {
                     tx: mpsc::unbounded_channel().0,
                 });
-            running.subscribe(&"t1".into(), sub_tx).await;
+            running.subscribe(ThreadId::from_ref("t1"), sub_tx).await;
             let Evt::Replay(snapshot) = next_evt(&mut sub_rx).await else {
                 panic!("expected replay");
             };
@@ -111,7 +112,9 @@ async fn driver_idles_after_text_response() {
     local
         .run_until(async {
             let (mut running, mut rx, mut ctrl, _conv) = start_system(vec![], None);
-            running.send_user_text(&"t1".into(), "hello").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "hello")
+                .await;
             let _req = ctrl.next_request().await;
             ctrl.send_text("hi there");
             ctrl.finish();
@@ -130,7 +133,9 @@ async fn driver_stays_alive_waiting_for_tool_result() {
         .run_until(async {
             let (mut running, mut rx, mut ctrl, _conv) =
                 start_system(vec![Box::new(AsyncTool)], None);
-            running.send_user_text(&"t1".into(), "use tool").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "use tool")
+                .await;
             let _req = ctrl.next_request().await;
             ctrl.send_tool_call("tc-1", "async_tool", serde_json::json!({}));
             ctrl.finish();
@@ -151,7 +156,7 @@ async fn driver_stays_alive_waiting_for_tool_result() {
             // A client attaching while waiting gets a replay whose history
             // ends with the unresolved tool call and no completion in flight.
             let (sub_tx, mut sub_rx) = mpsc::unbounded_channel();
-            running.subscribe(&"t1".into(), sub_tx).await;
+            running.subscribe(ThreadId::from_ref("t1"), sub_tx).await;
             match next_evt(&mut sub_rx).await {
                 Evt::Replay(snapshot) => {
                     assert!(!snapshot.in_progress);
@@ -183,7 +188,9 @@ async fn user_text_interrupts_active_completion() {
     local
         .run_until(async {
             let (running, mut rx, mut ctrl, _conv) = start_system(vec![], None);
-            running.send_user_text(&"t1".into(), "first").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "first")
+                .await;
             let _req = ctrl.next_request().await;
             ctrl.send_text("partial...");
             // Wait until the chunk is observed so the completion is in flight.
@@ -192,7 +199,9 @@ async fn user_text_interrupts_active_completion() {
                     break;
                 }
             }
-            running.send_user_text(&"t1".into(), "stop that").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "stop that")
+                .await;
             let req2 = ctrl.next_request().await;
             let has_interrupt = req2.chat_history.into_iter().any(|m| {
                 if let infinity_provider_protocol::message::Message::User { content } = &m
@@ -218,7 +227,9 @@ async fn non_user_text_during_completion_does_not_interrupt() {
     local
         .run_until(async {
             let (running, mut rx, mut ctrl, _conv) = start_system(vec![Box::new(AsyncTool)], None);
-            running.send_user_text(&"t1".into(), "do stuff").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "do stuff")
+                .await;
             let _req = ctrl.next_request().await;
             ctrl.send_tool_call("tc-1", "async_tool", serde_json::json!({}));
             ctrl.finish();
@@ -261,7 +272,9 @@ async fn subscription_event_queued_during_completion_processed_after() {
         .run_until(async {
             let (running, mut rx, mut ctrl, _conv) =
                 start_system(vec![Box::new(SubscribeTool)], None);
-            running.send_user_text(&"t1".into(), "subscribe").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "subscribe")
+                .await;
             let _req = ctrl.next_request().await;
             ctrl.send_tool_call("tc-sub", "subscribe_tool", serde_json::json!({}));
             ctrl.finish();
@@ -338,7 +351,9 @@ async fn driver_idles_after_close_thread_tool_call() {
             }
             let (mut running, mut rx, mut ctrl, _conv) =
                 start_system_with(vec![Box::new(CloseThreadStub)], None, false);
-            running.send_user_text(&"t1".into(), "close").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "close")
+                .await;
             let _req = ctrl.next_request().await;
             ctrl.send_tool_call(
                 "tc-1",
@@ -363,7 +378,9 @@ async fn thread_report_deferred_during_async_tool_wait() {
             let (running, mut rx, mut ctrl, _conv) = start_system(vec![Box::new(AsyncTool)], None);
 
             // 1. User sends input, model calls async_tool.
-            running.send_user_text(&"t1".into(), "do async").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "do async")
+                .await;
             let _req = ctrl.next_request().await;
             ctrl.send_tool_call("tc-async", "async_tool", serde_json::json!({}));
             ctrl.finish();
@@ -436,7 +453,9 @@ async fn shutdown_persists_in_flight_tool_result() {
             let (running, mut rx, mut ctrl, conv) = start_system(vec![Box::new(AsyncTool)], None);
 
             // 1. User input → model issues an async tool call.
-            running.send_user_text(&"t1".into(), "do something").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "do something")
+                .await;
             let _req = ctrl.next_request().await;
             ctrl.send_tool_call("tc-1", "async_tool", serde_json::json!({}));
             ctrl.finish();
@@ -468,7 +487,7 @@ async fn shutdown_persists_in_flight_tool_result() {
             // 4. The tool result must have been synced to the store.
             use crate::traits::ConversationStore;
             let history = conv
-                .load_history_up_to(&"t1".into(), None, None)
+                .load_history_up_to(ThreadId::from_ref("t1"), None, None)
                 .await
                 .expect("load history");
             let has_tool_result = history.iter().any(|m| {
@@ -495,7 +514,9 @@ async fn subscription_event_deferred_during_async_tool_wait() {
     local
         .run_until(async {
             let (running, mut rx, mut ctrl, _conv) = start_system(vec![Box::new(AsyncTool)], None);
-            running.send_user_text(&"t1".into(), "do async").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "do async")
+                .await;
             let _req = ctrl.next_request().await;
             ctrl.send_tool_call("tc-async", "async_tool", serde_json::json!({}));
             ctrl.finish();
@@ -542,7 +563,9 @@ async fn stale_result_does_not_flush_deferred_events_during_async_tool_wait() {
     local
         .run_until(async {
             let (running, mut rx, mut ctrl, _conv) = start_system(vec![Box::new(AsyncTool)], None);
-            running.send_user_text(&"t1".into(), "do async").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "do async")
+                .await;
             let _req = ctrl.next_request().await;
             ctrl.send_tool_call("tc-async", "async_tool", serde_json::json!({}));
             ctrl.finish();
@@ -594,7 +617,9 @@ async fn subscribe_mid_thinking_replays_current_thinking() {
     local
         .run_until(async {
             let (running, mut rx, mut ctrl, _conv) = start_system(vec![], None);
-            running.send_user_text(&"t1".into(), "think hard").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "think hard")
+                .await;
             let _req = ctrl.next_request().await;
             ctrl.send_chunk(StreamChunk::ReasoningDelta {
                 id: None,
@@ -613,7 +638,7 @@ async fn subscribe_mid_thinking_replays_current_thinking() {
             }
 
             let (sub_tx, mut sub_rx) = mpsc::unbounded_channel();
-            running.subscribe(&"t1".into(), sub_tx).await;
+            running.subscribe(ThreadId::from_ref("t1"), sub_tx).await;
             match next_evt(&mut sub_rx).await {
                 Evt::Replay(snapshot) => {
                     assert!(snapshot.in_progress, "completion is in flight");
@@ -630,7 +655,7 @@ async fn subscribe_mid_thinking_replays_current_thinking() {
                 }
             }
             let (sub_tx2, mut sub_rx2) = mpsc::unbounded_channel();
-            running.subscribe(&"t1".into(), sub_tx2).await;
+            running.subscribe(ThreadId::from_ref("t1"), sub_tx2).await;
             match next_evt(&mut sub_rx2).await {
                 Evt::Replay(snapshot) => {
                     assert!(snapshot.in_progress);
@@ -656,13 +681,17 @@ async fn routes_to_separate_threads() {
     local
         .run_until(async {
             let (mut running, mut rx, mut ctrl, _conv) = start_system(vec![], None);
-            running.send_user_text(&"t1".into(), "one").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "one")
+                .await;
             let _r1 = ctrl.next_request().await;
             ctrl.send_text("first");
             ctrl.finish();
             collect_until_finished(&mut rx).await;
 
-            running.send_user_text(&"t2".into(), "two").await;
+            running
+                .send_user_text(ThreadId::from_ref("t2"), "two")
+                .await;
             let _r2 = ctrl.next_request().await;
             ctrl.send_text("second");
             ctrl.finish();
@@ -679,7 +708,9 @@ async fn respawns_driver_after_idle() {
     local
         .run_until(async {
             let (mut running, mut rx, mut ctrl, _conv) = start_system(vec![], None);
-            running.send_user_text(&"t1".into(), "hello").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "hello")
+                .await;
             let _req = ctrl.next_request().await;
             ctrl.send_text("hi");
             ctrl.finish();
@@ -688,7 +719,9 @@ async fn respawns_driver_after_idle() {
             assert!(running.is_idle());
 
             // A new message respawns the driver; the history is intact.
-            running.send_user_text(&"t1".into(), "again").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "again")
+                .await;
             let req2 = ctrl.next_request().await;
             assert!(req2.chat_history.into_iter().any(|m| {
                 if let infinity_provider_protocol::message::Message::User { content } = &m
@@ -719,7 +752,7 @@ async fn compaction_during_tool_call_corrupts_history() {
             // 1. User sends input, model responds with an async tool call and
             //    usage above the compaction threshold.
             running
-                .send_user_text(&"t1".into(), "do something")
+                .send_user_text(ThreadId::from_ref("t1"), "do something")
                 .await;
             let _req = ctrl.next_request().await;
             ctrl.send_tool_call("tc-1", "async_tool", serde_json::json!({}));
@@ -752,7 +785,7 @@ async fn compaction_during_tool_call_corrupts_history() {
             // 3. After CompactionComplete is applied, trigger a model call so
             //    we can inspect the history.
             running
-                .send_user_text(&"t1".into(), "what happened?")
+                .send_user_text(ThreadId::from_ref("t1"), "what happened?")
                 .await;
             let req_final =
                 tokio::time::timeout(std::time::Duration::from_secs(5), ctrl.next_request())
@@ -802,7 +835,9 @@ async fn compaction_does_not_retrigger_after_applied() {
                 start_system(vec![Box::new(AsyncTool)], Some(small_context_entry()));
 
             // 1. User input → async tool call + high usage → compaction triggers.
-            running.send_user_text(&"t1".into(), "do something").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "do something")
+                .await;
             let _req = ctrl.next_request().await;
             ctrl.send_tool_call("tc-1", "async_tool", serde_json::json!({}));
             ctrl.finish_with_usage(high_usage());
@@ -864,7 +899,9 @@ async fn second_compaction_during_tool_call_after_prior_compaction() {
                 start_system(vec![Box::new(AsyncTool)], Some(small_context_entry()));
 
             // ── FIRST ROUND: text response + compaction (no tool call) ──
-            running.send_user_text(&"t1".into(), "first message").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "first message")
+                .await;
             let _req1 = ctrl.next_request().await;
             ctrl.send_text("first response");
             ctrl.finish_with_usage(high_usage());
@@ -874,18 +911,24 @@ async fn second_compaction_during_tool_call_after_prior_compaction() {
             handle_compaction_child(&mut ctrl, &compaction_req1, "Summary of first round");
 
             // Build more history after the first compaction.
-            running.send_user_text(&"t1".into(), "second message").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "second message")
+                .await;
             let _req2 = ctrl.next_request().await;
             ctrl.send_text("second response");
             ctrl.finish();
 
-            running.send_user_text(&"t1".into(), "third message").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "third message")
+                .await;
             let _req3 = ctrl.next_request().await;
             ctrl.send_text("third response");
             ctrl.finish();
 
             // ── SECOND ROUND: tool call + compaction after prior compaction ──
-            running.send_user_text(&"t1".into(), "fourth message").await;
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "fourth message")
+                .await;
             let _req4 = ctrl.next_request().await;
             ctrl.send_tool_call("tc-2", "async_tool", serde_json::json!({}));
             ctrl.finish_with_usage(high_usage());
@@ -948,14 +991,14 @@ async fn compaction_inside_child_thread_does_not_panic() {
 
             // ── Build root history ──
             running
-                .send_user_text(&"root".into(), "root message one")
+                .send_user_text(ThreadId::from_ref("root"), "root message one")
                 .await;
             let _req = ctrl.next_request().await;
             ctrl.send_text("root response one");
             ctrl.finish();
 
             running
-                .send_user_text(&"root".into(), "root message two")
+                .send_user_text(ThreadId::from_ref("root"), "root message two")
                 .await;
             let _req = ctrl.next_request().await;
             ctrl.send_text("root response two");
@@ -963,7 +1006,7 @@ async fn compaction_inside_child_thread_does_not_panic() {
 
             // ── Spawn a child thread from root ──
             running
-                .send_user_text(&"root".into(), "spawn a child")
+                .send_user_text(ThreadId::from_ref("root"), "spawn a child")
                 .await;
             let _req = ctrl.next_request().await;
             ctrl.send_tool_call(
@@ -997,7 +1040,7 @@ async fn compaction_inside_child_thread_does_not_panic() {
             // ── Another round in the child: tool call + high usage triggers
             //    compaction inside the child thread. ──
             running
-                .send_user_text(&child_thread_id.clone().into(), "child follow-up")
+                .send_user_text(ThreadId::from_ref(&child_thread_id), "child follow-up")
                 .await;
             let _req = ctrl.next_request().await;
             ctrl.send_tool_call("tc-child", "async_tool", serde_json::json!({}));
@@ -1048,7 +1091,10 @@ async fn compaction_inside_child_thread_does_not_panic() {
 
             // ── After compaction applies, inspect the child's history ──
             running
-                .send_user_text(&child_thread_id.clone().into(), "message after compaction")
+                .send_user_text(
+                    ThreadId::from_ref(&child_thread_id),
+                    "message after compaction",
+                )
                 .await;
             let post_compaction_req =
                 tokio::time::timeout(std::time::Duration::from_secs(5), ctrl.next_request())

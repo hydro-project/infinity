@@ -384,7 +384,7 @@ where
     pub fn start_with_observer<O, F>(self, make_observer: F) -> RunningSystem<O::SubscribeRequest>
     where
         O: ThreadObserver + 'static,
-        F: Fn(&ThreadId) -> O + 'static,
+        F: Fn(&ThreadId<str>) -> O + 'static,
     {
         self.build_local().start_with_observer(make_observer)
     }

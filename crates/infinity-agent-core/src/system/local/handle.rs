@@ -41,7 +41,7 @@ pub(crate) struct HandleObserver {
 impl ThreadObserver for HandleObserver {
     type SubscribeRequest = HandleSubscribeRequest;
 
-    fn on_event(&self, thread_id: &ThreadId, event: &AgentEvent) {
+    fn on_event(&self, thread_id: &ThreadId<str>, event: &AgentEvent) {
         let mut subs = self.subscribers.borrow_mut();
         if let Some(list) = subs.get_mut(thread_id) {
             // Prune handles that have been dropped.
@@ -54,7 +54,7 @@ impl ThreadObserver for HandleObserver {
 
     fn on_subscribe(
         &self,
-        thread_id: &ThreadId,
+        thread_id: &ThreadId<str>,
         request: HandleSubscribeRequest,
         snapshot: ReplaySnapshot,
     ) {
@@ -62,7 +62,7 @@ impl ThreadObserver for HandleObserver {
         let _ = request.replay_tx.send(snapshot);
         self.subscribers
             .borrow_mut()
-            .entry(thread_id.clone())
+            .entry(thread_id.to_owned())
             .or_default()
             .push(request.events_tx);
     }
@@ -85,7 +85,7 @@ pub struct ThreadHandle {
 
 impl ThreadHandle {
     /// The thread this handle is attached to.
-    pub fn thread_id(&self) -> &ThreadId {
+    pub fn thread_id(&self) -> &ThreadId<str> {
         &self.thread_id
     }
 
@@ -126,7 +126,7 @@ impl ThreadHandle {
 /// down requires owning it, so a borrowed system's router is alive.
 pub(crate) async fn attach(
     running: &RunningSystem<HandleSubscribeRequest>,
-    thread_id: &ThreadId,
+    thread_id: &ThreadId<str>,
 ) -> ThreadHandle {
     let (events_tx, events) = mpsc::unbounded_channel();
     let (replay_tx, replay_rx) = oneshot::channel();
@@ -141,7 +141,7 @@ pub(crate) async fn attach(
         .await
         .expect("bug: subscribe acked without a replay");
     ThreadHandle {
-        thread_id: thread_id.clone(),
+        thread_id: thread_id.to_owned(),
         sender: running.sender(),
         events,
         replay,
@@ -150,7 +150,7 @@ pub(crate) async fn attach(
 
 /// A per-system factory for [`HandleObserver`]s sharing one subscriber
 /// registry (so subscriptions survive driver respawns).
-pub(crate) fn handle_observer_factory() -> impl Fn(&ThreadId) -> HandleObserver + 'static {
+pub(crate) fn handle_observer_factory() -> impl Fn(&ThreadId<str>) -> HandleObserver + 'static {
     let subscribers: Rc<RefCell<HashMap<ThreadId, Vec<mpsc::UnboundedSender<AgentEvent>>>>> =
         Default::default();
     move |_thread_id| HandleObserver {

@@ -150,7 +150,7 @@ impl DsqlConversationStore {
 impl ConversationStore for DsqlConversationStore {
     type Error = DsqlError;
 
-    async fn ensure_root_thread(&self, thread_id: &ThreadId) -> Result<(), DsqlError> {
+    async fn ensure_root_thread(&self, thread_id: &ThreadId<str>) -> Result<(), DsqlError> {
         sqlx::query(
             r#"INSERT INTO thread_hierarchy (thread_id, parent_thread_id, root_thread_id)
             VALUES ($1, NULL, $1)
@@ -163,7 +163,7 @@ impl ConversationStore for DsqlConversationStore {
         Ok(())
     }
 
-    async fn thread_exists(&self, thread_id: &ThreadId) -> Result<bool, DsqlError> {
+    async fn thread_exists(&self, thread_id: &ThreadId<str>) -> Result<bool, DsqlError> {
         sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS (SELECT 1 FROM thread_hierarchy WHERE thread_id = $1)",
         )
@@ -175,7 +175,7 @@ impl ConversationStore for DsqlConversationStore {
 
     async fn load_history_up_to(
         &self,
-        session_id: &ThreadId,
+        session_id: &ThreadId<str>,
         start_from: Option<i64>,
         up_to: Option<i64>,
     ) -> Result<Vec<InfinityMessage>, DsqlError> {
@@ -220,7 +220,7 @@ impl ConversationStore for DsqlConversationStore {
 
     async fn append_messages(
         &self,
-        session_id: &ThreadId,
+        session_id: &ThreadId<str>,
         messages: Vec<(InfinityMessage, String)>,
     ) -> Result<(), DsqlError> {
         if messages.is_empty() {
@@ -279,7 +279,7 @@ impl ConversationStore for DsqlConversationStore {
 
     async fn spawn_thread(
         &self,
-        parent_thread_id: &ThreadId,
+        parent_thread_id: &ThreadId<str>,
         spawn_tool_call_id: &str,
         is_for_subscription_event: bool,
         spawn_order_override: Option<usize>,
@@ -325,7 +325,7 @@ impl ConversationStore for DsqlConversationStore {
         Ok(new_thread_id)
     }
 
-    async fn is_thread_closed(&self, thread_id: &ThreadId) -> Result<bool, DsqlError> {
+    async fn is_thread_closed(&self, thread_id: &ThreadId<str>) -> Result<bool, DsqlError> {
         let row: Option<(bool,)> =
             sqlx::query_as(r#"SELECT closed FROM thread_hierarchy WHERE thread_id = $1"#)
                 .bind(thread_id.as_str())
@@ -335,7 +335,7 @@ impl ConversationStore for DsqlConversationStore {
         Ok(row.map(|(c,)| c).unwrap_or(false))
     }
 
-    async fn close_thread(&self, thread_id: &ThreadId) -> Result<(), DsqlError> {
+    async fn close_thread(&self, thread_id: &ThreadId<str>) -> Result<(), DsqlError> {
         sqlx::query(r#"UPDATE thread_hierarchy SET closed = TRUE WHERE thread_id = $1"#)
             .bind(thread_id.as_str())
             .execute(&self.pool)
@@ -344,7 +344,10 @@ impl ConversationStore for DsqlConversationStore {
         Ok(())
     }
 
-    async fn is_subscription_event_thread(&self, thread_id: &ThreadId) -> Result<bool, DsqlError> {
+    async fn is_subscription_event_thread(
+        &self,
+        thread_id: &ThreadId<str>,
+    ) -> Result<bool, DsqlError> {
         let row: Option<(bool,)> = sqlx::query_as(
             r#"SELECT is_subscription_event FROM thread_hierarchy WHERE thread_id = $1"#,
         )
@@ -357,7 +360,7 @@ impl ConversationStore for DsqlConversationStore {
 
     async fn get_thread_parent_info(
         &self,
-        thread_id: &ThreadId,
+        thread_id: &ThreadId<str>,
     ) -> Result<Option<(ThreadId, String)>, DsqlError> {
         let row = sqlx::query(
             r#"SELECT parent_thread_id, spawn_tool_call_id FROM thread_hierarchy WHERE thread_id = $1"#,
@@ -377,7 +380,7 @@ impl ConversationStore for DsqlConversationStore {
 
     async fn get_ancestor_chain(
         &self,
-        thread_id: &ThreadId,
+        thread_id: &ThreadId<str>,
     ) -> Result<Vec<(ThreadId, i64)>, DsqlError> {
         let mut result: Vec<(ThreadId, i64)> = Vec::new();
         let mut current = thread_id.as_str().to_owned();
@@ -409,7 +412,7 @@ impl ConversationStore for DsqlConversationStore {
 
     async fn save_compaction_summary(
         &self,
-        thread_id: &ThreadId,
+        thread_id: &ThreadId<str>,
         summary: &str,
         up_to_order: i64,
     ) -> Result<(), DsqlError> {
@@ -429,7 +432,7 @@ impl ConversationStore for DsqlConversationStore {
 
     async fn load_latest_compaction_summary_up_to(
         &self,
-        thread_id: &ThreadId,
+        thread_id: &ThreadId<str>,
         up_to_order: Option<i64>,
     ) -> Result<Option<(String, i64)>, DsqlError> {
         let row = match up_to_order {
@@ -463,7 +466,7 @@ impl ConversationStore for DsqlConversationStore {
         }))
     }
 
-    async fn is_compaction_thread(&self, thread_id: &ThreadId) -> Result<bool, DsqlError> {
+    async fn is_compaction_thread(&self, thread_id: &ThreadId<str>) -> Result<bool, DsqlError> {
         let row: Option<(bool,)> =
             sqlx::query_as(r#"SELECT is_compaction FROM thread_hierarchy WHERE thread_id = $1"#)
                 .bind(thread_id.as_str())
@@ -473,7 +476,7 @@ impl ConversationStore for DsqlConversationStore {
         Ok(row.map(|(v,)| v).unwrap_or(false))
     }
 
-    async fn mark_thread_as_compaction(&self, thread_id: &ThreadId) -> Result<(), DsqlError> {
+    async fn mark_thread_as_compaction(&self, thread_id: &ThreadId<str>) -> Result<(), DsqlError> {
         sqlx::query(r#"UPDATE thread_hierarchy SET is_compaction = TRUE WHERE thread_id = $1"#)
             .bind(thread_id.as_str())
             .execute(&self.pool)
@@ -482,7 +485,10 @@ impl ConversationStore for DsqlConversationStore {
         Ok(())
     }
 
-    async fn get_thread_spawn_order(&self, thread_id: &ThreadId) -> Result<Option<i64>, DsqlError> {
+    async fn get_thread_spawn_order(
+        &self,
+        thread_id: &ThreadId<str>,
+    ) -> Result<Option<i64>, DsqlError> {
         let row: Option<(Option<i64>,)> = sqlx::query_as(
             r#"SELECT spawn_message_order FROM thread_hierarchy WHERE thread_id = $1"#,
         )

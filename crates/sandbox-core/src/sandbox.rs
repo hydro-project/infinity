@@ -15,7 +15,7 @@ pub struct SpawnedCommand {
 /// they can set up the repository and build a [`RepoState`].
 pub struct CloneContext<'a> {
     /// The group_id (thread id) initializing the repo.
-    pub group_id: &'a ThreadId,
+    pub group_id: &'a ThreadId<str>,
     /// The path (or remote URI) as originally requested by the caller,
     /// before any backend resolution. Providers that use their own root
     /// markers should walk up from here (and return the root they find via
@@ -182,7 +182,7 @@ pub trait SandboxBackend: Send + Sync {
     async fn push_sandbox(
         &self,
         sandbox_dir: &Path,
-        group_id: &ThreadId,
+        group_id: &ThreadId<str>,
         description: Option<&str>,
     ) -> Result<(), SandboxError>;
 
@@ -195,7 +195,10 @@ pub trait SandboxBackend: Send + Sync {
     /// On the local backend this runs `jj workspace forget` and deletes the
     /// cached directory. On the remote backend this is a no-op since sandboxes
     /// are ephemeral temp dirs cleaned up after each invocation.
-    async fn cleanup_sandbox_permanently(&self, _group_id: &ThreadId) -> Result<(), SandboxError> {
+    async fn cleanup_sandbox_permanently(
+        &self,
+        _group_id: &ThreadId<str>,
+    ) -> Result<(), SandboxError> {
         Ok(())
     }
 

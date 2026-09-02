@@ -52,9 +52,13 @@ impl<Sub: Send + 'static> SubscribeHandle<Sub> {
     /// message's events. A driver that exits while requests race in hands
     /// them back to the router, so installation is reliable; `false` is
     /// returned only if the whole system was shut down.
-    pub async fn subscribe(&self, thread_id: &ThreadId, request: Sub) -> bool {
+    pub async fn subscribe(&self, thread_id: &ThreadId<str>, request: Sub) -> bool {
         let (ack_tx, ack_rx) = oneshot::channel();
-        if self.tx.send((thread_id.clone(), request, ack_tx)).is_err() {
+        if self
+            .tx
+            .send((thread_id.to_owned(), request, ack_tx))
+            .is_err()
+        {
             return false;
         }
         // An error means the ack sender was dropped mid-shutdown — the
@@ -98,14 +102,14 @@ impl<Sub: Send + 'static> RunningSystem<Sub> {
     }
 
     /// Convenience: send plain user text to a thread.
-    pub async fn send_user_text(&self, thread_id: &ThreadId, text: impl Into<String>) {
-        let msg = InputMessage::user_text(thread_id.clone(), text);
+    pub async fn send_user_text(&self, thread_id: &ThreadId<str>, text: impl Into<String>) {
+        let msg = InputMessage::user_text(thread_id.to_owned(), text);
         self.send(msg, &uuid::Uuid::new_v4().to_string()).await
     }
 
     /// Attach a subscriber to a thread; resolves once the subscriber is
     /// installed. See [`SubscribeHandle::subscribe`].
-    pub async fn subscribe(&self, thread_id: &ThreadId, request: Sub) {
+    pub async fn subscribe(&self, thread_id: &ThreadId<str>, request: Sub) {
         assert!(
             self.subscribe_handle().subscribe(thread_id, request).await,
             "bug: router exited while the system was alive"
@@ -176,7 +180,7 @@ where
     pub fn start_with_observer<O, F>(self, make_observer: F) -> RunningSystem<O::SubscribeRequest>
     where
         O: ThreadObserver + 'static,
-        F: Fn(&ThreadId) -> O + 'static,
+        F: Fn(&ThreadId<str>) -> O + 'static,
     {
         self.start_inner(make_observer)
     }
@@ -193,7 +197,7 @@ where
     pub(crate) fn start_inner<O, F>(self, make_observer: F) -> RunningSystem<O::SubscribeRequest>
     where
         O: ThreadObserver + 'static,
-        F: Fn(&ThreadId) -> O + 'static,
+        F: Fn(&ThreadId<str>) -> O + 'static,
     {
         let sender = self.system.inner.sender.clone();
         let (subscribe_tx, subscribe_rx) = mpsc::unbounded_channel();
@@ -245,7 +249,7 @@ async fn route_loop<C, S, H, O, F>(
     S: StateStore + 'static,
     H: HttpClient + 'static,
     O: ThreadObserver + 'static,
-    F: Fn(&ThreadId) -> O + 'static,
+    F: Fn(&ThreadId<str>) -> O + 'static,
 {
     let mut workers: HashMap<ThreadId, WorkerChannels<O::SubscribeRequest>> = HashMap::new();
     let mut subscribe_closed = false;
@@ -416,7 +420,9 @@ mod tests {
                 let (mut running, mut rx, mut ctrl, conv) = start_system(vec![], None);
 
                 // Create a real thread so the system is not trivially empty.
-                running.send_user_text(&"t1".into(), "hello").await;
+                running
+                    .send_user_text(rap_protocol::ThreadId::from_ref("t1"), "hello")
+                    .await;
                 let _req = ctrl.next_request().await;
                 ctrl.send_text("hi");
                 ctrl.finish();
@@ -455,7 +461,8 @@ mod tests {
                     );
                 }
                 assert!(
-                    conv.thread_info(&"ghost".into()).is_none(),
+                    conv.thread_info(rap_protocol::ThreadId::from_ref("ghost"))
+                        .is_none(),
                     "a dropped event must not create thread records"
                 );
             })
@@ -470,12 +477,17 @@ mod tests {
         local
             .run_until(async {
                 let (running, mut rx, mut ctrl, conv) = start_system(vec![], None);
-                running.send_user_text(&"brand-new".into(), "hello").await;
+                running
+                    .send_user_text(rap_protocol::ThreadId::from_ref("brand-new"), "hello")
+                    .await;
                 let _req = ctrl.next_request().await;
                 ctrl.send_text("created");
                 ctrl.finish();
                 collect_until_finished(&mut rx).await;
-                assert!(conv.thread_info(&"brand-new".into()).is_some());
+                assert!(
+                    conv.thread_info(rap_protocol::ThreadId::from_ref("brand-new"))
+                        .is_some()
+                );
             })
             .await;
     }
@@ -491,7 +503,9 @@ mod tests {
             .run_until(async {
                 let (mut running, mut rx, mut ctrl, _conv) = start_system(vec![], None);
 
-                running.send_user_text(&"t1".into(), "hello").await;
+                running
+                    .send_user_text(rap_protocol::ThreadId::from_ref("t1"), "hello")
+                    .await;
                 let _req = ctrl.next_request().await;
                 ctrl.send_text("hi");
                 ctrl.finish();
@@ -547,7 +561,9 @@ mod tests {
         local
             .run_until(async {
                 let (running, mut rx, mut ctrl, conv) = start_system(vec![], None);
-                running.send_user_text(&"t1".into(), "hello").await;
+                running
+                    .send_user_text(rap_protocol::ThreadId::from_ref("t1"), "hello")
+                    .await;
                 let _req = ctrl.next_request().await;
                 ctrl.send_text("partial answer");
                 loop {
@@ -561,7 +577,7 @@ mod tests {
 
                 use crate::traits::ConversationStore;
                 let history = conv
-                    .load_history_up_to(&"t1".into(), None, None)
+                    .load_history_up_to(rap_protocol::ThreadId::from_ref("t1"), None, None)
                     .await
                     .expect("load history");
                 assert!(

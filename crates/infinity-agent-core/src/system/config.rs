@@ -37,7 +37,7 @@ pub struct ThreadConfig<M: InputSender, H: HttpClient> {
 /// long-lived system serve many differently-configured conversations.
 #[async_trait(?Send)]
 pub trait ThreadConfigSource<M: InputSender, H: HttpClient> {
-    async fn resolve(&self, thread_id: &ThreadId) -> Result<ThreadConfig<M, H>, BoxError>;
+    async fn resolve(&self, thread_id: &ThreadId<str>) -> Result<ThreadConfig<M, H>, BoxError>;
 }
 
 /// The same fixed configuration for every thread — what
@@ -53,7 +53,7 @@ pub struct StaticThreadConfig<M: InputSender, H: HttpClient> {
 impl<M: InputSender + 'static, H: HttpClient + 'static> ThreadConfigSource<M, H>
     for StaticThreadConfig<M, H>
 {
-    async fn resolve(&self, _thread_id: &ThreadId) -> Result<ThreadConfig<M, H>, BoxError> {
+    async fn resolve(&self, _thread_id: &ThreadId<str>) -> Result<ThreadConfig<M, H>, BoxError> {
         Ok(ThreadConfig {
             tools: self.tools.clone(),
             extra_system_prompt: self.extra_system_prompt.clone(),

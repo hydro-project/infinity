@@ -395,7 +395,7 @@ where
         &self,
         input_msg: &InputMessage,
         observer: &O,
-        thread_id: &ThreadId,
+        thread_id: &ThreadId<str>,
     ) {
         if let Some(event) = event_processor::input_event(&self.history, input_msg) {
             observer.on_event(thread_id, &event);
@@ -588,7 +588,7 @@ where
         &self,
         event: CompletionEvent,
         observer: &impl ThreadObserver,
-        thread_id: &ThreadId,
+        thread_id: &ThreadId<str>,
         action: &mut Option<CompletionAction>,
         usage: &mut Option<Usage>,
     ) {
@@ -687,7 +687,9 @@ mod tests {
             .run_until(async {
                 let (mut running, mut rx, mut ctrl, _conv) =
                     start_system(vec![Box::new(FailingTool)], None);
-                running.send_user_text(&"t1".into(), "use tool").await;
+                running
+                    .send_user_text(rap_protocol::ThreadId::from_ref("t1"), "use tool")
+                    .await;
                 let _req = ctrl.next_request().await;
                 ctrl.send_tool_call("call-1", "failing_tool", serde_json::json!({}));
                 ctrl.finish();

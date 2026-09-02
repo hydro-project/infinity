@@ -137,7 +137,10 @@ async fn create_session_and_chat(h: &mut TestHarness, keeps_session_alive: bool)
 
 /// Poll until the session's RAP servers have been stopped (the session-idle
 /// teardown path ran), or time out.
-async fn wait_for_server_teardown(manager: &SharedSessionManager, session_id: &ThreadId) -> bool {
+async fn wait_for_server_teardown(
+    manager: &SharedSessionManager,
+    session_id: &ThreadId<str>,
+) -> bool {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
         {

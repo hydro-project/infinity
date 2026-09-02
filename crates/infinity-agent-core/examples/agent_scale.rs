@@ -157,13 +157,13 @@ struct CountObserver {
 impl ThreadObserver for CountObserver {
     type SubscribeRequest = ();
 
-    fn on_event(&self, _thread_id: &ThreadId, event: &AgentEvent) {
+    fn on_event(&self, _thread_id: &ThreadId<str>, event: &AgentEvent) {
         if matches!(event, AgentEvent::CompletionFinished { .. }) {
             self.finished.set(self.finished.get() + 1);
         }
     }
 
-    fn on_subscribe(&self, _thread_id: &ThreadId, _request: (), _snapshot: ReplaySnapshot) {}
+    fn on_subscribe(&self, _thread_id: &ThreadId<str>, _request: (), _snapshot: ReplaySnapshot) {}
 }
 
 // ── Measurement helpers ──

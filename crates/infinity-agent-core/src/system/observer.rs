@@ -35,7 +35,7 @@ pub trait ThreadObserver {
 
     /// A display event was emitted. Called synchronously at the emission
     /// point; keep this fast (fan-out, buffering).
-    fn on_event(&self, thread_id: &ThreadId, event: &AgentEvent);
+    fn on_event(&self, thread_id: &ThreadId<str>, event: &AgentEvent);
 
     /// A subscriber attached to a running thread (local driver mode only;
     /// step-mode embeddings never receive this call).
@@ -63,7 +63,7 @@ pub trait ThreadObserver {
     /// race.
     fn on_subscribe(
         &self,
-        _thread_id: &ThreadId,
+        _thread_id: &ThreadId<str>,
         _request: Self::SubscribeRequest,
         _snapshot: ReplaySnapshot,
     ) {
@@ -95,9 +95,9 @@ impl EventCollector {
 impl ThreadObserver for EventCollector {
     type SubscribeRequest = ();
 
-    fn on_event(&self, thread_id: &ThreadId, event: &AgentEvent) {
+    fn on_event(&self, thread_id: &ThreadId<str>, event: &AgentEvent) {
         self.events
             .borrow_mut()
-            .push((thread_id.clone(), event.clone()));
+            .push((thread_id.to_owned(), event.clone()));
     }
 }

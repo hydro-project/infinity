@@ -23,7 +23,7 @@ fn wakeup_message(
     id: &str,
     call_id: Option<String>,
     text: String,
-    group_id: &ThreadId,
+    group_id: &ThreadId<str>,
 ) -> InputMessage {
     InputMessage {
         content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
@@ -31,7 +31,7 @@ fn wakeup_message(
             call_id,
             content: vec![ToolResultContent::Text(Text { text })],
         })),
-        group_id: group_id.clone(),
+        group_id: group_id.to_owned(),
         metadata: None,
         synthetic: None,
         display_as: None,
