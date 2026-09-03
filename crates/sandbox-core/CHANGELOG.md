@@ -421,7 +421,7 @@
 
 <csr-read-only-do-not-edit/>
 
- - 91 commits contributed to the release.
+ - 92 commits contributed to the release.
  - 37 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 10 unique issues were worked on: [#10](https://github.com/hydro-project/infinity/issues/10), [#107](https://github.com/hydro-project/infinity/issues/107), [#113](https://github.com/hydro-project/infinity/issues/113), [#30](https://github.com/hydro-project/infinity/issues/30), [#61](https://github.com/hydro-project/infinity/issues/61), [#65](https://github.com/hydro-project/infinity/issues/65), [#75](https://github.com/hydro-project/infinity/issues/75), [#77](https://github.com/hydro-project/infinity/issues/77), [#78](https://github.com/hydro-project/infinity/issues/78), [#8](https://github.com/hydro-project/infinity/issues/8)
 
@@ -452,6 +452,7 @@
  * **[#8](https://github.com/hydro-project/infinity/issues/8)**
     - Add automated THIRD-PARTY file generation with license enforcement ([`e2e0719`](https://github.com/hydro-project/infinity/commit/e2e0719faebbffc72ec7bd8a8b3b02223da8ba0e))
  * **Uncategorized**
+    - Release infinity-agent-core v0.1.0, infinity-mcp-bridge v0.1.0, infinity-rap-bridge v0.1.0, infinity-daemon v0.1.0, infinity-agent-cli v0.1.0, sandbox-core v0.1.0, sandbox-local v0.1.0, sandbox-remote v0.1.0 ([`7599fbb`](https://github.com/hydro-project/infinity/commit/7599fbbdfad042a6fd85c23002bf937fecbe7b45))
     - Release infinity-provider-protocol v0.1.0, infinity-provider-bedrock v0.1.0, infinity-provider-rig v0.1.0, infinity-agent-core v0.1.0, infinity-mcp-bridge v0.1.0, infinity-rap-bridge v0.1.0, infinity-daemon v0.1.0, infinity-agent-cli v0.1.0, sandbox-core v0.1.0, sandbox-local v0.1.0, sandbox-remote v0.1.0 ([`7e1cd1d`](https://github.com/hydro-project/infinity/commit/7e1cd1df69d8fce402bef4085e9d17f871994503))
     - Release rap-protocol v0.1.0, rap-client v0.1.0, rap-steering-server v0.1.0, rap-github-event-poller v0.1.0, infinity-protocol v0.1.0, infinity-provider-protocol v0.1.0, infinity-provider-bedrock v0.1.0, infinity-provider-rig v0.1.0, infinity-agent-core v0.1.0, infinity-mcp-bridge v0.1.0, infinity-rap-bridge v0.1.0, infinity-daemon v0.1.0, infinity-agent-cli v0.1.0, sandbox-core v0.1.0, sandbox-local v0.1.0, sandbox-remote v0.1.0 ([`dd8c7f4`](https://github.com/hydro-project/infinity/commit/dd8c7f49028a26052d785b4241f9ade125f0afb3))
     - Use TempDir with Drop for per-sandbox TMPDIR + update agent docs ([`49fda2e`](https://github.com/hydro-project/infinity/commit/49fda2e8aea86b8e5eb90da4cc9298b0d5a8fb47))
