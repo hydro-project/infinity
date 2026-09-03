@@ -313,17 +313,48 @@ pub fn usage_from_rig(usage: rig::completion::Usage) -> proto::Usage {
 /// Convert a rig completion error. Variants the protocol models map 1:1;
 /// transport-level errors (HTTP, URL parsing) are stringified into
 /// `ProviderError`.
+///
+/// Rig does not expose structured retry information, so provider errors are
+/// classified from their message: known rate-limit and overflow phrasings
+/// used by the common OpenAI-compatible backends are recognized, everything
+/// else defaults to [`proto::ErrorClass::Fatal`].
 pub fn error_from_rig(error: rig::completion::CompletionError) -> proto::CompletionError {
     use rig::completion::CompletionError as RigError;
     match error {
         RigError::RequestError(e) => proto::CompletionError::RequestError(e),
         RigError::ResponseError(e) => proto::CompletionError::ResponseError(e),
-        RigError::ProviderError(e) => proto::CompletionError::ProviderError(e),
+        RigError::ProviderError(e) => {
+            let class = classify_provider_message(&e);
+            proto::CompletionError::provider(class, e)
+        }
         RigError::JsonError(e) => proto::CompletionError::JsonError(e),
         other @ (RigError::HttpError(_) | RigError::UrlError(_)) => {
-            proto::CompletionError::ProviderError(other.to_string())
+            proto::CompletionError::provider(proto::ErrorClass::Transient, other.to_string())
         }
     }
+}
+
+fn classify_provider_message(message: &str) -> proto::ErrorClass {
+    let msg = message.to_ascii_lowercase();
+    if msg.contains("rate limit")
+        || msg.contains("too many requests")
+        || msg.contains("please try again")
+        || msg.contains("overloaded")
+    {
+        return proto::ErrorClass::Throttled;
+    }
+    if msg.contains("context length")
+        || msg.contains("context window")
+        || msg.contains("too long")
+        || msg.contains("too large")
+        || msg.contains("maximum context")
+    {
+        return proto::ErrorClass::ContextOverflow;
+    }
+    if msg.contains("internal server error") || msg.contains("service unavailable") {
+        return proto::ErrorClass::Transient;
+    }
+    proto::ErrorClass::Fatal
 }
 
 #[cfg(test)]

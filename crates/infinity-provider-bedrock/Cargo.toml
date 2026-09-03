@@ -23,3 +23,13 @@ tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true
+
+[features]
+# Tests that talk to the real Bedrock service using your local AWS
+# credentials: `cargo test -p infinity-provider-bedrock --features live-tests`.
+live-tests = []
+
+[dev-dependencies]
+futures-util = { workspace = true }
+aws-smithy-runtime-api = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

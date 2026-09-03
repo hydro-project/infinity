@@ -19,7 +19,7 @@ use crate::message::{
 use crate::system::AgentEvent;
 use crate::tools::{Tool, ToolContext};
 use crate::traits::{ConversationStore, InputSender, StateStore};
-use infinity_provider_protocol::{FinalResponse, ModelProvider};
+use infinity_provider_protocol::{ErrorClass, FinalResponse, ModelProvider};
 
 // ── Public types ──
 
@@ -147,7 +147,27 @@ pub struct HistoryManager<C: ConversationStore, S: StateStore> {
     pub history: RefCell<Vec<InfinityMessage>>,
     processed_message_ids: RefCell<HashSet<String>>,
     metadata: RefCell<Option<serde_json::Value>>,
+    // Un-persisted content moves through three phases:
+    //
+    //   1. `unvalidated_items` — inputs (user text, tool results, injected
+    //      synthetic results) that the model has not produced output for
+    //      yet. They are part of the in-memory `history` (so completions
+    //      include them) but are **not** persisted by [`Self::sync`]: one
+    //      of them could be the oversized input that blows up the model's
+    //      context window, and persisting it would permanently wedge the
+    //      thread on a poison message.
+    //   2. `pending_items` — known-safe content awaiting persistence.
+    //      Inputs are promoted here by
+    //      [`Self::mark_inputs_model_validated`] as soon as the model
+    //      streams any output for them (proof the context did not
+    //      overflow); model-produced content is appended here directly.
+    //   3. Synced — persisted to the conversation store by [`Self::sync`].
+    //
+    // Sequentiality invariant: known-safe content is never appended while
+    // unvalidated items exist (enforced by an assert), so `pending_items`
+    // always precedes `unvalidated_items` in history order.
     pending_items: RefCell<Vec<PendingItem>>,
+    unvalidated_items: RefCell<Vec<PendingItem>>,
     /// until a turn is complete the data lives here. If errors occur,
     /// it'll get discarded, if the turn completes, then it will get flushed to
     /// _both_ pending_items and history.
@@ -210,6 +230,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             processed_message_ids: RefCell::new(processed_message_ids),
             metadata: RefCell::new(metadata),
             pending_items: RefCell::new(Vec::new()),
+            unvalidated_items: RefCell::new(Vec::new()),
             turn_buffer: RefCell::new(Vec::new()),
             interrupted_tool_calls: RefCell::new(Vec::new()),
             compacted_up_to: RefCell::new(compacted_up_to),
@@ -264,7 +285,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             self.interrupt_pending_tool_call();
         }
 
-        self.append_pending(message, message_id.clone());
+        self.append_unvalidated(message, message_id.clone());
         self.processed_message_ids.borrow_mut().insert(message_id);
         Ok(true)
     }
@@ -319,13 +340,13 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                     call_id: tool_call.call_id.clone(),
                     content: vec![ToolResultContent::Text(
                         infinity_provider_protocol::message::Text {
-                            text: "Tool call interrupted by user".to_owned(),
+                            text: TOOL_CALL_INTERRUPTED_TEXT.to_owned(),
                         },
                     )],
                 },
                 display_segments: None,
             };
-            self.append_pending(synthetic_result, format!("{}-interrupted", tool_call.id));
+            self.append_unvalidated(synthetic_result, format!("{}-interrupted", tool_call.id));
         }
     }
 
@@ -378,10 +399,15 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     /// `pending_items`. Called at a flush point: a completed turn (`Final`) or
     /// a turn-ending tool call. After this, the buffered messages are part of
     /// committed history and will be persisted by the next [`Self::sync`].
+    ///
+    /// Callers must have promoted any unvalidated inputs first (see
+    /// [`Self::mark_inputs_model_validated`]): the buffered content is model
+    /// output, and model output for a request that included unvalidated
+    /// inputs is exactly the proof required to validate them.
     pub fn flush_turn(&self) {
         let drained = std::mem::take(&mut *self.turn_buffer.borrow_mut());
         for item in drained {
-            self.append_pending(item.message, item.message_id);
+            self.append_known_safe(item.message, item.message_id);
         }
     }
 
@@ -435,10 +461,38 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             .collect()
     }
 
-    fn append_pending(&self, message: InfinityMessage, message_id: String) {
+    /// Append an *input* (user text, tool result, injected synthetic
+    /// result) to the in-memory history. The item is not persistable yet:
+    /// it stays in `unvalidated_items` until the model produces output for
+    /// it (see [`Self::mark_inputs_model_validated`]).
+    fn append_unvalidated(&self, message: InfinityMessage, message_id: String) {
         assert!(
             self.turn_buffer.borrow().is_empty(),
-            "bug: append_pending called with un-flushed turn_buffer content"
+            "bug: append_unvalidated called with un-flushed turn_buffer content"
+        );
+
+        self.history.borrow_mut().push(message.clone());
+        self.unvalidated_items.borrow_mut().push(PendingItem {
+            message,
+            message_id,
+        });
+    }
+
+    /// Append *model-produced* content (assistant text/reasoning, tool
+    /// calls) to the in-memory history and the known-safe persistence
+    /// queue.
+    fn append_known_safe(&self, message: InfinityMessage, message_id: String) {
+        assert!(
+            self.turn_buffer.borrow().is_empty(),
+            "bug: append_known_safe called with un-flushed turn_buffer content"
+        );
+        // Sequentiality safeguard: known-safe content must never be
+        // committed while unvalidated inputs exist, otherwise sync() would
+        // persist the model's output without the inputs it answers.
+        assert!(
+            self.unvalidated_items.borrow().is_empty(),
+            "bug: committing model output while unvalidated inputs exist \
+             (mark_inputs_model_validated must run first)"
         );
 
         self.history.borrow_mut().push(message.clone());
@@ -446,6 +500,109 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             message,
             message_id,
         });
+    }
+
+    /// Promote all unvalidated inputs to the known-safe persistence queue.
+    ///
+    /// Called as soon as the model streams any output for a request that
+    /// included them: output means the request was accepted, i.e. the
+    /// context window did not overflow, so the inputs are safe to persist.
+    pub fn mark_inputs_model_validated(&self) {
+        let drained = std::mem::take(&mut *self.unvalidated_items.borrow_mut());
+        self.pending_items.borrow_mut().extend(drained);
+    }
+
+    /// Number of inputs still awaiting model validation.
+    pub fn unvalidated_len(&self) -> usize {
+        self.unvalidated_items.borrow().len()
+    }
+
+    /// Drop all unvalidated *user* inputs: items that are neither tool
+    /// results nor subscription events (those are placeholder-replaceable,
+    /// see [`Self::replace_unvalidated_tool_results`], and answering a tool
+    /// call is always better than stranding it). Dropped items are removed
+    /// from the in-memory history and their dedup IDs forgotten so a
+    /// redelivery is not silently ignored. Returns how many items were
+    /// dropped.
+    ///
+    /// Used when the model reports a context overflow: an oversized user
+    /// input has no safe substitute, and it must not be persisted (or kept
+    /// in memory) or the thread would be permanently wedged on it.
+    pub fn drop_unvalidated_user_inputs(&self) -> usize {
+        let mut unvalidated = self.unvalidated_items.borrow_mut();
+        if unvalidated.is_empty() {
+            return 0;
+        }
+        let mut history = self.history.borrow_mut();
+        // By the sequentiality invariant the unvalidated items are exactly
+        // the in-memory history tail.
+        let tail_start = history.len() - unvalidated.len();
+        let mut processed = self.processed_message_ids.borrow_mut();
+
+        let mut kept = Vec::new();
+        let mut dropped = 0;
+        for item in unvalidated.drain(..) {
+            if matches!(
+                item.message,
+                InfinityMessage::ToolResult { .. } | InfinityMessage::SubscriptionEvent { .. }
+            ) {
+                kept.push(item);
+            } else {
+                processed.remove(&item.message_id);
+                dropped += 1;
+            }
+        }
+        history.truncate(tail_start);
+        history.extend(kept.iter().map(|item| item.message.clone()));
+        *unvalidated = kept;
+        dropped
+    }
+
+    /// Replace the content of every unvalidated tool result — including the
+    /// bodies of subscription events, which carry a tool result — with
+    /// `placeholder` (in both the persistence queue and the in-memory
+    /// history). Returns `true` if at least one was replaced.
+    ///
+    /// Used on context overflow: unlike user text, a tool result cannot
+    /// simply be dropped without stranding its tool call (and a
+    /// subscription event should still record that an event arrived), but
+    /// both *can* be answered with a fixed placeholder. Bodies already
+    /// equal to the placeholder are not counted, so a second overflow
+    /// reports `false` and the caller falls back to dropping the inputs.
+    pub fn replace_unvalidated_tool_results(&self, placeholder: &str) -> bool {
+        let mut unvalidated = self.unvalidated_items.borrow_mut();
+        let mut history = self.history.borrow_mut();
+        // By the sequentiality invariant the unvalidated items are exactly
+        // the in-memory history tail.
+        let tail_start = history.len() - unvalidated.len();
+        let mut replaced = false;
+        for (i, item) in unvalidated.iter_mut().enumerate() {
+            let result = match &mut item.message {
+                InfinityMessage::ToolResult {
+                    result,
+                    display_segments,
+                } => {
+                    *display_segments = None;
+                    result
+                }
+                InfinityMessage::SubscriptionEvent { result, .. } => result.as_mut(),
+                _ => continue,
+            };
+            if matches!(
+                result.content.first(),
+                Some(ToolResultContent::Text(t)) if t.text == placeholder
+            ) {
+                continue;
+            }
+            result.content = vec![ToolResultContent::Text(
+                infinity_provider_protocol::message::Text {
+                    text: placeholder.to_owned(),
+                },
+            )];
+            history[tail_start + i] = item.message.clone();
+            replaced = true;
+        }
+        replaced
     }
 
     /// If the last buffered turn entry is an assistant text message, append
@@ -468,9 +625,10 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     }
 
     pub async fn sync(&self) -> Result<(), BoxError> {
-        // `sync` only persists committed (`pending_items`) content. Any in-flight
-        // turn must have been flushed or discarded before this point; otherwise a
-        // flush point was missed and buffered content would be silently lost.
+        // `sync` only persists known-safe (`pending_items`) content.
+        // Unvalidated inputs deliberately stay in memory (see the field
+        // docs); any in-flight turn must have been flushed or discarded
+        // before this point.
         assert!(
             self.turn_buffer.borrow().is_empty(),
             "bug: sync() called with un-flushed turn_buffer content"
@@ -600,9 +758,10 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         std::mem::take(&mut *self.interrupted_tool_calls.borrow_mut())
     }
 
-    /// Compute a safe spawn point that excludes trailing unanswered tool calls.
-    /// Returns an absolute store order (accounting for prior compaction offset
-    /// and ancestor prefix) suitable for use as `spawn_order_override`.
+    /// Compute a safe spawn point that excludes trailing unanswered tool calls
+    /// and any unvalidated (not yet persistable) inputs. Returns an absolute
+    /// store order (accounting for prior compaction offset and ancestor
+    /// prefix) suitable for use as `spawn_order_override`.
     pub fn safe_spawn_point(&self) -> usize {
         let history = self.history.borrow();
         // Walk the trailing run of tool calls / tool results (future-proofing
@@ -626,6 +785,11 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 _ => break,
             }
         }
+        // Child threads inherit history *from the store*, so the spawn
+        // point must also stay before any unvalidated inputs: they occupy
+        // the in-memory history tail but have not been persisted yet.
+        let validated_len = history.len() - self.unvalidated_items.borrow().len();
+        safe = safe.min(validated_len);
         // Convert in-memory index to absolute store order by adding the offset
         // from any prior compaction. The -1 accounts for the compaction summary
         // message occupying slot 0 in the in-memory history.
@@ -1148,6 +1312,76 @@ where
 pub const IMAGE_OMITTED_PLACEHOLDER: &str =
     "[image omitted: the current model does not support image inputs]";
 
+/// Fixed text substituted for a pending tool result when the model reports
+/// a context overflow ([`ErrorClass::ContextOverflow`]): the oversized
+/// result cannot be sent, but its tool call must still be answered, so the
+/// call is resolved with this placeholder instead.
+pub const TOOL_RESULT_TOO_LARGE_PLACEHOLDER: &str =
+    "[tool result omitted: it was too large for the model's remaining context window]";
+
+/// Text used to settle a tool call as interrupted. Injected when a user
+/// message arrives while the call is unanswered, and also substituted for a
+/// pending tool result during overflow recovery when user input had to be
+/// dropped: the next thing the model sees is a fresh user message, and
+/// "interrupted by user" describes that situation accurately, whereas a
+/// "too large" placeholder could mislead the model into re-running the
+/// tool.
+pub const TOOL_CALL_INTERRUPTED_TEXT: &str = "Tool call interrupted by user";
+
+/// Maximum number of retries for one completion round (transient and
+/// throttled provider errors).
+const MAX_COMPLETION_RETRIES: u32 = 10;
+/// Backoff before retrying a [`ErrorClass::Throttled`] provider error.
+const THROTTLED_RETRY_DELAY: Duration = Duration::from_secs(30);
+/// Backoff before retrying a [`ErrorClass::Transient`] request-initiation
+/// error.
+const TRANSIENT_RETRY_DELAY: Duration = Duration::from_secs(5);
+
+/// How [`run_completion`] recovered from a provider-declared context
+/// overflow (see [`ErrorClass::ContextOverflow`]).
+enum OverflowRecovery {
+    /// The not-known-safe queue was exactly one replaceable item (tool
+    /// result / subscription event) — the culprit is unambiguous, so it was
+    /// replaced with [`TOOL_RESULT_TOO_LARGE_PLACEHOLDER`] and the
+    /// completion should be retried.
+    RetryWithPlaceholder,
+    /// Anything else: replaceable items were settled with
+    /// [`TOOL_CALL_INTERRUPTED_TEXT`], user inputs were dropped (count
+    /// `usize`, they have no safe substitute), and the completion must
+    /// fail. Dropping is never followed by a retry — the user clearly
+    /// wanted to say something, and silently re-running the round without
+    /// their words would act on stale instructions.
+    DroppedInputs(usize),
+}
+
+/// Recover from a context overflow.
+///
+/// * If exactly one unvalidated item is pending and it is replaceable (a
+///   tool result or subscription event), it must be what overflowed:
+///   replace its body with the "too large" placeholder and retry.
+/// * Otherwise the culprit is ambiguous (or is user text, which has no safe
+///   substitute): settle replaceable items with the same "interrupted by
+///   user" text a user interruption would inject — the next thing the model
+///   sees is a fresh user message, and a "too large" note could mislead it
+///   into re-running the tool — drop the user inputs, and stop.
+///
+/// TODO(deferral): when the *committed* history is what overflows (shrinking
+/// the fresh inputs does not help), the thread should block on a
+/// lower-threshold compaction instead of erroring. That needs deferral
+/// support for "wait for the in-flight compaction child", which does not
+/// exist yet.
+fn recover_from_overflow<C: ConversationStore, S: StateStore>(
+    history: &HistoryManager<C, S>,
+) -> OverflowRecovery {
+    if history.unvalidated_len() == 1
+        && history.replace_unvalidated_tool_results(TOOL_RESULT_TOO_LARGE_PLACEHOLDER)
+    {
+        return OverflowRecovery::RetryWithPlaceholder;
+    }
+    history.replace_unvalidated_tool_results(TOOL_CALL_INTERRUPTED_TEXT);
+    OverflowRecovery::DroppedInputs(history.drop_unvalidated_user_inputs())
+}
+
 /// Replace image tool-result content with a text placeholder, in place. Used
 /// to sanitize the chat history before invoking a model that does not declare
 /// image input support (see `ModelEntry::supports_image_input`).
@@ -1226,60 +1460,79 @@ where
                     additional_params: None,
                 });
 
+            // No initiation timeout here: request timeouts are the
+            // provider's responsibility (e.g. infinity-provider-bedrock
+            // applies its own 60s initiation timeout and reports it as an
+            // `ErrorClass::Transient` error). Only cancellation ends the
+            // wait.
             let stream_result = tokio::select! {
-                r = stream_result => {
-                    Ok(r)
-                }
+                r = stream_result => r,
                 _ = &mut cancel_rx => {
                     tracing::info!("Completion cancelled during request initiation");
+                    // The model never accepted this request, so this
+                    // round's inputs remain unvalidated: they stay in
+                    // memory for the next round but are not persisted.
                     return;
                 }
-                _ = tokio::time::sleep(Duration::from_secs(60)) => {
-                    if retry_count < 10 {
-                        yield CompletionEvent::Info("Stream error (timeout initiating request), retrying...".to_owned());
-                        retry_count += 1;
-                        continue 'outer;
-                    } else {
-                        Err(Into::<BoxError>::into("Timed out initiating request"))
-                    }
-                }
-            }?;
+            };
 
             let mut llm_stream = match stream_result {
                 Ok(s) => s,
                 Err(e) => {
-                    let err_str = format!("{}", e);
-                    tracing::error!(error = %e, "Completion stream initiation failed");
+                    tracing::error!(error = %e, class = ?e.class(), "Completion stream initiation failed");
 
-                    if (err_str.contains("please wait before trying again") || err_str.contains("please try again")) && retry_count < 10 {
-                        tracing::warn!("Stream error (rate limit), retrying...");
-
-                        yield CompletionEvent::Info("Stream error (rate limit), retrying after 30 seconds...".to_owned());
-                        tokio::select! {
-                            _ = tokio::time::sleep(Duration::from_secs(30)) => {}
-                            _ = &mut cancel_rx => {
-                                tracing::info!("Completion cancelled during retry wait");
-                                return;
+                    match e.class() {
+                        ErrorClass::Throttled if retry_count < MAX_COMPLETION_RETRIES => {
+                            tracing::warn!("Stream error (rate limit), retrying...");
+                            yield CompletionEvent::Info(format!(
+                                "Stream error (rate limit), retrying after {} seconds...",
+                                THROTTLED_RETRY_DELAY.as_secs()
+                            ));
+                            tokio::select! {
+                                _ = tokio::time::sleep(THROTTLED_RETRY_DELAY) => {}
+                                _ = &mut cancel_rx => {
+                                    tracing::info!("Completion cancelled during retry wait");
+                                    return;
+                                }
+                            }
+                            retry_count += 1;
+                            continue 'outer;
+                        }
+                        ErrorClass::Transient if retry_count < MAX_COMPLETION_RETRIES => {
+                            tracing::warn!("Stream error ({e}), retrying...");
+                            yield CompletionEvent::Info(format!("Stream error ({e}), retrying..."));
+                            tokio::select! {
+                                _ = tokio::time::sleep(TRANSIENT_RETRY_DELAY) => {}
+                                _ = &mut cancel_rx => {
+                                    tracing::info!("Completion cancelled during retry wait");
+                                    return;
+                                }
+                            }
+                            retry_count += 1;
+                            continue 'outer;
+                        }
+                        ErrorClass::ContextOverflow => {
+                            match recover_from_overflow(history) {
+                                OverflowRecovery::RetryWithPlaceholder => {
+                                    tracing::warn!("Context overflow: replaced oversized tool result with a placeholder, retrying...");
+                                    yield CompletionEvent::Info("Tool result too large for the model's context window; replaced it with a placeholder and retrying...".to_owned());
+                                    retry_count += 1;
+                                    continue 'outer;
+                                }
+                                OverflowRecovery::DroppedInputs(dropped) => {
+                                    if dropped > 0 {
+                                        tracing::warn!("Context overflow: dropped {dropped} oversized input message(s)");
+                                        yield CompletionEvent::Info("The last input was too large for the model's context window and has been discarded.".to_owned());
+                                    }
+                                    Err(Into::<BoxError>::into(e))?;
+                                    unreachable!()
+                                }
                             }
                         }
-                        retry_count += 1;
-                        continue 'outer;
-                    } else if (err_str.contains("unexpected end of stream") || err_str.contains("unexpected error when processing the request") || err_str.contains("is unable to process your request")) && retry_count < 10 {
-                        tracing::warn!("Stream error ({err_str}), retrying...");
-
-                        yield CompletionEvent::Info(format!("Stream error ({err_str}), retrying..."));
-                        tokio::select! {
-                            _ = tokio::time::sleep(Duration::from_secs(5)) => {}
-                            _ = &mut cancel_rx => {
-                                tracing::info!("Completion cancelled during retry wait");
-                                return;
-                            }
+                        _ => {
+                            Err(Into::<BoxError>::into(e))?;
+                            unreachable!()
                         }
-                        retry_count += 1;
-                        continue 'outer;
-                    } else {
-                        Err(Into::<BoxError>::into(e))?;
-                        unreachable!()
                     }
                 }
             };
@@ -1291,40 +1544,23 @@ where
                 // Race between LLM output and cancellation signal.
                 // We avoid `yield` inside `select!` (async_stream limitation)
                 // by capturing the result into locals first.
+                //
+                // Deliberately no inactivity timer here: once a stream is
+                // live it is never artificially cut off by us. Stall
+                // handling, if any, belongs to the provider.
                 let cancelled;
                 let llm_next = tokio::select! {
-                    res = llm_stream.next() => { cancelled = false; Ok(res) },
-                    _ = &mut cancel_rx => { cancelled = true; Ok(None) },
-                    _ = tokio::time::sleep(Duration::from_secs(120)) => {
-                        cancelled = false;
-                        if retry_count < 10 {
-                            yield CompletionEvent::Info("Stream error (timeout), retrying...".to_owned());
-                            tracing::warn!("Stream stalled, discarding partial turn and retrying...");
-                            // Retry rebuilds the request from committed history, so
-                            // drop the abandoned partial turn.
-                            history.discard_turn();
-                            if is_thinking {
-                                is_thinking = false;
-                                yield CompletionEvent::ThinkingEnd;
-                            }
-                            retry_count += 1;
-                            continue 'outer;
-                        } else {
-                            // Giving up: preserve whatever visible text streamed,
-                            // but trim trailing reasoning — the next turn appends a
-                            // user message and reasoning-then-user is rejected by
-                            // some providers.
-                            history.flush_turn_trimming_reasoning();
-                            Err(Into::<BoxError>::into("Stream timed out"))
-                        }
-                    },
-                }?;
+                    res = llm_stream.next() => { cancelled = false; res },
+                    _ = &mut cancel_rx => { cancelled = true; None },
+                };
 
                 if cancelled {
                     tracing::info!("Completion cancelled");
                     // Terminal: keep the visible partial text, but trim trailing
                     // reasoning. This path fires on user interruption, so the next
                     // message is a user turn and must not follow a reasoning block.
+                    // If the model produced no output yet, this is a no-op and the
+                    // round's inputs stay unvalidated (in memory, unpersisted).
                     history.flush_turn_trimming_reasoning();
                     if is_thinking {
                         yield CompletionEvent::ThinkingEnd;
@@ -1337,7 +1573,7 @@ where
                         is_thinking = false;
                         yield CompletionEvent::ThinkingEnd;
                     }
-                    if retry_count < 10 {
+                    if retry_count < MAX_COMPLETION_RETRIES {
                         // Retry rebuilds the request from committed history, so
                         // drop the abandoned partial turn.
                         history.discard_turn();
@@ -1350,7 +1586,7 @@ where
                         // Giving up: keep visible text, trim trailing reasoning
                         // (the next appended message is a user turn).
                         history.flush_turn_trimming_reasoning();
-                        Err(Into::<BoxError>::into("Stream timed out"))?;
+                        Err(Into::<BoxError>::into("Stream ended unexpectedly"))?;
                         unreachable!()
                     }
                 };
@@ -1358,6 +1594,10 @@ where
                 let chunk = match res {
                     Ok(c) => {
                         retry_count = 0;
+                        // The model produced output for this request, so its
+                        // context accepted the inputs: they are now safe to
+                        // persist.
+                        history.mark_inputs_model_validated();
                         c
                     },
                     Err(e) => {
@@ -1365,21 +1605,61 @@ where
                             is_thinking = false;
                             yield CompletionEvent::ThinkingEnd;
                         }
-                        let err_str = format!("{}", e);
-                        if (err_str.contains("unexpected end of stream") || err_str.contains("unexpected error when processing the request")) && retry_count < 10 {
-                            // Retry rebuilds from committed history.
-                            history.discard_turn();
-                            yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_owned());
-                            tracing::warn!("Stream error (unexpected end), discarding partial turn and retrying...");
-                            tokio::time::sleep(Duration::from_secs(1)).await;
-                            retry_count += 1;
-                            continue 'outer;
-                        } else {
-                            // Giving up: keep visible text, trim trailing reasoning
-                            // (the next appended message is a user turn).
-                            history.flush_turn_trimming_reasoning();
-                            Err(Into::<BoxError>::into(e))?;
-                            unreachable!()
+                        tracing::error!(error = %e, class = ?e.class(), "Completion stream error");
+                        match e.class() {
+                            ErrorClass::Transient if retry_count < MAX_COMPLETION_RETRIES => {
+                                // Retry rebuilds from committed history.
+                                history.discard_turn();
+                                yield CompletionEvent::Info(format!("Stream error ({e}), retrying..."));
+                                tracing::warn!("Stream error (transient), discarding partial turn and retrying...");
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                                retry_count += 1;
+                                continue 'outer;
+                            }
+                            ErrorClass::Throttled if retry_count < MAX_COMPLETION_RETRIES => {
+                                history.discard_turn();
+                                yield CompletionEvent::Info(format!(
+                                    "Stream error (rate limit), retrying after {} seconds...",
+                                    THROTTLED_RETRY_DELAY.as_secs()
+                                ));
+                                tokio::select! {
+                                    _ = tokio::time::sleep(THROTTLED_RETRY_DELAY) => {}
+                                    _ = &mut cancel_rx => {
+                                        tracing::info!("Completion cancelled during retry wait");
+                                        return;
+                                    }
+                                }
+                                retry_count += 1;
+                                continue 'outer;
+                            }
+                            ErrorClass::ContextOverflow => {
+                                // The request never fit the model's context;
+                                // any partial turn is unusable.
+                                history.discard_turn();
+                                match recover_from_overflow(history) {
+                                    OverflowRecovery::RetryWithPlaceholder => {
+                                        tracing::warn!("Context overflow: replaced oversized tool result with a placeholder, retrying...");
+                                        yield CompletionEvent::Info("Tool result too large for the model's context window; replaced it with a placeholder and retrying...".to_owned());
+                                        retry_count += 1;
+                                        continue 'outer;
+                                    }
+                                    OverflowRecovery::DroppedInputs(dropped) => {
+                                        if dropped > 0 {
+                                            tracing::warn!("Context overflow: dropped {dropped} oversized input message(s)");
+                                            yield CompletionEvent::Info("The last input was too large for the model's context window and has been discarded.".to_owned());
+                                        }
+                                        Err(Into::<BoxError>::into(e))?;
+                                        unreachable!()
+                                    }
+                                }
+                            }
+                            _ => {
+                                // Giving up: keep visible text, trim trailing reasoning
+                                // (the next appended message is a user turn).
+                                history.flush_turn_trimming_reasoning();
+                                Err(Into::<BoxError>::into(e))?;
+                                unreachable!()
+                            }
                         }
                     }
                 };
@@ -4126,5 +4406,722 @@ mod tests {
         assert_eq!(default, 0);
         assert_eq!(response_url, "https://example.com/choice");
         assert!(hm.history.into_inner().is_empty());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Context overflow & input-persistence safety
+    //
+    // Inputs must not be persisted to the conversation store until the
+    // model has produced output for them (which proves the context did not
+    // overflow). Provider errors carry an `ErrorClass`; core reacts to the
+    // classification instead of parsing message strings, and never applies
+    // its own timeouts to model requests.
+    // ═══════════════════════════════════════════════════════════════════
+
+    use infinity_provider_protocol::{CompletionError, ErrorClass, ModelProvider};
+
+    /// Feed a user text input through the same path a step uses
+    /// (`handle_content`), as opposed to `make_history` which fabricates
+    /// already-committed history.
+    fn add_user_input(
+        hm: &HistoryManager<InMemoryConversationStore, InMemoryStateStore>,
+        text: &str,
+        message_id: &str,
+    ) {
+        let accepted = hm
+            .handle_content(
+                InfinityMessage::User {
+                    content: UserContent::text(text),
+                },
+                message_id.to_owned(),
+            )
+            .expect("handle user input");
+        assert!(accepted, "input should be accepted");
+    }
+
+    /// Feed a tool-result input through the same path a step uses.
+    fn add_tool_result_input(
+        hm: &HistoryManager<InMemoryConversationStore, InMemoryStateStore>,
+        tool_call_id: &str,
+        text: &str,
+        message_id: &str,
+    ) {
+        let accepted = hm
+            .handle_content(
+                InfinityMessage::ToolResult {
+                    result: ToolResult {
+                        id: tool_call_id.to_owned(),
+                        call_id: None,
+                        content: vec![ToolResultContent::Text(
+                            infinity_provider_protocol::message::Text {
+                                text: text.to_owned(),
+                            },
+                        )],
+                    },
+                    display_segments: None,
+                },
+                message_id.to_owned(),
+            )
+            .expect("handle tool result input");
+        assert!(accepted, "tool result should be accepted");
+    }
+
+    /// Run one completion to termination, summarizing the yielded events as
+    /// strings (`text:`, `info:`, `error:`, `done`).
+    async fn collect_completion_events<P: ModelProvider>(
+        provider: &P,
+        hm: &HistoryManager<InMemoryConversationStore, InMemoryStateStore>,
+        cancel_rx: tokio::sync::oneshot::Receiver<()>,
+    ) -> Vec<String> {
+        let (tool_names, tool_defs, tool_registry) = no_tools();
+        let ctx = tool_context();
+        let thread_id = ThreadId::from("thread-1");
+        let stream = run_completion(
+            provider,
+            "mock",
+            false,
+            hm,
+            &tool_names,
+            &tool_defs,
+            &tool_registry,
+            &ctx,
+            &thread_id,
+            "msg-1",
+            None,
+            cancel_rx,
+        );
+        tokio::pin!(stream);
+        let mut events = Vec::new();
+        while let Some(ev) = stream.next().await {
+            match ev {
+                Ok(CompletionEvent::TextChunk(t)) => events.push(format!("text:{t}")),
+                Ok(CompletionEvent::Info(t)) => events.push(format!("info:{t}")),
+                Ok(CompletionEvent::Action(CompletionAction::Done(_))) => {
+                    events.push("done".to_owned());
+                }
+                Ok(_) => {}
+                Err(e) => events.push(format!("error:{e}")),
+            }
+        }
+        events
+    }
+
+    /// The messages persisted for `thread-1`, debug-formatted for asserts.
+    fn persisted(store: &InMemoryConversationStore) -> String {
+        format!(
+            "{:?}",
+            store
+                .thread_messages(&ThreadId::from("thread-1"))
+                .unwrap_or_default()
+        )
+    }
+
+    fn overflow_error() -> CompletionError {
+        CompletionError::provider(
+            ErrorClass::ContextOverflow,
+            "input is too long for the model",
+        )
+    }
+
+    /// An oversized *user input* cannot be shrunk: on a context-overflow
+    /// error it must be dropped from the in-memory history and never
+    /// persisted, so the thread does not permanently hang on a poison
+    /// message.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn oversized_user_input_is_dropped_and_not_persisted() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (provider, mut ctrl) = mock_provider();
+                let convo_store = InMemoryConversationStore::new();
+                let hm = make_history(&convo_store, vec![]).await;
+                add_user_input(&hm, "HUGE INPUT", "msg-huge");
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let handle = tokio::task::spawn_local(async move {
+                    let events = collect_completion_events(&provider, &hm, cancel_rx).await;
+                    (hm, events)
+                });
+
+                let _req = ctrl.next_request().await;
+                ctrl.send_error(overflow_error());
+                ctrl.drop_stream();
+
+                let (hm, events) = handle.await.expect("join completion task");
+                assert!(
+                    events.iter().any(|e| e.starts_with("error:")),
+                    "the overflow must surface as a terminal error, got {events:?}"
+                );
+                // The poison input is gone from the in-memory history...
+                assert!(
+                    !format!("{:?}", hm.history.borrow()).contains("HUGE INPUT"),
+                    "oversized input must be dropped from in-memory history"
+                );
+                // ...and the commit that ends the step persists nothing.
+                hm.sync().await.expect("sync");
+                assert!(
+                    !persisted(&convo_store).contains("HUGE INPUT"),
+                    "oversized input must not be persisted"
+                );
+            })
+            .await;
+    }
+
+    /// An oversized *tool result* can be shrunk: on a context-overflow
+    /// error it is replaced with a fixed placeholder (the tool call must
+    /// still be answered) and the completion is retried.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn oversized_tool_result_is_replaced_with_placeholder_and_retried() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (provider, mut ctrl) = mock_provider();
+                let convo_store = InMemoryConversationStore::new();
+                let hm = make_history(
+                    &convo_store,
+                    vec![
+                        Message::User {
+                            content: vec![UserContent::text("run it")],
+                        },
+                        tool_call_msg("tc-1", "some_tool", serde_json::json!({})),
+                    ],
+                )
+                .await;
+                add_tool_result_input(&hm, "tc-1", "HUGE RESULT", "msg-tr");
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let handle = tokio::task::spawn_local(async move {
+                    let events = collect_completion_events(&provider, &hm, cancel_rx).await;
+                    (hm, events)
+                });
+
+                let _req1 = ctrl.next_request().await;
+                ctrl.send_error(overflow_error());
+                ctrl.drop_stream();
+
+                // The retry must present the placeholder instead of the
+                // oversized result.
+                let req2 = tokio::time::timeout(Duration::from_secs(300), ctrl.next_request())
+                    .await
+                    .expect("core should retry after replacing the oversized tool result");
+                let history_debug = format!("{:?}", req2.chat_history);
+                assert!(
+                    !history_debug.contains("HUGE RESULT"),
+                    "retry must not include the oversized tool result"
+                );
+                assert!(
+                    history_debug.contains(TOOL_RESULT_TOO_LARGE_PLACEHOLDER),
+                    "retry must include the placeholder tool result"
+                );
+                ctrl.send_text("recovered");
+                ctrl.finish();
+
+                let (hm, events) = handle.await.expect("join completion task");
+                assert!(events.contains(&"done".to_owned()), "events: {events:?}");
+                hm.sync().await.expect("sync");
+                let stored = persisted(&convo_store);
+                assert!(
+                    stored.contains(TOOL_RESULT_TOO_LARGE_PLACEHOLDER),
+                    "the placeholder result must be persisted"
+                );
+                assert!(
+                    !stored.contains("HUGE RESULT"),
+                    "the oversized result must not be persisted"
+                );
+            })
+            .await;
+    }
+
+    /// An oversized *subscription event* is also replaced with the
+    /// placeholder (its body is a tool result) rather than dropped: the
+    /// agent should still learn that an event arrived.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn oversized_subscription_event_is_replaced_with_placeholder_and_retried() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (provider, mut ctrl) = mock_provider();
+                let convo_store = InMemoryConversationStore::new();
+                let hm = make_history(
+                    &convo_store,
+                    vec![Message::User {
+                        content: vec![UserContent::text("subscribe to things")],
+                    }],
+                )
+                .await;
+                let accepted = hm
+                    .handle_content(
+                        InfinityMessage::SubscriptionEvent {
+                            result: Box::new(ToolResult {
+                                id: "evt-1".to_owned(),
+                                call_id: None,
+                                content: vec![ToolResultContent::Text(
+                                    infinity_provider_protocol::message::Text {
+                                        text: "HUGE EVENT BODY".to_owned(),
+                                    },
+                                )],
+                            }),
+                            tool_call_id: "sub-1".to_owned(),
+                            child_thread_id: None,
+                            invocation: Some(Box::new(ToolCall::new(
+                                "evt-1",
+                                "receive_event__injected",
+                                serde_json::json!({}),
+                            ))),
+                        },
+                        "msg-evt".to_owned(),
+                    )
+                    .expect("handle subscription event");
+                assert!(accepted);
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let handle = tokio::task::spawn_local(async move {
+                    let events = collect_completion_events(&provider, &hm, cancel_rx).await;
+                    (hm, events)
+                });
+
+                let _req1 = ctrl.next_request().await;
+                ctrl.send_error(overflow_error());
+                ctrl.drop_stream();
+
+                let req2 = tokio::time::timeout(Duration::from_secs(300), ctrl.next_request())
+                    .await
+                    .expect("core should retry after replacing the oversized event body");
+                let history_debug = format!("{:?}", req2.chat_history);
+                assert!(
+                    !history_debug.contains("HUGE EVENT BODY"),
+                    "retry must not include the oversized event body"
+                );
+                assert!(
+                    history_debug.contains(TOOL_RESULT_TOO_LARGE_PLACEHOLDER),
+                    "retry must include the placeholder event body"
+                );
+                ctrl.send_text("noted");
+                ctrl.finish();
+
+                let (hm, events) = handle.await.expect("join completion task");
+                assert!(events.contains(&"done".to_owned()), "events: {events:?}");
+                hm.sync().await.expect("sync");
+                let stored = persisted(&convo_store);
+                assert!(
+                    stored.contains(TOOL_RESULT_TOO_LARGE_PLACEHOLDER)
+                        && !stored.contains("HUGE EVENT BODY"),
+                    "the placeholder event must be persisted, not the oversized body; store: {stored}"
+                );
+            })
+            .await;
+    }
+
+    /// If the unvalidated inputs include *user text* alongside a tool
+    /// result, an overflow must not trigger a retry: the culprit is
+    /// ambiguous and the user's words have to be dropped, so the tool
+    /// result is settled with the same "interrupted by user" text a user
+    /// interruption would inject (a "too large" note could mislead the
+    /// model into re-running the tool) and the round stops so the user can
+    /// re-send.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn overflow_with_pending_tool_result_and_user_input_does_not_retry() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (provider, mut ctrl) = mock_provider();
+                let convo_store = InMemoryConversationStore::new();
+                let hm = make_history(
+                    &convo_store,
+                    vec![
+                        Message::User {
+                            content: vec![UserContent::text("run it")],
+                        },
+                        tool_call_msg("tc-1", "some_tool", serde_json::json!({})),
+                    ],
+                )
+                .await;
+                // The tool result arrives first, then a huge user input
+                // interrupts before the model produced any output.
+                add_tool_result_input(&hm, "tc-1", "normal tool result", "msg-tr");
+                add_user_input(&hm, "HUGE USER INPUT", "msg-huge");
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let handle = tokio::task::spawn_local(async move {
+                    let events = collect_completion_events(&provider, &hm, cancel_rx).await;
+                    (hm, events)
+                });
+
+                let _req1 = ctrl.next_request().await;
+                ctrl.send_error(overflow_error());
+                ctrl.drop_stream();
+
+                // Time-boxed so a wrong retry attempt fails fast instead of
+                // hanging the test (the consumer would wait forever on the
+                // retry round's mock stream).
+                let (hm, events) = tokio::time::timeout(Duration::from_secs(600), handle)
+                    .await
+                    .expect("the round must stop, not retry")
+                    .expect("join completion task");
+                assert!(
+                    events.iter().any(|e| e.starts_with("error:")),
+                    "the overflow must surface as a terminal error, got {events:?}"
+                );
+                assert!(
+                    ctrl.try_next_request().is_none(),
+                    "dropping user input must stop the round, not retry it"
+                );
+
+                let history = format!("{:?}", hm.history.borrow());
+                // The user text was dropped...
+                assert!(
+                    !history.contains("HUGE USER INPUT"),
+                    "oversized user input must be dropped; history: {history}"
+                );
+                // ...and the tool call stays answered — settled as
+                // interrupted, not "too large" (the culprit is ambiguous).
+                assert!(
+                    history.contains(TOOL_CALL_INTERRUPTED_TEXT),
+                    "the tool result must be settled as interrupted; history: {history}"
+                );
+                assert!(
+                    !history.contains(TOOL_RESULT_TOO_LARGE_PLACEHOLDER),
+                    "ambiguous overflows must not blame the tool result; history: {history}"
+                );
+                assert!(!history.contains("normal tool result"));
+
+                // Nothing from this round persists (the settled result is
+                // still unvalidated).
+                hm.sync().await.expect("sync");
+                let stored = persisted(&convo_store);
+                assert!(
+                    !stored.contains("HUGE USER INPUT")
+                        && !stored.contains("normal tool result")
+                        && !stored.contains(TOOL_CALL_INTERRUPTED_TEXT),
+                    "nothing unvalidated may persist; store: {stored}"
+                );
+            })
+            .await;
+    }
+
+    /// If the *placeholder* tool result still overflows, give up: surface a
+    /// terminal error and persist nothing. Only user input is ever dropped,
+    /// so the tool call stays answered in memory — re-settled as
+    /// "interrupted by user", since the round is over and the next thing
+    /// the model sees will be a fresh user message (a "too large" note
+    /// could mislead it into re-running the tool). After a process restart
+    /// the store ends on the unanswered call and the next input settles it
+    /// the same way (see
+    /// `rebooted_session_settles_persisted_unanswered_tool_call`).
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn second_overflow_after_placeholder_gives_up_without_persisting_result() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (provider, mut ctrl) = mock_provider();
+                let convo_store = InMemoryConversationStore::new();
+                let hm = make_history(
+                    &convo_store,
+                    vec![
+                        Message::User {
+                            content: vec![UserContent::text("run it")],
+                        },
+                        tool_call_msg("tc-1", "some_tool", serde_json::json!({})),
+                    ],
+                )
+                .await;
+                add_tool_result_input(&hm, "tc-1", "HUGE RESULT", "msg-tr");
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let handle = tokio::task::spawn_local(async move {
+                    let events = collect_completion_events(&provider, &hm, cancel_rx).await;
+                    (hm, events)
+                });
+
+                let _req1 = ctrl.next_request().await;
+                ctrl.send_error(overflow_error());
+                ctrl.drop_stream();
+                let _req2 = tokio::time::timeout(Duration::from_secs(300), ctrl.next_request())
+                    .await
+                    .expect("core should retry once with the placeholder result");
+                ctrl.send_error(overflow_error());
+                ctrl.drop_stream();
+
+                let (hm, events) = handle.await.expect("join completion task");
+                assert!(
+                    events.iter().any(|e| e.starts_with("error:")),
+                    "the second overflow must surface as a terminal error, got {events:?}"
+                );
+                assert!(
+                    ctrl.try_next_request().is_none(),
+                    "the placeholder round must not be retried again"
+                );
+                // The tool call stays answered in memory — re-settled as
+                // "interrupted" now that the round is abandoned — but
+                // nothing about the result persists.
+                let last = format!("{:?}", hm.history.borrow().last());
+                assert!(
+                    last.contains("tc-1") && last.contains(TOOL_CALL_INTERRUPTED_TEXT),
+                    "the call must stay answered as interrupted, got {last}"
+                );
+                assert!(
+                    !last.contains(TOOL_RESULT_TOO_LARGE_PLACEHOLDER),
+                    "a 'too large' note would mislead the next round, got {last}"
+                );
+                hm.sync().await.expect("sync");
+                let stored = persisted(&convo_store);
+                assert!(!stored.contains("HUGE RESULT"), "stored: {stored}");
+                assert!(
+                    !stored.contains(TOOL_RESULT_TOO_LARGE_PLACEHOLDER)
+                        && !stored.contains(TOOL_CALL_INTERRUPTED_TEXT),
+                    "stored: {stored}"
+                );
+
+                // A later user input does not need to interrupt anything —
+                // the call is already answered in memory.
+                add_user_input(&hm, "hello again", "msg-next");
+                let history = format!("{:?}", hm.history.borrow());
+                assert!(history.contains(TOOL_CALL_INTERRUPTED_TEXT));
+                assert!(history.contains("hello again"));
+            })
+            .await;
+    }
+
+    /// Interrupting a completion *before the model produced any output*
+    /// must not persist the batch's inputs — the model never validated them
+    /// (they could be the poison input) — but they stay in memory so the
+    /// next round still sends them.
+    #[tokio::test(flavor = "current_thread")]
+    async fn interrupt_before_model_output_keeps_input_in_memory_unpersisted() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (provider, mut ctrl) = mock_provider();
+                let convo_store = InMemoryConversationStore::new();
+                let hm = make_history(&convo_store, vec![]).await;
+                add_user_input(&hm, "hello there", "msg-1");
+                let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let handle = tokio::task::spawn_local(async move {
+                    let events = collect_completion_events(&provider, &hm, cancel_rx).await;
+                    (hm, events)
+                });
+
+                // Request is in flight; no output yet. Interrupt.
+                let _req = ctrl.next_request().await;
+                cancel_tx.send(()).expect("send cancel");
+
+                let (hm, _events) = handle.await.expect("join completion task");
+                // The input survives in memory (the next step resends it)...
+                assert!(
+                    format!("{:?}", hm.history.borrow()).contains("hello there"),
+                    "interrupted input must stay in the in-memory history"
+                );
+                // ...but must not be persisted: the model never accepted it.
+                hm.sync().await.expect("sync");
+                assert!(
+                    !persisted(&convo_store).contains("hello there"),
+                    "input must not be persisted before the model produced output"
+                );
+            })
+            .await;
+    }
+
+    /// Interrupting *after* the model produced output persists both the
+    /// input and the partial output: streamed output proves the context did
+    /// not overflow.
+    #[tokio::test(flavor = "current_thread")]
+    async fn interrupt_after_model_output_persists_input_and_partial_text() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (provider, mut ctrl) = mock_provider();
+                let convo_store = InMemoryConversationStore::new();
+                let hm = make_history(&convo_store, vec![]).await;
+                add_user_input(&hm, "hello there", "msg-1");
+                let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let handle = tokio::task::spawn_local(async move {
+                    let events = collect_completion_events(&provider, &hm, cancel_rx).await;
+                    (hm, events)
+                });
+
+                let _req = ctrl.next_request().await;
+                ctrl.send_text("partial answer");
+                tokio::task::yield_now().await;
+                tokio::task::yield_now().await;
+                cancel_tx.send(()).expect("send cancel");
+
+                let (hm, events) = handle.await.expect("join completion task");
+                assert!(events.contains(&"text:partial answer".to_owned()));
+                hm.sync().await.expect("sync");
+                let stored = persisted(&convo_store);
+                assert!(
+                    stored.contains("hello there"),
+                    "model output validated the input: it must persist"
+                );
+                assert!(
+                    stored.contains("partial answer"),
+                    "the partial output must persist"
+                );
+            })
+            .await;
+    }
+
+    /// A throttled error retries after a longer backoff — driven by the
+    /// provider's classification, not by message-string matching.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn throttled_error_waits_and_retries() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (provider, mut ctrl) = mock_provider();
+                let convo_store = InMemoryConversationStore::new();
+                let hm = make_history(&convo_store, vec![]).await;
+                add_user_input(&hm, "hi", "msg-1");
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let handle = tokio::task::spawn_local(async move {
+                    collect_completion_events(&provider, &hm, cancel_rx).await
+                });
+
+                let started = tokio::time::Instant::now();
+                let _req1 = ctrl.next_request().await;
+                ctrl.send_error(CompletionError::provider(
+                    ErrorClass::Throttled,
+                    "simulated throttle",
+                ));
+                ctrl.drop_stream();
+
+                let _req2 = tokio::time::timeout(Duration::from_secs(600), ctrl.next_request())
+                    .await
+                    .expect("core should retry after a throttled error");
+                assert!(
+                    started.elapsed() >= Duration::from_secs(10),
+                    "throttled retries should back off"
+                );
+                ctrl.send_text("ok");
+                ctrl.finish();
+
+                let events = handle.await.expect("join completion task");
+                assert!(events.contains(&"done".to_owned()), "events: {events:?}");
+            })
+            .await;
+    }
+
+    /// A transient error retries quickly — again from the classification,
+    /// regardless of the message text.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn transient_error_discards_turn_and_retries() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (provider, mut ctrl) = mock_provider();
+                let convo_store = InMemoryConversationStore::new();
+                let hm = make_history(&convo_store, vec![]).await;
+                add_user_input(&hm, "hi", "msg-1");
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let handle = tokio::task::spawn_local(async move {
+                    collect_completion_events(&provider, &hm, cancel_rx).await
+                });
+
+                let _req1 = ctrl.next_request().await;
+                ctrl.send_error(CompletionError::provider(
+                    ErrorClass::Transient,
+                    "connection reset by peer",
+                ));
+                ctrl.drop_stream();
+
+                let _req2 = tokio::time::timeout(Duration::from_secs(600), ctrl.next_request())
+                    .await
+                    .expect("core should retry after a transient error");
+                ctrl.send_text("ok");
+                ctrl.finish();
+
+                let events = handle.await.expect("join completion task");
+                assert!(events.contains(&"done".to_owned()), "events: {events:?}");
+            })
+            .await;
+    }
+
+    /// A fatal error terminates immediately: no retry request is made.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn fatal_error_gives_up_immediately() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (provider, mut ctrl) = mock_provider();
+                let convo_store = InMemoryConversationStore::new();
+                let hm = make_history(&convo_store, vec![]).await;
+                add_user_input(&hm, "hi", "msg-1");
+                let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+
+                let handle = tokio::task::spawn_local(async move {
+                    collect_completion_events(&provider, &hm, cancel_rx).await
+                });
+
+                let _req1 = ctrl.next_request().await;
+                ctrl.send_error(CompletionError::provider(
+                    ErrorClass::Fatal,
+                    "the model does not exist",
+                ));
+                ctrl.drop_stream();
+
+                let events = handle.await.expect("join completion task");
+                assert!(
+                    events.iter().any(|e| e.starts_with("error:")),
+                    "fatal errors must surface, got {events:?}"
+                );
+                assert!(
+                    ctrl.try_next_request().is_none(),
+                    "fatal errors must not be retried"
+                );
+            })
+            .await;
+    }
+
+    // ── HistoryManager three-phase pending safeguards ──
+
+    /// Inputs folded into history are not persisted by `sync()` until the
+    /// model validates them.
+    #[tokio::test]
+    async fn sync_does_not_persist_inputs_before_model_output() {
+        let store = InMemoryConversationStore::new();
+        let hm = make_history(&store, vec![]).await;
+        add_user_input(&hm, "not yet validated", "msg-1");
+        hm.sync().await.expect("sync");
+        assert!(
+            !persisted(&store).contains("not yet validated"),
+            "unvalidated inputs must not be persisted by sync()"
+        );
+    }
+
+    /// Sequentiality safeguard: committing model output while unvalidated
+    /// inputs exist would let `sync()` persist the output *without* the
+    /// input it answers. That is a bug and must panic.
+    #[tokio::test]
+    #[should_panic(expected = "unvalidated")]
+    async fn flushing_model_output_with_unvalidated_inputs_panics() {
+        let store = InMemoryConversationStore::new();
+        let hm = make_history(&store, vec![]).await;
+        add_user_input(&hm, "pending input", "msg-1");
+        hm.handle_completion(
+            &StreamChunk::Text("model output".to_owned()),
+            "completion-1".to_owned(),
+            None,
+        );
+        // Flushing without validating the pending input first violates
+        // sequentiality.
+        hm.flush_turn();
+    }
+
+    /// Child threads inherit history *from the store*, so a spawn point
+    /// must not extend past inputs that have not been persisted yet.
+    #[tokio::test]
+    async fn safe_spawn_point_excludes_unvalidated_inputs() {
+        let store = InMemoryConversationStore::new();
+        let hm = make_history(&store, vec![]).await;
+        add_user_input(&hm, "not persisted yet", "msg-1");
+        assert_eq!(
+            hm.safe_spawn_point(),
+            0,
+            "spawn point must not cover unvalidated (unpersisted) inputs"
+        );
     }
 }

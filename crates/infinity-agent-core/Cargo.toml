@@ -30,7 +30,7 @@ rhai = { workspace = true }
 insta = { version = "1", features = ["json", "redactions"] }
 libc = "0.2"
 infinity-provider-protocol = { path = "../infinity-provider-protocol", version = "^0.1.0", features = ["mock"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "test-util"] }
 futures-util = { workspace = true, features = ["sink"] }
 
 [lints]

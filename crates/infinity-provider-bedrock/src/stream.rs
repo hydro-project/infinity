@@ -4,8 +4,8 @@
 use aws_sdk_bedrockruntime::operation::converse_stream::ConverseStreamOutput as ConverseStreamResponse;
 use aws_sdk_bedrockruntime::types as bedrock;
 use infinity_provider_protocol::{
-    CompletionError, FinalResponse, ModelStream, Reasoning, ReasoningContent, StreamChunk,
-    ToolCall, ToolCallDeltaContent, Usage,
+    CompletionError, ErrorClass, FinalResponse, ModelStream, Reasoning, ReasoningContent,
+    StreamChunk, ToolCall, ToolCallDeltaContent, Usage,
 };
 
 /// An in-progress tool-use content block.
@@ -58,10 +58,10 @@ pub(crate) fn convert_stream(response: ConverseStreamResponse) -> ModelStream {
                 Ok(None) => break,
                 Err(e) => {
                     // Forward mid-stream transport/service errors instead of
-                    // silently ending the stream; agent-core retries on some
-                    // of these messages.
+                    // silently ending the stream; the retry classification
+                    // tells agent-core how to react.
                     tracing::error!(error = ?e, "Bedrock ConverseStream receive error");
-                    yield Err(CompletionError::ProviderError(crate::sdk_error_message(&e)));
+                    yield Err(crate::completion_error(&e));
                     break;
                 }
             };
@@ -81,16 +81,18 @@ pub(crate) fn convert_stream(response: ConverseStreamResponse) -> ModelStream {
                             });
                         }
                         _ => {
-                            yield Err(CompletionError::ProviderError(
-                                "AWS Bedrock sent an unsupported ContentBlockStart".to_owned(),
+                            yield Err(CompletionError::provider(
+                                ErrorClass::Fatal,
+                                "AWS Bedrock sent an unsupported ContentBlockStart",
                             ));
                         }
                     }
                 }
                 bedrock::ConverseStreamOutput::ContentBlockDelta(event) => {
                     let Some(delta) = event.delta else {
-                        yield Err(CompletionError::ProviderError(
-                            "The delta for a content block is missing".to_owned(),
+                        yield Err(CompletionError::provider(
+                            ErrorClass::Fatal,
+                            "The delta for a content block is missing",
                         ));
                         continue;
                     };
@@ -161,8 +163,9 @@ pub(crate) fn convert_stream(response: ConverseStreamResponse) -> ModelStream {
                         }
                     }
                     bedrock::StopReason::MaxTokens => {
-                        yield Err(CompletionError::ProviderError(
-                            "Exceeded max tokens".to_owned(),
+                        yield Err(CompletionError::provider(
+                            ErrorClass::Fatal,
+                            "Exceeded max tokens",
                         ));
                     }
                     _ => {}

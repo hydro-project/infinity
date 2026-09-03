@@ -32,7 +32,8 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio_util::codec::{Framed, LinesCodec};
 
 use crate::{
-    CompletionError, CompletionRequest, ModelEntry, ModelProvider, ModelStream, StreamChunk,
+    CompletionError, CompletionRequest, ErrorClass, ModelEntry, ModelProvider, ModelStream,
+    StreamChunk,
 };
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -41,6 +42,37 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 type JsonLines = Framed<UnixStream, LinesCodec>;
 
 // ── Wire types ──
+
+/// A completion error as it travels over the wire: the stringified message
+/// plus the provider's [`ErrorClass`], so retry classification survives the
+/// process boundary.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WireError {
+    pub message: String,
+    /// Missing in messages from older providers; default to the safe
+    /// (non-retrying) classification.
+    #[serde(default = "fatal_class")]
+    pub class: ErrorClass,
+}
+
+fn fatal_class() -> ErrorClass {
+    ErrorClass::Fatal
+}
+
+impl From<&CompletionError> for WireError {
+    fn from(e: &CompletionError) -> Self {
+        Self {
+            message: e.to_string(),
+            class: e.class(),
+        }
+    }
+}
+
+impl From<WireError> for CompletionError {
+    fn from(e: WireError) -> Self {
+        CompletionError::provider(e.class, e.message)
+    }
+}
 
 /// A request sent from the client to the provider server. One request is
 /// sent per connection.
@@ -64,12 +96,13 @@ pub enum ProviderResponse {
     /// The invocation succeeded; `Chunk`s follow.
     InvokeStarted,
     /// One streamed item of an invocation. `Err` carries a mid-stream
-    /// provider error (stringified) and does not end the stream.
-    Chunk(Result<StreamChunk, String>),
+    /// provider error (message plus retry classification) and does not end
+    /// the stream.
+    Chunk(Result<StreamChunk, WireError>),
     /// The invocation stream finished; the connection will close.
     StreamEnd,
     /// The request failed (sent in place of `Models` / `InvokeStarted`).
-    Error(String),
+    Error(WireError),
 }
 
 // ── Framing ──
@@ -154,7 +187,10 @@ async fn handle_connection(
         Err(e) => {
             send_json(
                 &mut framed,
-                &ProviderResponse::Error(format!("invalid request: {e}")),
+                &ProviderResponse::Error(WireError {
+                    message: format!("invalid request: {e}"),
+                    class: ErrorClass::Fatal,
+                }),
             )
             .await?;
             return Ok(());
@@ -165,7 +201,10 @@ async fn handle_connection(
         ProviderRequest::ListModels => {
             let response = match provider.list_models().await {
                 Ok(models) => ProviderResponse::Models(models),
-                Err(e) => ProviderResponse::Error(e.to_string()),
+                Err(e) => ProviderResponse::Error(WireError {
+                    message: e.to_string(),
+                    class: ErrorClass::Fatal,
+                }),
             };
             send_json(&mut framed, &response).await?;
         }
@@ -186,13 +225,13 @@ async fn handle_invoke(
     let mut stream = match provider.invoke_model(model_id, request).await {
         Ok(stream) => stream,
         Err(e) => {
-            send_json(framed, &ProviderResponse::Error(e.to_string())).await?;
+            send_json(framed, &ProviderResponse::Error(WireError::from(&e))).await?;
             return Ok(());
         }
     };
     send_json(framed, &ProviderResponse::InvokeStarted).await?;
     while let Some(item) = stream.next().await {
-        let wire = item.map_err(|e| e.to_string());
+        let wire = item.map_err(|e| WireError::from(&e));
         send_json(framed, &ProviderResponse::Chunk(wire)).await?;
     }
     send_json(framed, &ProviderResponse::StreamEnd).await
@@ -232,7 +271,7 @@ impl ModelProvider for RemoteModelProvider {
         let mut framed = self.connect_and_send(&ProviderRequest::ListModels).await?;
         match recv_json::<ProviderResponse>(&mut framed).await? {
             Some(ProviderResponse::Models(models)) => Ok(models),
-            Some(ProviderResponse::Error(e)) => Err(e.into()),
+            Some(ProviderResponse::Error(e)) => Err(e.message.into()),
             Some(_) => Err("unexpected response from model provider".into()),
             None => Err("model provider closed the connection without responding".into()),
         }
@@ -250,10 +289,13 @@ impl ModelProvider for RemoteModelProvider {
             })
             .await
             .map_err(|e| {
-                CompletionError::ProviderError(format!(
-                    "failed to reach model provider at {}: {e}",
-                    self.socket_path.display()
-                ))
+                CompletionError::provider(
+                    ErrorClass::Transient,
+                    format!(
+                        "failed to reach model provider at {}: {e}",
+                        self.socket_path.display()
+                    ),
+                )
             })?;
 
         match recv_json::<ProviderResponse>(&mut framed)
@@ -262,7 +304,7 @@ impl ModelProvider for RemoteModelProvider {
                 CompletionError::ResponseError(format!("failed reading from model provider: {e}"))
             })? {
             Some(ProviderResponse::InvokeStarted) => {}
-            Some(ProviderResponse::Error(e)) => return Err(CompletionError::ProviderError(e)),
+            Some(ProviderResponse::Error(e)) => return Err(CompletionError::from(e)),
             Some(_) => {
                 return Err(CompletionError::ResponseError(
                     "unexpected response from model provider".to_owned(),
@@ -279,7 +321,7 @@ impl ModelProvider for RemoteModelProvider {
             loop {
                 match recv_json::<ProviderResponse>(&mut framed).await {
                     Ok(Some(ProviderResponse::Chunk(item))) => {
-                        yield item.map_err(CompletionError::ProviderError);
+                        yield item.map_err(CompletionError::from);
                     }
                     Ok(Some(ProviderResponse::StreamEnd)) => break,
                     Ok(Some(_)) => {
@@ -388,10 +430,44 @@ mod tests {
     async fn connecting_to_missing_socket_fails_cleanly() {
         let remote = RemoteModelProvider::new("/nonexistent/provider.sock");
         match remote.invoke_model("mock", test_request("hi")).await {
-            Err(CompletionError::ProviderError(_)) => {}
+            Err(CompletionError::ProviderError { .. }) => {}
             Err(other) => panic!("unexpected error variant: {other}"),
             Ok(_) => panic!("connect should fail"),
         }
         assert!(remote.list_models().await.is_err());
+    }
+
+    /// A provider's retry classification must survive the wire round-trip
+    /// so core can react to it (e.g. drop oversized inputs on
+    /// [`ErrorClass::ContextOverflow`]).
+    #[tokio::test]
+    async fn error_class_survives_the_wire() {
+        let (model, mut ctrl) = mock_model();
+        let provider = Arc::new(SingleModelProvider::new(test_entry(), model));
+        let (path, server) = serve_provider(provider).expect("bind provider socket");
+        tokio::spawn(server);
+
+        let remote = RemoteModelProvider::new(&path);
+        let mut response = remote
+            .invoke_model("mock", test_request("hello"))
+            .await
+            .expect("invoke model");
+
+        let _request = ctrl.next_request().await;
+        ctrl.send_error(CompletionError::provider(
+            ErrorClass::ContextOverflow,
+            "input is too long",
+        ));
+        ctrl.drop_stream();
+
+        let item = response
+            .next()
+            .await
+            .expect("one stream item")
+            .expect_err("stream item should be an error");
+        assert_eq!(item.class(), ErrorClass::ContextOverflow);
+        assert!(item.to_string().contains("input is too long"));
+
+        std::fs::remove_file(&path).ok();
     }
 }

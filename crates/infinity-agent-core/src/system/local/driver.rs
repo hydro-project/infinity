@@ -44,7 +44,8 @@ struct InFlightStep<'a> {
 impl InFlightStep<'_> {
     /// Interrupt the step and wait for it to wind down. The cancellation
     /// path flushes whatever streamed so far to the store before returning,
-    /// so no partial turn is lost.
+    /// so no partial turn is lost. Inputs the model produced no output for
+    /// stay in memory (unpersisted) and are re-sent on the next round.
     async fn cancel(self) -> Result<StepOutcome, BoxError> {
         let _ = self.cancel_tx.send(());
         self.fut.await
