@@ -33,7 +33,7 @@ Porting the runtime to a new platform means implementing four traits, defined in
 | Trait | Responsibility | Lambda | Daemon |
 |---|---|---|---|
 | `ConversationStore` | Per-thread history, thread hierarchy, compaction summaries | Aurora DSQL | In-memory + JSON files |
-| `StateStore` | Processed IDs, metadata, active subscriptions | DynamoDB | In-memory + JSON files |
+| `StateStore` | Processed IDs, metadata, active subscriptions, pending user choices | DynamoDB | In-memory + JSON files |
 | `InputSender` | Delivering messages to the input queue | SQS FIFO | `mpsc` channels |
 | `HttpClient` | POST/GET to tool servers | SigV4-signed reqwest | Plain reqwest |
 

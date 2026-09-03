@@ -90,7 +90,7 @@ RAP enables powerful capabilities through arbitrary HTTP communication and async
 
 ### Key Principles
 
-**User Consent and Control.** Users MUST explicitly consent to and understand all tool operations before they are dispatched. Because RAP tools can perform long-running and potentially irreversible actions (deploying infrastructure, modifying repositories, sending messages on behalf of the user), runtimes MUST ensure that users retain control over what data is shared and what actions are taken. Implementors SHOULD provide clear interfaces for reviewing and authorizing tool invocations, especially for tools annotated as `destructive`.
+**User Consent and Control.** Users MUST explicitly consent to and understand all tool operations before they are dispatched. Because RAP tools can perform long-running and potentially irreversible actions (deploying infrastructure, modifying repositories, sending messages on behalf of the user), runtimes MUST ensure that users retain control over what data is shared and what actions are taken. Implementors SHOULD provide clear interfaces for reviewing and authorizing tool invocations, especially for tools that perform destructive operations.
 
 **Data Privacy.** Runtimes MUST NOT expose user data to tools without explicit user consent. Tools MUST NOT store or transmit user data beyond what is required for the requested operation. Because callback URLs can persist for the lifetime of a subscription, they SHOULD be scoped and short-lived where possible to limit the window of exposure if a URL is compromised.
 

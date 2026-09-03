@@ -61,19 +61,7 @@ Each tool in the array has a `name` (which becomes the `operation` field in invo
 
 ### Annotations
 
-Tools can include optional [annotations](/docs/rap/spec/basic/toolsets#annotations) that inform the runtime and LLM about the tool's behavior:
-
-```javascript
-{
-  name: 'delete_repository',
-  description: 'Permanently delete a GitHub repository',
-  inputSchema: { /* ... */ },
-  annotations: {
-    destructive: true,    // Runtime may prompt for confirmation
-    longRunning: true,    // Expected to take minutes
-  },
-}
-```
+Tools can include an optional [`annotations`](/docs/rap/spec/basic/toolsets#annotations) object carrying metadata about the tool. The protocol doesn't define any annotation keys, and runtimes treat the field as opaque, so put behavioral guidance the LLM needs (e.g. "this permanently deletes the repository") in the tool's `description` instead. If you define custom annotations for your own tooling, namespace the keys (e.g. `x-mycompany-priority`) to avoid collisions with keys the protocol may define later.
 
 ## Handling invocations
 

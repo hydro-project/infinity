@@ -12,7 +12,7 @@ The Infinity Runtime never calls an LLM API directly. All inference goes through
 
 Everything else in the runtime (the agent loop, threading, compaction, token accounting) is written against this trait. The Lambda deployment plugs in the Bedrock provider directly; the Infinity Code daemon registers each provider under a stable **provider id** and references models globally as `provider id + model id`, so multiple providers can coexist and even offer models with the same name.
 
-Providers own all backend-specific behavior. Callers hand them a plain [rig](https://docs.rs/rig-core) `CompletionRequest`; the provider is responsible for backend-specific request parameters: thinking configuration, beta feature flags, per-model output token limits, and so on. For example, the Bedrock provider injects Anthropic's adaptive thinking configuration and the 1M-context beta flag for the models that need them, without the agent loop knowing those exist.
+Providers own all backend-specific behavior. Callers hand them a plain `CompletionRequest` (defined by the protocol crate); the provider is responsible for backend-specific request parameters: thinking configuration, beta feature flags, per-model output token limits, and so on. For example, the Bedrock provider injects Anthropic's adaptive thinking configuration and the 1M-context beta flag for the models that need them, without the agent loop knowing those exist.
 
 ## The `ModelProvider` trait
 
@@ -26,17 +26,12 @@ pub trait ModelProvider: Send + Sync {
     async fn list_models(&self) -> Result<Vec<ModelEntry>, BoxError>;
 
     /// Invoke a model by its provider-scoped id, streaming the completion
-    /// response. Behaves exactly like rig's `CompletionModel::stream`, with
-    /// the streaming response type erased.
+    /// response.
     async fn invoke_model(
         &self,
         model_id: &str,
         request: CompletionRequest,
-    ) -> Result<ProviderCompletionResponse, CompletionError>;
-
-    /// Whether the given model accepts image content in its input.
-    /// The default implementation looks the model up in `list_models`.
-    async fn supports_image_input(&self, model_id: &str) -> bool { /* default */ }
+    ) -> Result<ModelStream, CompletionError>;
 }
 ```
 
@@ -64,26 +59,32 @@ Because `model_id` is provider-scoped rather than the upstream id, a provider ca
 
 ## Writing a provider
 
-A provider typically wraps a rig `CompletionModel` internally:
+A provider implements the two trait methods against its backend's API:
 
 1. Implement `list_models` to return your catalog (often a static list).
-2. Implement `invoke_model`: resolve the `model_id` to your backend's model, apply any backend-specific request parameters, call the underlying model's `stream`, and erase the response with the `erase_streaming_response` helper:
+2. Implement `invoke_model`: resolve the `model_id` to your backend's model, apply any backend-specific request parameters, call the backend, and adapt its streaming response into a `ModelStream` — a pinned stream of `StreamChunk` items (text, tool calls and tool-call deltas, reasoning, and a `Final` chunk carrying the completion's token usage).
+
+For single-model setups and tests there's a ready-made adapter: implement the one-method `CompletionModel` trait and wrap it with `SingleModelProvider::new(entry, model)`, which advertises the given `ModelEntry` and forwards every invocation to that model.
+
+The protocol crate itself has no dependency on any LLM SDK. To serve one of [rig](https://docs.rs/rig-core)'s backends (OpenAI, Anthropic, Gemini, ...), use the optional `infinity-provider-rig` bridge crate: `RigCompletionModel::new(rig_model).into_provider(entry)` produces a `ModelProvider`, and its `convert` module exposes the raw request/stream conversions for providers that need to inject per-model request parameters themselves:
 
 ```rust
-async fn invoke_model(
-    &self,
-    model_id: &str,
-    mut request: CompletionRequest,
-) -> Result<ProviderCompletionResponse, CompletionError> {
-    // ...apply backend-specific parameters to `request`...
-    let model = self.client.completion_model(model_id);
-    Ok(erase_streaming_response(model.stream(request).await?))
-}
+use infinity_provider_rig::RigCompletionModel;
+use infinity_provider_protocol::ModelEntry;
+use rig::client::{CompletionClient, ProviderClient};
+
+let client = rig::providers::anthropic::Client::from_env();
+let model = client.completion_model("claude-sonnet-4-5");
+let provider = RigCompletionModel::new(model).into_provider(ModelEntry {
+    model_id: "claude-sonnet-4-5".to_owned(),
+    display_name: "Claude Sonnet 4.5".to_owned(),
+    context_window: 200_000,
+    max_output_tokens: Some(64_000),
+    supports_image_input: true,
+});
 ```
 
-For tests or single-model setups there's a ready-made adapter, `SingleModelProvider`, which exposes one rig `CompletionModel` as a provider.
-
-The trait is dyn-compatible, which requires erasing the backend-specific streaming response type: streams yield the usual text / tool call / reasoning chunks, and the final response is reduced to a `ProviderStreamingResponse` carrying the token usage, which is all that downstream code needs.
+The trait is dyn-compatible: the backend-specific streaming response type is erased behind `ModelStream`, and the final `StreamChunk::Final` is reduced to a `FinalResponse` carrying the token usage, which is all that downstream code needs.
 
 ## The provider process transport
 

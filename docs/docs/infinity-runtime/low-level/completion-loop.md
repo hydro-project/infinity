@@ -32,9 +32,9 @@ Many messages end at this phase: a slice pays for a model call only when an inpu
 As the stream runs, it buffers the turn into the history manager (`handle_completion`) and flushes at turn boundaries, retrying transient provider failures from clean committed history. Tools that opt into synchronous execution (`Tool::execute_synchronous`) are invoked inline and their results loop back into the completion without ending the slice. The stream's terminal event is a `CompletionAction`:
 
 ```rust
-pub enum CompletionAction<R> {
+pub enum CompletionAction {
     /// Model produced text and is done (no tool call).
-    Done(R),
+    Done(FinalResponse),
     /// Model wants to execute a tool call (fire-and-forget under RAP).
     ExecuteToolCall {
         tool_name: String,
@@ -48,8 +48,8 @@ pub enum CompletionAction<R> {
 
 ## `execute_action`: Dispatch and Stop
 ```rust
-pub async fn execute_action<M, R>(
-    action: CompletionAction<R>,
+pub async fn execute_action<M>(
+    action: CompletionAction,
     tool_registry: &HashMap<String, &dyn Tool<M>>,
     tool_context: &ToolContext<M>,
 ) -> Result<(), BoxError>

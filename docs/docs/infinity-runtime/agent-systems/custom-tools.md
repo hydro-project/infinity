@@ -10,13 +10,12 @@ The tool below looks up a build and returns its status. `execute` schedules the 
 
 ```rust
 use async_trait::async_trait;
+use infinity_agent_core::ThreadId;
 use infinity_agent_core::message::{InputMessage, InputMessageContent};
 use infinity_agent_core::system::local::ChannelSender;
 use infinity_agent_core::tools::{Tool, ToolContext};
 use infinity_agent_core::traits::InputSender;
-use rig::OneOrMany;
-use rig::agent::Text;
-use rig::message::{ToolResult, ToolResultContent, UserContent};
+use infinity_provider_protocol::message::{Text, ToolResult, ToolResultContent, UserContent};
 use serde_json::json;
 
 struct GetBuildStatus {
@@ -95,7 +94,7 @@ impl Tool<ChannelSender> for GetBuildStatus {
 
 async fn send_result(
     sender: ChannelSender,
-    group_id: String,
+    group_id: ThreadId,
     id: String,
     call_id: Option<String>,
     text: String,
@@ -104,7 +103,7 @@ async fn send_result(
         content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
             id: id.clone(),
             call_id,
-            content: OneOrMany::one(ToolResultContent::Text(Text { text })),
+            content: vec![ToolResultContent::Text(Text { text })],
         })),
         group_id: group_id.clone(),
         metadata: None,
@@ -176,9 +175,9 @@ async fn execute_synchronous(
     Some(ToolResult {
         id: id.to_owned(),
         call_id: call_id.map(str::to_owned),
-        content: OneOrMany::one(ToolResultContent::Text(Text {
+        content: vec![ToolResultContent::Text(Text {
             text: calculate(args),
-        })),
+        })],
     })
 }
 ```
@@ -274,7 +273,7 @@ The helper differs from `send_result` by accepting a synthetic event and subscri
 use infinity_agent_core::message::{SyntheticKind, TaggedSyntheticKind};
 
 fn subscription_result(
-    group_id: &str,
+    group_id: &ThreadId<str>,
     id: &str,
     call_id: Option<String>,
     text: String,
@@ -285,7 +284,7 @@ fn subscription_result(
         content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
             id: id.to_owned(),
             call_id,
-            content: OneOrMany::one(ToolResultContent::Text(Text { text })),
+            content: vec![ToolResultContent::Text(Text { text })],
         })),
         group_id: group_id.to_owned(),
         metadata: None,
