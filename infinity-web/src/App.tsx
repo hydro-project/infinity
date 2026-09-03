@@ -259,7 +259,7 @@ export function App() {
             // Flush pending inputs
             for (const text of pendingInputRef.current) {
               sendRef.current({
-                UserInput: { root_thread_id: p.thread_id, text },
+                UserInput: { thread_id: p.thread_id, text },
               });
             }
             pendingInputRef.current = [];
@@ -631,7 +631,7 @@ export function App() {
   const handleSend = useCallback(
     (text: string) => {
       if (threadRef.current) {
-        send({ UserInput: { root_thread_id: threadRef.current, text } });
+        send({ UserInput: { thread_id: threadRef.current, text } });
       } else {
         pendingInputRef.current.push(text);
         setNewSessionPickerOpen(true);

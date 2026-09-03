@@ -170,7 +170,7 @@ export type ClientMessage =
       };
     }
   | { Connect: { root_thread_id: string; thread_id: string | null } }
-  | { UserInput: { root_thread_id: string; text: string } }
+  | { UserInput: { thread_id: string; text: string } }
   | "Disconnect"
   | { SoftDetach: { root_thread_id: string } }
   | { ShutdownSession: { root_thread_id: string } }
