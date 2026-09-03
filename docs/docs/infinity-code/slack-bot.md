@@ -122,10 +122,17 @@ Start the Infinity daemon first (if not already running), then start the Slack b
 infinity --daemon
 
 # Start the Slack bot
+cargo run -p infinity-slack-bot
+```
+
+Or install it as a standalone binary:
+
+```bash
+cargo install --path crates/infinity-slack-bot
 infinity-slack-bot
 ```
 
-The bot connects via Socket Mode (WebSocket) — no public URL or ngrok required.
+The bot is a single plain binary: the Hydro dataflow (from the `infinity-slack-dataflow` crate) is compiled into it at build time via Hydro's embedded mode and driven by the bot's own event loop. It connects to Slack via Socket Mode (WebSocket) — no public URL or ngrok required.
 
 ## Usage
 

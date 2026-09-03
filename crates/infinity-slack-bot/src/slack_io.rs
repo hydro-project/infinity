@@ -1,131 +1,21 @@
+//! Slack I/O: bridges Slack's Socket Mode WebSocket and Web API to the
+//! dataflow.
+//!
+//! Inbound: parses Socket Mode envelopes into [`SlackEvent`]s.
+//! Outbound: executes [`SlackAction`]s against the Slack Web API (message
+//! posting, streaming, statuses, modals, ...).
+
 use futures_util::{SinkExt, StreamExt};
+use infinity_slack_dataflow::config::Config;
+use infinity_slack_dataflow::slack::{
+    SlackAction, SlackEvent, MODEL_PICKER_ACTION_ID, MODEL_PICKER_BLOCK_ID,
+    MODEL_PICKER_CALLBACK_ID,
+};
 use serde::Deserialize;
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_util::sync::PollSender;
 
-use crate::config::Config;
 use crate::slack_client::SlackClient;
-
-/// Callback ID for the model-picker modal (set on the view when opening,
-/// echoed back by Slack in the `view_submission` payload).
-pub const MODEL_PICKER_CALLBACK_ID: &str = "model_picker";
-/// Block ID of the model-select input block in the model-picker modal.
-pub const MODEL_PICKER_BLOCK_ID: &str = "model_block";
-/// Action ID of the model-select element in the model-picker modal.
-pub const MODEL_PICKER_ACTION_ID: &str = "model_select";
-
-/// A normalized event from Slack (message, button click, or slash command)
-/// that flows through the dataflow.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct SlackEvent {
-    pub user: String,
-    pub text: String,
-    pub channel: String,
-    pub thread_ts: String,
-    pub is_button_click: bool,
-    pub button_value: Option<String>,
-    pub action_id: Option<String>,
-    /// The ts of the message that was interacted with (for button clicks).
-    pub message_ts: Option<String>,
-    /// The label text of the clicked button.
-    pub button_text: Option<String>,
-    /// True if this is a bot message.
-    pub is_bot: bool,
-    /// True if user is not authorized.
-    pub is_unauthorized: bool,
-    /// The slash command that produced this event (e.g. `/model`), if any.
-    /// For slash commands, `text` holds the arguments after the command.
-    #[serde(default)]
-    pub slash_command: Option<String>,
-    /// Slash-command response URL: POSTing JSON here sends an (ephemeral by
-    /// default) response visible only to the invoking user.
-    #[serde(default)]
-    pub response_url: Option<String>,
-    /// Trigger ID for opening modals (present in slash commands and some
-    /// interactive payloads).
-    #[serde(default)]
-    pub trigger_id: Option<String>,
-    /// True if the user opened the app's Messages tab (`app_home_opened`
-    /// event with `tab == "messages"`). Used for onboarding, not messaging.
-    #[serde(default)]
-    pub is_app_home_opened: bool,
-}
-
-/// An action the dataflow instructs the sidecar to perform against the Slack API.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub enum SlackAction {
-    /// Post a text message to a channel/thread.
-    PostMessage {
-        channel: String,
-        text: String,
-        thread_ts: Option<String>,
-    },
-    /// Post a message with Block Kit blocks.
-    PostBlocks {
-        channel: String,
-        fallback_text: String,
-        blocks: serde_json::Value,
-        thread_ts: Option<String>,
-        /// If set, the sidecar will store the resulting message_ts under this
-        /// choice_id so that a later `DismissChoiceButtons` can update it.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        choice_id: Option<String>,
-    },
-    /// Dismiss interactive buttons for a completed choice (replace with a
-    /// "resolved" indicator). The sidecar looks up the stored message_ts
-    /// from the choice_id.
-    DismissChoiceButtons { choice_id: String },
-    /// Update an existing message's blocks (e.g. to replace buttons with a selection indicator).
-    UpdateMessage {
-        channel: String,
-        ts: String,
-        text: String,
-        blocks: serde_json::Value,
-    },
-    /// Append text to the active stream for this thread (starts a stream if needed).
-    StreamAppend {
-        channel: String,
-        thread_ts: String,
-        text: String,
-    },
-    /// Stop/finalize the active stream for this thread.
-    StreamStop { channel: String, thread_ts: String },
-    /// Set a status indicator on the thread (e.g. "Thinking...").
-    SetStatus {
-        channel: String,
-        thread_ts: String,
-        status: String,
-    },
-    /// Respond to a slash command by POSTing to its `response_url`.
-    /// The response is ephemeral (visible only to the invoking user).
-    CommandResponse { response_url: String, text: String },
-    /// Open a modal view using the Slack `views.open` API.
-    OpenView {
-        trigger_id: String,
-        view: serde_json::Value,
-    },
-    /// Set the title of an agent thread.
-    SetThreadTitle {
-        channel: String,
-        thread_ts: String,
-        title: String,
-    },
-    /// Pin suggested prompts to the top of the app's Messages tab.
-    SetSuggestedPrompts { channel: String },
-    /// Append a task update (tool call progress) to the active stream for
-    /// this thread. `status` is `in_progress`, `complete`, or `error`.
-    /// `details` optionally carries the tool call arguments.
-    StreamTaskUpdate {
-        channel: String,
-        thread_ts: String,
-        task_id: String,
-        title: String,
-        status: String,
-        details: String,
-    },
-}
 
 // ── Internal deserialization types ──────────────────────────────────────────
 
@@ -244,70 +134,50 @@ struct SlashCommandPayload {
     trigger_id: Option<String>,
 }
 
-// ── Sidecar constructor ─────────────────────────────────────────────────────
+// ── I/O task constructor ─────────────────────────────────────────────────────
 
-/// Creates the Slack WebSocket sidecar for use with Hydro's `sidecar_bidi`.
-///
-/// This runs inside the deployed Hydro process. It bootstraps all runtime
-/// state (config, Slack client, session store) from scratch, then bridges
-/// the Slack WebSocket into the dataflow.
-///
-/// Returns `(inbound_stream, outbound_sink)` where:
-/// - `inbound_stream` emits parsed `SlackEvent`s into the dataflow
-/// - `outbound_sink` is unused (event handling happens in the dataflow via `for_each`)
-pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
-    // Initialize tracing in the deployed child process (must use stderr —
-    // stdout is reserved for the Hydro deploy protocol).
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
+/// Endpoints and task handles returned by [`spawn`].
+pub struct SlackIo {
+    /// Parsed Slack events; the bot wraps this in a stream and feeds it to
+    /// the embedded dataflow.
+    pub events: mpsc::Receiver<SlackEvent>,
+    /// Actions produced by the dataflow; a spawned task executes them against
+    /// the Slack Web API. The channel is unbounded because the dataflow emits
+    /// actions from a synchronous callback during a tick (it cannot await
+    /// backpressure), and action volume is bounded by human-scale chat traffic.
+    pub actions: mpsc::UnboundedSender<SlackAction>,
+    /// Handle of the outbound (action executor) task. This task never
+    /// finishes during normal operation; completion means a panic or bug and
+    /// should be treated as fatal by the caller.
+    pub outbound: tokio::task::JoinHandle<()>,
+    /// Handle of the inbound (Socket Mode) task. Same liveness contract as
+    /// `outbound`, with one nuance: it also returns cleanly if the
+    /// dataflow-side event channel closes -- which only happens once the
+    /// dataflow itself is gone, so the caller should still treat completion
+    /// as fatal.
+    pub inbound: tokio::task::JoinHandle<()>,
+}
 
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
-
-    let log_path = std::env::var("SLACK_BOT_LOG").unwrap_or_else(|_| {
-        infinity_protocol::state_dir()
-            .join("slack.log")
-            .to_string_lossy()
-            .into_owned()
-    });
-    let file_layer = {
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .unwrap_or_else(|e| panic!("failed to open log file {log_path}: {e}"));
-        tracing_subscriber::fmt::layer()
-            .with_writer(std::sync::Mutex::new(file))
-            .with_ansi(false)
-    };
-
-    let _ = tracing_subscriber::registry()
-        .with(env_filter)
-        .with(stderr_layer)
-        .with(file_layer)
-        .try_init();
-
-    // Bootstrap config and session store for the runtime.
-    let config: &'static Config =
-        Box::leak(Box::new(Config::load().expect("failed to load slack.json")));
-
-    let store_path = infinity_protocol::state_dir().join("slack_sessions.json");
-    let store =
-        crate::session_store::SessionStore::load(store_path).expect("failed to load session store");
-    let sessions = std::sync::Arc::new(std::sync::Mutex::new(store));
-    crate::runtime::init(config, sessions);
+/// Validates the Slack credentials, then spawns the Slack I/O tasks and
+/// returns the dataflow-facing endpoints.
+pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> {
+    // Validate both credentials on the startup path: a bad token must fail
+    // startup with an actionable error. (Previously the bot token was checked
+    // inside a detached task, whose panic tokio isolates -- leaving the bot
+    // running but permanently unable to execute actions.)
+    let slack = SlackClient::new(&config.bot_token).await.map_err(|e| {
+        format!("failed to authenticate with Slack: {e}\nVerify `bot_token` in slack.json")
+    })?;
+    tracing::info!("Slack bot authenticated");
+    let initial_ws_url = get_ws_url(&config.app_token).await.map_err(|e| {
+        format!("failed to open a Socket Mode connection: {e}\nVerify `app_token` in slack.json")
+    })?;
 
     let (to_df_tx, to_df_rx) = mpsc::channel::<SlackEvent>(1024);
-    let (from_df_tx, mut from_df_rx) = mpsc::channel::<SlackAction>(1024);
+    let (from_df_tx, mut from_df_rx) = mpsc::unbounded_channel::<SlackAction>();
 
     // Outbound: execute SlackActions against the Slack API.
-    tokio::spawn(async move {
-        let slack = SlackClient::new(&config.bot_token)
-            .await
-            .expect("failed to authenticate with Slack");
-        tracing::info!("Slack bot authenticated");
-
+    let outbound = tokio::spawn(async move {
         /// Per-thread stream state.
         struct StreamState {
             ts: String,
@@ -542,7 +412,7 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
                             // can dismiss it later when the choice is resolved without
                             // a Slack button click.
                             if let Some(cid) = choice_id {
-                                let rt = crate::runtime::get();
+                                let rt = infinity_slack_dataflow::runtime::get();
                                 rt.choice_messages
                                     .lock()
                                     .expect("bug: lock poisoned")
@@ -603,7 +473,7 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
                         // Complete any tool tasks that never got a result so
                         // the message doesn't finalize with spinners.
                         let pending: Vec<(String, String, String)> = {
-                            let rt = crate::runtime::get();
+                            let rt = infinity_slack_dataflow::runtime::get();
                             let mut tasks = rt.tool_tasks.lock().expect("bug: lock poisoned");
                             tasks
                                 .get_mut(&thread_ts)
@@ -750,7 +620,7 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
                 }
                 SlackAction::DismissChoiceButtons { choice_id } => {
                     let info = {
-                        let rt = crate::runtime::get();
+                        let rt = infinity_slack_dataflow::runtime::get();
                         rt.choice_messages
                             .lock()
                             .expect("bug: lock poisoned")
@@ -783,17 +653,23 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
         }
     });
 
-    // Inbound: Slack WebSocket → dataflow.
-    tokio::spawn(async move {
+    // Inbound: Slack WebSocket → dataflow. The URL fetched during startup
+    // validation is consumed by the first connection attempt (Socket Mode
+    // URLs are short-lived tickets, so refetch on every reconnect after).
+    let mut pending_ws_url = Some(initial_ws_url);
+    let inbound = tokio::spawn(async move {
         loop {
             tracing::info!("connecting to Slack Socket Mode...");
-            let url = match get_ws_url(&config.app_token).await {
-                Ok(u) => u,
-                Err(e) => {
-                    tracing::error!("failed to get Socket Mode URL: {e}");
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    continue;
-                }
+            let url = match pending_ws_url.take() {
+                Some(url) => url,
+                None => match get_ws_url(&config.app_token).await {
+                    Ok(u) => u,
+                    Err(e) => {
+                        tracing::error!("failed to get Socket Mode URL: {e}");
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        continue;
+                    }
+                },
             };
 
             let (ws_stream, _) = match tokio_tungstenite::connect_async(&url).await {
@@ -849,7 +725,7 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
                         "received Slack event"
                     );
                     if to_df_tx.send(event).await.is_err() {
-                        tracing::warn!("dataflow channel closed, stopping sidecar inbound");
+                        tracing::warn!("dataflow channel closed, stopping Slack inbound task");
                         return;
                     }
                 }
@@ -859,7 +735,12 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
         }
     });
 
-    (ReceiverStream::new(to_df_rx), PollSender::new(from_df_tx))
+    Ok(SlackIo {
+        events: to_df_rx,
+        actions: from_df_tx,
+        outbound,
+        inbound,
+    })
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -1362,72 +1243,5 @@ mod tests {
         let event = parse_envelope(envelope).expect("should parse");
         assert!(event.is_button_click);
         assert_eq!(event.button_value.as_deref(), Some("2"));
-    }
-
-    #[test]
-    fn filter_logic_drops_bot_messages() {
-        let event = SlackEvent {
-            user: "U1".into(),
-            text: "bot".into(),
-            channel: "C1".into(),
-            thread_ts: "1.0".into(),
-            is_button_click: false,
-            button_value: None,
-            action_id: None,
-            message_ts: None,
-            button_text: None,
-            is_bot: true,
-            is_unauthorized: false,
-            slash_command: None,
-            response_url: None,
-            trigger_id: None,
-            is_app_home_opened: false,
-        };
-        // Same filter as the dataflow
-        assert!(!(!event.is_bot && !event.is_unauthorized));
-    }
-
-    #[test]
-    fn filter_logic_drops_unauthorized() {
-        let event = SlackEvent {
-            user: "UBAD".into(),
-            text: "hi".into(),
-            channel: "C1".into(),
-            thread_ts: "1.0".into(),
-            is_button_click: false,
-            button_value: None,
-            action_id: None,
-            message_ts: None,
-            button_text: None,
-            is_bot: false,
-            is_unauthorized: true,
-            slash_command: None,
-            response_url: None,
-            trigger_id: None,
-            is_app_home_opened: false,
-        };
-        assert!(!(!event.is_bot && !event.is_unauthorized));
-    }
-
-    #[test]
-    fn filter_logic_passes_valid_message() {
-        let event = SlackEvent {
-            user: "U1".into(),
-            text: "hello".into(),
-            channel: "C1".into(),
-            thread_ts: "1.0".into(),
-            is_button_click: false,
-            button_value: None,
-            action_id: None,
-            message_ts: None,
-            button_text: None,
-            is_bot: false,
-            is_unauthorized: false,
-            slash_command: None,
-            response_url: None,
-            trigger_id: None,
-            is_app_home_opened: false,
-        };
-        assert!(!event.is_bot && !event.is_unauthorized);
     }
 }

@@ -1,7 +1,7 @@
 //! Deterministic simulation tests for the Slack bot dataflow.
 //!
 //! These drive the dataflow through Hydro's simulator (`flow.sim()`) via
-//! `sim_input`/`sim_output` ports — no sidecars are run. The simulator
+//! `sim_input`/`sim_output` ports — no I/O tasks are run. The simulator
 //! compiles the flow into a dylib and explores batching/interleaving
 //! schedules, so the tests below follow three rules:
 //!
@@ -27,8 +27,8 @@
 use hydro_lang::live_collections::stream::{ExactlyOnce, TotalOrder};
 use hydro_lang::prelude::*;
 use hydro_lang::sim::{SimReceiver, SimSender};
-use infinity_slack_bot::daemon_sidecar::{DaemonCommand, DaemonEvent};
-use infinity_slack_bot::sidecar::{SlackAction, SlackEvent};
+use infinity_slack_dataflow::daemon::{DaemonCommand, DaemonEvent};
+use infinity_slack_dataflow::slack::{SlackAction, SlackEvent};
 
 // Integration tests are a separate crate, so the `#[cfg(test)]` init hook from
 // `hydro_lang::setup!()` in the library does not apply here. Sim compilation
@@ -71,16 +71,16 @@ fn build_sim<'a>(
     // runtime is initialized *inside the sim dylib*. Initialize it lazily on
     // every input path before any downstream closure runs.
     let slack_events = slack_events.map(q!(|e| {
-        infinity_slack_bot::runtime::ensure_test_init();
+        infinity_slack_dataflow::runtime::ensure_test_init();
         e
     }));
     let daemon_events = daemon_events.map(q!(|e| {
-        infinity_slack_bot::runtime::ensure_test_init();
+        infinity_slack_dataflow::runtime::ensure_test_init();
         e
     }));
 
     let (slack_actions, daemon_commands) =
-        infinity_slack_bot::flow::slack_dataflow(slack_events, daemon_events);
+        infinity_slack_dataflow::flow::slack_dataflow(slack_events, daemon_events);
 
     (
         slack_tx,
