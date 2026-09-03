@@ -101,7 +101,7 @@ If the release fails it may leave the repo in a bit of a half-broken or half-rel
 or all of the release version tags may be pushed. You may need to manually create some
 [GitHub releases](https://github.com/hydro-project/infinity/releases).
 You can also try re-running the release action but with the version bump set to `keep`, if versions
-have been bumped but not released. You'll have to figure it out, its finicky.
+have been bumped but not released. You'll have to figure it out, it's finicky.
 
 **DO NOT MAKE CHANGES TO `main` WHEN THE RELEASE WORKFLOW IS RUNNING!**
 
