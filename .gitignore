@@ -3,6 +3,10 @@ target/
 .env.local
 node_modules/
 
+# Rust workspace vendored into the agent package by agent/scripts/prepare-package.mjs
+# (compiled lib JS/decls are already covered by agent/.gitignore)
+/agent/rust/
+
 # Lambda layer build artifacts
 jj-layer/
 
