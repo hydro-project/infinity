@@ -1,11 +1,15 @@
 [package]
 name = "sandbox-local"
+publish = true
 version = "0.1.0"
+documentation = "https://docs.rs/sandbox-local/"
+description = "Local sandbox RAP server for Infinity coding agents."
 edition = "2024"
+repository = { workspace = true }
 license = "Apache-2.0"
 
 [dependencies]
-sandbox-core = { path = "../sandbox-core" }
+sandbox-core = { path = "../sandbox-core", version = "^0.1.0" }
 clap = { version = "4", features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -21,8 +25,8 @@ nix = { version = "0.31", features = ["process"] }
 [dev-dependencies]
 insta = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-rap-client = { path = "../rap-client" }
-rap-protocol = { path = "../rap-protocol" }
+rap-client = { path = "../rap-client", version = "^0.1.0" }
+rap-protocol = { path = "../rap-protocol", version = "^0.1.0" }
 reqwest = { workspace = true }
 regex = "1"
 base64 = "0.22"

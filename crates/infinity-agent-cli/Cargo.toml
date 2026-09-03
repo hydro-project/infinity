@@ -1,7 +1,11 @@
 [package]
 name = "infinity-agent-cli"
+publish = true
 version = "0.1.0"
+documentation = "https://docs.rs/infinity-agent-cli/"
+description = "Terminal client for Infinity coding agents."
 edition = "2024"
+repository = { workspace = true }
 license = "Apache-2.0"
 
 [lib]
@@ -13,11 +17,11 @@ name = "infinity"
 path = "src/main.rs"
 
 [dependencies]
-infinity-agent-core = { path = "../infinity-agent-core" }
-infinity-provider-protocol = { path = "../infinity-provider-protocol" }
-infinity-protocol = { path = "../infinity-protocol" }
-rap-protocol = { path = "../rap-protocol" }
-infinity-daemon = { path = "../infinity-daemon" }
+infinity-agent-core = { path = "../infinity-agent-core", version = "^0.1.0" }
+infinity-provider-protocol = { path = "../infinity-provider-protocol", version = "^0.1.0" }
+infinity-protocol = { path = "../infinity-protocol", version = "^0.1.0" }
+rap-protocol = { path = "../rap-protocol", version = "^0.1.0" }
+infinity-daemon = { path = "../infinity-daemon", version = "^0.1.0" }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -48,9 +52,9 @@ bundled-web = ["infinity-daemon/bundled-web"]
 insta = { workspace = true }
 vt100 = { workspace = true }
 alacritty_terminal = { workspace = true }
-infinity-provider-protocol = { path = "../infinity-provider-protocol", features = ["mock"] }
-rap-client = { path = "../rap-client" }
-infinity-rap-bridge = { path = "../infinity-rap-bridge" }
+infinity-provider-protocol = { path = "../infinity-provider-protocol", version = "^0.1.0", features = ["mock"] }
+rap-client = { path = "../rap-client", version = "^0.1.0" }
+infinity-rap-bridge = { path = "../infinity-rap-bridge", version = "^0.1.0" }
 tempfile = { workspace = true }
 rap-test-servers = { path = "../rap-test-servers" }
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time", "test-util"] }

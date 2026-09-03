@@ -1,11 +1,15 @@
 [package]
 name = "infinity-provider-bedrock"
+publish = true
 version = "0.1.0"
+documentation = "https://docs.rs/infinity-provider-bedrock/"
+description = "Native AWS Bedrock (Converse API) model provider for Infinity coding agents."
 edition = "2024"
+repository = { workspace = true }
 license = "Apache-2.0"
 
 [dependencies]
-infinity-provider-protocol = { path = "../infinity-provider-protocol", features = ["remote"] }
+infinity-provider-protocol = { path = "../infinity-provider-protocol", version = "^0.1.0", features = ["remote"] }
 aws-config = { workspace = true }
 aws-sdk-bedrockruntime = { version = "1", default-features = false, features = ["rt-tokio", "default-https-client"] }
 aws-smithy-types = "1"

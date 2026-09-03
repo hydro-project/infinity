@@ -1,11 +1,15 @@
 [package]
 name = "rap-github-event-poller"
+publish = true
 version = "0.1.0"
+documentation = "https://docs.rs/rap-github-event-poller/"
+description = "RAP tool server that polls GitHub and delivers repository events to Infinity agents as subscriptions."
 edition = "2024"
+repository = { workspace = true }
 license = "Apache-2.0"
 
 [dependencies]
-rap-protocol = { path = "../rap-protocol" }
+rap-protocol = { path = "../rap-protocol", version = "^0.1.0" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }

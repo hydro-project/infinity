@@ -1,14 +1,18 @@
 [package]
 name = "infinity-rap-bridge"
+publish = true
 version = "0.1.0"
+documentation = "https://docs.rs/infinity-rap-bridge/"
+description = "Connect RAP tool servers to local Infinity agent systems."
 edition = "2024"
+repository = { workspace = true }
 license = "Apache-2.0"
 
 [dependencies]
-infinity-agent-core = { path = "../infinity-agent-core" }
-rap-client = { path = "../rap-client" }
-rap-protocol = { path = "../rap-protocol" }
-infinity-provider-protocol = { path = "../infinity-provider-protocol" }
+infinity-agent-core = { path = "../infinity-agent-core", version = "^0.1.0" }
+rap-client = { path = "../rap-client", version = "^0.1.0" }
+rap-protocol = { path = "../rap-protocol", version = "^0.1.0" }
+infinity-provider-protocol = { path = "../infinity-provider-protocol", version = "^0.1.0" }
 
 serde_json = { workspace = true }
 tracing = { workspace = true }
