@@ -573,7 +573,7 @@
 
 <csr-read-only-do-not-edit/>
 
- - 112 commits contributed to the release.
+ - 113 commits contributed to the release.
  - 33 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 20 unique issues were worked on: [#104](https://github.com/hydro-project/infinity/issues/104), [#105](https://github.com/hydro-project/infinity/issues/105), [#107](https://github.com/hydro-project/infinity/issues/107), [#110](https://github.com/hydro-project/infinity/issues/110), [#113](https://github.com/hydro-project/infinity/issues/113), [#13](https://github.com/hydro-project/infinity/issues/13), [#18](https://github.com/hydro-project/infinity/issues/18), [#19](https://github.com/hydro-project/infinity/issues/19), [#39](https://github.com/hydro-project/infinity/issues/39), [#50](https://github.com/hydro-project/infinity/issues/50), [#52](https://github.com/hydro-project/infinity/issues/52), [#61](https://github.com/hydro-project/infinity/issues/61), [#63](https://github.com/hydro-project/infinity/issues/63), [#71](https://github.com/hydro-project/infinity/issues/71), [#8](https://github.com/hydro-project/infinity/issues/8), [#82](https://github.com/hydro-project/infinity/issues/82), [#87](https://github.com/hydro-project/infinity/issues/87), [#88](https://github.com/hydro-project/infinity/issues/88), [#92](https://github.com/hydro-project/infinity/issues/92), [#96](https://github.com/hydro-project/infinity/issues/96)
 
@@ -624,6 +624,7 @@
  * **[#96](https://github.com/hydro-project/infinity/issues/96)**
     - Extract shared agent system engine ([`9c921fd`](https://github.com/hydro-project/infinity/commit/9c921fde280b50c89c3e5b9caadccf83a46078a4))
  * **Uncategorized**
+    - Release infinity-provider-protocol v0.1.0, infinity-provider-bedrock v0.1.0, infinity-provider-rig v0.1.0, infinity-agent-core v0.1.0, infinity-mcp-bridge v0.1.0, infinity-rap-bridge v0.1.0, infinity-daemon v0.1.0, infinity-agent-cli v0.1.0, sandbox-core v0.1.0, sandbox-local v0.1.0, sandbox-remote v0.1.0 ([`7e1cd1d`](https://github.com/hydro-project/infinity/commit/7e1cd1df69d8fce402bef4085e9d17f871994503))
     - Release rap-protocol v0.1.0, rap-client v0.1.0, rap-steering-server v0.1.0, rap-github-event-poller v0.1.0, infinity-protocol v0.1.0, infinity-provider-protocol v0.1.0, infinity-provider-bedrock v0.1.0, infinity-provider-rig v0.1.0, infinity-agent-core v0.1.0, infinity-mcp-bridge v0.1.0, infinity-rap-bridge v0.1.0, infinity-daemon v0.1.0, infinity-agent-cli v0.1.0, sandbox-core v0.1.0, sandbox-local v0.1.0, sandbox-remote v0.1.0 ([`dd8c7f4`](https://github.com/hydro-project/infinity/commit/dd8c7f49028a26052d785b4241f9ade125f0afb3))
     - Prevent close_thread on root thread and deduplicate get_thread_parent_info calls ([`bbfb25d`](https://github.com/hydro-project/infinity/commit/bbfb25dc3514f3c124b5ac50f102291e0c131e9c))
     - Prevent compaction from truncating pending tool calls ([`b959506`](https://github.com/hydro-project/infinity/commit/b959506eea3eb763bb8a6699dd6a5f37f9fe7a98))
