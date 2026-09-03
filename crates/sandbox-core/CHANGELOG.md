@@ -11,9 +11,9 @@
    
    Both ecosystems enforce an allowlist of permissive licenses:
    - Rust (about.toml): Apache-2.0, MIT, ISC, BSD-3-Clause, CC0-1.0,
-     CDLA-Permissive-2.0, MPL-2.0, Unicode-3.0, Zlib
+   CDLA-Permissive-2.0, MPL-2.0, Unicode-3.0, Zlib
    - npm (script): MIT, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, 0BSD,
-     CC0-1.0, Unlicense, BlueOak-1.0.0, MPL-2.0
+   CC0-1.0, Unlicense, BlueOak-1.0.0, MPL-2.0
    
    The script fails if any dependency uses a license not in the allowlist.
    
@@ -37,81 +37,81 @@
    ## Provider protocol (`infinity-provider-protocol`)
    
    * `ModelEntry` gains `supports_image_input: bool` (`#[serde(default)]`, so
-     the remote provider socket protocol stays backward compatible).
+   the remote provider socket protocol stays backward compatible).
    * Bedrock provider: all Claude models declare `supports_image_input: true`.
    * The capability is threaded from the resolved `ModelEntry` into
-     `run_completion`/`process_batch` (rather than a trait method that re-lists
-     models each turn): the daemon passes `catalog.find(&round_model)
-     .supports_image_input` per round (following mid-session model switches);
-     the Lambda resolves it once from `list_models()`.
+   `run_completion`/`process_batch` (rather than a trait method that re-lists
+   models each turn): the daemon passes `catalog.find(&round_model)
+   .supports_image_input` per round (following mid-session model switches);
+   the Lambda resolves it once from `list_models()`.
    
    ## Agent core (`infinity-agent-core`)
    
    * `HistoryManager::get_history(supports_image_input)` replaces image
-     tool-result content in place with `IMAGE_OMITTED_PLACEHOLDER` when the
-     model can't accept images (no extra allocation pass). Images kept in
-     history become visible again after switching to an image-capable model.
+   tool-result content in place with `IMAGE_OMITTED_PLACEHOLDER` when the
+   model can't accept images (no extra allocation pass). Images kept in
+   history become visible again after switching to an image-capable model.
    
    ## RAP protocol (`rap-protocol`)
    
    * `RapToolResult` carries either `text` **or** structured `content`
-     (`RapToolResultContent::{Text, Image{data, mediaType}}`, base64); `text` is
-     now optional. When `content` is present it supersedes `text`.
+   (`RapToolResultContent::{Text, Image{data, mediaType}}`, base64); `text` is
+   now optional. When `content` is present it supersedes `text`.
    * New `DisplaySegment::Image(ImageContent { data, mediaType })` for
-     human-facing UIs.
+   human-facing UIs.
    * Spec docs (`tool-result.md`) and provider docs updated.
    
    ## Daemon (`infinity-daemon`)
    
    * RAP callbacks build the rig tool result from structured `content` when
-     present (images → `ToolResultContent::Image`), else fall back to `text`.
+   present (images → `ToolResultContent::Image`), else fall back to `text`.
    
    ## Sandbox (`sandbox-core` / `sandbox-local`)
    
    * `read_file` detects images by content (magic bytes, not extension) so
-     mislabeled/extension-less files are classified correctly; returns a
-     describing text plus base64 image content with `display_as: [image,
-     text-summary]`. Tool output modeled as a named `ToolOutput` struct.
+   mislabeled/extension-less files are classified correctly; returns a
+   describing text plus base64 image content with `display_as: [image,
+   text-summary]`. Tool output modeled as a named `ToolOutput` struct.
    
    ## Clients
    
    * Web (`infinity-ui`): `MessageItem` renders images as an inline bordered
-     `<img>` (`data:` URL, `data-testid="tool-result-image"`).
+   `<img>` (`data:` URL, `data-testid="tool-result-image"`).
    * TUI / ACP (`infinity-agent-cli`): renderers pick the first *supported*
-     display segment; image-only results show `✓ [image — not displayable in
-     terminal]`, otherwise the text summary.
+   display segment; image-only results show `✓ [image — not displayable in
+   terminal]`, otherwise the text summary.
    
    ## Shared test crate (`rap-test-servers`, unpublished)
    
    * `start_stub_image_server()` serves a `read_image` RAP tool returning a
-     fixed indigo PNG; `write_rap_config(cwd, port)` points sessions at it.
-     Dev-dependency of the CLI and daemon e2e suites.
+   fixed indigo PNG; `write_rap_config(cwd, port)` points sessions at it.
+   Dev-dependency of the CLI and daemon e2e suites.
    
    ## Tests
    
    * agent-core: image tool results reach image-capable models and are replaced
-     with the placeholder otherwise.
+   with the placeholder otherwise.
    * daemon: RAP→rig content conversion (fallbacks, media types).
    * provider-protocol: remote transport round-trips `supports_image_input`.
    * sandbox-local: PNG content + display segments, content-based detection
-     (PNG named `.txt`), text reads unchanged.
+   (PNG named `.txt`), text reads unchanged.
    * TUI e2e: image content reaches the model; terminal renders the text
-     fallback (insta snapshot).
+   fallback (insta snapshot).
    * Web e2e: follow-up request carries the base64 image; transcript renders the
-     inline `<img>`; `chat-image-result.png` golden.
+   inline `<img>`; `chat-image-result.png` golden.
  - <csr-id-8b9db6bd4fe0572e4682115340361f7ad8f41b70/> expandable diffs and render performance overhaul
    **Backend** (`crates/sandbox-core/src/server.rs`):
    - Rewrote `push_diff_view` to send old/new file contents per changed file
-     instead of a unified diff patch string.
+   instead of a unified diff patch string.
    - Added `parse_changed_files` helper for `jj diff --summary` / `git diff --name-status`.
    - For each file, fetches contents via `jj file show` / `git show` from parent
-     and current revisions. Handles Jj, Git, and Brazil modes.
+   and current revisions. Handles Jj, Git, and Brazil modes.
    - New payload format: `{ "files": [{ path, status, oldContents, newContents }] }`
    
    **Frontend** (`infinity-web/src/components/DiffView.tsx`):
    - Switched from `PatchDiff` (patch string) to `MultiFileDiff` (old/new file
-     contents) from `@pierre/diffs`. Pierre computes the diff internally with
-     full file context, enabling native expand/collapse of unchanged sections.
+   contents) from `@pierre/diffs`. Pierre computes the diff internally with
+   full file context, enabling native expand/collapse of unchanged sections.
    - Default `hunkSeparators: "line-info"` provides clickable expand buttons.
  - <csr-id-ad18f9d280af5b8d33ea3f35fd12890f2603d7c2/> detect and warn when a sandbox bookmark is moved externally
    Added detection for external bookmark modifications in sandbox-local.
@@ -119,23 +119,23 @@
    operations, the next modifying tool call (edit_file, create_file, etc.)
    now prepends a warning to the result:
    
-     "Warning: bookmark 'sandbox-xyz' was moved externally; overwriting
-     with sandbox working copy."
+   "Warning: bookmark 'sandbox-xyz' was moved externally; overwriting
+   with sandbox working copy."
    
    The warning is also logged via tracing::warn for server-side debugging.
  - <csr-id-16b50c811830ba2c707f0aaf973cc90ad555e933/> pretty-print describe_overall_changes for the terminal
    - Added `display_script` to the `describe_overall_changes` tool definition so
-     the invocation line shows `◆ Describe changes: <first line>` instead of raw
-     JSON with literal `\n`s.
+   the invocation line shows `◆ Describe changes: <first line>` instead of raw
+   JSON with literal `\n`s.
    - Return the full commit message as a `DisplaySegment::Text` in the tool
-     result's `display_as` field, so the terminal renders it with `✓` and
-     continuation lines. The agent still only sees `"Edits described."` in its
-     context.
+   result's `display_as` field, so the terminal renders it with `✓` and
+   continuation lines. The agent still only sees `"Edits described."` in its
+   context.
    - Updated the tool description to tell the agent not to repeat the summary
-     since it is now displayed automatically.
+   since it is now displayed automatically.
    - Added `invoke_raw` test helper (deduplicated with `invoke` as a thin
-     wrapper) and `describe_returns_display_segments` test to verify the
-     `display_as` segments are returned correctly.
+   wrapper) and `describe_returns_display_segments` test to verify the
+   `display_as` segments are returned correctly.
  - <csr-id-c8a9d447f439931ce9ad534af156edb68f64d2a0/> add whitespace-tolerant fallback for `edit_file` matching
  - <csr-id-0ba5d1b522d484a02a948352613ff01171b118c4/> return diff from create_file for Pierre pretty printing
  - <csr-id-7085405bbfa8d07f6a69bc0e418761a56d108a67/> add RAP view_update protocol + diff view in web UI
@@ -146,41 +146,41 @@
 
  - <csr-id-87902de1c882a64ae78fe53b99a1f8ba50eac57f/> detect repository root when the requested path is nested inside a repo
    * Add `sandbox_core::find_repo_root`, which walks up from a path to the
-     closest ancestor containing a `.jj` directory or a `.git` entry
-     (directory, or file for worktrees/submodules). This makes jj repos
-     detectable when the cwd is inside a nested folder — jj subdirectories
-     carry no marker of their own, so the previous `path.join(".jj")` check
-     silently fell through to git mode (or failed entirely for
-     non-colocated jj repos).
+   closest ancestor containing a `.jj` directory or a `.git` entry
+   (directory, or file for worktrees/submodules). This makes jj repos
+   detectable when the cwd is inside a nested folder — jj subdirectories
+   carry no marker of their own, so the previous `path.join(".jj")` check
+   silently fell through to git mode (or failed entirely for
+   non-colocated jj repos).
    * `LocalBackend::init_repo` now resolves the requested path to the
-     repository root before storing it as the remote URI, so sandboxes are
-     always created from the repo root. Falls back to the path as given
-     when no root is found, preserving existing error paths (including
-     Direct mode on non-VCS directories).
+   repository root before storing it as the remote URI, so sandboxes are
+   always created from the repo root. Falls back to the path as given
+   when no root is found, preserving existing error paths (including
+   Direct mode on non-VCS directories).
    * `clone_repo` and `open_sandbox_direct` responses now include a note
-     when the detected repository root differs from the requested path,
-     telling the agent that the sandbox operates on the whole repository
-     and that file paths are relative to the root. Both handlers append
-     the note with the same `if let Some(note)` + `push_str` pattern, and
-     `handle_open_sandbox_direct` documents the distinction between the
-     caller-requested path (`args.repo`) and the backend-resolved root
-     (`remote_uri`).
+   when the detected repository root differs from the requested path,
+   telling the agent that the sandbox operates on the whole repository
+   and that file paths are relative to the root. Both handlers append
+   the note with the same `if let Some(note)` + `push_str` pattern, and
+   `handle_open_sandbox_direct` documents the distinction between the
+   caller-requested path (`args.repo`) and the backend-resolved root
+   (`remote_uri`).
    * The migration-import cwd check also walks up to the repo root instead
-     of requiring cwd to be the root itself.
+   of requiring cwd to be the root itself.
    * Add integration tests (`nested_repo_root.rs`) covering jj and git
-     clones from nested directories (mode detection + root note + reads
-     relative to the root) and the no-note case when cloning from the root.
+   clones from nested directories (mode detection + root note + reads
+   relative to the root) and the no-note case when cloning from the root.
  - <csr-id-cb15aa6da38e31c71b2cd71d4ec192150bf0c393/> resolve clippy 1.97 question_mark lints in server.rs
    CI's Lint job (clippy 1.97) fails on three new `clippy::question_mark`
    warnings that local stable clippy 1.96 does not yet flag:
    
    * `detect_cd_to_original_repo`: replace the two
-     `match stripped.find(...) { Some(end) => ..., None => return None }`
-     blocks (double- and single-quoted `cd` path parsing) with
-     `let end = stripped.find(...)?;`
+   `match stripped.find(...) { Some(end) => ..., None => return None }`
+   blocks (double- and single-quoted `cd` path parsing) with
+   `let end = stripped.find(...)?;`
    * `parse_changed_files`: rewrite the trailing
-     `else if let Some(rest) = ... else { return None }` branch for the
-     `D` (deleted) status using the `?` operator inside the `else` block
+   `else if let Some(rest) = ... else { return None }` branch for the
+   `D` (deleted) status using the `?` operator inside the `else` block
    
    No behavior change. Verified with cargo fmt, stable and nightly
    `cargo clippy --all-targets -- -D warnings` (both clean workspace-wide),
@@ -192,12 +192,12 @@
    workspace and commit dangling in jj.
    
    * Add `--ignore-working-copy` to `workspace forget` and `abandon` in
-     `cleanup_sandbox_permanently` (async close_thread path)
+   `cleanup_sandbox_permanently` (async close_thread path)
    * Add `--ignore-working-copy` to the same commands in `Drop for LocalBackend`
-     (server shutdown sync path)
+   (server shutdown sync path)
    * Add `--ignore-working-copy` to `jj_bookmark_is_empty` (both async and sync)
    * Add `--ignore-working-copy` to `jj git export` from the orig dir in
-     `push_sandbox`
+   `push_sandbox`
    * Add regression test reproducing the production scenario
  - <csr-id-49fda2e8aea86b8e5eb90da4cc9298b0d5a8fb47/> use TempDir with Drop for per-sandbox TMPDIR + update agent docs
    Addresses CR-276014461 review feedback:
@@ -242,52 +242,52 @@
    cargo-smart-release setup as hydro-project/hydro (per its RELEASING.md).
    
    * `.github/workflows/release.yml`: new manually-dispatched Release workflow,
-     adapted from hydro's. Supports major/minor/patch/keep/auto bumps, optional
-     pre-release ids, and a dry-run mode (execute unchecked). Uses the
-     hydro-project-bot GitHub App token to push past branch protection, and the
-     pinned hydro-project fork of cargo-smart-release (rev e6f3368337a0).
+   adapted from hydro's. Supports major/minor/patch/keep/auto bumps, optional
+   pre-release ids, and a dry-run mode (execute unchecked). Uses the
+   hydro-project-bot GitHub App token to push past branch protection, and the
+   pinned hydro-project fork of cargo-smart-release (rev e6f3368337a0).
    * `RELEASING.md`: releasing guide adapted from hydro's, including which crates
-     are published and why the others are not, plus an addendum explaining why
-     `[patch.crates-io]` on `rig-bedrock` blocks publishing the bedrock provider.
+   are published and why the others are not, plus an addendum explaining why
+   `[patch.crates-io]` on `rig-bedrock` blocks publishing the bedrock provider.
    * Crate manifests, 14 publishable crates (rap-protocol, rap-client,
-     rap-steering-server, rap-github-event-poller, infinity-protocol,
-     infinity-provider-protocol, infinity-agent-core, infinity-mcp-bridge,
-     infinity-rap-bridge, infinity-daemon, infinity-agent-cli, sandbox-core,
-     sandbox-local, sandbox-remote):
-     - `publish = true`, `description`, `documentation` (docs.rs), and
-       `repository = { workspace = true }` (new `[workspace.package]` in the root
-       `Cargo.toml`).
-     - `version = "^0.1.0"` added to all intra-workspace path dependencies
-       (including dev-deps between publishable crates), as required for
-       publishing.
-     - New empty `CHANGELOG.md` per crate so cargo-smart-release will generate
-       and track changelogs.
+   rap-steering-server, rap-github-event-poller, infinity-protocol,
+   infinity-provider-protocol, infinity-agent-core, infinity-mcp-bridge,
+   infinity-rap-bridge, infinity-daemon, infinity-agent-cli, sandbox-core,
+   sandbox-local, sandbox-remote):
+   - `publish = true`, `description`, `documentation` (docs.rs), and
+   `repository = { workspace = true }` (new `[workspace.package]` in the root
+   `Cargo.toml`).
+   - `version = "^0.1.0"` added to all intra-workspace path dependencies
+   (including dev-deps between publishable crates), as required for
+   publishing.
+   - New empty `CHANGELOG.md` per crate so cargo-smart-release will generate
+   and track changelogs.
    * `publish = false` added to crates that must not be published:
-     - `rig-mock`, `rap-test-servers` (test-only; left as path-only dev-deps so
-       cargo strips them at publish time),
-     - `rig-bedrock-patched` (vendored fork of crates-io `rig-bedrock`),
-     - `infinity-provider-bedrock` + `infinity-agent-lambda` (depend on the
-       patched rig-bedrock; publishing would silently drop the patches),
-     - `infinity-slack-bot` (deployment artifact).
+   - `rig-mock`, `rap-test-servers` (test-only; left as path-only dev-deps so
+   cargo strips them at publish time),
+   - `rig-bedrock-patched` (vendored fork of crates-io `rig-bedrock`),
+   - `infinity-provider-bedrock` + `infinity-agent-lambda` (depend on the
+   patched rig-bedrock; publishing would silently drop the patches),
+   - `infinity-slack-bot` (deployment artifact).
  - <csr-id-ea6b62e7b00f2a6b7e7338fa12e60fb3a46bb012/> add GitHub Actions workflows for lints, tests, conventional commits, and docs
    Added four workflow/action files modeled after hydro-project/hydro:
    
    - `.github/actions/use-sccache/action.yml` — composite action enabling sccache
-     with GHA cache backend for Rust compilation caching.
+   with GHA cache backend for Rust compilation caching.
    
    - `.github/workflows/ci.yml` — runs on push to main, PRs, and manual dispatch.
-     Two jobs: `lint` (fmt, clippy, license/THIRD-PARTY check via
-     generate-third-party.sh) and `test` (cargo test). Both use sccache and
-     skip-duplicate-actions. Installs libcap-dev and Node.js for the license checker.
+   Two jobs: `lint` (fmt, clippy, license/THIRD-PARTY check via
+   generate-third-party.sh) and `test` (cargo test). Both use sccache and
+   skip-duplicate-actions. Installs libcap-dev and Node.js for the license checker.
    
    - `.github/workflows/conventional_commits.yml` — validates PR titles match
-     conventional commit types (feat, fix, docs, refactor, perf, test, chore, ci,
-     revert) using amannn/action-semantic-pull-request.
+   conventional commit types (feat, fix, docs, refactor, perf, test, chore, ci,
+   revert) using amannn/action-semantic-pull-request.
    
    - `.github/workflows/docs.yml` — builds the documentation site by installing
-     infinity-ui deps then docs deps and running `npm run build` in docs/.
-     Uses Node 22 (current LTS) since the docs SSG requires `navigator.userAgent`
-     which was added in Node 21+.
+   infinity-ui deps then docs deps and running `npm run build` in docs/.
+   Uses Node 22 (current LTS) since the docs SSG requires `navigator.userAgent`
+   which was added in Node 21+.
    
    Also ran `cargo fmt --all` to fix minor formatting issues.
  - <csr-id-0951c1d559b5cdd7f6605eefae065c00d4165df7/> return error when ripgrep is not installed
@@ -327,57 +327,57 @@
    ## Core (`sandbox-core`)
    
    * New `ModeProvider` trait: the extension point for sandbox modes. A provider
-     claims a repository during `clone_repo` (`detect` → `ModeInit`) and then
-     handles all mode-specific behavior: `create_sandbox`, `refresh_sandbox`,
-     `describe`, `detect_external_change` (e.g. bookmark-move warnings),
-     `push_sandbox`, `squash`, `diff_files`, `cleanup`, `cleanup_blocking`
-     (sync, for `Drop`), and `extra_writable_paths`.
+   claims a repository during `clone_repo` (`detect` → `ModeInit`) and then
+   handles all mode-specific behavior: `create_sandbox`, `refresh_sandbox`,
+   `describe`, `detect_external_change` (e.g. bookmark-move warnings),
+   `push_sandbox`, `squash`, `diff_files`, `cleanup`, `cleanup_blocking`
+   (sync, for `Drop`), and `extra_writable_paths`.
    * New `SandboxMode::Custom { id, data }` variant carrying an opaque,
-     provider-defined JSON payload; existing `Jj`/`Git`/`Direct` serialization
-     is unchanged, so persisted metadata stays compatible.
+   provider-defined JSON payload; existing `Jj`/`Git`/`Direct` serialization
+   is unchanged, so persisted metadata stays compatible.
    * `SandboxBackend` reshaped around providers:
-     * `init_repo` is gone — `detect_mode(ctx)` is the single `clone_repo`
-       entry point where each backend does its repository setup and then
-       consults its providers. `ModeInit::repo_root` (canonicalized) becomes
-       the repo's `remote_uri`.
-     * Direct mode, which bypasses providers, gets its own `init_direct` hook
-       (default: unsupported).
-     * New delegating methods `describe_sandbox`, `detect_external_change`,
-       `squash_sandbox`, and `diff_files`.
+   * `init_repo` is gone — `detect_mode(ctx)` is the single `clone_repo`
+   entry point where each backend does its repository setup and then
+   consults its providers. `ModeInit::repo_root` (canonicalized) becomes
+   the repo's `remote_uri`.
+   * Direct mode, which bypasses providers, gets its own `init_direct` hook
+   (default: unsupported).
+   * New delegating methods `describe_sandbox`, `detect_external_change`,
+   `squash_sandbox`, and `diff_files`.
    * `server.rs` is now mode-agnostic: clone detection, the describe and
-     external-change logic in `with_sandbox`, `squash_sandbox`, and the diff
-     view all delegate to the backend instead of matching on Jj/Git. The diff
-     view is now also pushed after git/custom squashes (previously jj-only).
-     Session migration remains enum-based since it operates on git bundles and
-     rejects custom modes.
+   external-change logic in `with_sandbox`, `squash_sandbox`, and the diff
+   view all delegate to the backend instead of matching on Jj/Git. The diff
+   view is now also pushed after git/custom squashes (previously jj-only).
+   Session migration remains enum-based since it operates on git bundles and
+   rejects custom modes.
    * The reusable jj/git mode logic (detect, describe, external-change warning,
-     squash, diff) lives in `jj.rs`/`git.rs`, shared by the local providers and
-     the EFS backend. `git::detect_mode` is the documented fallback that claims
-     any repo not claimed earlier, preserving the friendly
-     "use `open_sandbox_direct`" error for commit-less repos.
+   squash, diff) lives in `jj.rs`/`git.rs`, shared by the local providers and
+   the EFS backend. `git::detect_mode` is the documented fallback that claims
+   any repo not claimed earlier, preserving the friendly
+   "use `open_sandbox_direct`" error for commit-less repos.
    
    ## Local backend (`sandbox-local`)
    
    * New `providers` module with `LocalJjProvider` and `LocalGitProvider`
-     (jj workspaces / git worktrees under `{repo}/.infinity/.sandboxes/`).
+   (jj workspaces / git worktrees under `{repo}/.infinity/.sandboxes/`).
    * `LocalBackend` holds an ordered `Vec<Arc<dyn ModeProvider>>` — jj then git
-     by default; `LocalBackend::new(enabled).with_provider(p)` prepends an
-     external provider ahead of the built-ins. All mode dispatch (creation,
-     push, squash, diff, cleanup, `Drop`-time cleanup, per-mode writable paths)
-     goes through the registry. Dropping a cached sandbox whose mode has no
-     registered provider logs a warning instead of silently leaking it.
+   by default; `LocalBackend::new(enabled).with_provider(p)` prepends an
+   external provider ahead of the built-ins. All mode dispatch (creation,
+   push, squash, diff, cleanup, `Drop`-time cleanup, per-mode writable paths)
+   goes through the registry. Dropping a cached sandbox whose mode has no
+   registered provider logs a warning instead of silently leaking it.
    * The old `init_repo` root resolution became the private `resolve_repo_root`,
-     used by both `detect_mode` and `init_direct` (Direct mode still works on
-     non-VCS directories).
+   used by both `detect_mode` and `init_direct` (Direct mode still works on
+   non-VCS directories).
    
    ## Remote backend (`sandbox-remote`)
    
    * `EfsBackend` (jj-only) implements the backend methods via the shared
-     `sandbox_core::jj` helpers; the old `init_repo` became the private
-     `mirror_repo` step of `detect_mode`, making the URL-mirror-then-detect
-     flow explicit in one place. `open_sandbox_direct` now fails immediately on
-     the remote backend (previously it stored Direct state that failed at
-     first use).
+   `sandbox_core::jj` helpers; the old `init_repo` became the private
+   `mirror_repo` step of `detect_mode`, making the URL-mirror-then-detect
+   flow explicit in one place. `open_sandbox_direct` now fails immediately on
+   the remote backend (previously it stored Direct state that failed at
+   first use).
    
    Verified with `cargo fmt --check`, clippy (`-D warnings`) on the touched
    crates, workspace-wide `cargo check --all-targets`, and the
@@ -397,22 +397,22 @@
    insta snapshot changes; full test suite passes).
    
    * rap-protocol: `strkind! { pub ThreadId; }` with docs (RAP calls it
-     `group_id` on the wire; UUIDs in the daemon, caller-chosen conversation
-     keys in the Lambda runtime). `group_id: ThreadId` on `RapInvocation`,
-     `RapToolResult`, `RapUserChoice`, `RapSubscriptionEvent`,
-     `RapViewUpdate`, `RapOAuth`; `thread_ancestors: Option<Vec<ThreadId>>`;
-     `send_subscription_event`/`send_view_update` take `ThreadId`
+   `group_id` on the wire; UUIDs in the daemon, caller-chosen conversation
+   keys in the Lambda runtime). `group_id: ThreadId` on `RapInvocation`,
+   `RapToolResult`, `RapUserChoice`, `RapSubscriptionEvent`,
+   `RapViewUpdate`, `RapOAuth`; `thread_ancestors: Option<Vec<ThreadId>>`;
+   `send_subscription_event`/`send_view_update` take `ThreadId`
    * sandbox-core/local/remote (via sub-agent): `ThreadId` re-exported from
-     sandbox-core root; `MetadataStore::get/delete(&ThreadId)`;
-     `SandboxBackend::push_sandbox`/`cleanup_sandbox_permanently` typed;
-     `RepoState.{group_id, root_thread_id}`, `CloneRepoArgs.base_thread_id`,
-     `SquashSandboxArgs.from_thread_id`, `CloneContext.group_id`,
-     `SandboxError::RepoNotFound`, and server request payload structs typed
+   sandbox-core root; `MetadataStore::get/delete(&ThreadId)`;
+   `SandboxBackend::push_sandbox`/`cleanup_sandbox_permanently` typed;
+   `RepoState.{group_id, root_thread_id}`, `CloneRepoArgs.base_thread_id`,
+   `SquashSandboxArgs.from_thread_id`, `CloneContext.group_id`,
+   `SandboxError::RepoNotFound`, and server request payload structs typed
    * infinity-agent-core: rap_tool boundary converts `ToolContext` strings
-     into `ThreadId` when building invocations (context types themselves are
-     Stage 2)
+   into `ThreadId` when building invocations (context types themselves are
+   Stage 2)
    * infinity-rap-bridge: callback conversion unwraps `ThreadId` into
-     `InputMessage.group_id` (String until Stage 2)
+   `InputMessage.group_id` (String until Stage 2)
    * rap-github-event-poller: `Subscription.group_id: ThreadId`
    * infinity-daemon: view-update routing + test fixture conversions
    * Workspace: `strkind = "0.0.1"` added to workspace dependencies
@@ -421,7 +421,7 @@
 
 <csr-read-only-do-not-edit/>
 
- - 89 commits contributed to the release.
+ - 90 commits contributed to the release.
  - 37 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 10 unique issues were worked on: [#10](https://github.com/hydro-project/infinity/issues/10), [#107](https://github.com/hydro-project/infinity/issues/107), [#113](https://github.com/hydro-project/infinity/issues/113), [#30](https://github.com/hydro-project/infinity/issues/30), [#61](https://github.com/hydro-project/infinity/issues/61), [#65](https://github.com/hydro-project/infinity/issues/65), [#75](https://github.com/hydro-project/infinity/issues/75), [#77](https://github.com/hydro-project/infinity/issues/77), [#78](https://github.com/hydro-project/infinity/issues/78), [#8](https://github.com/hydro-project/infinity/issues/8)
 
@@ -452,6 +452,7 @@
  * **[#8](https://github.com/hydro-project/infinity/issues/8)**
     - Add automated THIRD-PARTY file generation with license enforcement ([`e2e0719`](https://github.com/hydro-project/infinity/commit/e2e0719faebbffc72ec7bd8a8b3b02223da8ba0e))
  * **Uncategorized**
+    - Release rap-protocol v0.1.0, rap-client v0.1.0, rap-steering-server v0.1.0, rap-github-event-poller v0.1.0, infinity-protocol v0.1.0, infinity-provider-protocol v0.1.0, infinity-provider-bedrock v0.1.0, infinity-provider-rig v0.1.0, infinity-agent-core v0.1.0, infinity-mcp-bridge v0.1.0, infinity-rap-bridge v0.1.0, infinity-daemon v0.1.0, infinity-agent-cli v0.1.0, sandbox-core v0.1.0, sandbox-local v0.1.0, sandbox-remote v0.1.0 ([`dd8c7f4`](https://github.com/hydro-project/infinity/commit/dd8c7f49028a26052d785b4241f9ade125f0afb3))
     - Use TempDir with Drop for per-sandbox TMPDIR + update agent docs ([`49fda2e`](https://github.com/hydro-project/infinity/commit/49fda2e8aea86b8e5eb90da4cc9298b0d5a8fb47))
     - Remove unused `_keepalive` field from SpawnedCommand ([`24820fe`](https://github.com/hydro-project/infinity/commit/24820fe9b2be138774a8a4e069019b9b11444a0d))
     - Use --max-columns-preview, extend ([`4d3576f`](https://github.com/hydro-project/infinity/commit/4d3576f071754c86f36358f3de91c58999089fe7))

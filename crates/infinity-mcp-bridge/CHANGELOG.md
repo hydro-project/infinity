@@ -11,33 +11,33 @@
    cargo-smart-release setup as hydro-project/hydro (per its RELEASING.md).
    
    * `.github/workflows/release.yml`: new manually-dispatched Release workflow,
-     adapted from hydro's. Supports major/minor/patch/keep/auto bumps, optional
-     pre-release ids, and a dry-run mode (execute unchecked). Uses the
-     hydro-project-bot GitHub App token to push past branch protection, and the
-     pinned hydro-project fork of cargo-smart-release (rev e6f3368337a0).
+   adapted from hydro's. Supports major/minor/patch/keep/auto bumps, optional
+   pre-release ids, and a dry-run mode (execute unchecked). Uses the
+   hydro-project-bot GitHub App token to push past branch protection, and the
+   pinned hydro-project fork of cargo-smart-release (rev e6f3368337a0).
    * `RELEASING.md`: releasing guide adapted from hydro's, including which crates
-     are published and why the others are not, plus an addendum explaining why
-     `[patch.crates-io]` on `rig-bedrock` blocks publishing the bedrock provider.
+   are published and why the others are not, plus an addendum explaining why
+   `[patch.crates-io]` on `rig-bedrock` blocks publishing the bedrock provider.
    * Crate manifests, 14 publishable crates (rap-protocol, rap-client,
-     rap-steering-server, rap-github-event-poller, infinity-protocol,
-     infinity-provider-protocol, infinity-agent-core, infinity-mcp-bridge,
-     infinity-rap-bridge, infinity-daemon, infinity-agent-cli, sandbox-core,
-     sandbox-local, sandbox-remote):
-     - `publish = true`, `description`, `documentation` (docs.rs), and
-       `repository = { workspace = true }` (new `[workspace.package]` in the root
-       `Cargo.toml`).
-     - `version = "^0.1.0"` added to all intra-workspace path dependencies
-       (including dev-deps between publishable crates), as required for
-       publishing.
-     - New empty `CHANGELOG.md` per crate so cargo-smart-release will generate
-       and track changelogs.
+   rap-steering-server, rap-github-event-poller, infinity-protocol,
+   infinity-provider-protocol, infinity-agent-core, infinity-mcp-bridge,
+   infinity-rap-bridge, infinity-daemon, infinity-agent-cli, sandbox-core,
+   sandbox-local, sandbox-remote):
+   - `publish = true`, `description`, `documentation` (docs.rs), and
+   `repository = { workspace = true }` (new `[workspace.package]` in the root
+   `Cargo.toml`).
+   - `version = "^0.1.0"` added to all intra-workspace path dependencies
+   (including dev-deps between publishable crates), as required for
+   publishing.
+   - New empty `CHANGELOG.md` per crate so cargo-smart-release will generate
+   and track changelogs.
    * `publish = false` added to crates that must not be published:
-     - `rig-mock`, `rap-test-servers` (test-only; left as path-only dev-deps so
-       cargo strips them at publish time),
-     - `rig-bedrock-patched` (vendored fork of crates-io `rig-bedrock`),
-     - `infinity-provider-bedrock` + `infinity-agent-lambda` (depend on the
-       patched rig-bedrock; publishing would silently drop the patches),
-     - `infinity-slack-bot` (deployment artifact).
+   - `rig-mock`, `rap-test-servers` (test-only; left as path-only dev-deps so
+   cargo strips them at publish time),
+   - `rig-bedrock-patched` (vendored fork of crates-io `rig-bedrock`),
+   - `infinity-provider-bedrock` + `infinity-agent-lambda` (depend on the
+   patched rig-bedrock; publishing would silently drop the patches),
+   - `infinity-slack-bot` (deployment artifact).
 
 ### New Features (BREAKING)
 
@@ -84,7 +84,7 @@
 
 <csr-read-only-do-not-edit/>
 
- - 4 commits contributed to the release.
+ - 5 commits contributed to the release.
  - 4 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 4 unique issues were worked on: [#107](https://github.com/hydro-project/infinity/issues/107), [#110](https://github.com/hydro-project/infinity/issues/110), [#92](https://github.com/hydro-project/infinity/issues/92), [#96](https://github.com/hydro-project/infinity/issues/96)
 
@@ -102,5 +102,7 @@
     - Add high-level agent system API ([`8bef2c5`](https://github.com/hydro-project/infinity/commit/8bef2c534f90b7fe038cb6dda1fb2015fa9e737d))
  * **[#96](https://github.com/hydro-project/infinity/issues/96)**
     - Extract shared agent system engine ([`9c921fd`](https://github.com/hydro-project/infinity/commit/9c921fde280b50c89c3e5b9caadccf83a46078a4))
+ * **Uncategorized**
+    - Release rap-protocol v0.1.0, rap-client v0.1.0, rap-steering-server v0.1.0, rap-github-event-poller v0.1.0, infinity-protocol v0.1.0, infinity-provider-protocol v0.1.0, infinity-provider-bedrock v0.1.0, infinity-provider-rig v0.1.0, infinity-agent-core v0.1.0, infinity-mcp-bridge v0.1.0, infinity-rap-bridge v0.1.0, infinity-daemon v0.1.0, infinity-agent-cli v0.1.0, sandbox-core v0.1.0, sandbox-local v0.1.0, sandbox-remote v0.1.0 ([`dd8c7f4`](https://github.com/hydro-project/infinity/commit/dd8c7f49028a26052d785b4241f9ade125f0afb3))
 </details>
 

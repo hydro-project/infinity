@@ -11,9 +11,9 @@
    
    Both ecosystems enforce an allowlist of permissive licenses:
    - Rust (about.toml): Apache-2.0, MIT, ISC, BSD-3-Clause, CC0-1.0,
-     CDLA-Permissive-2.0, MPL-2.0, Unicode-3.0, Zlib
+   CDLA-Permissive-2.0, MPL-2.0, Unicode-3.0, Zlib
    - npm (script): MIT, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, 0BSD,
-     CC0-1.0, Unlicense, BlueOak-1.0.0, MPL-2.0
+   CC0-1.0, Unlicense, BlueOak-1.0.0, MPL-2.0
    
    The script fails if any dependency uses a license not in the allowlist.
    
@@ -32,14 +32,14 @@
    rendered a blank area with no indication of what was happening.
    
    - session_picker.rs: render a dim italic placeholder line ("No sessions to
-     load — press esc to dismiss and start a new one.") when the session list
-     is empty; reserve one visible row for it via visible_rows(); make Enter
-     dismiss the empty picker instead of doing nothing.
+   load — press esc to dismiss and start a new one.") when the session list
+   is empty; reserve one visible row for it via visible_rows(); make Enter
+   dismiss the empty picker instead of doing nothing.
    - terminal.rs: guard against an out-of-bounds panic when a sessions-updated
-     notification arrives while the picker is open with an empty list (was
-     indexing sessions[selected] unconditionally).
+   notification arrives while the picker is open with an empty list (was
+   indexing sessions[selected] unconditionally).
    - tests: new snapshot test empty_session_picker_shows_placeholder covering
-     both the placeholder rendering and Enter-to-dismiss behavior.
+   both the placeholder rendering and Enter-to-dismiss behavior.
  - <csr-id-1935c387d806a1da271e15078b26e06f228737c6/> multimodal (image) tool results end-to-end, with image display + review fixes
    Models can declare image input support, RAP tools can return images in tool
    results (both as model-facing content and as inline display segments), the
@@ -50,99 +50,99 @@
    ## Provider protocol (`infinity-provider-protocol`)
    
    * `ModelEntry` gains `supports_image_input: bool` (`#[serde(default)]`, so
-     the remote provider socket protocol stays backward compatible).
+   the remote provider socket protocol stays backward compatible).
    * Bedrock provider: all Claude models declare `supports_image_input: true`.
    * The capability is threaded from the resolved `ModelEntry` into
-     `run_completion`/`process_batch` (rather than a trait method that re-lists
-     models each turn): the daemon passes `catalog.find(&round_model)
-     .supports_image_input` per round (following mid-session model switches);
-     the Lambda resolves it once from `list_models()`.
+   `run_completion`/`process_batch` (rather than a trait method that re-lists
+   models each turn): the daemon passes `catalog.find(&round_model)
+   .supports_image_input` per round (following mid-session model switches);
+   the Lambda resolves it once from `list_models()`.
    
    ## Agent core (`infinity-agent-core`)
    
    * `HistoryManager::get_history(supports_image_input)` replaces image
-     tool-result content in place with `IMAGE_OMITTED_PLACEHOLDER` when the
-     model can't accept images (no extra allocation pass). Images kept in
-     history become visible again after switching to an image-capable model.
+   tool-result content in place with `IMAGE_OMITTED_PLACEHOLDER` when the
+   model can't accept images (no extra allocation pass). Images kept in
+   history become visible again after switching to an image-capable model.
    
    ## RAP protocol (`rap-protocol`)
    
    * `RapToolResult` carries either `text` **or** structured `content`
-     (`RapToolResultContent::{Text, Image{data, mediaType}}`, base64); `text` is
-     now optional. When `content` is present it supersedes `text`.
+   (`RapToolResultContent::{Text, Image{data, mediaType}}`, base64); `text` is
+   now optional. When `content` is present it supersedes `text`.
    * New `DisplaySegment::Image(ImageContent { data, mediaType })` for
-     human-facing UIs.
+   human-facing UIs.
    * Spec docs (`tool-result.md`) and provider docs updated.
    
    ## Daemon (`infinity-daemon`)
    
    * RAP callbacks build the rig tool result from structured `content` when
-     present (images → `ToolResultContent::Image`), else fall back to `text`.
+   present (images → `ToolResultContent::Image`), else fall back to `text`.
    
    ## Sandbox (`sandbox-core` / `sandbox-local`)
    
    * `read_file` detects images by content (magic bytes, not extension) so
-     mislabeled/extension-less files are classified correctly; returns a
-     describing text plus base64 image content with `display_as: [image,
-     text-summary]`. Tool output modeled as a named `ToolOutput` struct.
+   mislabeled/extension-less files are classified correctly; returns a
+   describing text plus base64 image content with `display_as: [image,
+   text-summary]`. Tool output modeled as a named `ToolOutput` struct.
    
    ## Clients
    
    * Web (`infinity-ui`): `MessageItem` renders images as an inline bordered
-     `<img>` (`data:` URL, `data-testid="tool-result-image"`).
+   `<img>` (`data:` URL, `data-testid="tool-result-image"`).
    * TUI / ACP (`infinity-agent-cli`): renderers pick the first *supported*
-     display segment; image-only results show `✓ [image — not displayable in
-     terminal]`, otherwise the text summary.
+   display segment; image-only results show `✓ [image — not displayable in
+   terminal]`, otherwise the text summary.
    
    ## Shared test crate (`rap-test-servers`, unpublished)
    
    * `start_stub_image_server()` serves a `read_image` RAP tool returning a
-     fixed indigo PNG; `write_rap_config(cwd, port)` points sessions at it.
-     Dev-dependency of the CLI and daemon e2e suites.
+   fixed indigo PNG; `write_rap_config(cwd, port)` points sessions at it.
+   Dev-dependency of the CLI and daemon e2e suites.
    
    ## Tests
    
    * agent-core: image tool results reach image-capable models and are replaced
-     with the placeholder otherwise.
+   with the placeholder otherwise.
    * daemon: RAP→rig content conversion (fallbacks, media types).
    * provider-protocol: remote transport round-trips `supports_image_input`.
    * sandbox-local: PNG content + display segments, content-based detection
-     (PNG named `.txt`), text reads unchanged.
+   (PNG named `.txt`), text reads unchanged.
    * TUI e2e: image content reaches the model; terminal renders the text
-     fallback (insta snapshot).
+   fallback (insta snapshot).
    * Web e2e: follow-up request carries the base64 image; transcript renders the
-     inline `<img>`; `chat-image-result.png` golden.
+   inline `<img>`; `chat-image-result.png` golden.
  - <csr-id-440752df0e987e0eaaf7adda2dfaf23f9a2955db/> add `infinity daemon restart` and post-update daemon check
    ## `infinity daemon restart`
    
    * New `DaemonCommands::Restart` subcommand backed by `daemon_client::restart_daemon()`:
-     stops the running daemon (if any), then launches a fresh instance via the existing
-     `launch_daemon()` readiness handshake; starts one directly if none was running
+   stops the running daemon (if any), then launches a fresh instance via the existing
+   `launch_daemon()` readiness handshake; starts one directly if none was running
    
    ## Shared, blocking stop logic
    
    * New `daemon_client::running_daemon_pid()`: reads the pid file and probes liveness
-     with signal 0, so stale pid files (e.g. after a crash) are treated as not running
+   with signal 0, so stale pid files (e.g. after a crash) are treated as not running
    * New async `daemon_client::stop_daemon()`: sends SIGTERM and waits (up to 30s) for
-     the process to fully exit, so its shutdown cleanup (socket/pid file removal) cannot
-     race a subsequently launched daemon; returns `Ok(Some(pid))` or `Ok(None)` when
-     not running
+   the process to fully exit, so its shutdown cleanup (socket/pid file removal) cannot
+   race a subsequently launched daemon; returns `Ok(Some(pid))` or `Ok(None)` when
+   not running
    * `infinity daemon stop` and `restart_daemon()` both use it — the hand-rolled `nix`
-     kill code is gone from `main.rs`, and `daemon stop` now reports
-     "daemon stopped (pid N)" only once the daemon is actually gone
+   kill code is gone from `main.rs`, and `daemon stop` now reports
+   "daemon stopped (pid N)" only once the daemon is actually gone
    
    ## Post-update daemon check
    
    * New `install::ensure_fresh_daemon()` runs after `infinity update`,
-     `infinity rap update`, and `infinity provider update` (all update binaries the
-     daemon executes or spawns):
-     * daemon not running → boots it, so the freshly installed version is live
-     * daemon running → prints a yellow warning that it's still on the previous
-       version and to run `infinity daemon restart`
+   `infinity rap update`, and `infinity provider update` (all update binaries the
+   daemon executes or spawns):
+   * daemon not running → boots it, so the freshly installed version is live
+   * daemon running → prints a yellow warning that it's still on the previous
+   version and to run `infinity daemon restart`
    * `launch_daemon()` now resolves its executable via `daemon_exe_path()`, stripping
-     the Linux `/proc/self/exe` " (deleted)" suffix — after a self-update the old
-     process would otherwise try to re-exec its replaced inode's path; this ensures
-     the freshly installed binary is spawned. Made `pub` for reuse from `install.rs`.
+   the Linux `/proc/self/exe` " (deleted)" suffix — after a self-update the old
+   process would otherwise try to re-exec its replaced inode's path; this ensures
+   the freshly installed binary is spawned. Made `pub` for reuse from `install.rs`.
    
    Verified with `./check.bash` (all checks pass, including web e2e).
  - <csr-id-1c4f71a611507dc7575c20b724faef680cbde2c7/> mid-session model switching per thread, with TUI + desktop UI and e2e tests
@@ -158,11 +158,11 @@
    resumes the same session instead of creating a new one.
    
    * `terminal.rs`: Don't clear `thread_id` or `total_tokens_used` on `/stop`.
-     Updated the status message to hint that the session can be resumed.
+   Updated the status message to hint that the session can be resumed.
    * `daemon_client.rs`: When `/stop` fires (`shut_down_old=true, maybe_target=None`),
-     keep `active_session` set so the next `UserInput` routes to the same session.
-     The daemon's `send_input()` already handles restarting shut-down sessions
-     (re-boots RAP servers, starts new agent loop, re-attaches client).
+   keep `active_session` set so the next `UserInput` routes to the same session.
+   The daemon's `send_input()` already handles restarting shut-down sessions
+   (re-boots RAP servers, starts new agent loop, re-attaches client).
  - <csr-id-dba5f88e924e5bf8f2d512b6ce6485230c56110f/> support prefix matching for --session arg
    The `--session` flag now uses prefix matching instead of requiring an exact
    session ID. If exactly one session ID starts with the given prefix, it connects
@@ -176,10 +176,10 @@
    * Add `/archive` (alias `/a`) to the autocomplete hints and help text
    * Parse the command from both Enter input and slash-command matching
    * In the terminal handler, reset local UI state (tokens, thread buffers,
-     spinner) and send the `__archive__` sentinel through the input channel
+   spinner) and send the `__archive__` sentinel through the input channel
    * In `daemon_client.rs`, intercept `__archive__` and send
-     `ClientMessage::ArchiveSession`, then clear `active_session` so the
-     CLI returns to the idle/new-session state
+   `ClientMessage::ArchiveSession`, then clear `active_session` so the
+   CLI returns to the idle/new-session state
  - <csr-id-59d331491087ef43aa3cea9215a94c2089675b30/> show choice picker alongside input and cancel choices on tool interruption
    ## Choice picker coexists with text input
    
@@ -190,18 +190,18 @@
    ### CLI
    
    - Removed `UiMode::ChoicePicker`; choice state is tracked via
-     `UiMode::Normal { choice_focused: bool }`.
+   `UiMode::Normal { choice_focused: bool }`.
    - `draw_viewport` renders both choice picker and text input when a choice
-     is active (choice above, input below).
+   is active (choice above, input below).
    - Arrow-key focus transitions: Down past last choice → input, Up at top
-     of input → choice picker. Cursor only shown when input is focused.
+   of input → choice picker. Cursor only shown when input is focused.
    
    ### Web UI
    
    - `MessageList` always renders `InputBar`; renders `ChoicePicker` above it
-     when a pending choice exists.
+   when a pending choice exists.
    - `ChoicePicker` calls `onFocusInput` when ArrowDown is pressed at the
-     last choice, shifting focus to the textarea.
+   last choice, shifting focus to the textarea.
    - Both components converted to `forwardRef` to support programmatic focus.
    
    ## Cancel pending choices on tool call interruption
@@ -210,42 +210,42 @@
    call is interrupted but the choice was left dangling in the UI.
    
    - `batch_processor`: After notifying RAP servers of interrupted tool calls,
-     emit `UserChoiceComplete` for each interrupted ID to dismiss associated
-     choices.
+   emit `UserChoiceComplete` for each interrupted ID to dismiss associated
+   choices.
    - `thread_worker`: Handle `UserChoiceComplete` in the display event
-     forwarder by removing from `pending_choices` in the memory store.
+   forwarder by removing from `pending_choices` in the memory store.
  - <csr-id-4059c548b91070d2885215957ec45e381fce7565/> add `--session` flag to connect to a session by name or ID
    - Add `-s`/`--session` CLI argument to `Cli` struct that accepts a session
-     name (title substring, case-insensitive) or exact session ID
+   name (title substring, case-insensitive) or exact session ID
    - In `run_client`, resolve the `--session` target against the Welcome
-     message's session list: exact ID match first, then case-insensitive
-     title substring match. Errors on zero matches or ambiguous matches.
+   message's session list: exact ID match first, then case-insensitive
+   title substring match. Errors on zero matches or ambiguous matches.
    - Auto-sends `ClientMessage::Connect` when a session is resolved, so the
-     TUI opens directly into that session
+   TUI opens directly into that session
    - Thread the `session` parameter through `run_with_daemon`, `run_in_memory`,
-     `run_client`, and `run_direct`
+   `run_client`, and `run_direct`
    - Update `run_headless` to print the reconnect command:
-     `To connect: infinity --session '<session_id>'`
+   `To connect: infinity --session '<session_id>'`
  - <csr-id-b5d3cac9bd75ca35d65d77db97fbe6da548bf0f3/> add -H/--headless flag, rename -m to -i/--initial-message
    - Rename `-m/--message` to `-i/--initial-message` for the TUI initial message
    - Add `-H/--headless <MESSAGE>` that sends a task to the daemon and exits
-     without opening the TUI
+   without opening the TUI
    - New `run_headless()` in `daemon_client.rs` does the minimal protocol
-     handshake: connect → Welcome → CreateSession → Connected → UserInput →
-     wait for StartOutput → Disconnect
+   handshake: connect → Welcome → CreateSession → Connected → UserInput →
+   wait for StartOutput → Disconnect
    - Waits for `StartOutput` before disconnecting so the agent is in
-     `active_threads` and won't be killed by the daemon's idle check
+   `active_threads` and won't be killed by the daemon's idle check
    - Initialization errors are surfaced to the user before exit
  - <csr-id-b026adc49c8997cff35b88d181b202b0209ca477/> accept Ctrl+C as cancel in TUI menu popups
    Added an `is_cancel` helper to `component.rs` that recognizes both Esc and
    Ctrl+C as cancel gestures, and wired it into the picker popups:
    
    * choice_picker, model_picker, session_picker: Ctrl+C now cancels/dismisses
-     the popup, same as Esc, using the shared `is_cancel` helper.
+   the popup, same as Esc, using the shared `is_cancel` helper.
    * quit_picker: reordered options so "Continue running agent in background" is
-     the default (first) selection. Ctrl+C directly selects KeepRunning, while
-     Esc still cancels the picker — these are handled as separate match arms
-     since they have different behavior.
+   the default (first) selection. Ctrl+C directly selects KeepRunning, while
+   Esc still cancels the picker — these are handled as separate match arms
+   since they have different behavior.
  - <csr-id-bc19ab28e1ff552a4992812b75ffefd796973948/> serve web UI from daemon with `bundled-web` feature
  - <csr-id-0297d743512c02edd25a8ede1ee551ea65d878dc/> add directory tab completion in session picker
  - <csr-id-ea42de747adccf033b0be82f6d5131bd68e6408d/> require explicit `ssh` keyword after `--` in `remote add`
@@ -267,16 +267,16 @@
    assistant output.
    
    * `InlineViewport::re_anchor` now re-checks the terminal size after every
-     cursor-query round-trip and, if the geometry moved again, absorbs the new
-     resize and re-queries until stable
+   cursor-query round-trip and, if the geometry moved again, absorbs the new
+   resize and re-queries until stable
    * `InlineViewport::draw` runs `re_anchor` before computing any
-     geometry-dependent values (frame area, ideal viewport position), so a draw
-     that absorbs a raced resize is fully consistent with the newest geometry
+   geometry-dependent values (frame area, ideal viewport position), so a draw
+   that absorbs a raced resize is fully consistent with the newest geometry
    * Regression test `tui_resize_race.rs` reproduces the race with a `TermOut`
-     interposer that resizes the emulator right after answering the cursor
-     query (before the fix, 6 of 30 output lines were erased)
+   interposer that resizes the emulator right after answering the cursor
+   query (before the fix, 6 of 30 output lines were erased)
    * Test harness: `TuiHarness::spawn_with_term` allows spawning the TUI
-     against a caller-provided `TermOut` and event channel
+   against a caller-provided `TermOut` and event channel
  - <csr-id-1b20fdac512ea534ee24006b95903f3961ff5179/> add `keeps_session_alive` flag to prevent non-interactive clients from blocking idle shutdown
    Add a `keeps_session_alive` boolean field to `ClientMessage::CreateSession` and
    `ClientMessage::Connect` (defaulting to `true` via serde for backward compat).
@@ -287,20 +287,20 @@
    Key changes:
    
    * `infinity-protocol`: new `keeps_session_alive` field on `CreateSession` and
-     `Connect`, with `#[serde(default = "default_true")]`.
+   `Connect`, with `#[serde(default = "default_true")]`.
    
    * `client_handler.rs`: tracks `connection_keeps_alive` per connection and
-     threads it through `attach_client` and `send_input`.
+   threads it through `attach_client` and `send_input`.
    
    * `session/thread_worker.rs`: replaces bare `UnboundedSender` subscriber lists
-     with a `Subscriber` struct carrying `tx` + `keeps_session_alive`. Idle-exit
-     and has-clients checks now only consider keep-alive subscribers.
+   with a `Subscriber` struct carrying `tx` + `keeps_session_alive`. Idle-exit
+   and has-clients checks now only consider keep-alive subscribers.
    
    * `infinity-agent-cli`: all existing call sites pass `keeps_session_alive: true`
-     (preserving current behavior for interactive CLI clients).
+   (preserving current behavior for interactive CLI clients).
    
    * `tests/keep_alive.rs`: integration tests covering non-keep-alive idle exit
-     and keep-alive warmth.
+   and keep-alive warmth.
  - <csr-id-a536c9fa6d51bd2eaf0d5cf88af237ea1cce0e65/> reset context usage when compaction is applied so it does not re-trigger
  - <csr-id-45f198eec86493474ba48f812f397a4dbc113321/> strip ANSI escapes from external text instead of panicking
    The inline viewport's `OutputTracker` panics on any escape sequence it
@@ -309,21 +309,21 @@
    `bug: print_above wrote untracked escape sequence ESC ']'`.
    
    * Add `sanitize::strip_ansi`, a small VT-parser-shaped state machine that
-     removes CSI sequences, OSC/DCS/SOS/PM/APC strings (BEL- or ST-terminated),
-     all other escape sequences, and non-whitespace control characters (keeps
-     `\t`, `\n`, `\r`), returning `Cow::Borrowed` for the common clean case.
+   removes CSI sequences, OSC/DCS/SOS/PM/APC strings (BEL- or ST-terminated),
+   all other escape sequences, and non-whitespace control characters (keeps
+   `\t`, `\n`, `\r`), returning `Cow::Borrowed` for the common clean case.
    * Proactively sanitize all externally sourced text in `terminal.rs` before
-     it reaches the viewport: tool results (text and diff segments), tool call
-     display text, model text/thinking chunks, info lines, subscription events,
-     and user input; also sanitize cargo output lines in `install.rs` (which
-     carry colors when `CARGO_TERM_COLOR=always` is inherited).
+   it reaches the viewport: tool results (text and diff segments), tool call
+   display text, model text/thinking chunks, info lines, subscription events,
+   and user input; also sanitize cargo output lines in `install.rs` (which
+   carry colors when `CARGO_TERM_COLOR=always` is inherited).
    * Tighten `OutputTracker` to exactly what the TUI itself emits through
-     `print_above`: CSI parameter bytes are now restricted to digits and `;`
-     with `m` (SGR) as the only accepted final byte — anything else still
-     panics as a bug, per the "internal output only" contract.
+   `print_above`: CSI parameter bytes are now restricted to digits and `;`
+   with `m` (SGR) as the only accepted final byte — anything else still
+   panics as a bug, per the "internal output only" contract.
    * Add unit tests for `strip_ansi` and a `tui_flow_snapshots` regression test
-     feeding OSC/SGR/cursor-movement/DCS sequences and stray control bytes
-     through a tool result.
+   feeding OSC/SGR/cursor-movement/DCS sequences and stray control bytes
+   through a tool result.
  - <csr-id-78bd1b5524346a9cc786cdf12f0e6e7a0b2ea085/> count deferred soft wraps in the inline viewport's output tracker
    Fixes TUI corruption where, after submitting a long (wrapping) input while
    the agent was actively thinking, the input box was drawn one row too low —
@@ -341,47 +341,47 @@
    ## Daemon
    
    * `thread_worker` keeps the in-progress thinking text in a per-worker
-     `Rc<RefCell<Option<String>>>`: the display-event forwarder accumulates
-     `ThinkingChunk`s and clears on anything that moves the stream past the chain
-     (thinking end, text, tool call/result, response done)
+   `Rc<RefCell<Option<String>>>`: the display-event forwarder accumulates
+   `ThinkingChunk`s and clears on anything that moves the stream past the chain
+   (thinking end, text, tool call/result, response done)
    * On subscribe, the replayed history is extended with `ThinkingStart` +
-     `ThinkingChunk` for the buffered thinking, so clients recompute a live
-     "thinking" state from the end of the replay
+   `ThinkingChunk` for the buffered thinking, so clients recompute a live
+   "thinking" state from the end of the replay
    * `DaemonMessage::Replay` gains `#[serde(default)] in_progress: bool` — true iff
-     a completion is currently in flight. A pending async tool result is *not*
-     flagged; clients already derive "waiting for tool result" from the trailing
-     unresolved `ToolCall` in the history
+   a completion is currently in flight. A pending async tool result is *not*
+   flagged; clients already derive "waiting for tool result" from the trailing
+   unresolved `ToolCall` in the history
    * Dead-session replays (`attach_client`) send `in_progress: false`; remote
-     message prefixing passes the field through
+   message prefixing passes the field through
    
    ## Clients
    
    * CLI `daemon_client` only synthesizes the end-of-replay `ResponseDone` marker
-     when `!in_progress`, so the spinner state implied by the end of the history
-     stays live; `ResponseDone` continues to preserve `WaitingToolCall` for
-     trailing tool calls
+   when `!in_progress`, so the spinner state implied by the end of the history
+   stays live; `ResponseDone` continues to preserve `WaitingToolCall` for
+   trailing tool calls
    * Terminal: `ThinkingStart` now sets the spinner to `Thinking` unconditionally
-     (replays have no preceding `StartOutput`)
+   (replays have no preceding `StartOutput`)
    * Web: end of replay mirrors a live `ResponseDone` (`tool` survives, everything
-     else clears) instead of always clearing, and skips the implicit done entirely
-     when `in_progress`; `ToolResult` now switches the spinner back to thinking
-     like the terminal does
+   else clears) instead of always clearing, and skips the implicit done entirely
+   when `in_progress`; `ToolResult` now switches the spinner back to thinking
+   like the terminal does
    
    ## Tests
    
    * `thread_worker` unit tests: subscribing mid-thinking yields a replay ending
-     with the in-progress thinking and `in_progress: true`; after the chain closes
-     no stale thinking is replayed; waiting-for-tool-result replays have
-     `in_progress: false` with the trailing unresolved `ToolCall` last in history
+   with the in-progress thinking and `in_progress: true`; after the chain closes
+   no stale thinking is replayed; waiting-for-tool-result replays have
+   `in_progress: false` with the trailing unresolved `ToolCall` last in history
    * e2e TUI (`e2e_daemon_tui`): `switch_back_mid_thinking_revives_spinner` runs
-     the real daemon + TUI client, streams reasoning deltas mid-completion,
-     switches away (`/new`) and back (`/load`) with a single client, and snapshots
-     the live, post-reconnect (spinner revived with buffered thought), and
-     finished screens
+   the real daemon + TUI client, streams reasoning deltas mid-completion,
+   switches away (`/new`) and back (`/load`) with a single client, and snapshots
+   the live, post-reconnect (spinner revived with buffered thought), and
+   finished screens
    * e2e web (`web_e2e`, Playwright): `reload_mid_thinking_keeps_spinner` reloads
-     the page mid-thinking, reconnects, and asserts the thinking text and
-     "Thinking…" spinner are restored and clear once the stream finishes live —
-     with golden screenshots of the live, reconnected, and finished states
+   the page mid-thinking, reconnects, and asserts the thinking text and
+   "Thinking…" spinner are restored and clear once the stream finishes live —
+   with golden screenshots of the live, reconnected, and finished states
  - <csr-id-8ad86d850d761c58669dffb906ef389654e4990d/> increase LengthDelimitedCodec max frame size to 256 MiB
    The "Failed to send daemon message to client: frame size too big" error
    occurs because `LengthDelimitedCodec::new()` defaults to an 8 MiB max
@@ -398,18 +398,18 @@
    tokens. This caused two bugs:
    
    1. **Web UI context percentage showed ~1%** even at 800k tokens: the
-      `TokenUsage` protocol struct lacked `total_tokens`, so the web UI computed
-      `input_tokens + output_tokens` which only captured the small uncached
-      portion.
+   `TokenUsage` protocol struct lacked `total_tokens`, so the web UI computed
+   `input_tokens + output_tokens` which only captured the small uncached
+   portion.
    
    2. **Auto-compaction never triggered**: the compaction check compared
-      `input_tokens` (uncached only) against 75% of the context window, so it
-      never fired when most input was cached.
+   `input_tokens` (uncached only) against 75% of the context window, so it
+   never fired when most input was cached.
  - <csr-id-ba08e40ae829ed59bd2d08f1b986ce4d7b1e71e3/> fix test compilation after merge
    * Added missing `provider_id: "mock".to_owned()` field to the
-     `SessionChanged` initializer in `session_loaded_updates_model_name` test
+   `SessionChanged` initializer in `session_loaded_updates_model_name` test
    * Updated the corresponding insta snapshot to match the new status bar format
-     (`session_id | /help for commands` left, `provider: model · N% context` right)
+   (`session_id | /help for commands` left, `provider: model · N% context` right)
  - <csr-id-c49fc7d0e78a22c2f0f8f6c84878e4e6a3dcfe35/> context usage resets to zero after session replay
    ## Root cause
    
@@ -421,7 +421,7 @@
    
    ```rust
    if let Some(r) = r {
-       total_tokens_used = r.token_usage().map_or(0, ...);
+   total_tokens_used = r.token_usage().map_or(0, ...);
    }
    ```
    
@@ -432,23 +432,23 @@
    ## Changes
    
    * `terminal.rs`: only update `total_tokens_used` when the response
-     actually reports usage; a usage-less `ResponseDone` (post-replay
-     marker, or a provider that omits usage metadata) keeps the last known
-     value instead of zeroing it.
+   actually reports usage; a usage-less `ResponseDone` (post-replay
+   marker, or a provider that omits usage metadata) keeps the last known
+   value instead of zeroing it.
    * `daemon_client.rs`: send the end-of-replay marker as
-     `ResponseDone(None)` instead of wrapping an empty usage, making the
-     "no usage info" intent explicit.
+   `ResponseDone(None)` instead of wrapping an empty usage, making the
+   "no usage info" intent explicit.
    * `infinity-daemon/thread_worker.rs` (defensive, same bug class): the
-     display-event forwarder no longer persists `total_tokens_used = 0`
-     when a response has no usage metadata (e.g. a Bedrock stream that ends
-     without a usage `Metadata` event); `last_updated` is still refreshed.
+   display-event forwarder no longer persists `total_tokens_used = 0`
+   when a response has no usage metadata (e.g. a Bedrock stream that ends
+   without a usage `Metadata` event); `last_updated` is still refreshed.
    
    ## Tests
    
    * New snapshot test `replay_keeps_context_usage` modeling the real load
-     flow: `SessionChanged` with 42k tokens → replayed history →
-     `ResponseDone(None)` → `ResponseDone` with `usage: None`. Status bar
-     must still show `42% context used` (previously showed `0%`).
+   flow: `SessionChanged` with 42k tokens → replayed history →
+   `ResponseDone(None)` → `ResponseDone` with `usage: None`. Status bar
+   must still show `42% context used` (previously showed `0%`).
  - <csr-id-bb92400080d4b85fcc34a51b6a54b8959cabade3/> update displayed model when loading an existing session
    The daemon's `Connected` message already carries the resolved `model_name` and
    `context_window` for the session's root thread (resolved via
@@ -461,8 +461,8 @@
    * Add `model_name` and `context_window` to `terminal::SessionChanged`
    * Forward both fields from `DaemonMessage::Connected` in `daemon_client.rs`
    * Apply them to the terminal's `model_name` / `context_window` state when a
-     session change arrives, so the status bar and context gauge reflect the
-     loaded session's model
+   session change arrives, so the status bar and context gauge reflect the
+   loaded session's model
  - <csr-id-cdcf0933658551227caa38def229e734fb0b0e42/> fix all 34 snapshot-documented TUI bugs (reflow, wide chars, spinner state, tiny terminals)
    Fixes every `// BUG:` annotated in the snapshot suite from the previous
    commit, healing all baselines (53 tests, +1 new). Round-trip discipline got
@@ -480,58 +480,58 @@
    everything on. The viewport now re-derives its anchor from the live cursor:
    
    * hidden cursors are *parked on the anchor*, so the terminal itself tracks
-     the anchor through reflows for free;
+   the anchor through reflows for free;
    * with the cursor shown in the input box, the anchor is reconstructed by
-     computing how many rows the previously drawn viewport rows rewrap to at
-     the new width (occupied lengths captured from the last frame, matching
-     alacritty's cell-emptiness rules);
+   computing how many rows the previously drawn viewport rows rewrap to at
+   the new width (occupied lengths captured from the last frame, matching
+   alacritty's cell-emptiness rules);
    * non-reflowing terminals (xterm-class) are detected by the queried cursor
-     matching its old position exactly, keeping the old anchor; the ambiguous
-     width-grow case resolves in favor of reflow (cosmetic gap on xterm vs.
-     data loss on kitty).
+   matching its old position exactly, keeping the old anchor; the ambiguous
+   width-grow case resolves in favor of reflow (cosmetic gap on xterm vs.
+   data loss on kitty).
    * The anchor's mid-line column (streaming) is recomputed for any width from
-     a tracked logical-line length: `print_above` buffers its output and parses
-     it (`OutputTracker`: CR/LF/tabs, SGR, display widths, auto-wrap), panicking
-     on any escape sequence it doesn't know how to track rather than silently
-     desynchronizing.
+   a tracked logical-line length: `print_above` buffers its output and parses
+   it (`OutputTracker`: CR/LF/tabs, SGR, display widths, auto-wrap), panicking
+   on any escape sequence it doesn't know how to track rather than silently
+   desynchronizing.
    * `print_above` checks `size()` (cheap ioctl, no round trip) on every print,
-     repairing the anchor before printing — fixes prints racing the Resize
-     event eating lines or corrupting scrollback.
+   repairing the anchor before printing — fixes prints racing the Resize
+   event eating lines or corrupting scrollback.
    * After a resize the viewport stays pinned to the bottom: a later reflow can
-     then push at most *blank* gap rows into scrollback — never stale viewport
-     rows — and prints consume the gap (the anchor advances into it) before any
-     scrolling resumes. The new `repeated_resizes_do_not_accumulate` test
-     asserts both properties through a double width-shrink over wrapped
-     scrollback and vertical shrink/grow cycles. (The alternative — drawing
-     tight under the anchor after resizes, as the old code did — was probed and
-     rejected: it leaks stale border rows into scrollback during resize storms.)
+   then push at most *blank* gap rows into scrollback — never stale viewport
+   rows — and prints consume the gap (the anchor advances into it) before any
+   scrolling resumes. The new `repeated_resizes_do_not_accumulate` test
+   asserts both properties through a double width-shrink over wrapped
+   scrollback and vertical shrink/grow cycles. (The alternative — drawing
+   tight under the anchor after resizes, as the old code did — was probed and
+   rejected: it leaks stale border rows into scrollback during resize storms.)
    * Clear + full repaints (resize, viewport height changes) are wrapped in
-     `CSI ?2026` synchronized updates so supporting terminals apply them
-     atomically; unsupporting terminals ignore the markers.
+   `CSI ?2026` synchronized updates so supporting terminals apply them
+   atomically; unsupporting terminals ignore the markers.
    * Degenerate scroll regions (`CSI 1;1r` on tiny terminals) are skipped and
-     followed by a repaint instead of being silently ignored by the terminal.
+   followed by a repaint instead of being silently ignored by the terminal.
    * Viewport height is clamped to rows−1 (the anchor needs a row above).
    
    ## Terminal UI logic (`terminal.rs`)
    
    * `ToolResult` clears "waiting for tool call result" once all pending root
-     tool calls (counted) have resolved and switches the spinner back to
-     Thinking — the model continues its turn immediately; `StartOutput`
-     preserves the Thinking state instead of demoting it to LoadingContext.
+   tool calls (counted) have resolved and switches the spinner back to
+   Thinking — the model continues its turn immediately; `StartOutput`
+   preserves the Thinking state instead of demoting it to LoadingContext.
    * Session-change and sessions-updated arms now redraw (status/% context,
-     cursor restore, live session-picker list refresh).
+   cursor restore, live session-picker list refresh).
    * Switching to a lazily-created session (and `/archive`) resets the terminal
-     title left over from the previous session.
+   title left over from the previous session.
    * Multi-line `Info` and OAuth messages print line-by-line (ratatui `Line`
-     drops `\n`; raw LF staircases in raw mode).
+   drops `\n`; raw LF staircases in raw mode).
    * `/help` box clamps to the terminal width and truncates rows instead of
-     wrapping into scroll-region corruption.
+   wrapping into scroll-region corruption.
    * Status row measures display width (emoji/CJK), keeps the right side whole,
-     and truncates the left with an ellipsis and a guaranteed 2-space gap.
+   and truncates the left with an ellipsis and a guaranteed 2-space gap.
    * `wrap_tail` (thread rows, thinking text) trims by display width so the
-     freshest CJK/emoji text stays visible.
+   freshest CJK/emoji text stays visible.
    * Tiny terminals shed gap → spinner → border rows before squeezing the
-     input/status rows.
+   input/status rows.
    
    ## Text input (`text_input.rs`)
    
@@ -570,52 +570,52 @@
    cargo-smart-release setup as hydro-project/hydro (per its RELEASING.md).
    
    * `.github/workflows/release.yml`: new manually-dispatched Release workflow,
-     adapted from hydro's. Supports major/minor/patch/keep/auto bumps, optional
-     pre-release ids, and a dry-run mode (execute unchecked). Uses the
-     hydro-project-bot GitHub App token to push past branch protection, and the
-     pinned hydro-project fork of cargo-smart-release (rev e6f3368337a0).
+   adapted from hydro's. Supports major/minor/patch/keep/auto bumps, optional
+   pre-release ids, and a dry-run mode (execute unchecked). Uses the
+   hydro-project-bot GitHub App token to push past branch protection, and the
+   pinned hydro-project fork of cargo-smart-release (rev e6f3368337a0).
    * `RELEASING.md`: releasing guide adapted from hydro's, including which crates
-     are published and why the others are not, plus an addendum explaining why
-     `[patch.crates-io]` on `rig-bedrock` blocks publishing the bedrock provider.
+   are published and why the others are not, plus an addendum explaining why
+   `[patch.crates-io]` on `rig-bedrock` blocks publishing the bedrock provider.
    * Crate manifests, 14 publishable crates (rap-protocol, rap-client,
-     rap-steering-server, rap-github-event-poller, infinity-protocol,
-     infinity-provider-protocol, infinity-agent-core, infinity-mcp-bridge,
-     infinity-rap-bridge, infinity-daemon, infinity-agent-cli, sandbox-core,
-     sandbox-local, sandbox-remote):
-     - `publish = true`, `description`, `documentation` (docs.rs), and
-       `repository = { workspace = true }` (new `[workspace.package]` in the root
-       `Cargo.toml`).
-     - `version = "^0.1.0"` added to all intra-workspace path dependencies
-       (including dev-deps between publishable crates), as required for
-       publishing.
-     - New empty `CHANGELOG.md` per crate so cargo-smart-release will generate
-       and track changelogs.
+   rap-steering-server, rap-github-event-poller, infinity-protocol,
+   infinity-provider-protocol, infinity-agent-core, infinity-mcp-bridge,
+   infinity-rap-bridge, infinity-daemon, infinity-agent-cli, sandbox-core,
+   sandbox-local, sandbox-remote):
+   - `publish = true`, `description`, `documentation` (docs.rs), and
+   `repository = { workspace = true }` (new `[workspace.package]` in the root
+   `Cargo.toml`).
+   - `version = "^0.1.0"` added to all intra-workspace path dependencies
+   (including dev-deps between publishable crates), as required for
+   publishing.
+   - New empty `CHANGELOG.md` per crate so cargo-smart-release will generate
+   and track changelogs.
    * `publish = false` added to crates that must not be published:
-     - `rig-mock`, `rap-test-servers` (test-only; left as path-only dev-deps so
-       cargo strips them at publish time),
-     - `rig-bedrock-patched` (vendored fork of crates-io `rig-bedrock`),
-     - `infinity-provider-bedrock` + `infinity-agent-lambda` (depend on the
-       patched rig-bedrock; publishing would silently drop the patches),
-     - `infinity-slack-bot` (deployment artifact).
+   - `rig-mock`, `rap-test-servers` (test-only; left as path-only dev-deps so
+   cargo strips them at publish time),
+   - `rig-bedrock-patched` (vendored fork of crates-io `rig-bedrock`),
+   - `infinity-provider-bedrock` + `infinity-agent-lambda` (depend on the
+   patched rig-bedrock; publishing would silently drop the patches),
+   - `infinity-slack-bot` (deployment artifact).
  - <csr-id-ea6b62e7b00f2a6b7e7338fa12e60fb3a46bb012/> add GitHub Actions workflows for lints, tests, conventional commits, and docs
    Added four workflow/action files modeled after hydro-project/hydro:
    
    - `.github/actions/use-sccache/action.yml` — composite action enabling sccache
-     with GHA cache backend for Rust compilation caching.
+   with GHA cache backend for Rust compilation caching.
    
    - `.github/workflows/ci.yml` — runs on push to main, PRs, and manual dispatch.
-     Two jobs: `lint` (fmt, clippy, license/THIRD-PARTY check via
-     generate-third-party.sh) and `test` (cargo test). Both use sccache and
-     skip-duplicate-actions. Installs libcap-dev and Node.js for the license checker.
+   Two jobs: `lint` (fmt, clippy, license/THIRD-PARTY check via
+   generate-third-party.sh) and `test` (cargo test). Both use sccache and
+   skip-duplicate-actions. Installs libcap-dev and Node.js for the license checker.
    
    - `.github/workflows/conventional_commits.yml` — validates PR titles match
-     conventional commit types (feat, fix, docs, refactor, perf, test, chore, ci,
-     revert) using amannn/action-semantic-pull-request.
+   conventional commit types (feat, fix, docs, refactor, perf, test, chore, ci,
+   revert) using amannn/action-semantic-pull-request.
    
    - `.github/workflows/docs.yml` — builds the documentation site by installing
-     infinity-ui deps then docs deps and running `npm run build` in docs/.
-     Uses Node 22 (current LTS) since the docs SSG requires `navigator.userAgent`
-     which was added in Node 21+.
+   infinity-ui deps then docs deps and running `npm run build` in docs/.
+   Uses Node 22 (current LTS) since the docs SSG requires `navigator.userAgent`
+   which was added in Node 21+.
    
    Also ran `cargo fmt --all` to fix minor formatting issues.
 
@@ -631,20 +631,20 @@
  - <csr-id-9757071818663cefb8e6a12438071d95000379a8/> add precheck script, lints
  - <csr-id-51406e4dfab243a4400027507f446862b26ce8d3/> extract rap-client crate and unify RAP protocol types
    - Unify all duplicate RAP protocol types into rap-protocol crate:
-     RapInvocation (3 copies), ToolsetManifest/ToolDef, and callback
-     types (RapToolResult, RapSubscriptionEvent, RapUserChoice) with
-     new RapOAuth struct and RapCallback tagged enum
+   RapInvocation (3 copies), ToolsetManifest/ToolDef, and callback
+   types (RapToolResult, RapSubscriptionEvent, RapUserChoice) with
+   new RapOAuth struct and RapCallback tagged enum
    
    - Create rap-client crate with HttpClient trait, ToolsetCache trait,
-     SimpleHttpClient, InMemoryToolsetCache, ToolsetLoader, RapNotifier,
-     and a generic callback server accepting an async closure
+   SimpleHttpClient, InMemoryToolsetCache, ToolsetLoader, RapNotifier,
+   and a generic callback server accepting an async closure
    
    - Update infinity-agent-core, infinity-daemon, infinity-agent-lambda,
-     and infinity-agent-cli to import directly from rap-client and
-     rap-protocol instead of local duplicates
+   and infinity-agent-cli to import directly from rap-client and
+   rap-protocol instead of local duplicates
    
    - Rewrite daemon callback server to wrap rap-client's generic server,
-     routing callbacks directly to SessionManager without mpsc indirection
+   routing callbacks directly to SessionManager without mpsc indirection
    
    - Fix Send lifetime error in send_input's async closure
 
@@ -665,15 +665,15 @@
    ## Daemon: injectable providers & configurable paths
    
    * `SessionManager::with_providers(SessionManagerConfig, providers, processes)` —
-     generic constructor taking explicit `(provider_id, provider)` pairs;
-     `SessionManager::new` keeps the production defaults (spawn providers from
-     `~/.infinity/providers.json`, user RAP config at `~/.infinity/rap.json`).
+   generic constructor taking explicit `(provider_id, provider)` pairs;
+   `SessionManager::new` keeps the production defaults (spawn providers from
+   `~/.infinity/providers.json`, user RAP config at `~/.infinity/rap.json`).
    * `SessionManagerConfig { state_dir, callback_url, user_rap_config, id_source }`
-     reduces hardcoded paths: `user_rap_config: None` makes sessions hermetic.
+   reduces hardcoded paths: `user_rap_config: None` makes sessions hermetic.
    * `rap_callback::serve_callbacks(listener, manager)` — callback accept loop for a
-     pre-built manager; `start_callback_server` now composes it.
+   pre-built manager; `start_callback_server` now composes it.
    * `ws_handler::serve(listener, mgr)` — reusable HTTP/WS accept loop (used by
-     `run_daemon` and by tests binding an OS-assigned port).
+   `run_daemon` and by tests binding an OS-assigned port).
    * `boot_rap_servers` takes the user-level config path as a parameter.
    
    ## Deterministic ids (`infinity_daemon::ids::IdSource`)
@@ -687,44 +687,44 @@
    ## TUI ↔ daemon e2e (`crates/infinity-agent-cli/tests/e2e_daemon_tui.rs`)
    
    * `daemon_client` moved from the binary into the lib; `run_client` is now public
-     and generic over `TermOut`/`EventSource` + explicit cwd (crossterm /
-     `current_dir()` defaults stay in `run_with_daemon`/`run_in_memory`).
+   and generic over `TermOut`/`EventSource` + explicit cwd (crossterm /
+   `current_dir()` defaults stay in `run_with_daemon`/`run_in_memory`).
    * Single-process test on a paused-clock current-thread runtime: real
-     `SessionManager` (mock rig provider) + `handle_client_channels` + real
-     `run_client` rendered into a vt100 virtual terminal. Covers lazy session
-     creation from first input, streamed chunks, `set_title` tool round-trip
-     (terminal title), multi-turn, quit-picker-when-busy, and clean Ctrl+C
-     shutdown, with 6 insta screen snapshots (fully deterministic, no filters).
+   `SessionManager` (mock rig provider) + `handle_client_channels` + real
+   `run_client` rendered into a vt100 virtual terminal. Covers lazy session
+   creation from first input, streamed chunks, `set_title` tool round-trip
+   (terminal title), multi-turn, quit-picker-when-busy, and clean Ctrl+C
+   shutdown, with 6 insta screen snapshots (fully deterministic, no filters).
    
    ## Web UI e2e (`crates/infinity-daemon/tests/web_e2e.rs`, feature `e2e-web`)
    
    * New `e2e-web` feature = `bundled-web` + optional `playwright-rs` dep (optional
-     regular dep because Cargo has no optional dev-dependencies; test gated with
-     `#![cfg(feature = "e2e-web")]` so plain builds/tests are unaffected).
+   regular dep because Cargo has no optional dev-dependencies; test gated with
+   `#![cfg(feature = "e2e-web")]` so plain builds/tests are unaffected).
    * In-process daemon on an OS-assigned port (concurrent-test safe) + headless
-     Chromium via playwright-rs with a deterministic context (1280×800, light
-     theme, `prefers-reduced-motion: reduce`, en-US/UTC). The harness waits for
-     the Google-Fonts webfonts (`document.fonts.load` + `check`) before any
-     assertions so screenshots never race font loading. Tests:
-     `chat_round_trip_with_tool_call` and `reload_replays_history`.
+   Chromium via playwright-rs with a deterministic context (1280×800, light
+   theme, `prefers-reduced-motion: reduce`, en-US/UTC). The harness waits for
+   the Google-Fonts webfonts (`document.fonts.load` + `check`) before any
+   assertions so screenshots never race font loading. Tests:
+   `chat_round_trip_with_tool_call` and `reload_replays_history`.
    * Screenshot goldens in `tests/web_snapshots/` via playwright's screenshot
-     assertions: animations disabled, auto-retry, `max_diff_pixels(25)` (absorbs
-     the sub-pixel text rasterization drift observed between this host and
-     GitHub's ubuntu runners); `UPDATE_SNAPSHOTS=1` regenerates, mismatches write
-     `-actual`/`-diff` PNGs. **The two golden PNGs (light mode) need human
-     visual review.**
+   assertions: animations disabled, auto-retry, `max_diff_pixels(25)` (absorbs
+   the sub-pixel text rasterization drift observed between this host and
+   GitHub's ubuntu runners); `UPDATE_SNAPSHOTS=1` regenerates, mismatches write
+   `-actual`/`-diff` PNGs. **The two golden PNGs (light mode) need human
+   visual review.**
    
    ## Web UI: deterministic rendering & fonts
    
    * `theme.css`: global `@media (prefers-reduced-motion: reduce)` rule freezing
-     CSS animations/transitions; `Spinner.tsx` honors the media query (static
-     frame instead of a rAF loop).
+   CSS animations/transitions; `Spinner.tsx` honors the media query (static
+   frame instead of a rAF loop).
    * Google Fonts request now includes weight 700 (bold markdown text was
-     synthesized differently per platform from the 400–600 set).
+   synthesized differently per platform from the 400–600 set).
    * New `infinity-ui` `icons.tsx` (PinIcon, Sun/Moon/MonitorIcon, Copy/CheckIcon,
-     Chevron icons): all emoji / font-dependent symbol glyphs (📌 💻 ☀ ☾ ⧉ ✓ ▾ ▸)
-     replaced with inline stroke SVGs — emoji rendering depends on platform fonts
-     (hosts without a color-emoji font drop 📌 entirely).
+   Chevron icons): all emoji / font-dependent symbol glyphs (📌 💻 ☀ ☾ ⧉ ✓ ▾ ▸)
+   replaced with inline stroke SVGs — emoji rendering depends on platform fonts
+   (hosts without a color-emoji font drop 📌 entirely).
    
    ## CI (`.github/workflows/ci.yml`)
    
@@ -753,75 +753,75 @@
    ## Terminal I/O abstraction (`src/term_io.rs`)
    
    * `TermOut` trait: ANSI byte sink (`Write`) + `size()`,
-     `cursor_position()`, raw-mode toggles — everything the TUI queries
-     from the terminal.
+   `cursor_position()`, raw-mode toggles — everything the TUI queries
+   from the terminal.
    * `EventSource` trait: cancel-safe async `wait_for_event()` +
-     non-blocking `try_read_event()` for crossterm input events.
+   non-blocking `try_read_event()` for crossterm input events.
    * Production impls `CrosstermTerm` (stdout) and `CrosstermEvents` (16ms
-     spawn_blocking poll, preserving spinner-animation wakeups; replaces
-     `terminal::poll_crossterm_event`).
+   spawn_blocking poll, preserving spinner-animation wakeups; replaces
+   `terminal::poll_crossterm_event`).
    
    ## Refactors (no behavior change)
    
    * `InlineViewport<T: TermOut>` owns its terminal instead of grabbing
-     `io::stdout()` ad hoc; size/cursor queries go through the trait.
+   `io::stdout()` ad hoc; size/cursor queries go through the trait.
    * `terminal::run(term, events, ...)` is generic over both traits;
-     `cleanup()` / `set_terminal_title()` take the terminal explicitly.
+   `cleanup()` / `set_terminal_title()` take the terminal explicitly.
    * `std::time::Instant` → `tokio::time::Instant` in spinner paths so
-     paused-clock tests are deterministic.
+   paused-clock tests are deterministic.
    * `MoveToNextLine` emits `CSI B` + CR instead of the equivalent but
-     less-supported `CSI E` (vt100 lacks CNL; vt100 0.16 is blocked by
-     ratatui's `unicode-width =0.2.0` pin).
+   less-supported `CSI E` (vt100 lacks CNL; vt100 0.16 is blocked by
+   ratatui's `unicode-width =0.2.0` pin).
    * `install.rs` / `daemon_client.rs` updated to the new APIs.
    
    ## Test harness (`tests/common/mod.rs`)
    
    * `Emulator` trait with two backends covering both real-world terminal
-     behavior classes:
-     * `Vt100Emulator` — truncates on resize, no reflow (xterm-like);
-     * `AlacrittyEmulator` (via `alacritty_terminal`) — rewraps wrapped
-       lines through scrollback and translates cursor + DECSC saved cursor
-       on resize (alacritty/kitty/VTE-like), the class where inline-viewport
-       resize bugs live. Wide-char spacer cells rendered correctly.
+   behavior classes:
+   * `Vt100Emulator` — truncates on resize, no reflow (xterm-like);
+   * `AlacrittyEmulator` (via `alacritty_terminal`) — rewraps wrapped
+   lines through scrollback and translates cursor + DECSC saved cursor
+   on resize (alacritty/kitty/VTE-like), the class where inline-viewport
+   resize bugs live. Wide-char spacer cells rendered correctly.
    * `VirtualTerm` (TermOut → shared emulator) + `ScriptedEvents`
-     (channel-fed EventSource).
+   (channel-fed EventSource).
    * `TuiHarness`: spawns the real `terminal::run` loop with mock channels
-     (`rig_mock::MockStreamingResponse` as the response type); helpers
-     `display()`, `display_for_thread()`, `key()`, `type_str()`,
-     `resize()`, `tick()`, `advance_and_redraw()`, `screen()` and
-     `screen_with_scrollback()` (framed character grid + scrollback +
-     cursor state + terminal title).
+   (`rig_mock::MockStreamingResponse` as the response type); helpers
+   `display()`, `display_for_thread()`, `key()`, `type_str()`,
+   `resize()`, `tick()`, `advance_and_redraw()`, `screen()` and
+   `screen_with_scrollback()` (framed character grid + scrollback +
+   cursor state + terminal title).
    * Determinism: `#[tokio::test(start_paused = true)]`; `settle()` is a
-     1ms sleep completing only via tokio auto-advance once the UI task has
-     drained its queues; animations advanced explicitly with
-     `tokio::time::advance`. Verified flake-free across repeated locked
-     (INSTA_UPDATE=no) runs.
+   1ms sleep completing only via tokio auto-advance once the UI task has
+   drained its queues; animations advanced explicitly with
+   `tokio::time::advance`. Verified flake-free across repeated locked
+   (INSTA_UPDATE=no) runs.
    
    ## Test suites
    
    * `tui_snapshots.rs` (10, vt100): startup, slash autocomplete + Tab,
-     thinking → streaming → done, tool call + result replacing the thinking
-     display, resize mid-stream, help overlay, child-thread rows, message
-     submission, session load, spinner animation over time.
+   thinking → streaming → done, tool call + result replacing the thinking
+   display, resize mid-stream, help overlay, child-thread rows, message
+   submission, session load, spinner animation over time.
    * `tui_reflow_snapshots.rs` (14, alacritty): wrapped-scrollback reflow on
-     narrow/wide resize, deep scrollback, vertical shrink/grow (incl. next
-     to spinner-height changes and mid-stream partial lines), coalesced
-     resizes, resizes with pickers open, widen mid-stream, print racing the
-     Resize notification.
+   narrow/wide resize, deep scrollback, vertical shrink/grow (incl. next
+   to spinner-height changes and mid-stream partial lines), coalesced
+   resizes, resizes with pickers open, widen mid-stream, print racing the
+   Resize notification.
    * `tui_viewport_snapshots.rs` (14, alacritty): viewport height changes
-     next to scrollback (spinner/autocomplete/pickers/choice/thread rows,
-     multiline input), multiline Info / OAuth / subscription events, tiny
-     terminals, /help on narrow terminals, prints while picker open,
-     submit mid-stream, compound grow/collapse.
+   next to scrollback (spinner/autocomplete/pickers/choice/thread rows,
+   multiline input), multiline Info / OAuth / subscription events, tiny
+   terminals, /help on narrow terminals, prints while picker open,
+   submit mid-stream, compound grow/collapse.
    * `tui_widechar_snapshots.rs` (5, alacritty): CJK/emoji display-width vs
-     char-count issues in wrap_tail, the input box, and the status row.
+   char-count issues in wrap_tail, the input box, and the status row.
    * `tui_flow_snapshots.rs` (9, mixed): zellij-style session-replay burst
-     (session switch + full history replayed undrained, spinner toggling
-     between prints — renders clean, locked as regression guard),
-     diff/empty tool results, child close_thread + subscription prefixes,
-     multiline bracketed paste, quit picker via soft detach, lazy new
-     session, queued choices + external completion, sessions updated while
-     picker open, slash-command feedback.
+   (session switch + full history replayed undrained, spinner toggling
+   between prints — renders clean, locked as regression guard),
+   diff/empty tool results, child close_thread + subscription prefixes,
+   multiline bracketed paste, quit picker via soft detach, lazy new
+   session, queued choices + external completion, sessions updated while
+   picker open, slash-command feedback.
    
    ## Bugs documented (34 `// BUG:` annotated assertions)
    
@@ -829,22 +829,22 @@
    its assertion. Highlights:
    
    * data loss: widening mid-stream overwrites reflowed text; a print
-     racing the Resize event is eaten by a stale scroll region (and its
-     aftermath bakes a duplicate status row into scrollback)
+   racing the Resize event is eaten by a stale scroll region (and its
+   aftermath bakes a duplicate status row into scrollback)
    * vertical/horizontal resize corruption: ghost spinners and stale or
-     duplicated borders that subsequent prints scroll into permanent
-     history; picker-resize artifacts; session-picker shrink merging
-     leftovers into the status row
+   duplicated borders that subsequent prints scroll into permanent
+   history; picker-resize artifacts; session-picker shrink merging
+   leftovers into the status row
    * wide chars: wrap_tail clips CJK/emoji tails (chars vs columns); emoji
-     eat the following space in the input box; emoji unbalance status-row
-     padding
+   eat the following space in the input box; emoji unbalance status-row
+   padding
    * text/layout: multi-line Info loses newlines; OAuth URL staircases
-     (LF without CR); tiny terminals lose the input row; /help corrupts
-     scrollback on narrow terminals; status-row collision at narrow widths
+   (LF without CR); tiny terminals lose the input row; /help corrupts
+   scrollback on narrow terminals; status-row collision at narrow widths
    * stale state: session change never redraws (hidden cursor, stale
-     context %); "waiting for tool call result" spinner text persists after
-     the result rendered; lazy new session keeps the old terminal title;
-     sessions_updated never repaints an open session picker
+   context %); "waiting for tool call result" spinner text persists after
+   the result rendered; lazy new session keeps the old terminal title;
+   sessions_updated never repaints an open session picker
    
    Verified-correct behaviors (spinner grow/shrink, vertical grow pulling
    history, prints while picker open, streaming CJK, replay burst, compound
@@ -866,17 +866,17 @@
    (`model_provider.rs` moved to `model_provider/mod.rs` to host it):
    
    * **Protocol**: one JSON value per line, framed with tokio-util's
-     `LinesCodec`; one request per connection (concurrent invocations =
-     concurrent connections). `ProviderRequest::{ListModels, InvokeModel}` →
-     `ProviderResponse::{Models, InvokeStarted, Chunk…, StreamEnd, Error}`.
-     `WireCompletionRequest` / `WireStreamItem` are serializable mirrors of
-     rig's `CompletionRequest` and `RawStreamingChoice`.
+   `LinesCodec`; one request per connection (concurrent invocations =
+   concurrent connections). `ProviderRequest::{ListModels, InvokeModel}` →
+   `ProviderResponse::{Models, InvokeStarted, Chunk…, StreamEnd, Error}`.
+   `WireCompletionRequest` / `WireStreamItem` are serializable mirrors of
+   rig's `CompletionRequest` and `RawStreamingChoice`.
    * **Server**: `serve_provider(provider)` binds a fresh temp socket path and
-     returns `(path, server_future)` for provider binaries to run.
+   returns `(path, server_future)` for provider binaries to run.
    * **Client**: `RemoteModelProvider` implements the full trait over the
-     socket, including streaming with mid-stream error forwarding.
+   socket, including streaming with mid-stream error forwarding.
    * Tests: socket round trip (list + streamed invocation with usage) against
-     a mock model; clean failure on a missing socket.
+   a mock model; clean failure on a missing socket.
    
    ## `infinity-provider-bedrock`: new binary
    
@@ -886,53 +886,53 @@
    ## `infinity-daemon`: config-driven provider registry
    
    * **BREAKING**: the daemon no longer links the Bedrock provider. Providers
-     come from `~/.infinity/providers.json` — a JSON object mapping provider
-     id to `{ "command": [...], "crate_name"?, "git"?, "path"? }`. There is no
-     implicit default: a missing/empty config is a startup error pointing at
-     `infinity provider install`.
+   come from `~/.infinity/providers.json` — a JSON object mapping provider
+   id to `{ "command": [...], "crate_name"?, "git"?, "path"? }`. There is no
+   implicit default: a missing/empty config is a startup error pointing at
+   `infinity provider install`.
    * `ProvidersConfig` preserves the JSON document's entry order via custom
-     serde impls backed by a `Vec` (config order = registration order; the
-     first model of the first provider is the global default). Duplicate ids,
-     empty ids, and empty commands are rejected.
+   serde impls backed by a `Vec` (config order = registration order; the
+   first model of the first provider is the global default). Duplicate ids,
+   empty ids, and empty commands are rejected.
    * `models::spawn_provider` launches each command (normal `PATH` lookup; no
-     special resolution) with piped stdout, waits (30s timeout) for the socket
-     path line, forwards later stdout to the log, and kills the process on
-     drop. `SessionManager` builds the `ModelCatalog` from
-     `RemoteModelProvider`s and keeps the child handles alive for the
-     daemon's lifetime.
+   special resolution) with piped stdout, waits (30s timeout) for the socket
+   path line, forwards later stdout to the log, and kills the process on
+   drop. `SessionManager` builds the `ModelCatalog` from
+   `RemoteModelProvider`s and keeps the child handles alive for the
+   daemon's lifetime.
    * `run_daemon(announce_ready: bool)` prints the new `DAEMON_READY_LINE` to
-     stdout after all initialization succeeds (passed as true by the
-     `infinity daemon` subcommand; the standalone binary keeps it off).
+   stdout after all initialization succeeds (passed as true by the
+   `infinity daemon` subcommand; the standalone binary keeps it off).
    
    ## `infinity-agent-cli`: provider management + launch supervision
    
    * `infinity provider install <id> --crate <name> [--git URL | --path DIR]`
-     — cargo-installs the provider crate (sharing the `run_cargo_install` TUI
-     plumbing with `rap install`) and registers it in providers.json,
-     replacing existing entries in place to preserve ordering.
+   — cargo-installs the provider crate (sharing the `run_cargo_install` TUI
+   plumbing with `rap install`) and registers it in providers.json,
+   replacing existing entries in place to preserve ordering.
    * `infinity provider update` re-installs all providers with recorded
-     sources; full `infinity update` now also updates providers.
+   sources; full `infinity update` now also updates providers.
    * `launch_daemon` spawns `{bin} daemon` with piped stdout/stderr and races
-     (`tokio::select!`) the ready line against process exit (60s outer
-     timeout). If the daemon exits during startup, the CLI reports everything
-     it printed to stdout/stderr — previously discarded for the detached
-     process. No post-launch connect retries: the socket is bound before
-     readiness is announced, so a single connect suffices.
+   (`tokio::select!`) the ready line against process exit (60s outer
+   timeout). If the daemon exits during startup, the CLI reports everything
+   it printed to stdout/stderr — previously discarded for the detached
+   process. No post-launch connect retries: the socket is bound before
+   readiness is announced, so a single connect suffices.
    * CLI `main` returns `ExitCode` and prints errors with Display formatting,
-     so multi-line failure reports keep real newlines instead of Debug-escaped
-     `\n`s.
+   so multi-line failure reports keep real newlines instead of Debug-escaped
+   `\n`s.
    
    ## Docs
    
    * Quickstarts (README, Infinity Code overview, runtime getting-started)
-     now include installing the Bedrock provider.
+   now include installing the Bedrock provider.
    * New `infinity-code/model-providers.md`: installing / configuring /
-     switching / updating providers, providers.json reference, and
-     troubleshooting based on the captured startup output.
+   switching / updating providers, providers.json reference, and
+   troubleshooting based on the captured startup output.
    * New `infinity-runtime/model-providers.md`: the `ModelProvider` trait and
-     `ModelEntry` semantics, writing a provider, with the Unix-socket process
-     transport (stdout contract, line-delimited JSON protocol,
-     `RemoteModelProvider`) covered at the end.
+   `ModelEntry` semantics, writing a provider, with the Unix-socket process
+   transport (stdout contract, line-delimited JSON protocol,
+   `RemoteModelProvider`) covered at the end.
    
    The lambda crate intentionally keeps linking `BedrockProvider` in-process.
 
@@ -966,26 +966,26 @@
    - CLI `DisplayEvent` lives in `infinity_agent_cli::display`.
  - <csr-id-27b40fed6c5fd1fad5ebfabb1a2a909b7018a0cf/> extract provider protocol into `infinity-provider-protocol` crate
    * Move `infinity_agent_core::model_provider` (the `ModelProvider` trait, `ModelEntry`,
-     `erase_streaming_response`, `SingleModelProvider`, and the `remote` Unix-socket wire
-     protocol) into a new lightweight `infinity-provider-protocol` crate whose dependency
-     surface is just rig-core + serde/schemars + async plumbing — no rap-client,
-     rap-protocol, rhai, chrono, etc.
+   `erase_streaming_response`, `SingleModelProvider`, and the `remote` Unix-socket wire
+   protocol) into a new lightweight `infinity-provider-protocol` crate whose dependency
+   surface is just rig-core + serde/schemars + async plumbing — no rap-client,
+   rap-protocol, rhai, chrono, etc.
    * `infinity-provider-bedrock` now depends only on `infinity-provider-protocol`, dropping
-     the entire `infinity-agent-core`/rap dependency tree from provider builds.
+   the entire `infinity-agent-core`/rap dependency tree from provider builds.
    * No legacy path: all consumers (`infinity-agent-core` internals, `infinity-daemon`,
-     `infinity-agent-cli` tests) import `infinity_provider_protocol::…` directly instead
-     of going through a re-export.
+   `infinity-agent-cli` tests) import `infinity_provider_protocol::…` directly instead
+   of going through a re-export.
    * Trim now-unused deps from `infinity-agent-core` (`schemars`, `tokio-util`, tokio `net`
-     feature).
+   feature).
    * Update `docs/docs/infinity-runtime/model-providers.md` to reference the new crate.
    * Regenerate the Rust section of `THIRD-PARTY` (adds `infinity-provider-protocol` to the
-     Apache-2.0 "used by" list); the npm sections are unchanged since no npm deps changed.
+   Apache-2.0 "used by" list); the npm sections are unchanged since no npm deps changed.
  - <csr-id-b4a31e2925c371f38b85b8b2e878fdd226566766/> make model providers extensible via a dyn-compatible `ModelProvider` trait
    ## `infinity-agent-core`
    * New `model_provider` module:
-     * `ModelProvider` trait (via `async_trait`) exposing `list_models()` and `invoke_model(model_id, CompletionRequest)`, which returns the same `StreamingCompletionResponse` as rig's `CompletionModel::stream` with the provider-specific final response erased to `ProviderStreamingResponse` (carries token usage only).
-     * Providers have no identity of their own — ids are assigned at registration by callers that manage multiple providers.
-     * `erase_streaming_response()` helper and a `SingleModelProvider<M>` adapter wrapping any rig `CompletionModel` (used by tests).
+   * `ModelProvider` trait (via `async_trait`) exposing `list_models()` and `invoke_model(model_id, CompletionRequest)`, which returns the same `StreamingCompletionResponse` as rig's `CompletionModel::stream` with the provider-specific final response erased to `ProviderStreamingResponse` (carries token usage only).
+   * Providers have no identity of their own — ids are assigned at registration by callers that manage multiple providers.
+   * `erase_streaming_response()` helper and a `SingleModelProvider<M>` adapter wrapping any rig `CompletionModel` (used by tests).
    * `run_completion`/`process_batch` now take a generic `P: ModelProvider + ?Sized` + model id instead of `Mdl: CompletionModel`, and no longer take `additional_request_params` / `model_id_override` / `max_output_tokens` — provider implementations handle those internally. Concrete callers (e.g. the Lambda) avoid `dyn` entirely and can specialize.
    
    ## `infinity-provider-bedrock` (new crate)
@@ -1015,7 +1015,7 @@
 
 <csr-read-only-do-not-edit/>
 
- - 192 commits contributed to the release.
+ - 193 commits contributed to the release.
  - 60 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 33 unique issues were worked on: [#10](https://github.com/hydro-project/infinity/issues/10), [#107](https://github.com/hydro-project/infinity/issues/107), [#110](https://github.com/hydro-project/infinity/issues/110), [#13](https://github.com/hydro-project/infinity/issues/13), [#15](https://github.com/hydro-project/infinity/issues/15), [#18](https://github.com/hydro-project/infinity/issues/18), [#19](https://github.com/hydro-project/infinity/issues/19), [#20](https://github.com/hydro-project/infinity/issues/20), [#21](https://github.com/hydro-project/infinity/issues/21), [#22](https://github.com/hydro-project/infinity/issues/22), [#23](https://github.com/hydro-project/infinity/issues/23), [#26](https://github.com/hydro-project/infinity/issues/26), [#29](https://github.com/hydro-project/infinity/issues/29), [#35](https://github.com/hydro-project/infinity/issues/35), [#37](https://github.com/hydro-project/infinity/issues/37), [#41](https://github.com/hydro-project/infinity/issues/41), [#52](https://github.com/hydro-project/infinity/issues/52), [#53](https://github.com/hydro-project/infinity/issues/53), [#55](https://github.com/hydro-project/infinity/issues/55), [#60](https://github.com/hydro-project/infinity/issues/60), [#61](https://github.com/hydro-project/infinity/issues/61), [#67](https://github.com/hydro-project/infinity/issues/67), [#68](https://github.com/hydro-project/infinity/issues/68), [#69](https://github.com/hydro-project/infinity/issues/69), [#70](https://github.com/hydro-project/infinity/issues/70), [#71](https://github.com/hydro-project/infinity/issues/71), [#72](https://github.com/hydro-project/infinity/issues/72), [#74](https://github.com/hydro-project/infinity/issues/74), [#8](https://github.com/hydro-project/infinity/issues/8), [#89](https://github.com/hydro-project/infinity/issues/89), [#90](https://github.com/hydro-project/infinity/issues/90), [#95](https://github.com/hydro-project/infinity/issues/95), [#96](https://github.com/hydro-project/infinity/issues/96)
 
@@ -1092,6 +1092,7 @@
  * **[#96](https://github.com/hydro-project/infinity/issues/96)**
     - Extract shared agent system engine ([`9c921fd`](https://github.com/hydro-project/infinity/commit/9c921fde280b50c89c3e5b9caadccf83a46078a4))
  * **Uncategorized**
+    - Release rap-protocol v0.1.0, rap-client v0.1.0, rap-steering-server v0.1.0, rap-github-event-poller v0.1.0, infinity-protocol v0.1.0, infinity-provider-protocol v0.1.0, infinity-provider-bedrock v0.1.0, infinity-provider-rig v0.1.0, infinity-agent-core v0.1.0, infinity-mcp-bridge v0.1.0, infinity-rap-bridge v0.1.0, infinity-daemon v0.1.0, infinity-agent-cli v0.1.0, sandbox-core v0.1.0, sandbox-local v0.1.0, sandbox-remote v0.1.0 ([`dd8c7f4`](https://github.com/hydro-project/infinity/commit/dd8c7f49028a26052d785b4241f9ade125f0afb3))
     - Rewrite ACP server with per-session daemon connections ([`ff1b8ee`](https://github.com/hydro-project/infinity/commit/ff1b8ee3af55c3fa816d507a7634012d2cc1fdad))
     - /stop pauses agent instead of resetting session ([`c308202`](https://github.com/hydro-project/infinity/commit/c308202b8b11a8092399eefbf7c087ddab11971a))
     - Support prefix matching for --session arg ([`dba5f88`](https://github.com/hydro-project/infinity/commit/dba5f88e924e5bf8f2d512b6ce6485230c56110f))

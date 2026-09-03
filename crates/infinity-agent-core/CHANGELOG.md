@@ -11,9 +11,9 @@
    
    Both ecosystems enforce an allowlist of permissive licenses:
    - Rust (about.toml): Apache-2.0, MIT, ISC, BSD-3-Clause, CC0-1.0,
-     CDLA-Permissive-2.0, MPL-2.0, Unicode-3.0, Zlib
+   CDLA-Permissive-2.0, MPL-2.0, Unicode-3.0, Zlib
    - npm (script): MIT, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, 0BSD,
-     CC0-1.0, Unlicense, BlueOak-1.0.0, MPL-2.0
+   CC0-1.0, Unlicense, BlueOak-1.0.0, MPL-2.0
    
    The script fails if any dependency uses a license not in the allowlist.
    
@@ -59,68 +59,68 @@
    ## Provider protocol (`infinity-provider-protocol`)
    
    * `ModelEntry` gains `supports_image_input: bool` (`#[serde(default)]`, so
-     the remote provider socket protocol stays backward compatible).
+   the remote provider socket protocol stays backward compatible).
    * Bedrock provider: all Claude models declare `supports_image_input: true`.
    * The capability is threaded from the resolved `ModelEntry` into
-     `run_completion`/`process_batch` (rather than a trait method that re-lists
-     models each turn): the daemon passes `catalog.find(&round_model)
-     .supports_image_input` per round (following mid-session model switches);
-     the Lambda resolves it once from `list_models()`.
+   `run_completion`/`process_batch` (rather than a trait method that re-lists
+   models each turn): the daemon passes `catalog.find(&round_model)
+   .supports_image_input` per round (following mid-session model switches);
+   the Lambda resolves it once from `list_models()`.
    
    ## Agent core (`infinity-agent-core`)
    
    * `HistoryManager::get_history(supports_image_input)` replaces image
-     tool-result content in place with `IMAGE_OMITTED_PLACEHOLDER` when the
-     model can't accept images (no extra allocation pass). Images kept in
-     history become visible again after switching to an image-capable model.
+   tool-result content in place with `IMAGE_OMITTED_PLACEHOLDER` when the
+   model can't accept images (no extra allocation pass). Images kept in
+   history become visible again after switching to an image-capable model.
    
    ## RAP protocol (`rap-protocol`)
    
    * `RapToolResult` carries either `text` **or** structured `content`
-     (`RapToolResultContent::{Text, Image{data, mediaType}}`, base64); `text` is
-     now optional. When `content` is present it supersedes `text`.
+   (`RapToolResultContent::{Text, Image{data, mediaType}}`, base64); `text` is
+   now optional. When `content` is present it supersedes `text`.
    * New `DisplaySegment::Image(ImageContent { data, mediaType })` for
-     human-facing UIs.
+   human-facing UIs.
    * Spec docs (`tool-result.md`) and provider docs updated.
    
    ## Daemon (`infinity-daemon`)
    
    * RAP callbacks build the rig tool result from structured `content` when
-     present (images → `ToolResultContent::Image`), else fall back to `text`.
+   present (images → `ToolResultContent::Image`), else fall back to `text`.
    
    ## Sandbox (`sandbox-core` / `sandbox-local`)
    
    * `read_file` detects images by content (magic bytes, not extension) so
-     mislabeled/extension-less files are classified correctly; returns a
-     describing text plus base64 image content with `display_as: [image,
-     text-summary]`. Tool output modeled as a named `ToolOutput` struct.
+   mislabeled/extension-less files are classified correctly; returns a
+   describing text plus base64 image content with `display_as: [image,
+   text-summary]`. Tool output modeled as a named `ToolOutput` struct.
    
    ## Clients
    
    * Web (`infinity-ui`): `MessageItem` renders images as an inline bordered
-     `<img>` (`data:` URL, `data-testid="tool-result-image"`).
+   `<img>` (`data:` URL, `data-testid="tool-result-image"`).
    * TUI / ACP (`infinity-agent-cli`): renderers pick the first *supported*
-     display segment; image-only results show `✓ [image — not displayable in
-     terminal]`, otherwise the text summary.
+   display segment; image-only results show `✓ [image — not displayable in
+   terminal]`, otherwise the text summary.
    
    ## Shared test crate (`rap-test-servers`, unpublished)
    
    * `start_stub_image_server()` serves a `read_image` RAP tool returning a
-     fixed indigo PNG; `write_rap_config(cwd, port)` points sessions at it.
-     Dev-dependency of the CLI and daemon e2e suites.
+   fixed indigo PNG; `write_rap_config(cwd, port)` points sessions at it.
+   Dev-dependency of the CLI and daemon e2e suites.
    
    ## Tests
    
    * agent-core: image tool results reach image-capable models and are replaced
-     with the placeholder otherwise.
+   with the placeholder otherwise.
    * daemon: RAP→rig content conversion (fallbacks, media types).
    * provider-protocol: remote transport round-trips `supports_image_input`.
    * sandbox-local: PNG content + display segments, content-based detection
-     (PNG named `.txt`), text reads unchanged.
+   (PNG named `.txt`), text reads unchanged.
    * TUI e2e: image content reaches the model; terminal renders the text
-     fallback (insta snapshot).
+   fallback (insta snapshot).
    * Web e2e: follow-up request carries the base64 image; transcript renders the
-     inline `<img>`; `chat-image-result.png` golden.
+   inline `<img>`; `chat-image-result.png` golden.
  - <csr-id-66ddd8ff3797df0284b0658382249133361b55d9/> add Claude Fable 5 to Bedrock models list
  - <csr-id-6abd457adc8b7c4ff5dcc62d575250d7f1736f2b/> add pretty-print display scripts for sleep tools
    - `SleepTool`: "Sleeping 30s" or "Sleeping 30s: waiting for deploy"
@@ -139,18 +139,18 @@
    ### CLI
    
    - Removed `UiMode::ChoicePicker`; choice state is tracked via
-     `UiMode::Normal { choice_focused: bool }`.
+   `UiMode::Normal { choice_focused: bool }`.
    - `draw_viewport` renders both choice picker and text input when a choice
-     is active (choice above, input below).
+   is active (choice above, input below).
    - Arrow-key focus transitions: Down past last choice → input, Up at top
-     of input → choice picker. Cursor only shown when input is focused.
+   of input → choice picker. Cursor only shown when input is focused.
    
    ### Web UI
    
    - `MessageList` always renders `InputBar`; renders `ChoicePicker` above it
-     when a pending choice exists.
+   when a pending choice exists.
    - `ChoicePicker` calls `onFocusInput` when ArrowDown is pressed at the
-     last choice, shifting focus to the textarea.
+   last choice, shifting focus to the textarea.
    - Both components converted to `forwardRef` to support programmatic focus.
    
    ## Cancel pending choices on tool call interruption
@@ -159,10 +159,10 @@
    call is interrupted but the choice was left dangling in the UI.
    
    - `batch_processor`: After notifying RAP servers of interrupted tool calls,
-     emit `UserChoiceComplete` for each interrupted ID to dismiss associated
-     choices.
+   emit `UserChoiceComplete` for each interrupted ID to dismiss associated
+   choices.
    - `thread_worker`: Handle `UserChoiceComplete` in the display event
-     forwarder by removing from `pending_choices` in the memory store.
+   forwarder by removing from `pending_choices` in the memory store.
  - <csr-id-4169bdceccae28a77d664b9942758651defe8a0b/> add UserChoiceComplete daemon-to-client message
  - <csr-id-ba10ffd62644a4c86c31a7fb6d5eaaca8c403b55/> add remote host migration UI and daemon orchestration
 
@@ -181,13 +181,13 @@
    (the rest are ignored), but it kept forwarding everything streamed after it:
    
    * the ignored calls' name/argument deltas and the interleaved reasoning were
-     yielded as `ThinkingChunk`s, so clients (web UI, TUI, ACP) saw "thinking"
-     streaming *after* the `ToolCall` but *before* its `ToolResult` display event
-     (which only arrives in a later round, via the MCP/RAP callback)
+   yielded as `ThinkingChunk`s, so clients (web UI, TUI, ACP) saw "thinking"
+   streaming *after* the `ToolCall` but *before* its `ToolResult` display event
+   (which only arrives in a later round, via the MCP/RAP callback)
    * worse, a trailing reasoning/text block was committed to history *after* the
-     tool call, which broke the `history.last()` match in `handle_content` when
-     the tool result arrived — the result was silently dropped and the call
-     stranded as unanswered
+   tool call, which broke the `history.last()` match in `handle_content` when
+   the tool result arrived — the result was silently dropped and the call
+   stranded as unanswered
    
    Fix in `run_completion`: once the turn's first tool call has been emitted,
    drop all subsequent stream content for that turn (logging it at info level)
@@ -208,13 +208,13 @@
    tokens. This caused two bugs:
    
    1. **Web UI context percentage showed ~1%** even at 800k tokens: the
-      `TokenUsage` protocol struct lacked `total_tokens`, so the web UI computed
-      `input_tokens + output_tokens` which only captured the small uncached
-      portion.
+   `TokenUsage` protocol struct lacked `total_tokens`, so the web UI computed
+   `input_tokens + output_tokens` which only captured the small uncached
+   portion.
    
    2. **Auto-compaction never triggered**: the compaction check compared
-      `input_tokens` (uncached only) against 75% of the context window, so it
-      never fired when most input was cached.
+   `input_tokens` (uncached only) against 75% of the context window, so it
+   never fired when most input was cached.
  - <csr-id-be6bbd5ca0f907b3a75df4b5615a7181f756e18d/> compaction inside child thread no longer panics on indexing
    When compaction triggered inside a child thread, `safe_spawn_point()` returned
    an in-memory index that included ancestor messages prepended to the history.
@@ -224,13 +224,13 @@
    
    The fix:
    - `load_history_with_ancestors` now returns `ancestor_prefix_len` as a third
-     tuple element (how many messages at the front come from ancestor threads).
+   tuple element (how many messages at the front come from ancestor threads).
    - `HistoryManager` stores this in a `Cell<usize>` field.
    - `safe_spawn_point()` subtracts `ancestor_prefix_len` so the returned index
-     is relative to the thread's own store.
+   is relative to the thread's own store.
    - `apply_compaction()` adds `ancestor_prefix_len` to the split position (since
-     ancestors occupy the beginning of in-memory history) and resets it to 0 after
-     compaction (ancestors are consumed into the summary).
+   ancestors occupy the beginning of in-memory history) and resets it to 0 after
+   compaction (ancestors are consumed into the summary).
    
    A regression test (`compaction_inside_child_thread_does_not_panic`) reproduces
    the exact panic from issue #31 and uses insta snapshots to verify both the
@@ -244,8 +244,8 @@
  - <csr-id-fe820d8894b7768579245399b9b157e280b87bea/> embed subscription invocation inside SubscriptionEvent to prevent duplicate replay entries
  - <csr-id-5cf4d552ad412a7946c39c6d8a84913fd5a1685e/> address review comments for error handling
    - thread.rs: Return an error ToolResult instead of panicking when
-     spawn_thread fails in the conversation store, since this is a
-     runtime/IO failure, not a logic bug
+   spawn_thread fails in the conversation store, since this is a
+   runtime/IO failure, not a logic bug
  - <csr-id-b40442e37ac91b884f51fcabb018a3735bdf612f/> hanging caused by `sh -c` intercepting SIGINT, improved config error handling
    Fixes a (the?) hanging issue encountered on Ubuntu 24.04
 
@@ -258,33 +258,33 @@
    cargo-smart-release setup as hydro-project/hydro (per its RELEASING.md).
    
    * `.github/workflows/release.yml`: new manually-dispatched Release workflow,
-     adapted from hydro's. Supports major/minor/patch/keep/auto bumps, optional
-     pre-release ids, and a dry-run mode (execute unchecked). Uses the
-     hydro-project-bot GitHub App token to push past branch protection, and the
-     pinned hydro-project fork of cargo-smart-release (rev e6f3368337a0).
+   adapted from hydro's. Supports major/minor/patch/keep/auto bumps, optional
+   pre-release ids, and a dry-run mode (execute unchecked). Uses the
+   hydro-project-bot GitHub App token to push past branch protection, and the
+   pinned hydro-project fork of cargo-smart-release (rev e6f3368337a0).
    * `RELEASING.md`: releasing guide adapted from hydro's, including which crates
-     are published and why the others are not, plus an addendum explaining why
-     `[patch.crates-io]` on `rig-bedrock` blocks publishing the bedrock provider.
+   are published and why the others are not, plus an addendum explaining why
+   `[patch.crates-io]` on `rig-bedrock` blocks publishing the bedrock provider.
    * Crate manifests, 14 publishable crates (rap-protocol, rap-client,
-     rap-steering-server, rap-github-event-poller, infinity-protocol,
-     infinity-provider-protocol, infinity-agent-core, infinity-mcp-bridge,
-     infinity-rap-bridge, infinity-daemon, infinity-agent-cli, sandbox-core,
-     sandbox-local, sandbox-remote):
-     - `publish = true`, `description`, `documentation` (docs.rs), and
-       `repository = { workspace = true }` (new `[workspace.package]` in the root
-       `Cargo.toml`).
-     - `version = "^0.1.0"` added to all intra-workspace path dependencies
-       (including dev-deps between publishable crates), as required for
-       publishing.
-     - New empty `CHANGELOG.md` per crate so cargo-smart-release will generate
-       and track changelogs.
+   rap-steering-server, rap-github-event-poller, infinity-protocol,
+   infinity-provider-protocol, infinity-agent-core, infinity-mcp-bridge,
+   infinity-rap-bridge, infinity-daemon, infinity-agent-cli, sandbox-core,
+   sandbox-local, sandbox-remote):
+   - `publish = true`, `description`, `documentation` (docs.rs), and
+   `repository = { workspace = true }` (new `[workspace.package]` in the root
+   `Cargo.toml`).
+   - `version = "^0.1.0"` added to all intra-workspace path dependencies
+   (including dev-deps between publishable crates), as required for
+   publishing.
+   - New empty `CHANGELOG.md` per crate so cargo-smart-release will generate
+   and track changelogs.
    * `publish = false` added to crates that must not be published:
-     - `rig-mock`, `rap-test-servers` (test-only; left as path-only dev-deps so
-       cargo strips them at publish time),
-     - `rig-bedrock-patched` (vendored fork of crates-io `rig-bedrock`),
-     - `infinity-provider-bedrock` + `infinity-agent-lambda` (depend on the
-       patched rig-bedrock; publishing would silently drop the patches),
-     - `infinity-slack-bot` (deployment artifact).
+   - `rig-mock`, `rap-test-servers` (test-only; left as path-only dev-deps so
+   cargo strips them at publish time),
+   - `rig-bedrock-patched` (vendored fork of crates-io `rig-bedrock`),
+   - `infinity-provider-bedrock` + `infinity-agent-lambda` (depend on the
+   patched rig-bedrock; publishing would silently drop the patches),
+   - `infinity-slack-bot` (deployment artifact).
 
 ### Performance
 
@@ -297,9 +297,9 @@
    last pending item when it is already an assistant text message.
    
    * In `try_merge_pending_text`, the in-memory history tail must always
-     correspond to the last pending item, so a mismatch is now treated as a
-     logical bug via `let ... else { panic!("bug: pending_items and history
-     out of sync") }` instead of silently no-op'ing.
+   correspond to the last pending item, so a mismatch is now treated as a
+   logical bug via `let ... else { panic!("bug: pending_items and history
+   out of sync") }` instead of silently no-op'ing.
 
 ### Refactor
 
@@ -323,20 +323,20 @@
  - <csr-id-9757071818663cefb8e6a12438071d95000379a8/> add precheck script, lints
  - <csr-id-51406e4dfab243a4400027507f446862b26ce8d3/> extract rap-client crate and unify RAP protocol types
    - Unify all duplicate RAP protocol types into rap-protocol crate:
-     RapInvocation (3 copies), ToolsetManifest/ToolDef, and callback
-     types (RapToolResult, RapSubscriptionEvent, RapUserChoice) with
-     new RapOAuth struct and RapCallback tagged enum
+   RapInvocation (3 copies), ToolsetManifest/ToolDef, and callback
+   types (RapToolResult, RapSubscriptionEvent, RapUserChoice) with
+   new RapOAuth struct and RapCallback tagged enum
    
    - Create rap-client crate with HttpClient trait, ToolsetCache trait,
-     SimpleHttpClient, InMemoryToolsetCache, ToolsetLoader, RapNotifier,
-     and a generic callback server accepting an async closure
+   SimpleHttpClient, InMemoryToolsetCache, ToolsetLoader, RapNotifier,
+   and a generic callback server accepting an async closure
    
    - Update infinity-agent-core, infinity-daemon, infinity-agent-lambda,
-     and infinity-agent-cli to import directly from rap-client and
-     rap-protocol instead of local duplicates
+   and infinity-agent-cli to import directly from rap-client and
+   rap-protocol instead of local duplicates
    
    - Rewrite daemon callback server to wrap rap-client's generic server,
-     routing callbacks directly to SessionManager without mpsc indirection
+   routing callbacks directly to SessionManager without mpsc indirection
    
    - Fix Send lifetime error in send_input's async closure
 
@@ -364,17 +364,17 @@
    (`model_provider.rs` moved to `model_provider/mod.rs` to host it):
    
    * **Protocol**: one JSON value per line, framed with tokio-util's
-     `LinesCodec`; one request per connection (concurrent invocations =
-     concurrent connections). `ProviderRequest::{ListModels, InvokeModel}` →
-     `ProviderResponse::{Models, InvokeStarted, Chunk…, StreamEnd, Error}`.
-     `WireCompletionRequest` / `WireStreamItem` are serializable mirrors of
-     rig's `CompletionRequest` and `RawStreamingChoice`.
+   `LinesCodec`; one request per connection (concurrent invocations =
+   concurrent connections). `ProviderRequest::{ListModels, InvokeModel}` →
+   `ProviderResponse::{Models, InvokeStarted, Chunk…, StreamEnd, Error}`.
+   `WireCompletionRequest` / `WireStreamItem` are serializable mirrors of
+   rig's `CompletionRequest` and `RawStreamingChoice`.
    * **Server**: `serve_provider(provider)` binds a fresh temp socket path and
-     returns `(path, server_future)` for provider binaries to run.
+   returns `(path, server_future)` for provider binaries to run.
    * **Client**: `RemoteModelProvider` implements the full trait over the
-     socket, including streaming with mid-stream error forwarding.
+   socket, including streaming with mid-stream error forwarding.
    * Tests: socket round trip (list + streamed invocation with usage) against
-     a mock model; clean failure on a missing socket.
+   a mock model; clean failure on a missing socket.
    
    ## `infinity-provider-bedrock`: new binary
    
@@ -384,53 +384,53 @@
    ## `infinity-daemon`: config-driven provider registry
    
    * **BREAKING**: the daemon no longer links the Bedrock provider. Providers
-     come from `~/.infinity/providers.json` — a JSON object mapping provider
-     id to `{ "command": [...], "crate_name"?, "git"?, "path"? }`. There is no
-     implicit default: a missing/empty config is a startup error pointing at
-     `infinity provider install`.
+   come from `~/.infinity/providers.json` — a JSON object mapping provider
+   id to `{ "command": [...], "crate_name"?, "git"?, "path"? }`. There is no
+   implicit default: a missing/empty config is a startup error pointing at
+   `infinity provider install`.
    * `ProvidersConfig` preserves the JSON document's entry order via custom
-     serde impls backed by a `Vec` (config order = registration order; the
-     first model of the first provider is the global default). Duplicate ids,
-     empty ids, and empty commands are rejected.
+   serde impls backed by a `Vec` (config order = registration order; the
+   first model of the first provider is the global default). Duplicate ids,
+   empty ids, and empty commands are rejected.
    * `models::spawn_provider` launches each command (normal `PATH` lookup; no
-     special resolution) with piped stdout, waits (30s timeout) for the socket
-     path line, forwards later stdout to the log, and kills the process on
-     drop. `SessionManager` builds the `ModelCatalog` from
-     `RemoteModelProvider`s and keeps the child handles alive for the
-     daemon's lifetime.
+   special resolution) with piped stdout, waits (30s timeout) for the socket
+   path line, forwards later stdout to the log, and kills the process on
+   drop. `SessionManager` builds the `ModelCatalog` from
+   `RemoteModelProvider`s and keeps the child handles alive for the
+   daemon's lifetime.
    * `run_daemon(announce_ready: bool)` prints the new `DAEMON_READY_LINE` to
-     stdout after all initialization succeeds (passed as true by the
-     `infinity daemon` subcommand; the standalone binary keeps it off).
+   stdout after all initialization succeeds (passed as true by the
+   `infinity daemon` subcommand; the standalone binary keeps it off).
    
    ## `infinity-agent-cli`: provider management + launch supervision
    
    * `infinity provider install <id> --crate <name> [--git URL | --path DIR]`
-     — cargo-installs the provider crate (sharing the `run_cargo_install` TUI
-     plumbing with `rap install`) and registers it in providers.json,
-     replacing existing entries in place to preserve ordering.
+   — cargo-installs the provider crate (sharing the `run_cargo_install` TUI
+   plumbing with `rap install`) and registers it in providers.json,
+   replacing existing entries in place to preserve ordering.
    * `infinity provider update` re-installs all providers with recorded
-     sources; full `infinity update` now also updates providers.
+   sources; full `infinity update` now also updates providers.
    * `launch_daemon` spawns `{bin} daemon` with piped stdout/stderr and races
-     (`tokio::select!`) the ready line against process exit (60s outer
-     timeout). If the daemon exits during startup, the CLI reports everything
-     it printed to stdout/stderr — previously discarded for the detached
-     process. No post-launch connect retries: the socket is bound before
-     readiness is announced, so a single connect suffices.
+   (`tokio::select!`) the ready line against process exit (60s outer
+   timeout). If the daemon exits during startup, the CLI reports everything
+   it printed to stdout/stderr — previously discarded for the detached
+   process. No post-launch connect retries: the socket is bound before
+   readiness is announced, so a single connect suffices.
    * CLI `main` returns `ExitCode` and prints errors with Display formatting,
-     so multi-line failure reports keep real newlines instead of Debug-escaped
-     `\n`s.
+   so multi-line failure reports keep real newlines instead of Debug-escaped
+   `\n`s.
    
    ## Docs
    
    * Quickstarts (README, Infinity Code overview, runtime getting-started)
-     now include installing the Bedrock provider.
+   now include installing the Bedrock provider.
    * New `infinity-code/model-providers.md`: installing / configuring /
-     switching / updating providers, providers.json reference, and
-     troubleshooting based on the captured startup output.
+   switching / updating providers, providers.json reference, and
+   troubleshooting based on the captured startup output.
    * New `infinity-runtime/model-providers.md`: the `ModelProvider` trait and
-     `ModelEntry` semantics, writing a provider, with the Unix-socket process
-     transport (stdout contract, line-delimited JSON protocol,
-     `RemoteModelProvider`) covered at the end.
+   `ModelEntry` semantics, writing a provider, with the Unix-socket process
+   transport (stdout contract, line-delimited JSON protocol,
+   `RemoteModelProvider`) covered at the end.
    
    The lambda crate intentionally keeps linking `BedrockProvider` in-process.
 
@@ -477,22 +477,22 @@
    insta snapshot changes; full test suite passes).
    
    * rap-protocol: `strkind! { pub ThreadId; }` with docs (RAP calls it
-     `group_id` on the wire; UUIDs in the daemon, caller-chosen conversation
-     keys in the Lambda runtime). `group_id: ThreadId` on `RapInvocation`,
-     `RapToolResult`, `RapUserChoice`, `RapSubscriptionEvent`,
-     `RapViewUpdate`, `RapOAuth`; `thread_ancestors: Option<Vec<ThreadId>>`;
-     `send_subscription_event`/`send_view_update` take `ThreadId`
+   `group_id` on the wire; UUIDs in the daemon, caller-chosen conversation
+   keys in the Lambda runtime). `group_id: ThreadId` on `RapInvocation`,
+   `RapToolResult`, `RapUserChoice`, `RapSubscriptionEvent`,
+   `RapViewUpdate`, `RapOAuth`; `thread_ancestors: Option<Vec<ThreadId>>`;
+   `send_subscription_event`/`send_view_update` take `ThreadId`
    * sandbox-core/local/remote (via sub-agent): `ThreadId` re-exported from
-     sandbox-core root; `MetadataStore::get/delete(&ThreadId)`;
-     `SandboxBackend::push_sandbox`/`cleanup_sandbox_permanently` typed;
-     `RepoState.{group_id, root_thread_id}`, `CloneRepoArgs.base_thread_id`,
-     `SquashSandboxArgs.from_thread_id`, `CloneContext.group_id`,
-     `SandboxError::RepoNotFound`, and server request payload structs typed
+   sandbox-core root; `MetadataStore::get/delete(&ThreadId)`;
+   `SandboxBackend::push_sandbox`/`cleanup_sandbox_permanently` typed;
+   `RepoState.{group_id, root_thread_id}`, `CloneRepoArgs.base_thread_id`,
+   `SquashSandboxArgs.from_thread_id`, `CloneContext.group_id`,
+   `SandboxError::RepoNotFound`, and server request payload structs typed
    * infinity-agent-core: rap_tool boundary converts `ToolContext` strings
-     into `ThreadId` when building invocations (context types themselves are
-     Stage 2)
+   into `ThreadId` when building invocations (context types themselves are
+   Stage 2)
    * infinity-rap-bridge: callback conversion unwraps `ThreadId` into
-     `InputMessage.group_id` (String until Stage 2)
+   `InputMessage.group_id` (String until Stage 2)
    * rap-github-event-poller: `Subscription.group_id: ThreadId`
    * infinity-daemon: view-update routing + test fixture conversions
    * Workspace: `strkind = "0.0.1"` added to workspace dependencies
@@ -524,26 +524,26 @@
    - CLI `DisplayEvent` lives in `infinity_agent_cli::display`.
  - <csr-id-27b40fed6c5fd1fad5ebfabb1a2a909b7018a0cf/> extract provider protocol into `infinity-provider-protocol` crate
    * Move `infinity_agent_core::model_provider` (the `ModelProvider` trait, `ModelEntry`,
-     `erase_streaming_response`, `SingleModelProvider`, and the `remote` Unix-socket wire
-     protocol) into a new lightweight `infinity-provider-protocol` crate whose dependency
-     surface is just rig-core + serde/schemars + async plumbing — no rap-client,
-     rap-protocol, rhai, chrono, etc.
+   `erase_streaming_response`, `SingleModelProvider`, and the `remote` Unix-socket wire
+   protocol) into a new lightweight `infinity-provider-protocol` crate whose dependency
+   surface is just rig-core + serde/schemars + async plumbing — no rap-client,
+   rap-protocol, rhai, chrono, etc.
    * `infinity-provider-bedrock` now depends only on `infinity-provider-protocol`, dropping
-     the entire `infinity-agent-core`/rap dependency tree from provider builds.
+   the entire `infinity-agent-core`/rap dependency tree from provider builds.
    * No legacy path: all consumers (`infinity-agent-core` internals, `infinity-daemon`,
-     `infinity-agent-cli` tests) import `infinity_provider_protocol::…` directly instead
-     of going through a re-export.
+   `infinity-agent-cli` tests) import `infinity_provider_protocol::…` directly instead
+   of going through a re-export.
    * Trim now-unused deps from `infinity-agent-core` (`schemars`, `tokio-util`, tokio `net`
-     feature).
+   feature).
    * Update `docs/docs/infinity-runtime/model-providers.md` to reference the new crate.
    * Regenerate the Rust section of `THIRD-PARTY` (adds `infinity-provider-protocol` to the
-     Apache-2.0 "used by" list); the npm sections are unchanged since no npm deps changed.
+   Apache-2.0 "used by" list); the npm sections are unchanged since no npm deps changed.
  - <csr-id-b4a31e2925c371f38b85b8b2e878fdd226566766/> make model providers extensible via a dyn-compatible `ModelProvider` trait
    ## `infinity-agent-core`
    * New `model_provider` module:
-     * `ModelProvider` trait (via `async_trait`) exposing `list_models()` and `invoke_model(model_id, CompletionRequest)`, which returns the same `StreamingCompletionResponse` as rig's `CompletionModel::stream` with the provider-specific final response erased to `ProviderStreamingResponse` (carries token usage only).
-     * Providers have no identity of their own — ids are assigned at registration by callers that manage multiple providers.
-     * `erase_streaming_response()` helper and a `SingleModelProvider<M>` adapter wrapping any rig `CompletionModel` (used by tests).
+   * `ModelProvider` trait (via `async_trait`) exposing `list_models()` and `invoke_model(model_id, CompletionRequest)`, which returns the same `StreamingCompletionResponse` as rig's `CompletionModel::stream` with the provider-specific final response erased to `ProviderStreamingResponse` (carries token usage only).
+   * Providers have no identity of their own — ids are assigned at registration by callers that manage multiple providers.
+   * `erase_streaming_response()` helper and a `SingleModelProvider<M>` adapter wrapping any rig `CompletionModel` (used by tests).
    * `run_completion`/`process_batch` now take a generic `P: ModelProvider + ?Sized` + model id instead of `Mdl: CompletionModel`, and no longer take `additional_request_params` / `model_id_override` / `max_output_tokens` — provider implementations handle those internally. Concrete callers (e.g. the Lambda) avoid `dyn` entirely and can specialize.
    
    ## `infinity-provider-bedrock` (new crate)
@@ -573,7 +573,7 @@
 
 <csr-read-only-do-not-edit/>
 
- - 111 commits contributed to the release.
+ - 112 commits contributed to the release.
  - 33 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 20 unique issues were worked on: [#104](https://github.com/hydro-project/infinity/issues/104), [#105](https://github.com/hydro-project/infinity/issues/105), [#107](https://github.com/hydro-project/infinity/issues/107), [#110](https://github.com/hydro-project/infinity/issues/110), [#113](https://github.com/hydro-project/infinity/issues/113), [#13](https://github.com/hydro-project/infinity/issues/13), [#18](https://github.com/hydro-project/infinity/issues/18), [#19](https://github.com/hydro-project/infinity/issues/19), [#39](https://github.com/hydro-project/infinity/issues/39), [#50](https://github.com/hydro-project/infinity/issues/50), [#52](https://github.com/hydro-project/infinity/issues/52), [#61](https://github.com/hydro-project/infinity/issues/61), [#63](https://github.com/hydro-project/infinity/issues/63), [#71](https://github.com/hydro-project/infinity/issues/71), [#8](https://github.com/hydro-project/infinity/issues/8), [#82](https://github.com/hydro-project/infinity/issues/82), [#87](https://github.com/hydro-project/infinity/issues/87), [#88](https://github.com/hydro-project/infinity/issues/88), [#92](https://github.com/hydro-project/infinity/issues/92), [#96](https://github.com/hydro-project/infinity/issues/96)
 
@@ -624,6 +624,7 @@
  * **[#96](https://github.com/hydro-project/infinity/issues/96)**
     - Extract shared agent system engine ([`9c921fd`](https://github.com/hydro-project/infinity/commit/9c921fde280b50c89c3e5b9caadccf83a46078a4))
  * **Uncategorized**
+    - Release rap-protocol v0.1.0, rap-client v0.1.0, rap-steering-server v0.1.0, rap-github-event-poller v0.1.0, infinity-protocol v0.1.0, infinity-provider-protocol v0.1.0, infinity-provider-bedrock v0.1.0, infinity-provider-rig v0.1.0, infinity-agent-core v0.1.0, infinity-mcp-bridge v0.1.0, infinity-rap-bridge v0.1.0, infinity-daemon v0.1.0, infinity-agent-cli v0.1.0, sandbox-core v0.1.0, sandbox-local v0.1.0, sandbox-remote v0.1.0 ([`dd8c7f4`](https://github.com/hydro-project/infinity/commit/dd8c7f49028a26052d785b4241f9ade125f0afb3))
     - Prevent close_thread on root thread and deduplicate get_thread_parent_info calls ([`bbfb25d`](https://github.com/hydro-project/infinity/commit/bbfb25dc3514f3c124b5ac50f102291e0c131e9c))
     - Prevent compaction from truncating pending tool calls ([`b959506`](https://github.com/hydro-project/infinity/commit/b959506eea3eb763bb8a6699dd6a5f37f9fe7a98))
     - Add pretty-print display scripts for sleep tools ([`6abd457`](https://github.com/hydro-project/infinity/commit/6abd457adc8b7c4ff5dcc62d575250d7f1736f2b))

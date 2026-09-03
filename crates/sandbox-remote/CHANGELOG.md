@@ -11,9 +11,9 @@
    
    Both ecosystems enforce an allowlist of permissive licenses:
    - Rust (about.toml): Apache-2.0, MIT, ISC, BSD-3-Clause, CC0-1.0,
-     CDLA-Permissive-2.0, MPL-2.0, Unicode-3.0, Zlib
+   CDLA-Permissive-2.0, MPL-2.0, Unicode-3.0, Zlib
    - npm (script): MIT, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, 0BSD,
-     CC0-1.0, Unlicense, BlueOak-1.0.0, MPL-2.0
+   CC0-1.0, Unlicense, BlueOak-1.0.0, MPL-2.0
    
    The script fails if any dependency uses a license not in the allowlist.
    
@@ -43,33 +43,33 @@
    cargo-smart-release setup as hydro-project/hydro (per its RELEASING.md).
    
    * `.github/workflows/release.yml`: new manually-dispatched Release workflow,
-     adapted from hydro's. Supports major/minor/patch/keep/auto bumps, optional
-     pre-release ids, and a dry-run mode (execute unchecked). Uses the
-     hydro-project-bot GitHub App token to push past branch protection, and the
-     pinned hydro-project fork of cargo-smart-release (rev e6f3368337a0).
+   adapted from hydro's. Supports major/minor/patch/keep/auto bumps, optional
+   pre-release ids, and a dry-run mode (execute unchecked). Uses the
+   hydro-project-bot GitHub App token to push past branch protection, and the
+   pinned hydro-project fork of cargo-smart-release (rev e6f3368337a0).
    * `RELEASING.md`: releasing guide adapted from hydro's, including which crates
-     are published and why the others are not, plus an addendum explaining why
-     `[patch.crates-io]` on `rig-bedrock` blocks publishing the bedrock provider.
+   are published and why the others are not, plus an addendum explaining why
+   `[patch.crates-io]` on `rig-bedrock` blocks publishing the bedrock provider.
    * Crate manifests, 14 publishable crates (rap-protocol, rap-client,
-     rap-steering-server, rap-github-event-poller, infinity-protocol,
-     infinity-provider-protocol, infinity-agent-core, infinity-mcp-bridge,
-     infinity-rap-bridge, infinity-daemon, infinity-agent-cli, sandbox-core,
-     sandbox-local, sandbox-remote):
-     - `publish = true`, `description`, `documentation` (docs.rs), and
-       `repository = { workspace = true }` (new `[workspace.package]` in the root
-       `Cargo.toml`).
-     - `version = "^0.1.0"` added to all intra-workspace path dependencies
-       (including dev-deps between publishable crates), as required for
-       publishing.
-     - New empty `CHANGELOG.md` per crate so cargo-smart-release will generate
-       and track changelogs.
+   rap-steering-server, rap-github-event-poller, infinity-protocol,
+   infinity-provider-protocol, infinity-agent-core, infinity-mcp-bridge,
+   infinity-rap-bridge, infinity-daemon, infinity-agent-cli, sandbox-core,
+   sandbox-local, sandbox-remote):
+   - `publish = true`, `description`, `documentation` (docs.rs), and
+   `repository = { workspace = true }` (new `[workspace.package]` in the root
+   `Cargo.toml`).
+   - `version = "^0.1.0"` added to all intra-workspace path dependencies
+   (including dev-deps between publishable crates), as required for
+   publishing.
+   - New empty `CHANGELOG.md` per crate so cargo-smart-release will generate
+   and track changelogs.
    * `publish = false` added to crates that must not be published:
-     - `rig-mock`, `rap-test-servers` (test-only; left as path-only dev-deps so
-       cargo strips them at publish time),
-     - `rig-bedrock-patched` (vendored fork of crates-io `rig-bedrock`),
-     - `infinity-provider-bedrock` + `infinity-agent-lambda` (depend on the
-       patched rig-bedrock; publishing would silently drop the patches),
-     - `infinity-slack-bot` (deployment artifact).
+   - `rig-mock`, `rap-test-servers` (test-only; left as path-only dev-deps so
+   cargo strips them at publish time),
+   - `rig-bedrock-patched` (vendored fork of crates-io `rig-bedrock`),
+   - `infinity-provider-bedrock` + `infinity-agent-lambda` (depend on the
+   patched rig-bedrock; publishing would silently drop the patches),
+   - `infinity-slack-bot` (deployment artifact).
 
 ### Refactor
 
@@ -86,57 +86,57 @@
    ## Core (`sandbox-core`)
    
    * New `ModeProvider` trait: the extension point for sandbox modes. A provider
-     claims a repository during `clone_repo` (`detect` → `ModeInit`) and then
-     handles all mode-specific behavior: `create_sandbox`, `refresh_sandbox`,
-     `describe`, `detect_external_change` (e.g. bookmark-move warnings),
-     `push_sandbox`, `squash`, `diff_files`, `cleanup`, `cleanup_blocking`
-     (sync, for `Drop`), and `extra_writable_paths`.
+   claims a repository during `clone_repo` (`detect` → `ModeInit`) and then
+   handles all mode-specific behavior: `create_sandbox`, `refresh_sandbox`,
+   `describe`, `detect_external_change` (e.g. bookmark-move warnings),
+   `push_sandbox`, `squash`, `diff_files`, `cleanup`, `cleanup_blocking`
+   (sync, for `Drop`), and `extra_writable_paths`.
    * New `SandboxMode::Custom { id, data }` variant carrying an opaque,
-     provider-defined JSON payload; existing `Jj`/`Git`/`Direct` serialization
-     is unchanged, so persisted metadata stays compatible.
+   provider-defined JSON payload; existing `Jj`/`Git`/`Direct` serialization
+   is unchanged, so persisted metadata stays compatible.
    * `SandboxBackend` reshaped around providers:
-     * `init_repo` is gone — `detect_mode(ctx)` is the single `clone_repo`
-       entry point where each backend does its repository setup and then
-       consults its providers. `ModeInit::repo_root` (canonicalized) becomes
-       the repo's `remote_uri`.
-     * Direct mode, which bypasses providers, gets its own `init_direct` hook
-       (default: unsupported).
-     * New delegating methods `describe_sandbox`, `detect_external_change`,
-       `squash_sandbox`, and `diff_files`.
+   * `init_repo` is gone — `detect_mode(ctx)` is the single `clone_repo`
+   entry point where each backend does its repository setup and then
+   consults its providers. `ModeInit::repo_root` (canonicalized) becomes
+   the repo's `remote_uri`.
+   * Direct mode, which bypasses providers, gets its own `init_direct` hook
+   (default: unsupported).
+   * New delegating methods `describe_sandbox`, `detect_external_change`,
+   `squash_sandbox`, and `diff_files`.
    * `server.rs` is now mode-agnostic: clone detection, the describe and
-     external-change logic in `with_sandbox`, `squash_sandbox`, and the diff
-     view all delegate to the backend instead of matching on Jj/Git. The diff
-     view is now also pushed after git/custom squashes (previously jj-only).
-     Session migration remains enum-based since it operates on git bundles and
-     rejects custom modes.
+   external-change logic in `with_sandbox`, `squash_sandbox`, and the diff
+   view all delegate to the backend instead of matching on Jj/Git. The diff
+   view is now also pushed after git/custom squashes (previously jj-only).
+   Session migration remains enum-based since it operates on git bundles and
+   rejects custom modes.
    * The reusable jj/git mode logic (detect, describe, external-change warning,
-     squash, diff) lives in `jj.rs`/`git.rs`, shared by the local providers and
-     the EFS backend. `git::detect_mode` is the documented fallback that claims
-     any repo not claimed earlier, preserving the friendly
-     "use `open_sandbox_direct`" error for commit-less repos.
+   squash, diff) lives in `jj.rs`/`git.rs`, shared by the local providers and
+   the EFS backend. `git::detect_mode` is the documented fallback that claims
+   any repo not claimed earlier, preserving the friendly
+   "use `open_sandbox_direct`" error for commit-less repos.
    
    ## Local backend (`sandbox-local`)
    
    * New `providers` module with `LocalJjProvider` and `LocalGitProvider`
-     (jj workspaces / git worktrees under `{repo}/.infinity/.sandboxes/`).
+   (jj workspaces / git worktrees under `{repo}/.infinity/.sandboxes/`).
    * `LocalBackend` holds an ordered `Vec<Arc<dyn ModeProvider>>` — jj then git
-     by default; `LocalBackend::new(enabled).with_provider(p)` prepends an
-     external provider ahead of the built-ins. All mode dispatch (creation,
-     push, squash, diff, cleanup, `Drop`-time cleanup, per-mode writable paths)
-     goes through the registry. Dropping a cached sandbox whose mode has no
-     registered provider logs a warning instead of silently leaking it.
+   by default; `LocalBackend::new(enabled).with_provider(p)` prepends an
+   external provider ahead of the built-ins. All mode dispatch (creation,
+   push, squash, diff, cleanup, `Drop`-time cleanup, per-mode writable paths)
+   goes through the registry. Dropping a cached sandbox whose mode has no
+   registered provider logs a warning instead of silently leaking it.
    * The old `init_repo` root resolution became the private `resolve_repo_root`,
-     used by both `detect_mode` and `init_direct` (Direct mode still works on
-     non-VCS directories).
+   used by both `detect_mode` and `init_direct` (Direct mode still works on
+   non-VCS directories).
    
    ## Remote backend (`sandbox-remote`)
    
    * `EfsBackend` (jj-only) implements the backend methods via the shared
-     `sandbox_core::jj` helpers; the old `init_repo` became the private
-     `mirror_repo` step of `detect_mode`, making the URL-mirror-then-detect
-     flow explicit in one place. `open_sandbox_direct` now fails immediately on
-     the remote backend (previously it stored Direct state that failed at
-     first use).
+   `sandbox_core::jj` helpers; the old `init_repo` became the private
+   `mirror_repo` step of `detect_mode`, making the URL-mirror-then-detect
+   flow explicit in one place. `open_sandbox_direct` now fails immediately on
+   the remote backend (previously it stored Direct state that failed at
+   first use).
    
    Verified with `cargo fmt --check`, clippy (`-D warnings`) on the touched
    crates, workspace-wide `cargo check --all-targets`, and the
@@ -156,22 +156,22 @@
    insta snapshot changes; full test suite passes).
    
    * rap-protocol: `strkind! { pub ThreadId; }` with docs (RAP calls it
-     `group_id` on the wire; UUIDs in the daemon, caller-chosen conversation
-     keys in the Lambda runtime). `group_id: ThreadId` on `RapInvocation`,
-     `RapToolResult`, `RapUserChoice`, `RapSubscriptionEvent`,
-     `RapViewUpdate`, `RapOAuth`; `thread_ancestors: Option<Vec<ThreadId>>`;
-     `send_subscription_event`/`send_view_update` take `ThreadId`
+   `group_id` on the wire; UUIDs in the daemon, caller-chosen conversation
+   keys in the Lambda runtime). `group_id: ThreadId` on `RapInvocation`,
+   `RapToolResult`, `RapUserChoice`, `RapSubscriptionEvent`,
+   `RapViewUpdate`, `RapOAuth`; `thread_ancestors: Option<Vec<ThreadId>>`;
+   `send_subscription_event`/`send_view_update` take `ThreadId`
    * sandbox-core/local/remote (via sub-agent): `ThreadId` re-exported from
-     sandbox-core root; `MetadataStore::get/delete(&ThreadId)`;
-     `SandboxBackend::push_sandbox`/`cleanup_sandbox_permanently` typed;
-     `RepoState.{group_id, root_thread_id}`, `CloneRepoArgs.base_thread_id`,
-     `SquashSandboxArgs.from_thread_id`, `CloneContext.group_id`,
-     `SandboxError::RepoNotFound`, and server request payload structs typed
+   sandbox-core root; `MetadataStore::get/delete(&ThreadId)`;
+   `SandboxBackend::push_sandbox`/`cleanup_sandbox_permanently` typed;
+   `RepoState.{group_id, root_thread_id}`, `CloneRepoArgs.base_thread_id`,
+   `SquashSandboxArgs.from_thread_id`, `CloneContext.group_id`,
+   `SandboxError::RepoNotFound`, and server request payload structs typed
    * infinity-agent-core: rap_tool boundary converts `ToolContext` strings
-     into `ThreadId` when building invocations (context types themselves are
-     Stage 2)
+   into `ThreadId` when building invocations (context types themselves are
+   Stage 2)
    * infinity-rap-bridge: callback conversion unwraps `ThreadId` into
-     `InputMessage.group_id` (String until Stage 2)
+   `InputMessage.group_id` (String until Stage 2)
    * rap-github-event-poller: `Subscription.group_id: ThreadId`
    * infinity-daemon: view-update routing + test fixture conversions
    * Workspace: `strkind = "0.0.1"` added to workspace dependencies
@@ -201,7 +201,7 @@
 
 <csr-read-only-do-not-edit/>
 
- - 29 commits contributed to the release.
+ - 30 commits contributed to the release.
  - 11 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 5 unique issues were worked on: [#107](https://github.com/hydro-project/infinity/issues/107), [#113](https://github.com/hydro-project/infinity/issues/113), [#78](https://github.com/hydro-project/infinity/issues/78), [#8](https://github.com/hydro-project/infinity/issues/8), [#96](https://github.com/hydro-project/infinity/issues/96)
 
@@ -222,6 +222,7 @@
  * **[#96](https://github.com/hydro-project/infinity/issues/96)**
     - Extract shared agent system engine ([`9c921fd`](https://github.com/hydro-project/infinity/commit/9c921fde280b50c89c3e5b9caadccf83a46078a4))
  * **Uncategorized**
+    - Release rap-protocol v0.1.0, rap-client v0.1.0, rap-steering-server v0.1.0, rap-github-event-poller v0.1.0, infinity-protocol v0.1.0, infinity-provider-protocol v0.1.0, infinity-provider-bedrock v0.1.0, infinity-provider-rig v0.1.0, infinity-agent-core v0.1.0, infinity-mcp-bridge v0.1.0, infinity-rap-bridge v0.1.0, infinity-daemon v0.1.0, infinity-agent-cli v0.1.0, sandbox-core v0.1.0, sandbox-local v0.1.0, sandbox-remote v0.1.0 ([`dd8c7f4`](https://github.com/hydro-project/infinity/commit/dd8c7f49028a26052d785b4241f9ade125f0afb3))
     - Remove unused `_keepalive` field from SpawnedCommand ([`24820fe`](https://github.com/hydro-project/infinity/commit/24820fe9b2be138774a8a4e069019b9b11444a0d))
     - Prevent git from resolving outer repo in sandboxes ([`a0b74f2`](https://github.com/hydro-project/infinity/commit/a0b74f2b3a8b732e6731e1e94d2bff57d0ce422f))
     - Add workspace lints and fix all lint violations ([`b92b7a1`](https://github.com/hydro-project/infinity/commit/b92b7a17f4b69e2652f5cce813320eca851717e4))
