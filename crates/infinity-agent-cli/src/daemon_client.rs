@@ -381,7 +381,7 @@ pub async fn run_headless(message: String) -> Result<(), BoxError> {
 
     // Send the user's message.
     let msg = ClientMessage::UserInput {
-        root_thread_id: session_id.clone(),
+        thread_id: session_id.clone(),
         text: message,
     };
     framed.send(Bytes::from(serde_json::to_vec(&msg)?)).await?;
@@ -644,7 +644,7 @@ where
                             let _ = session_tx.send(SessionChanged { session_id: root_thread_id, title, total_tokens_used, model_name, context_window, provider_id });
                             for text in pending_input.drain(..) {
                                 let sid = active_session.as_ref().expect("bug: active_session should be set after Connected").clone();
-                                let _ = to_daemon.send(ClientMessage::UserInput { root_thread_id: sid, text });
+                                let _ = to_daemon.send(ClientMessage::UserInput { thread_id: sid, text });
                             }
                         }
                         DaemonMessage::ModelSwitched { thread_id, model_name, context_window, provider_id } => {
@@ -763,7 +763,7 @@ where
                             let _ = to_daemon.send(ClientMessage::ArchiveSession { root_thread_id: sid.clone() });
                             active_session = None;
                         } else {
-                            let _ = to_daemon.send(ClientMessage::UserInput { root_thread_id: sid.clone(), text });
+                            let _ = to_daemon.send(ClientMessage::UserInput { thread_id: sid.clone(), text });
                         }
                     } else {
                         pending_input.push(text);

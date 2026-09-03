@@ -123,7 +123,7 @@ async fn create_session_and_chat(h: &mut TestHarness) -> infinity_protocol::Thre
 
     h.client_tx
         .send(ClientMessage::UserInput {
-            root_thread_id: session_id.clone(),
+            thread_id: session_id.clone(),
             text: "hello".to_owned(),
         })
         .expect("send UserInput");
@@ -201,7 +201,7 @@ async fn session_status_follows_thread_activity() {
 
             h.client_tx
                 .send(ClientMessage::UserInput {
-                    root_thread_id: session_id.clone(),
+                    thread_id: session_id.clone(),
                     text: "hello".to_owned(),
                 })
                 .expect("send UserInput");

@@ -209,7 +209,7 @@ pub enum ClientMessage {
         keeps_session_alive: bool,
     },
     UserInput {
-        root_thread_id: ThreadRef,
+        thread_id: ThreadRef,
         text: String,
     },
     /// Disconnect from the session while letting the agent continue to run in the background.
@@ -217,12 +217,18 @@ pub enum ClientMessage {
     /// Immediately attempt to detach. If the agent is idle, the daemon shuts
     /// down the session (closing the display channel). If not idle, the daemon
     /// responds with `DisconnectNotIdle` so the client can show a picker.
-    SoftDetach { root_thread_id: ThreadRef },
+    SoftDetach {
+        root_thread_id: ThreadRef,
+    },
     /// Disconnects from the session and shuts down the agent so that it can only be woken bu
     /// new user inputs.
-    ShutdownSession { root_thread_id: ThreadRef },
+    ShutdownSession {
+        root_thread_id: ThreadRef,
+    },
     /// Archive a session (shut it down and hide from the main list).
-    ArchiveSession { root_thread_id: ThreadRef },
+    ArchiveSession {
+        root_thread_id: ThreadRef,
+    },
     /// Switch the model used for future requests on a thread. `thread_id`
     /// may be any thread (root or subthread); the switch affects only that
     /// specific thread — it does not propagate to child threads. If a
@@ -234,9 +240,14 @@ pub enum ClientMessage {
     },
     /// Notify the daemon that a user choice was answered so it can be
     /// removed from the pending replay list.
-    UserChoiceAnswered { choice_id: String, selected: usize },
+    UserChoiceAnswered {
+        choice_id: String,
+        selected: usize,
+    },
     /// Trigger compaction for the given session.
-    TriggerCompaction { root_thread_id: ThreadRef },
+    TriggerCompaction {
+        root_thread_id: ThreadRef,
+    },
     /// Request migration of a session to a different host.
     RequestMigrate {
         root_thread_id: ThreadRef,
@@ -253,7 +264,9 @@ pub enum ClientMessage {
         dest_rap_urls: HashMap<String, String>,
     },
     /// Daemon-to-daemon: immigration is complete, source can clean up.
-    EmigrateDone { root_thread_id: ThreadId },
+    EmigrateDone {
+        root_thread_id: ThreadId,
+    },
     /// Daemon-to-daemon: import a serialized session at the given cwd.
     ImportSession {
         root_thread_id: ThreadId,
@@ -261,7 +274,9 @@ pub enum ClientMessage {
         session_data: String,
     },
     /// Daemon-to-daemon: boot RAP servers at the given cwd and return their ports.
-    BootRapServers { cwd: PathBuf },
+    BootRapServers {
+        cwd: PathBuf,
+    },
     /// Request directory listing for path completion.
     ListDirectory {
         path: String,

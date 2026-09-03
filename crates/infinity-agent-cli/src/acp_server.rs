@@ -543,7 +543,7 @@ async fn run_session_connection(
                         }
 
                         let input_msg = ClientMessage::UserInput {
-                            root_thread_id: session_id,
+                            thread_id: session_id,
                             text,
                         };
                         send(&mut framed, &input_msg).await?;
@@ -587,7 +587,7 @@ async fn run_session_connection(
                 match msg {
                     DaemonMessage::Connected { .. } => {
                         let input_msg = ClientMessage::UserInput {
-                            root_thread_id: daemon_id,
+                            thread_id: daemon_id,
                             text,
                         };
                         send(&mut framed, &input_msg).await?;
@@ -631,7 +631,7 @@ async fn run_session_connection(
                 }
                 if let Some(ref daemon_id) = conn.daemon_id {
                     let msg = ClientMessage::UserInput {
-                        root_thread_id: daemon_id.clone(),
+                        thread_id: daemon_id.clone(),
                         text,
                     };
                     if let Err(e) = send(&mut framed, &msg).await {

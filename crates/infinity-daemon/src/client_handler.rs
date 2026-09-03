@@ -208,11 +208,8 @@ fn prefix_daemon_message(msg: DaemonMessage, remote_name: &RemoteName) -> Daemon
 
 fn strip_client_message(msg: ClientMessage, remote_name: &RemoteName) -> ClientMessage {
     match msg {
-        ClientMessage::UserInput {
-            root_thread_id,
-            text,
-        } => ClientMessage::UserInput {
-            root_thread_id: root_thread_id.strip(remote_name),
+        ClientMessage::UserInput { thread_id, text } => ClientMessage::UserInput {
+            thread_id: thread_id.strip(remote_name),
             text,
         },
         ClientMessage::SoftDetach { root_thread_id } => ClientMessage::SoftDetach {
@@ -499,7 +496,7 @@ pub async fn handle_client_channels(
                             }
                         }
                     }
-                    ClientMessage::UserInput { root_thread_id: thread_id, text } => {
+                    ClientMessage::UserInput { thread_id, text } => {
                         if thread_id.remote.is_some() {
                             let _ = daemon_tx.send(DaemonMessage::Error { thread_id: Some(thread_id), text: "remote is not connected".into() });
                             continue;

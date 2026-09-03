@@ -225,7 +225,7 @@ fn spawn_receiver(
                     if let Some(text) = pending_text {
                         let _ = tx_for_input
                             .send(infinity_protocol::ClientMessage::UserInput {
-                                root_thread_id: session_id.clone(),
+                                thread_id: session_id.clone(),
                                 text,
                             })
                             .await;
@@ -260,7 +260,7 @@ fn spawn_receiver(
                 if let Some(text) = pending_text {
                     let _ = tx_for_input
                         .send(infinity_protocol::ClientMessage::UserInput {
-                            root_thread_id: session_id.clone(),
+                            thread_id: session_id.clone(),
                             text,
                         })
                         .await;

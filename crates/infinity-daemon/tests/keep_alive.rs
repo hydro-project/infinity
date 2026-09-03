@@ -122,7 +122,7 @@ async fn create_session_and_chat(h: &mut TestHarness, keeps_session_alive: bool)
 
     h.client_tx
         .send(ClientMessage::UserInput {
-            root_thread_id: session_id.clone(),
+            thread_id: session_id.clone(),
             text: "hello".to_owned(),
         })
         .expect("send UserInput");
@@ -211,7 +211,7 @@ async fn user_input_restarts_stopped_session() {
 
             h.client_tx
                 .send(ClientMessage::UserInput {
-                    root_thread_id: infinity_protocol::ThreadRef::local(session_id.clone()),
+                    thread_id: infinity_protocol::ThreadRef::local(session_id.clone()),
                     text: "resume".to_owned(),
                 })
                 .expect("send user input");
@@ -296,7 +296,7 @@ async fn active_subscription_keeps_rap_servers_warm() {
             // Round 1 leaves a pending tool call for the subscription setup.
             h.client_tx
                 .send(ClientMessage::UserInput {
-                    root_thread_id: infinity_protocol::ThreadRef::local(session_id.clone()),
+                    thread_id: infinity_protocol::ThreadRef::local(session_id.clone()),
                     text: "watch the build".to_owned(),
                 })
                 .expect("send UserInput");

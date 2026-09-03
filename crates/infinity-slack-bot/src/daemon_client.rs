@@ -84,7 +84,7 @@ impl DaemonClient {
     ) -> Result<(), BoxError> {
         self.tx
             .send(ClientMessage::UserInput {
-                root_thread_id: session_id.clone(),
+                thread_id: session_id.clone(),
                 text: text.to_owned(),
             })
             .await?;
