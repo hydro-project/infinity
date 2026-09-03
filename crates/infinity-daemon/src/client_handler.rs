@@ -354,7 +354,8 @@ pub async fn handle_client_channels(
                     let _ = daemon_tx.send(DaemonMessage::Error { thread_id: None, text: format!("Remote '{rn}' connection closed") });
                     break;
                 };
-                let rn = active_remote_name.clone().unwrap_or_else(|| "".into());
+                let rn = active_remote_name.clone()
+                    .expect("bug: remote proxy active but no remote name");
                 if daemon_tx.send(prefix_daemon_message(msg, &rn)).is_err() { break; }
             }
             // Handle client messages
@@ -367,7 +368,6 @@ pub async fn handle_client_channels(
 
                 // If connected to a remote session, forward most messages there
                 if let Some(ref proxy_tx) = remote_proxy_tx {
-                    let rn = active_remote_name.clone().unwrap_or_else(|| "".into());
                     match &msg {
                         ClientMessage::Disconnect => {
                             // Disconnect from remote: drop proxy, also disconnect locally
@@ -398,7 +398,9 @@ pub async fn handle_client_channels(
                         }
                         _ => {
                             // Forward everything else to remote (stripped)
-                            let _ = proxy_tx.send(strip_client_message(msg, &rn));
+                            let rn = active_remote_name.as_ref()
+                                .expect("bug: remote proxy active but no remote name");
+                            let _ = proxy_tx.send(strip_client_message(msg, rn));
                             continue;
                         }
                     }

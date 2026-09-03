@@ -40,7 +40,16 @@ impl ThreadRef {
     }
 
     /// A reference to a thread on the named remote daemon.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `remote` contains `/`, which would make the composite wire
+    /// encoding (`"{remote}/{id}"`) ambiguous.
     pub fn remote(remote: RemoteName, id: ThreadId) -> Self {
+        assert!(
+            !remote.as_str().contains('/'),
+            "bug: remote name {remote:?} contains '/'"
+        );
         Self {
             remote: Some(remote),
             id,
@@ -49,11 +58,13 @@ impl ThreadRef {
 
     /// Re-home this reference onto `remote` (used when a daemon proxies a
     /// remote daemon's messages to its own clients).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `remote` contains `/`, which would make the composite wire
+    /// encoding (`"{remote}/{id}"`) ambiguous.
     pub fn prefixed(self, remote: &RemoteName) -> Self {
-        Self {
-            remote: Some(remote.clone()),
-            id: self.id,
-        }
+        Self::remote(remote.clone(), self.id)
     }
 
     /// Strip the given remote, yielding the thread's ID on its home daemon.
@@ -78,25 +89,61 @@ impl std::fmt::Display for ThreadRef {
     }
 }
 
+/// Error parsing a [`ThreadRef`] from its composite string form.
+///
+/// Produced when the input is not a bare thread ID or a well-formed
+/// `"{remote}/{id}"` composite: an empty remote or ID half, or a second `/`
+/// (remote names and thread IDs must not contain `/`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadRefParseError {
+    input: String,
+    reason: &'static str,
+}
+
+impl std::fmt::Display for ThreadRefParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid thread ref {:?}: {}", self.input, self.reason)
+    }
+}
+
+impl std::error::Error for ThreadRefParseError {}
+
 impl std::str::FromStr for ThreadRef {
-    type Err = std::convert::Infallible;
+    type Err = ThreadRefParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s.split_once('/') {
-            Some((remote, id)) => Self {
-                remote: Some(remote.into()),
-                id: id.into(),
-            },
-            None => Self {
+        let err = |reason| {
+            Err(ThreadRefParseError {
+                input: s.to_owned(),
+                reason,
+            })
+        };
+        match s.split_once('/') {
+            Some((remote, id)) => {
+                if remote.is_empty() {
+                    return err("empty remote name");
+                }
+                if id.is_empty() {
+                    return err("empty thread ID");
+                }
+                if id.contains('/') {
+                    return err("more than one '/'");
+                }
+                Ok(Self {
+                    remote: Some(remote.into()),
+                    id: id.into(),
+                })
+            }
+            None => Ok(Self {
                 remote: None,
                 id: s.into(),
-            },
-        })
+            }),
+        }
     }
 }
 
 impl From<&str> for ThreadRef {
     fn from(s: &str) -> Self {
-        s.parse().expect("bug: ThreadRef parsing is infallible")
+        s.parse().expect("invalid ThreadRef")
     }
 }
 
@@ -121,7 +168,7 @@ impl Serialize for ThreadRef {
 impl<'de> Deserialize<'de> for ThreadRef {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
-        Ok(s.as_str().into())
+        s.parse().map_err(serde::de::Error::custom)
     }
 }
 
@@ -523,4 +570,44 @@ pub struct ModelRef {
 pub struct RemoteInfo {
     pub name: RemoteName,
     pub status: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thread_ref_parse_local() {
+        let r: ThreadRef = "abc-123".parse().expect("local ref should parse");
+        assert_eq!(r, ThreadRef::local("abc-123".into()));
+        assert_eq!(r.to_string(), "abc-123");
+    }
+
+    #[test]
+    fn thread_ref_parse_remote() {
+        let r: ThreadRef = "devbox/abc-123".parse().expect("remote ref should parse");
+        assert_eq!(r, ThreadRef::remote("devbox".into(), "abc-123".into()));
+        assert_eq!(r.to_string(), "devbox/abc-123");
+    }
+
+    #[test]
+    fn thread_ref_parse_rejects_malformed() {
+        assert!("a/b/c".parse::<ThreadRef>().is_err(), "second '/'");
+        assert!("/abc".parse::<ThreadRef>().is_err(), "empty remote");
+        assert!("devbox/".parse::<ThreadRef>().is_err(), "empty thread ID");
+    }
+
+    #[test]
+    fn thread_ref_deserialize_rejects_malformed() {
+        assert!(serde_json::from_str::<ThreadRef>("\"a/b/c\"").is_err());
+        let r: ThreadRef =
+            serde_json::from_str("\"devbox/abc-123\"").expect("valid composite should deserialize");
+        assert_eq!(r, ThreadRef::remote("devbox".into(), "abc-123".into()));
+    }
+
+    #[test]
+    #[should_panic(expected = "contains '/'")]
+    fn thread_ref_remote_rejects_slash_in_name() {
+        ThreadRef::remote("dev/box".into(), "abc-123".into());
+    }
 }
