@@ -56,7 +56,7 @@ Each entry in the `tools` array describes a single operation that the LLM can in
 | `name` | `string` | Yes | Unique operation name within the toolset. This value is sent as the `operation` field in [tool invocations](/docs/rap/spec/basic/tool-invocation). |
 | `description` | `string` | Yes | Human-readable description of what the tool does. This is passed to the LLM for tool selection. |
 | `inputSchema` | `object` | Yes | JSON Schema defining the expected `arguments` for this tool. MUST be a valid JSON Schema object. |
-| `annotations` | `object` | No | Optional metadata describing tool behavior. See [Annotations](#annotations). |
+| `annotations` | `object` | No | Optional, opaque metadata about the tool. Not interpreted by runtimes. See [Annotations](#annotations). |
 | `displayScript` | `string` | No | A [Rhai](https://rhai.rs/) script that returns a human-readable string for displaying the tool call. See [Display Script](#display-script). |
 
 ### Tool Names
@@ -81,17 +81,9 @@ For tools that accept no parameters, the schema SHOULD explicitly indicate that 
 
 ### Annotations
 
-Tools MAY include an `annotations` object that provides metadata about their behavior. Annotations are informational: they help runtimes and LLMs make better decisions about when and how to invoke a tool, but they do not change the protocol mechanics. For example, a runtime might use the `destructive` annotation to prompt for user confirmation.
+Tools MAY include an `annotations` object that provides metadata about their behavior. Annotations are informational: they do not change the protocol mechanics, and the protocol does not currently define any annotation keys. Runtimes MUST treat the `annotations` object as opaque, implementation-defined metadata: they MUST NOT fail to load a toolset because of unrecognized annotations, and MAY ignore the field entirely.
 
-| Annotation | Type | Description |
-|---|---|---|
-| `requiresAuth` | `string` | Identifier for the authentication provider this tool requires. Indicates the tool may initiate an [OAuth flow](/docs/rap/spec/server/oauth). |
-| `readOnly` | `boolean` | If `true`, indicates this tool performs only read operations and does not modify external state. |
-| `destructive` | `boolean` | If `true`, indicates this tool performs destructive operations (e.g., deleting resources). Runtimes SHOULD prompt for user confirmation. |
-| `idempotent` | `boolean` | If `true`, indicates the tool can be safely retried without side effects. |
-| `longRunning` | `boolean` | If `true`, indicates the tool is expected to take significant time (minutes or hours) to complete. |
-
-Implementations MAY define additional custom annotations. Custom annotation keys SHOULD use a namespaced format (e.g., `x-mycompany-priority`) to avoid conflicts with future protocol-defined annotations.
+Implementations that define custom annotations SHOULD use a namespaced key format (e.g., `x-mycompany-priority`) to avoid conflicts with annotation keys the protocol may define in the future.
 
 ### Display Script
 

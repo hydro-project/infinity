@@ -118,8 +118,9 @@ To find your Slack user ID: click your profile in Slack → **⋮** → **Copy m
 Start the Infinity daemon first (if not already running), then start the Slack bot:
 
 ```bash
-# Start the daemon (if not running)
-infinity --daemon
+# Start the daemon (if not running; any `infinity` run auto-starts it,
+# or run it in the foreground with `infinity daemon`)
+infinity
 
 # Start the Slack bot
 infinity-slack-bot
@@ -145,7 +146,7 @@ Use the `/model` slash command (responses are ephemeral — only you see them):
 
 | Command | Effect |
 |---------|--------|
-| `/model` | List available models, with the current default marked |
+| `/model` | Open an interactive model picker (falls back to a text listing with the current default marked) |
 | `/model <provider_id>/<model_id>` | Switch the default model for new sessions |
 | `/model <display name or model id>` | Same, matching by name (case-insensitive) |
 
@@ -156,7 +157,7 @@ The switch applies to sessions created afterwards; existing threads keep their m
 | Symptom | Fix |
 |---------|-----|
 | Bot doesn't respond | Check that the user's ID is in `allowed_users` (or leave the list empty) |
-| "Cannot connect to daemon" | Start the daemon with `infinity --daemon` first |
+| "Cannot connect to daemon" | Start the daemon first (run `infinity` once, or `infinity daemon` in the foreground) |
 | "apps.connections.open failed" | Verify `app_token` is correct and Socket Mode is enabled in app settings |
 | "auth.test failed" | Verify `bot_token` is correct and the app is installed to the workspace |
 | Bot responds but no streaming | The `assistant:write` scope is required for `chat.startStream` |

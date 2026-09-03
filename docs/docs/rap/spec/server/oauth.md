@@ -76,7 +76,7 @@ Tools that implement OAuth MUST detect when authorization is required before att
 
 The tool MUST handle the OAuth callback to receive authorization codes, exchange them securely for access tokens, and store the resulting tokens associated with the `user_id`. After successful authorization, the tool MUST retry the original operation using the new token and MUST send a `tool_result` to the callback URL when the operation completes, whether the retry succeeds or fails.
 
-Tools that require OAuth SHOULD include the OAuth provider identifier in the tool's [annotations](/docs/rap/spec/basic/toolsets#annotations) via the `requiresAuth` field, so that runtimes can inform users about authorization requirements before invocation.
+Tools that require OAuth SHOULD mention the authorization requirement in the tool's description, so that runtimes and LLMs are aware the tool may initiate an authorization flow before invocation.
 
 ## Token Management
 

@@ -54,16 +54,16 @@ A local `RunningSystem` or `LaunchingSystem` remains available until `shutdown()
 
 Individual threads have a shorter active lifetime. A thread driver starts when a message arrives and exits once nothing is queued and no tool result is on its way. Active subscriptions do not keep a driver resident: a subscription event respawns the driver when it arrives. The conversation remains in the stores, so the next message loads it and continues from the persisted history.
 
-`thread_lifecycle` reports a `ThreadLifecycleEvent` for each driver transition: `Live` when a driver spawns and `Idle` when it exits, and `is_idle()` reports whether any driver remains. Use these signals to track conversation activity and release per-conversation resources such as command-based RAP servers or caches:
+`next_lifecycle_event()` reports a `ThreadLifecycleEvent` for each driver transition: `ThreadLifecycleState::Live` when a driver spawns and `ThreadLifecycleState::Idle` when it exits, and `is_idle()` reports whether any driver remains. Use these signals to track conversation activity and release per-conversation resources such as command-based RAP servers or caches:
 
 ```rust
-while let Some(event) = system.thread_lifecycle.recv().await {
-    match event {
-        ThreadLifecycleEvent::Live { thread_id } => {
-            status.mark_conversation_active(&thread_id).await?;
+while let Some(event) = system.next_lifecycle_event().await {
+    match event.state {
+        ThreadLifecycleState::Live => {
+            status.mark_conversation_active(&event.thread_id).await?;
         }
-        ThreadLifecycleEvent::Idle { thread_id } => {
-            resources.release_if_conversation_is_idle(&thread_id).await?;
+        ThreadLifecycleState::Idle => {
+            resources.release_if_conversation_is_idle(&event.thread_id).await?;
         }
     }
 }

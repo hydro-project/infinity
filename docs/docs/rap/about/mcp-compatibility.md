@@ -72,35 +72,30 @@ new HTTPMCPToolSet(this, 'RemoteServer', {
 });
 ```
 
-## Stateful Session Continuity
+## Session Handling
 
-MCP includes a session mechanism (`Mcp-Session-Id` header) that allows clients to resume sessions with a server. The proxy uses this to bridge MCP's session model with RAP's ephemeral execution.
+MCP includes a session mechanism (`Mcp-Session-Id` header) that allows clients to resume sessions with a server. The two proxy implementations handle it differently, reflecting their execution models.
+
+The **local in-process proxy** is part of the long-lived Infinity Code daemon. It connects to the MCP server lazily on first use and keeps the connection (and any `Mcp-Session-Id` the server assigns) alive for the duration of the agent session, so successive tool calls share one MCP session.
+
+The **Lambda proxy** creates a fresh MCP connection for each invocation. When the server assigns a session ID during the `initialize` handshake, the proxy echoes it on the subsequent JSON-RPC requests within that same invocation, but it does not persist session IDs across invocations: each tool call runs in its own short-lived MCP session.
 
 ```mermaid
 sequenceDiagram
     participant R as Agent Runtime
-    participant P as MCP Proxy
+    participant P as MCP Proxy (Lambda)
     participant M as MCP Server (HTTP)
 
-    Note over R,M: First invocation
-
     R->>P: POST invocation
     P-->>R: HTTP 200 (ack)
-    P->>M: JSON-RPC request
+    P->>M: JSON-RPC initialize
     M-->>P: response + Mcp-Session-Id: abc123
-    P->>P: persist session ID
-    P->>R: POST tool_result to callback URL
-
-    Note over R,M: Later invocation (new proxy instance)
-
-    R->>P: POST invocation
-    P-->>R: HTTP 200 (ack)
-    P->>M: JSON-RPC request + Mcp-Session-Id: abc123
-    M-->>P: response (session restored)
+    P->>M: JSON-RPC tools/call + Mcp-Session-Id: abc123
+    M-->>P: tool result
     P->>R: POST tool_result to callback URL
 ```
 
-When an MCP server returns a session ID, the proxy stores it. On subsequent invocations, the proxy includes the stored session ID in the request, allowing the server to restore context. For MCP servers that support this pattern, the proxy can spawn a fresh process on each invocation and still maintain session continuity.
+This means MCP servers that accumulate important in-memory state across tool calls won't retain it between invocations of the Lambda proxy. Tools that need durable per-user state should externalize it, the way the proxy itself stores OAuth tokens in DynamoDB (see below).
 
 ## OAuth support
 

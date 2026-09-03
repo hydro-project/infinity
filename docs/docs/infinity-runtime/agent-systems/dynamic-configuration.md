@@ -19,7 +19,7 @@ For configuration chosen when a process creates a new thread, local systems also
 pub trait ThreadConfigSource<M: InputSender, H: HttpClient> {
     async fn resolve(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId<str>,
     ) -> Result<ThreadConfig<M, H>, BoxError>;
 }
 ```
@@ -36,6 +36,7 @@ The following source gives every root conversation and its subagents the same te
 use std::rc::Rc;
 
 use async_trait::async_trait;
+use infinity_agent_core::ThreadId;
 use infinity_agent_core::system::{ThreadConfig, ThreadConfigSource};
 use infinity_agent_core::system::local::ChannelSender;
 use infinity_agent_core::tools::Tool;
@@ -64,14 +65,14 @@ where
 {
     async fn resolve(
         &self,
-        thread_id: &str,
+        thread_id: &ThreadId<str>,
     ) -> Result<ThreadConfig<ChannelSender, SimpleHttpClient>, BoxError> {
         let ancestors = self.conversations.get_ancestor_chain(thread_id).await?;
         let root_id = ancestors
             .first()
-            .map(|(id, _)| id.as_str())
-            .unwrap_or(thread_id);
-        let tenant = self.tenants.for_root_thread(root_id).await?;
+            .map(|(id, _)| id.clone())
+            .unwrap_or_else(|| thread_id.to_owned());
+        let tenant = self.tenants.for_root_thread(&root_id).await?;
 
         Ok(ThreadConfig {
             tools: tenant.tools,
@@ -121,7 +122,7 @@ Resolution receives the ID of the thread that is about to run. For a root conver
 ```rust
 #[async_trait(?Send)]
 pub trait ModelSource {
-    async fn resolve(&self, thread_id: &str) -> Result<ResolvedModel, BoxError>;
+    async fn resolve(&self, thread_id: &ThreadId<str>) -> Result<ResolvedModel, BoxError>;
 }
 ```
 
@@ -131,6 +132,7 @@ The constructor accepts the source directly. A fixed deployment can pass `Static
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use infinity_agent_core::ThreadId;
 use infinity_agent_core::system::{ModelSource, ResolvedModel};
 use infinity_agent_core::traits::ConversationStore;
 use infinity_provider_protocol::ModelProvider;
@@ -153,13 +155,13 @@ impl<C> ModelSource for TenantModelSource<C>
 where
     C: ConversationStore + 'static,
 {
-    async fn resolve(&self, thread_id: &str) -> Result<ResolvedModel, BoxError> {
+    async fn resolve(&self, thread_id: &ThreadId<str>) -> Result<ResolvedModel, BoxError> {
         let ancestors = self.conversations.get_ancestor_chain(thread_id).await?;
         let root_id = ancestors
             .first()
-            .map(|(id, _)| id.as_str())
-            .unwrap_or(thread_id);
-        let selection = self.selections.for_root_thread(root_id).await?;
+            .map(|(id, _)| id.clone())
+            .unwrap_or_else(|| thread_id.to_owned());
+        let selection = self.selections.for_root_thread(&root_id).await?;
         let model = self.catalog.resolve(&selection)?;
 
         Ok(ResolvedModel {

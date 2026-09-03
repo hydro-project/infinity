@@ -19,7 +19,7 @@ Tools and protocol integrations have dedicated guides: [Dynamic Thread Configura
 An agent system uses two stores with separate responsibilities:
 
 - **`ConversationStore`** persists messages, thread relationships, and compaction summaries.
-- **`StateStore`** persists processed IDs, thread metadata, and active subscriptions.
+- **`StateStore`** persists processed IDs, thread metadata, active subscriptions, and pending user choices.
 
 The runtime can resume a thread when both stores retain their state. In-memory implementations are complete stores, but their contents belong to one process. A service with multiple workers should provide shared implementations:
 
@@ -34,7 +34,7 @@ let system = AgentSystemBuilder::new_local(
 
 Store methods define the runtime's ordering, deduplication, and thread-tree contract. Implement both traits directly when adding a persistence provider, and test interrupted turns, duplicate inputs, child threads, compaction, and active subscriptions. The [platform traits](../low-level/overview.md#the-platform-traits) document the complete interfaces.
 
-`StateStore` also carries the local router's wake policy. Before an event-style input (a tool result, subscription event, OAuth completion, or user choice) wakes an idle thread, the router calls `should_wake_thread_for_event`. Returning `false` drops the input before any driver is spawned, so a stale callback cannot create thread records for a conversation that does not exist. The default admits everything. `InMemoryStateStore::for_conversations` links the in-memory pair so events are refused for threads the conversation store has never seen, and the Infinity Code daemon's stores refuse sessions the user shut down. User text is never gated, because first input is how threads are created.
+The stores also carry the local router's wake policy. Before an event-style input (a tool result, subscription event, OAuth completion, or user choice) wakes an idle thread, the router checks `ConversationStore::thread_exists` and `StateStore::is_thread_stopped`. An event for a thread the conversation store has never seen, or one the state store reports as stopped, is dropped before any driver is spawned, so a stale callback cannot create thread records for a conversation that does not exist. `is_thread_stopped` defaults to `false` (admitting everything); the Infinity Code daemon's store implements it to refuse events for sessions the user shut down. User text is never gated, because first input is how threads are created and how stopped threads are resumed.
 
 :::caution
 
@@ -48,7 +48,7 @@ A **`ModelSource`** chooses one `ResolvedModel` at the start of each completion 
 ```rust
 #[async_trait(?Send)]
 impl ModelSource for SelectedModelSource {
-    async fn resolve(&self, thread_id: &str) -> Result<ResolvedModel, BoxError> {
+    async fn resolve(&self, thread_id: &ThreadId<str>) -> Result<ResolvedModel, BoxError> {
         let selection = self.selections.load(thread_id).await?;
         self.catalog.resolve(&selection)
     }
