@@ -1,6 +1,6 @@
 
 
-## v0.1.0 (2026-09-03)
+## v0.1.0 (2026-09-04)
 
 ### Chore
 
@@ -399,7 +399,7 @@
 
 <csr-read-only-do-not-edit/>
 
- - 77 commits contributed to the release.
+ - 78 commits contributed to the release.
  - 36 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 9 unique issues were worked on: [#107](https://github.com/hydro-project/infinity/issues/107), [#113](https://github.com/hydro-project/infinity/issues/113), [#30](https://github.com/hydro-project/infinity/issues/30), [#61](https://github.com/hydro-project/infinity/issues/61), [#65](https://github.com/hydro-project/infinity/issues/65), [#75](https://github.com/hydro-project/infinity/issues/75), [#78](https://github.com/hydro-project/infinity/issues/78), [#8](https://github.com/hydro-project/infinity/issues/8), [#83](https://github.com/hydro-project/infinity/issues/83)
 
@@ -428,6 +428,7 @@
  * **[#83](https://github.com/hydro-project/infinity/issues/83)**
     - Ensure `check.bash` passes ([`892cb62`](https://github.com/hydro-project/infinity/commit/892cb628cb114102afa29c09e3e798c3dee1b381))
  * **Uncategorized**
+    - Release infinity-agent-cli v0.1.0, sandbox-core v0.1.0, sandbox-local v0.1.0, sandbox-remote v0.1.0 ([`ac467e4`](https://github.com/hydro-project/infinity/commit/ac467e4a455da7a1690e7e672e7a76a138432f99))
     - Release infinity-agent-core v0.1.0, infinity-mcp-bridge v0.1.0, infinity-rap-bridge v0.1.0, infinity-daemon v0.1.0, infinity-agent-cli v0.1.0, sandbox-core v0.1.0, sandbox-local v0.1.0, sandbox-remote v0.1.0 ([`7599fbb`](https://github.com/hydro-project/infinity/commit/7599fbbdfad042a6fd85c23002bf937fecbe7b45))
     - Release infinity-provider-protocol v0.1.0, infinity-provider-bedrock v0.1.0, infinity-provider-rig v0.1.0, infinity-agent-core v0.1.0, infinity-mcp-bridge v0.1.0, infinity-rap-bridge v0.1.0, infinity-daemon v0.1.0, infinity-agent-cli v0.1.0, sandbox-core v0.1.0, sandbox-local v0.1.0, sandbox-remote v0.1.0 ([`7e1cd1d`](https://github.com/hydro-project/infinity/commit/7e1cd1df69d8fce402bef4085e9d17f871994503))
     - Release rap-protocol v0.1.0, rap-client v0.1.0, rap-steering-server v0.1.0, rap-github-event-poller v0.1.0, infinity-protocol v0.1.0, infinity-provider-protocol v0.1.0, infinity-provider-bedrock v0.1.0, infinity-provider-rig v0.1.0, infinity-agent-core v0.1.0, infinity-mcp-bridge v0.1.0, infinity-rap-bridge v0.1.0, infinity-daemon v0.1.0, infinity-agent-cli v0.1.0, sandbox-core v0.1.0, sandbox-local v0.1.0, sandbox-remote v0.1.0 ([`dd8c7f4`](https://github.com/hydro-project/infinity/commit/dd8c7f49028a26052d785b4241f9ade125f0afb3))
