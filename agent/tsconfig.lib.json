@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["lib/index.ts", "lib/infinity-agents/**/*.ts"]
+}

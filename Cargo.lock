@@ -3149,6 +3149,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "include_mdtests"
+version = "0.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2eebdcf591e156d7c1e9907cd877fe69f80bce244f3f140809d9e35af5b8538"
+dependencies = [
+ "glob",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "indenter"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3346,6 +3358,23 @@ dependencies = [
  "rap-protocol",
  "reqwest",
  "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "infinity-mdtests"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "include_mdtests",
+ "infinity-agent-core",
+ "infinity-mcp-bridge",
+ "infinity-provider-bedrock",
+ "infinity-provider-protocol",
+ "infinity-rap-bridge",
+ "rap-protocol",
  "serde_json",
  "tokio",
  "tracing",

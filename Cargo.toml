@@ -5,6 +5,7 @@ members = [
     "crates/infinity-mcp-bridge",
     "crates/infinity-rap-bridge",
     "crates/infinity-agent-cli",
+    "crates/infinity-mdtests",
     "crates/sandbox-core",
     "crates/sandbox-local",
     "crates/sandbox-remote",

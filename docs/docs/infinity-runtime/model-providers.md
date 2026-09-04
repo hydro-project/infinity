@@ -1,22 +1,19 @@
 ---
-sidebar_position: 6
+sidebar_position: 4
 title: Model Providers
 ---
 
 # Model Providers
 
-The Infinity Runtime never calls an LLM API directly. All inference goes through the `ModelProvider` trait, an abstraction that decouples the agent loop from any particular model backend. A provider:
+The Infinity Runtime never calls an LLM API directly. Instead, all inference goes through the `ModelProvider` trait, which decouples the agent loop from any particular model backend. A provider lists the models it offers (each with a display name, context window, and output token limit), and it invokes a model by id, streaming the completion response back.
 
-- **lists the models it offers**, each with a display name, context window, and output token limit, and
-- **invokes a model by id**, streaming the completion response back.
+Everything else in the runtime, such as the agent loop, threading, compaction, and token accounting, is written against this trait. The Lambda deployment plugs in the Bedrock provider directly. The Infinity Code daemon registers each provider under a stable **provider id** and references models globally as `provider id + model id`, so multiple providers can coexist and can even offer models with the same name.
 
-Everything else in the runtime (the agent loop, threading, compaction, token accounting) is written against this trait. The Lambda deployment plugs in the Bedrock provider directly; the Infinity Code daemon registers each provider under a stable **provider id** and references models globally as `provider id + model id`, so multiple providers can coexist and even offer models with the same name.
-
-Providers own all backend-specific behavior. Callers hand them a plain `CompletionRequest` (defined by the protocol crate); the provider is responsible for backend-specific request parameters: thinking configuration, beta feature flags, per-model output token limits, and so on. For example, the Bedrock provider injects Anthropic's adaptive thinking configuration and the 1M-context beta flag for the models that need them, without the agent loop knowing those exist.
+Providers own all backend-specific behavior. Callers hand them a plain `CompletionRequest` (defined by the protocol crate), and the provider is responsible for backend-specific request parameters such as thinking configuration, beta feature flags, and per-model output token limits. For example, the Bedrock provider injects Anthropic's adaptive thinking configuration and the 1M-context beta flag for the models that need them, without the agent loop knowing that those exist.
 
 ## The `ModelProvider` trait
 
-Defined in the `infinity-provider-protocol` crate, a deliberately lightweight crate so provider implementations can depend on it without pulling in the rest of the runtime:
+The trait lives in `infinity-provider-protocol`, a deliberately lightweight crate so provider implementations can depend on it without pulling in the rest of the runtime:
 
 ```rust
 #[async_trait]
@@ -55,18 +52,18 @@ pub struct ModelEntry {
 }
 ```
 
-Because `model_id` is provider-scoped rather than the upstream id, a provider can expose **multiple configurations of the same upstream model** as separate entries. The Bedrock provider offers `claude-opus-4-6` both as a standard 200K-context model and as a 1M-context variant that enables a beta flag on every request.
+Because `model_id` is provider-scoped rather than the upstream id, a provider can expose **multiple configurations of the same upstream model** as separate entries. For example, the Bedrock provider offers `claude-opus-4-6` both as a standard 200K-context model and as a 1M-context variant that enables a beta flag on every request.
 
 ## Writing a provider
 
 A provider implements the two trait methods against its backend's API:
 
 1. Implement `list_models` to return your catalog (often a static list).
-2. Implement `invoke_model`: resolve the `model_id` to your backend's model, apply any backend-specific request parameters, call the backend, and adapt its streaming response into a `ModelStream` — a pinned stream of `StreamChunk` items (text, tool calls and tool-call deltas, reasoning, and a `Final` chunk carrying the completion's token usage).
+2. Implement `invoke_model`: resolve the `model_id` to your backend's model, apply any backend-specific request parameters, call the backend, and adapt its streaming response into a `ModelStream`, which is a pinned stream of `StreamChunk` items (text, tool calls and tool-call deltas, reasoning, and a `Final` chunk carrying the completion's token usage).
 
-For single-model setups and tests there's a ready-made adapter: implement the one-method `CompletionModel` trait and wrap it with `SingleModelProvider::new(entry, model)`, which advertises the given `ModelEntry` and forwards every invocation to that model.
+For single-model setups and tests, there is a ready-made adapter: you can implement the one-method `CompletionModel` trait and wrap it with `SingleModelProvider::new(entry, model)`, which advertises the given `ModelEntry` and forwards every invocation to that model.
 
-The protocol crate itself has no dependency on any LLM SDK. To serve one of [rig](https://docs.rs/rig-core)'s backends (OpenAI, Anthropic, Gemini, ...), use the optional `infinity-provider-rig` bridge crate: `RigCompletionModel::new(rig_model).into_provider(entry)` produces a `ModelProvider`, and its `convert` module exposes the raw request/stream conversions for providers that need to inject per-model request parameters themselves:
+The protocol crate itself has no dependency on any LLM SDK. To serve one of [rig](https://docs.rs/rig-core)'s backends (OpenAI, Anthropic, Gemini, ...), you can use the optional `infinity-provider-rig` bridge crate: `RigCompletionModel::new(rig_model).into_provider(entry)` produces a `ModelProvider`. The bridge's `convert` module also exposes the raw request/stream conversions, for providers that need to inject per-model request parameters themselves:
 
 ```rust
 use infinity_provider_rig::RigCompletionModel;
@@ -88,7 +85,7 @@ The trait is dyn-compatible: the backend-specific streaming response type is era
 
 ## The provider process transport
 
-The Infinity Code daemon runs each provider as a separate process configured in `~/.infinity/providers.json` (see [Model Providers in the Infinity Code docs](/docs/infinity-code/model-providers) for installing and configuring them) and aggregates their models into one catalog, with the first model of the first configured provider as the default. These provider processes are served over a **Unix domain socket**. You rarely need the details (`infinity_provider_protocol::remote` provides both sides), but they matter when packaging a provider as an installable crate.
+The Infinity Code daemon runs each provider as a separate process, configured in `~/.infinity/providers.json` (see [Model Providers in the Infinity Code docs](/docs/infinity-code/model-providers) for installing and configuring them). The daemon aggregates the providers' models into one catalog, with the first model of the first configured provider as the default. These provider processes are served over a **Unix domain socket**. You will rarely need the details, since `infinity_provider_protocol::remote` provides both sides of the transport, but they matter when packaging a provider as an installable crate.
 
 A provider binary does three things:
 
@@ -110,12 +107,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 ```
 
 1. `serve_provider` binds a listener on a freshly generated temp socket path and serves the provider on it.
-2. The binary prints the socket path as its **first stdout line**; that's how the supervising daemon discovers it. Anything else (logging, diagnostics) should go to stderr; the daemon captures both streams and forwards every later line to its own log.
+2. The binary prints the socket path as its **first stdout line**, which is how the supervising daemon discovers it. Anything else (logging, diagnostics) should go to stderr; the daemon captures both streams and will forward every later line to its own log.
 3. It then awaits the server future forever. The daemon owns the process lifecycle: it spawns the binary at startup and kills it on shutdown.
 
-On the wire, the protocol is newline-delimited JSON with one request per connection (concurrent invocations use concurrent connections): a `ListModels` request gets a single response, while `InvokeModel` streams the completion back as chunk lines terminated by a stream-end marker. The daemon side is `RemoteModelProvider`, itself a `ModelProvider` implementation that forwards every call over the socket, so in-process and out-of-process providers are indistinguishable to the runtime.
+On the wire, the protocol is newline-delimited JSON with one request per connection (concurrent invocations use concurrent connections). A `ListModels` request gets a single response, while `InvokeModel` streams the completion back as chunk lines terminated by a stream-end marker. The daemon side is `RemoteModelProvider`, which is itself a `ModelProvider` implementation that forwards every call over the socket, so in-process and out-of-process providers are indistinguishable to the runtime.
 
-Once your provider crate is published (or available in a git repo), users install it with:
+Once your provider crate is published (or available in a git repo), users can install it with:
 
 ```bash
 infinity provider install my-provider --git https://github.com/you/my-provider --crate my-provider
