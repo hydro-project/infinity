@@ -181,7 +181,7 @@ async fn session_loaded_updates_title_and_status() {
 
     h.session_tx
         .send(infinity_agent_cli::terminal::SessionChanged {
-            session_id: "f00dcafe-1234-5678-9abc-def012345678".to_owned(),
+            session_id: "f00dcafe-1234-5678-9abc-def012345678".into(),
             title: Some("My fancy session".to_owned()),
             total_tokens_used: 42_000,
             model_name: "mock-model".to_owned(),
@@ -200,7 +200,7 @@ async fn session_loaded_updates_model_name() {
     // Load a session whose thread uses a different model than the default.
     h.session_tx
         .send(infinity_agent_cli::terminal::SessionChanged {
-            session_id: "aaa-bbb".to_owned(),
+            session_id: "aaa-bbb".into(),
             title: Some("Other model session".to_owned()),
             total_tokens_used: 10_000,
             model_name: "Mock Mini".to_owned(),

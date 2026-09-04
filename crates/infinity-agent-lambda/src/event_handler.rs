@@ -331,7 +331,7 @@ impl ThreadConfigSource<SqsMessageSender, RapHttpClient> for LambdaThreadConfig 
         if !self.toolset_server_urls.is_empty() {
             match self
                 .toolset_loader
-                .load_toolsets(&self.toolset_server_urls, thread_id.as_str())
+                .load_toolsets(&self.toolset_server_urls, thread_id)
                 .await
             {
                 Ok(loaded) => {

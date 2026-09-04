@@ -20,7 +20,7 @@ impl<H: HttpClient> RapNotifier<H> {
     }
 
     /// Best-effort notification that a thread has been closed.
-    pub async fn notify_thread_closed(&self, thread_id: &rap_protocol::ThreadId) {
+    pub async fn notify_thread_closed(&self, thread_id: &rap_protocol::ThreadId<str>) {
         let payload = serde_json::json!({ "thread_id": thread_id }).to_string();
         for url in &self.server_urls {
             let endpoint = format!("{}/close_thread", url.trim_end_matches('/'));
@@ -38,7 +38,7 @@ impl<H: HttpClient> RapNotifier<H> {
     /// Best-effort notification that a tool call has been cancelled.
     pub async fn notify_tool_cancelled(
         &self,
-        thread_id: &rap_protocol::ThreadId,
+        thread_id: &rap_protocol::ThreadId<str>,
         tool_call_id: &str,
     ) {
         let payload = serde_json::json!({
@@ -68,7 +68,7 @@ impl<H: HttpClient> RapNotifier<H> {
     /// `destination_urls` maps config ID → destination server URL.
     pub async fn request_migration(
         &self,
-        session_id: &str,
+        session_id: &rap_protocol::ThreadId<str>,
         servers_needing_migration: &[(String, String)],
         destination_urls: &HashMap<String, String>,
     ) -> Result<(), Vec<String>> {

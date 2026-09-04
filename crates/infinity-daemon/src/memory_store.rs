@@ -565,8 +565,8 @@ impl PersistentConversationStore {
                         extras.get(&child_id).and_then(|e| e.title.clone())
                     };
                     result.push(infinity_protocol::SubthreadInfo {
-                        thread_id: child_id.to_string(),
-                        parent_thread_id: pid.to_string(),
+                        thread_id: infinity_protocol::ThreadRef::local(child_id.clone()),
+                        parent_thread_id: infinity_protocol::ThreadRef::local(pid.clone()),
                         title,
                     });
                     queue.push(child_id);
@@ -814,7 +814,7 @@ impl ConversationStore for PersistentConversationStore {
         spawn_order_override: Option<usize>,
     ) -> Result<ThreadId, MemoryError> {
         self.ensure_thread_loaded(parent_thread_id);
-        let new_id = ThreadId::from(self.id_source.generate());
+        let new_id = self.id_source.generate();
         {
             // Hold the load-tracking locks while creating the thread so a
             // concurrent load cannot interleave with the creation.

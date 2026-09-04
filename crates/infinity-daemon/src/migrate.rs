@@ -7,7 +7,7 @@ use infinity_agent_core::ThreadId;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use infinity_protocol::{ClientMessage, DaemonMessage};
+use infinity_protocol::{ClientMessage, DaemonMessage, RemoteName, ThreadRef};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::rap_servers::{MigrationServer, boot_migration_servers, migration_server_ports};
@@ -19,36 +19,31 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// Run the full migration flow for a `RequestMigrate` message.
 /// This is spawned as a task from the client handler.
 pub async fn orchestrate_migration(
-    session_id: String,
-    to: Option<String>,
+    root_thread_id: ThreadRef,
+    to: Option<RemoteName>,
     dest_cwd: PathBuf,
     session_manager: SharedSessionManager,
     daemon_tx: UnboundedSender<DaemonMessage>,
 ) {
     let _ = daemon_tx.send(DaemonMessage::MigrateStarted {
-        session_id: session_id.clone(),
+        root_thread_id: root_thread_id.clone(),
     });
 
-    let real_session_id = ThreadId::from(
-        session_id
-            .split_once('/')
-            .map_or(session_id.as_str(), |(_, s)| s),
-    );
-    let new_session_id = match &to {
-        None => real_session_id.to_string(),
-        Some(remote) => format!("{remote}/{real_session_id}"),
+    let new_root_thread_id = ThreadRef {
+        remote: to.clone(),
+        id: root_thread_id.id.clone(),
     };
 
-    match run_migration(&session_id, to.as_deref(), &dest_cwd, &session_manager).await {
+    match run_migration(&root_thread_id, to.as_ref(), &dest_cwd, &session_manager).await {
         Ok(()) => {
             let _ = daemon_tx.send(DaemonMessage::MigrateComplete {
-                session_id,
-                new_session_id,
+                root_thread_id,
+                new_root_thread_id,
             });
         }
         Err(e) => {
             let _ = daemon_tx.send(DaemonMessage::MigrateError {
-                session_id,
+                root_thread_id,
                 error: e.to_string(),
             });
         }
@@ -56,20 +51,14 @@ pub async fn orchestrate_migration(
 }
 
 async fn run_migration(
-    session_id: &str,
-    to: Option<&str>,
+    session_ref: &ThreadRef,
+    to: Option<&RemoteName>,
     dest_cwd: &Path,
     session_manager: &SharedSessionManager,
 ) -> Result<(), BoxError> {
-    let source_is_local = !session_id.contains('/');
-    let (source_remote, real_session_id) = if source_is_local {
-        (None, ThreadId::from(session_id))
-    } else {
-        let (r, s) = session_id
-            .split_once('/')
-            .ok_or("invalid remote session id")?;
-        (Some(r.to_owned()), ThreadId::from(s))
-    };
+    let source_is_local = session_ref.remote.is_none();
+    let source_remote = session_ref.remote.clone();
+    let real_session_id = session_ref.id.clone();
     let dest_is_local = to.is_none();
 
     // Shut down the source session first (kills agent + original RAP servers)
@@ -107,7 +96,7 @@ async fn run_migration(
             rap_client::http::SimpleHttpClient::new(),
         );
         if let Err(errors) = notifier
-            .request_migration(real_session_id.as_str(), &migration_servers, &dest_rap_urls)
+            .request_migration(&real_session_id, &migration_servers, &dest_rap_urls)
             .await
         {
             return Err(format!("RAP migration failed: {}", errors.join("; ")).into());
@@ -128,9 +117,9 @@ async fn run_migration(
         emigrate_from_remote(
             &rd,
             source_remote
-                .as_deref()
+                .as_ref()
                 .expect("bug: source remote but no name"),
-            real_session_id.as_str(),
+            &real_session_id,
             dest_rap_urls,
         )
         .await?
@@ -158,7 +147,7 @@ async fn run_migration(
         immigrate_to_remote(
             &rd,
             to.expect("bug: dest is remote"),
-            real_session_id.as_str(),
+            &real_session_id,
             dest_cwd,
             &session_data,
         )
@@ -181,9 +170,9 @@ async fn run_migration(
             send_emigrate_done(
                 &rd,
                 source_remote
-                    .as_deref()
+                    .as_ref()
                     .expect("bug: source remote but no name"),
-                real_session_id.as_str(),
+                &real_session_id,
             )
             .await?;
         }
@@ -242,7 +231,7 @@ pub async fn handle_emigrate(
             rap_client::http::SimpleHttpClient::new(),
         );
         if let Err(errors) = notifier
-            .request_migration(session_id.as_str(), &migration_servers, &dest_rap_urls)
+            .request_migration(session_id, &migration_servers, &dest_rap_urls)
             .await
         {
             return Err(format!("RAP migration failed: {}", errors.join("; ")).into());
@@ -261,9 +250,9 @@ pub enum LocalOrRemoteSpawned {
 /// Boot RAP servers on the destination and set up SSH tunnels so the source can reach them.
 /// Returns (config_id → reachable_url, tunnel guards, spawned dest servers).
 async fn boot_dest_and_tunnel(
-    to: Option<&str>,
+    to: Option<&RemoteName>,
     dest_cwd: &Path,
-    source_remote: &Option<String>,
+    source_remote: &Option<RemoteName>,
     session_manager: &SharedSessionManager,
 ) -> Result<
     (
@@ -322,7 +311,7 @@ async fn boot_dest_and_tunnel(
         };
         let rd = rd.ok_or("no remote daemons configured")?;
         let source_remote_name = source_remote
-            .as_deref()
+            .as_ref()
             .expect("bug: source remote but no name");
         let ssh_args = rd
             .get_ssh_args(source_remote_name)
@@ -360,7 +349,7 @@ async fn boot_dest_and_tunnel(
             .get_ssh_args(to.expect("bug: dest is remote"))
             .ok_or("unknown dest remote")?;
         let source_remote_name = source_remote
-            .as_deref()
+            .as_ref()
             .expect("bug: source remote but no name");
         let source_ssh_args = rd
             .get_ssh_args(source_remote_name)
@@ -384,14 +373,14 @@ async fn boot_dest_and_tunnel(
 /// Send Emigrate to a remote daemon and receive the serialized session data.
 async fn emigrate_from_remote(
     rd: &RemoteDaemons,
-    remote_name: &str,
-    session_id: &str,
+    remote_name: &RemoteName,
+    session_id: &ThreadId<str>,
     dest_rap_urls: HashMap<String, String>,
 ) -> Result<String, BoxError> {
     let (tx, mut rx) = rd.open_raw_connection(remote_name).await?;
 
     tx.send(ClientMessage::Emigrate {
-        session_id: session_id.to_owned(),
+        root_thread_id: session_id.to_owned(),
         dest_rap_urls,
     })?;
 
@@ -405,15 +394,15 @@ async fn emigrate_from_remote(
 /// Send session data to a remote daemon for immigration.
 async fn immigrate_to_remote(
     rd: &RemoteDaemons,
-    remote_name: &str,
-    session_id: &str,
+    remote_name: &RemoteName,
+    session_id: &ThreadId<str>,
     dest_cwd: &Path,
     session_data: &str,
 ) -> Result<(), BoxError> {
     let (tx, mut rx) = rd.open_raw_connection(remote_name).await?;
 
     tx.send(ClientMessage::ImportSession {
-        session_id: session_id.to_owned(),
+        root_thread_id: session_id.to_owned(),
         cwd: dest_cwd.to_path_buf(),
         session_data: session_data.to_owned(),
     })?;
@@ -428,12 +417,12 @@ async fn immigrate_to_remote(
 /// Send EmigrateDone to a remote daemon so it can clean up.
 async fn send_emigrate_done(
     rd: &RemoteDaemons,
-    remote_name: &str,
-    session_id: &str,
+    remote_name: &RemoteName,
+    session_id: &ThreadId<str>,
 ) -> Result<(), BoxError> {
     let (tx, _rx) = rd.open_raw_connection(remote_name).await?;
     tx.send(ClientMessage::EmigrateDone {
-        session_id: session_id.to_owned(),
+        root_thread_id: session_id.to_owned(),
     })
     .map_err(|e| e.into())
 }

@@ -229,7 +229,9 @@ pub fn slack_dataflow<'a, P: 'a>(
 
             match &de.message {
                 infinity_protocol::DaemonMessage::Connected {
-                    session_id, title, ..
+                    root_thread_id: session_id,
+                    title,
+                    ..
                 } => {
                     {
                         let mut sessions = rt.sessions.lock().expect("bug: lock poisoned");

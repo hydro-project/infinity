@@ -351,7 +351,7 @@ async fn vertical_shrink_under_session_picker() {
     let mut sessions = HashMap::new();
     for i in 1..=8 {
         sessions.insert(
-            format!("session-{i:04}aaaa-bbbb-cccc"),
+            format!("session-{i:04}aaaa-bbbb-cccc").as_str().into(),
             SessionInfo {
                 title: Some(format!("Session number {i}")),
                 last_updated: format!("2025-01-{:02}T00:00:00Z", i),
