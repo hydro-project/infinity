@@ -470,8 +470,10 @@ where
         }
 
         if !any_ready {
-            // Commit anything prepare persisted (processed IDs, interruption
-            // results) even though no completion runs.
+            // Commit anything already known-safe (e.g. processed IDs from
+            // deduped inputs). Interruption results and other fresh inputs
+            // stay unvalidated — and unpersisted — until a completion
+            // produces model output for them.
             self.history.sync().await?;
             return Ok(StepOutcome::Skipped);
         }

@@ -6,8 +6,8 @@ use aws_smithy_types::{Document, Number};
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use infinity_provider_protocol::{
-    AssistantContent, CompletionError, Image, ImageMediaType, ImageSource, Message, Reasoning,
-    ReasoningContent, ToolDefinition, ToolResultContent, UserContent,
+    AssistantContent, CompletionError, ErrorClass, Image, ImageMediaType, ImageSource, Message,
+    Reasoning, ReasoningContent, ToolDefinition, ToolResultContent, UserContent,
 };
 
 /// Convert a JSON value into a smithy [`Document`] (the representation
@@ -165,23 +165,24 @@ fn reasoning_block(
         })
         .count();
     if signed_text_count > 1 {
-        return Err(CompletionError::ProviderError(
-            "AWS Bedrock does not support multiple signed reasoning text blocks".to_owned(),
+        return Err(CompletionError::provider(
+            ErrorClass::Fatal,
+            "AWS Bedrock does not support multiple signed reasoning text blocks",
         ));
     }
     if signed_text_count == 1 && reasoning.content.len() > 1 {
-        return Err(CompletionError::ProviderError(
+        return Err(CompletionError::provider(
+            ErrorClass::Fatal,
             "AWS Bedrock requires a single signed reasoning text block without additional \
-             reasoning parts"
-                .to_owned(),
+             reasoning parts",
         ));
     }
 
     let text = reasoning.display_text();
     if text.is_empty() {
-        return Err(CompletionError::ProviderError(
-            "AWS Bedrock reasoning conversion requires at least one text or summary block"
-                .to_owned(),
+        return Err(CompletionError::provider(
+            ErrorClass::Fatal,
+            "AWS Bedrock reasoning conversion requires at least one text or summary block",
         ));
     }
 
@@ -200,14 +201,18 @@ fn image_block(image: Image) -> Result<bedrock::ImageBlock, CompletionError> {
         Some(ImageMediaType::GIF) => bedrock::ImageFormat::Gif,
         Some(ImageMediaType::WEBP) => bedrock::ImageFormat::Webp,
         Some(other) => {
-            return Err(CompletionError::ProviderError(format!(
-                "AWS Bedrock does not support {} images",
-                other.to_mime_type()
-            )));
+            return Err(CompletionError::provider(
+                ErrorClass::Fatal,
+                format!(
+                    "AWS Bedrock does not support {} images",
+                    other.to_mime_type()
+                ),
+            ));
         }
         None => {
-            return Err(CompletionError::ProviderError(
-                "image content requires a media type for AWS Bedrock".to_owned(),
+            return Err(CompletionError::provider(
+                ErrorClass::Fatal,
+                "image content requires a media type for AWS Bedrock",
             ));
         }
     };
@@ -217,9 +222,9 @@ fn image_block(image: Image) -> Result<bedrock::ImageBlock, CompletionError> {
             "only base64-encoded image data is supported by AWS Bedrock".into(),
         ));
     };
-    let bytes = BASE64_STANDARD
-        .decode(data)
-        .map_err(|e| CompletionError::ProviderError(format!("invalid base64 image data: {e}")))?;
+    let bytes = BASE64_STANDARD.decode(data).map_err(|e| {
+        CompletionError::provider(ErrorClass::Fatal, format!("invalid base64 image data: {e}"))
+    })?;
 
     bedrock::ImageBlock::builder()
         .format(format)
