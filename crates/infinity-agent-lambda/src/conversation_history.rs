@@ -7,7 +7,7 @@ use aws_sdk_dsql::{
 use aws_types::region::Region;
 use infinity_agent_core::ThreadId;
 use infinity_agent_core::message::InfinityMessage;
-use infinity_agent_core::traits::ConversationStore;
+use infinity_agent_core::traits::{ConversationStore, SpawnContext};
 use infinity_provider_protocol::message::Message;
 use lambda_runtime::Error;
 use sqlx::{Pool, Postgres, Row, postgres::PgConnectOptions};
@@ -123,6 +123,13 @@ impl DsqlConversationStore {
         .execute(&pool)
         .await
         .map_err(|e| Error::from(format!("Failed to add is_compaction column: {}", e)))?;
+
+        sqlx::query(
+            r#"ALTER TABLE thread_hierarchy ADD COLUMN IF NOT EXISTS fresh_context BOOLEAN NOT NULL DEFAULT FALSE"#,
+        )
+        .execute(&pool)
+        .await
+        .map_err(|e| Error::from(format!("Failed to add fresh_context column: {}", e)))?;
 
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS compaction_summaries (
@@ -282,22 +289,24 @@ impl ConversationStore for DsqlConversationStore {
         parent_thread_id: &ThreadId<str>,
         spawn_tool_call_id: &str,
         is_for_subscription_event: bool,
-        spawn_order_override: Option<usize>,
+        context: SpawnContext,
     ) -> Result<ThreadId, DsqlError> {
         let new_thread_id = ThreadId::from(uuid::Uuid::new_v4().to_string());
 
-        let spawn_message_order = if let Some(order) = spawn_order_override {
-            order as i64
-        } else {
-            let order: Option<i64> = sqlx::query_scalar(
-                r#"SELECT COALESCE(MAX(message_order), 0)
-                FROM conversation_history WHERE session_id = $1"#,
-            )
-            .bind(parent_thread_id.as_str())
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| DsqlError(format!("Failed to get current message order: {}", e)))?;
-            order.unwrap_or(0)
+        let (spawn_message_order, fresh_context) = match context {
+            SpawnContext::InheritUpTo(order) => (order as i64, false),
+            SpawnContext::Fresh => (0, true),
+            SpawnContext::Inherit => {
+                let order: Option<i64> = sqlx::query_scalar(
+                    r#"SELECT COALESCE(MAX(message_order), 0)
+                    FROM conversation_history WHERE session_id = $1"#,
+                )
+                .bind(parent_thread_id.as_str())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| DsqlError(format!("Failed to get current message order: {}", e)))?;
+                (order.unwrap_or(0), false)
+            }
         };
 
         let root_thread_id: String = sqlx::query_scalar(
@@ -309,8 +318,8 @@ impl ConversationStore for DsqlConversationStore {
         .map_err(|e| DsqlError(format!("Failed to find parent thread: {}", e)))?;
 
         sqlx::query(
-            r#"INSERT INTO thread_hierarchy (thread_id, parent_thread_id, root_thread_id, spawn_message_order, spawn_tool_call_id, is_subscription_event)
-            VALUES ($1, $2, $3, $4, $5, $6)"#,
+            r#"INSERT INTO thread_hierarchy (thread_id, parent_thread_id, root_thread_id, spawn_message_order, spawn_tool_call_id, is_subscription_event, fresh_context)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
         )
         .bind(new_thread_id.as_str())
         .bind(parent_thread_id.as_str())
@@ -318,6 +327,7 @@ impl ConversationStore for DsqlConversationStore {
         .bind(spawn_message_order)
         .bind(spawn_tool_call_id)
         .bind(is_for_subscription_event)
+        .bind(fresh_context)
         .execute(&self.pool)
         .await
         .map_err(|e| DsqlError(format!("Failed to spawn thread: {}", e)))?;
@@ -355,6 +365,16 @@ impl ConversationStore for DsqlConversationStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| DsqlError(format!("Failed to check subscription event: {}", e)))?;
+        Ok(row.map(|(v,)| v).unwrap_or(false))
+    }
+
+    async fn is_fresh_context_thread(&self, thread_id: &ThreadId<str>) -> Result<bool, DsqlError> {
+        let row: Option<(bool,)> =
+            sqlx::query_as(r#"SELECT fresh_context FROM thread_hierarchy WHERE thread_id = $1"#)
+                .bind(thread_id.as_str())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| DsqlError(format!("Failed to check fresh context thread: {}", e)))?;
         Ok(row.map(|(v,)| v).unwrap_or(false))
     }
 

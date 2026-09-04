@@ -18,7 +18,7 @@ use crate::message::{
 };
 use crate::system::AgentEvent;
 use crate::tools::{Tool, ToolContext};
-use crate::traits::{ConversationStore, InputSender, StateStore};
+use crate::traits::{ConversationStore, InputSender, SpawnContext, StateStore};
 use infinity_provider_protocol::{FinalResponse, ModelProvider};
 
 // ── Public types ──
@@ -712,7 +712,12 @@ where
         let safe_point = current_history.safe_spawn_point();
 
         let sub_thread_id = conversation_store
-            .spawn_thread(&input_msg.group_id, &spawn_call_id, false, Some(safe_point))
+            .spawn_thread(
+                &input_msg.group_id,
+                &spawn_call_id,
+                false,
+                SpawnContext::InheritUpTo(safe_point),
+            )
             .await
             .map_err(|e| Box::new(e) as BoxError)?;
         conversation_store
@@ -914,7 +919,7 @@ where
                     &input_msg.group_id,
                     &original_tool_call_id,
                     true,
-                    Some(safe_point),
+                    SpawnContext::InheritUpTo(safe_point),
                 )
                 .await
                 .map_err(|e| Box::new(e) as BoxError)?;

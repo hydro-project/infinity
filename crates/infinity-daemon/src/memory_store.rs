@@ -19,7 +19,7 @@ use infinity_agent_core::stores::{
     self as core_stores, CompactionSummary, ThreadInfo, ThreadState,
 };
 use infinity_agent_core::system::UserChoice;
-use infinity_agent_core::traits::{ConversationStore, StateStore};
+use infinity_agent_core::traits::{ConversationStore, SpawnContext, StateStore};
 use infinity_protocol::ModelRef;
 use infinity_provider_protocol::message::Message;
 use serde::{Deserialize, Serialize};
@@ -811,7 +811,7 @@ impl ConversationStore for PersistentConversationStore {
         parent_thread_id: &ThreadId<str>,
         spawn_tool_call_id: &str,
         is_for_subscription_event: bool,
-        spawn_order_override: Option<usize>,
+        context: SpawnContext,
     ) -> Result<ThreadId, MemoryError> {
         self.ensure_thread_loaded(parent_thread_id);
         let new_id = ThreadId::from(self.id_source.generate());
@@ -828,7 +828,7 @@ impl ConversationStore for PersistentConversationStore {
                 parent_thread_id,
                 spawn_tool_call_id,
                 is_for_subscription_event,
-                spawn_order_override,
+                context,
             );
             self.core.set_thread_messages(&new_id, Vec::new());
 
@@ -874,6 +874,14 @@ impl ConversationStore for PersistentConversationStore {
     ) -> Result<bool, MemoryError> {
         self.ensure_thread_metadata_loaded(thread_id);
         Ok(self.core.is_subscription_event_thread(thread_id).await?)
+    }
+
+    async fn is_fresh_context_thread(
+        &self,
+        thread_id: &ThreadId<str>,
+    ) -> Result<bool, MemoryError> {
+        self.ensure_thread_metadata_loaded(thread_id);
+        Ok(self.core.is_fresh_context_thread(thread_id).await?)
     }
 
     async fn get_thread_parent_info(
@@ -1227,11 +1235,16 @@ mod tests {
             serde_json::from_value(old_json.clone()).expect("old flat format parses");
         assert_eq!(meta.info.root_thread_id.as_str(), "r");
         assert_eq!(meta.info.spawn_message_order, Some(3));
+        assert!(!meta.info.fresh_context, "missing fresh_context defaults");
         assert_eq!(meta.extras.total_tokens_used, 42);
         assert_eq!(meta.extras.selected_model.provider_id, "prov");
         let round = serde_json::to_value(&meta).expect("serialize ThreadMeta");
+        // Re-serialization keeps the flat key set, plus later-added fields
+        // (with their defaults).
+        let mut expected = old_json;
+        expected["fresh_context"] = serde_json::json!(false);
         assert_eq!(
-            round, old_json,
+            round, expected,
             "flattened ThreadMeta must keep the flat on-disk format"
         );
     }
@@ -1264,7 +1277,7 @@ mod tests {
             .expect("append root messages");
 
         let child = store
-            .spawn_thread(ThreadId::from_ref("root"), "tc-1", false, None)
+            .spawn_thread(ThreadId::from_ref("root"), "tc-1", false, SpawnContext::Inherit)
             .await
             .expect("spawn child thread");
 
@@ -1322,7 +1335,7 @@ mod tests {
             .expect("append root messages");
 
         let child = store
-            .spawn_thread(ThreadId::from_ref("root"), "tc-1", false, None)
+            .spawn_thread(ThreadId::from_ref("root"), "tc-1", false, SpawnContext::Inherit)
             .await
             .expect("spawn child thread");
         store
@@ -1334,7 +1347,7 @@ mod tests {
             .expect("append child messages");
 
         let grandchild = store
-            .spawn_thread(&child, "tc-2", false, None)
+            .spawn_thread(&child, "tc-2", false, SpawnContext::Inherit)
             .await
             .expect("spawn grandchild thread");
         store
@@ -1425,7 +1438,7 @@ mod tests {
             .expect("save compaction summary");
 
         let child = store
-            .spawn_thread(ThreadId::from_ref("root"), "tc-1", false, None)
+            .spawn_thread(ThreadId::from_ref("root"), "tc-1", false, SpawnContext::Inherit)
             .await
             .expect("spawn child thread");
         store
@@ -1483,7 +1496,7 @@ mod tests {
             .expect("save later compaction summary");
 
         let child = store
-            .spawn_thread(ThreadId::from_ref("root"), "tc-1", false, None)
+            .spawn_thread(ThreadId::from_ref("root"), "tc-1", false, SpawnContext::Inherit)
             .await
             .expect("spawn child thread");
         store
@@ -1531,7 +1544,7 @@ mod tests {
             .expect("save root compaction summary");
 
         let child = store
-            .spawn_thread(ThreadId::from_ref("root"), "tc-1", false, None)
+            .spawn_thread(ThreadId::from_ref("root"), "tc-1", false, SpawnContext::Inherit)
             .await
             .expect("spawn child thread");
         store
