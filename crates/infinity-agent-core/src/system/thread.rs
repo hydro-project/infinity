@@ -367,19 +367,22 @@ where
                         .pending_choices
                         .borrow()
                         .iter()
-                        .any(|choice| choice.id == result.id)
+                        .any(|choice| choice.id.as_str() == result.id)
                 {
                     self.inner
                         .state_store
-                        .remove_pending_user_choice(&thread_id, &result.id)
+                        .remove_pending_user_choice(
+                            &thread_id,
+                            rap_protocol::ChoiceId::from_ref(&result.id),
+                        )
                         .await?;
                     self.pending_choices
                         .borrow_mut()
-                        .retain(|choice| choice.id != result.id);
+                        .retain(|choice| choice.id.as_str() != result.id);
                     observer.on_event(
                         &thread_id,
                         &AgentEvent::UserChoiceDismissed {
-                            choice_id: result.id.clone(),
+                            choice_id: rap_protocol::ChoiceId::from(result.id.clone()),
                         },
                     );
                 }

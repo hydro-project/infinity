@@ -39,7 +39,7 @@ impl<H: HttpClient> RapNotifier<H> {
     pub async fn notify_tool_cancelled(
         &self,
         thread_id: &rap_protocol::ThreadId<str>,
-        tool_call_id: &str,
+        tool_call_id: &rap_protocol::ToolCallId<str>,
     ) {
         let payload = serde_json::json!({
             "thread_id": thread_id,

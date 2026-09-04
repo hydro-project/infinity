@@ -442,7 +442,7 @@ pub struct TuiHarness {
     pub load_session_rx: mpsc::UnboundedReceiver<(Option<infinity_protocol::ThreadRef>, bool)>,
     pub model_switch_rx: mpsc::UnboundedReceiver<usize>,
     pub soft_detach_rx: mpsc::UnboundedReceiver<()>,
-    pub choice_answered_rx: mpsc::UnboundedReceiver<(String, usize)>,
+    pub choice_answered_rx: mpsc::UnboundedReceiver<(infinity_protocol::ChoiceId, usize)>,
     pub handle: tokio::task::JoinHandle<Result<bool, BoxError>>,
 }
 

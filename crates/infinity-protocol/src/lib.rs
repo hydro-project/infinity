@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio_util::codec::LengthDelimitedCodec;
 
-/// The thread identifier used throughout the runtime (re-exported from
+/// The identifier kinds used throughout the runtime (re-exported from
 /// `rap-protocol`).
-pub use rap_protocol::ThreadId;
+pub use rap_protocol::{ChoiceId, ProviderCallId, ThreadId, ToolCallId};
 
 strkind::strkind! {
     /// The name of a configured remote daemon (from `remotes.json`), e.g.
@@ -288,7 +288,7 @@ pub enum ClientMessage {
     /// Notify the daemon that a user choice was answered so it can be
     /// removed from the pending replay list.
     UserChoiceAnswered {
-        choice_id: String,
+        choice_id: ChoiceId,
         selected: usize,
     },
     /// Trigger compaction for the given session.
@@ -388,13 +388,13 @@ pub enum DaemonMessage {
     },
     UserChoiceRequired {
         thread_id: Option<ThreadRef>,
-        id: String,
+        id: ChoiceId,
         prompt: String,
         choices: Vec<String>,
         default: usize,
     },
     UserChoiceComplete {
-        choice_id: String,
+        choice_id: ChoiceId,
     },
     ThinkingStart {
         thread_id: Option<ThreadRef>,

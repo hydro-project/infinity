@@ -49,9 +49,9 @@ pub struct RapInvocationParams<'a> {
     /// The model-provided arguments.
     pub arguments: serde_json::Value,
     /// The tool-call ID from `execute`.
-    pub id: String,
+    pub id: rap_protocol::ToolCallId,
     /// The provider call ID from `execute`.
-    pub call_id: Option<String>,
+    pub call_id: Option<rap_protocol::ProviderCallId>,
     /// Callback destination for the server's asynchronous results. `None`
     /// uses [`ToolContext::callback_url`]; embeddings that run their own
     /// callback listener pass its URL instead.
@@ -163,8 +163,8 @@ impl<H: HttpClient + 'static, M: InputSender + 'static> Tool<M> for RapTool<H> {
     async fn execute(
         &self,
         args: serde_json::Value,
-        id: String,
-        call_id: Option<String>,
+        id: rap_protocol::ToolCallId,
+        call_id: Option<rap_protocol::ProviderCallId>,
         context: &ToolContext<M>,
     ) -> Result<(), BoxError> {
         invoke_rap_tool(
@@ -284,8 +284,8 @@ mod tests {
             endpoint: "http://server/invoke",
             operation: "lookup",
             arguments,
-            id: "tc-1".to_owned(),
-            call_id: Some("call-1".to_owned()),
+            id: "tc-1".into(),
+            call_id: Some("call-1".into()),
             callback_url: None,
         }
     }

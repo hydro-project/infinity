@@ -199,8 +199,8 @@ impl Tool<ChannelSender> for AsyncStubTool {
     async fn execute(
         &self,
         _: serde_json::Value,
-        _: String,
-        _: Option<String>,
+        _: rap_protocol::ToolCallId,
+        _: Option<rap_protocol::ProviderCallId>,
         _: &infinity_agent_core::tools::ToolContext<ChannelSender>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(())
@@ -500,7 +500,7 @@ async fn answered_user_choice_emits_complete_and_disappears_from_replay() {
                     InputMessage {
                         content: InputMessageContent::UserChoice(UserChoiceRequired {
                             content_type: "user_choice_required".to_owned(),
-                            id: "tc-choice".to_owned(),
+                            id: "tc-choice".into(),
                             call_id: None,
                             prompt: "Pick one".to_owned(),
                             choices: vec!["A".to_owned(), "B".to_owned()],
@@ -518,7 +518,7 @@ async fn answered_user_choice_emits_complete_and_disappears_from_replay() {
                 .await;
             assert!(matches!(
                 display_rx.recv().await,
-                Some(DaemonMessage::UserChoiceRequired { id, .. }) if id == "tc-choice"
+                Some(DaemonMessage::UserChoiceRequired { id, .. }) if id.as_str() == "tc-choice"
             ));
 
             running
@@ -535,7 +535,7 @@ async fn answered_user_choice_emits_complete_and_disappears_from_replay() {
                     .expect("display channel closed")
                 {
                     DaemonMessage::UserChoiceComplete { choice_id } => {
-                        assert_eq!(choice_id, "tc-choice");
+                        assert_eq!(choice_id.as_str(), "tc-choice");
                         saw_complete = true;
                     }
                     DaemonMessage::StartOutput { .. } => {
@@ -618,11 +618,16 @@ async fn child_pending_choice_updates_root_session_status() {
                 .expect("create session");
             let child_id = manager
                 .conversation_store
-                .spawn_thread(&session_id, "spawn-call", false, None)
+                .spawn_thread(
+                    &session_id,
+                    rap_protocol::ToolCallId::from_ref("spawn-call"),
+                    false,
+                    None,
+                )
                 .await
                 .expect("spawn child thread");
             let choice = UserChoice {
-                id: "choice-1".to_owned(),
+                id: "choice-1".into(),
                 prompt: "Choose".to_owned(),
                 choices: vec!["one".to_owned(), "two".to_owned()],
                 default: 0,

@@ -71,12 +71,14 @@ pub enum SlackAction {
         /// If set, the sidecar will store the resulting message_ts under this
         /// choice_id so that a later `DismissChoiceButtons` can update it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        choice_id: Option<String>,
+        choice_id: Option<infinity_protocol::ChoiceId>,
     },
     /// Dismiss interactive buttons for a completed choice (replace with a
     /// "resolved" indicator). The sidecar looks up the stored message_ts
     /// from the choice_id.
-    DismissChoiceButtons { choice_id: String },
+    DismissChoiceButtons {
+        choice_id: infinity_protocol::ChoiceId,
+    },
     /// Update an existing message's blocks (e.g. to replace buttons with a selection indicator).
     UpdateMessage {
         channel: String,
@@ -546,7 +548,7 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
                                 rt.choice_messages
                                     .lock()
                                     .expect("bug: lock poisoned")
-                                    .insert(cid, (channel, msg_ts));
+                                    .insert(cid.into_inner(), (channel, msg_ts));
                             }
                         }
                         Ok(None) => {
@@ -754,7 +756,7 @@ pub fn create() -> (ReceiverStream<SlackEvent>, PollSender<SlackAction>) {
                         rt.choice_messages
                             .lock()
                             .expect("bug: lock poisoned")
-                            .remove(&choice_id)
+                            .remove(choice_id.as_str())
                     };
                     if let Some((channel, msg_ts)) = info {
                         let blocks = serde_json::json!([

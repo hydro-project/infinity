@@ -116,7 +116,7 @@ async fn choice_picker_during_stream() {
         chunk: "Working on it...".to_owned(),
     });
     h.display(Evt::UserChoiceRequired {
-        id: "choice-1".to_owned(),
+        id: "choice-1".into(),
         prompt: "Allow the tool to run?".to_owned(),
         choices: vec!["Allow".to_owned(), "Deny".to_owned()],
         default: 0,

@@ -9,7 +9,7 @@ use infinity_provider_protocol::{
     CompletionRequest, StreamChunk, ToolCallDeltaContent, ToolDefinition,
     message::{AssistantContent, Message, ToolResult, ToolResultContent, UserContent},
 };
-use rap_protocol::ThreadId;
+use rap_protocol::{ChoiceId, ProviderCallId, ThreadId, ToolCallId};
 use serde::Serialize;
 use tracing;
 
@@ -69,7 +69,7 @@ pub enum PrepareResult {
     OAuthRequired { auth_url: String },
     /// A user choice prompt must be surfaced to the user.
     UserChoiceRequired {
-        id: String,
+        id: ChoiceId,
         prompt: String,
         choices: Vec<String>,
         default: usize,
@@ -89,8 +89,8 @@ pub enum CompletionAction {
     ExecuteToolCall {
         tool_name: String,
         tool_args: serde_json::Value,
-        tool_call_id: String,
-        call_id: Option<String>,
+        tool_call_id: ToolCallId,
+        call_id: Option<ProviderCallId>,
         display_as: Option<String>,
     },
 }
@@ -155,7 +155,7 @@ pub struct HistoryManager<C: ConversationStore, S: StateStore> {
     /// Tool call IDs that were interrupted by a new user message during
     /// `handle_content`. Callers can drain this via `take_interrupted_tool_calls`
     /// to send best-effort cancellation notifications to RAP tool servers.
-    interrupted_tool_calls: RefCell<Vec<String>>,
+    interrupted_tool_calls: RefCell<Vec<ToolCallId>>,
     /// Tracks the absolute store index that the current in-memory compaction
     /// summary covers up to. Used to compute the correct relative split
     /// position when a second compaction is applied on top of an existing one.
@@ -312,7 +312,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             tracing::info!("Tool call {} interrupted by incoming message", tool_call.id);
             self.interrupted_tool_calls
                 .borrow_mut()
-                .push(tool_call.id.clone());
+                .push(ToolCallId::from(tool_call.id.clone()));
             let synthetic_result = InfinityMessage::ToolResult {
                 result: ToolResult {
                     id: tool_call.id.clone(),
@@ -596,7 +596,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     /// Drain and return tool call IDs that were interrupted by new user messages.
     /// Callers use this to send best-effort cancellation notifications to RAP
     /// tool servers so they can abort in-flight operations.
-    pub fn take_interrupted_tool_calls(&self) -> Vec<String> {
+    pub fn take_interrupted_tool_calls(&self) -> Vec<ToolCallId> {
         std::mem::take(&mut *self.interrupted_tool_calls.borrow_mut())
     }
 
@@ -642,7 +642,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     /// `tool_call_id` is the ID of the tool call whose result had
     /// `subscription: true`. Ownership is implicit — a subscription is
     /// stored in the thread that created it.
-    pub async fn track_subscription(&self, tool_call_id: &str) -> Result<(), BoxError> {
+    pub async fn track_subscription(&self, tool_call_id: &ToolCallId<str>) -> Result<(), BoxError> {
         self.state_store
             .add_active_subscription(&self.thread_id, tool_call_id)
             .await
@@ -650,7 +650,10 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     }
 
     /// Remove a subscription from the current thread's active tracking.
-    pub async fn remove_subscription(&self, tool_call_id: &str) -> Result<(), BoxError> {
+    pub async fn remove_subscription(
+        &self,
+        tool_call_id: &ToolCallId<str>,
+    ) -> Result<(), BoxError> {
         self.state_store
             .remove_active_subscription(&self.thread_id, tool_call_id)
             .await
@@ -705,7 +708,7 @@ where
         .as_ref()
         .is_some_and(SyntheticKind::is_compaction)
     {
-        let spawn_call_id = uuid::Uuid::new_v4().to_string();
+        let spawn_call_id = ToolCallId::from(uuid::Uuid::new_v4().to_string());
 
         // Compute a safe compaction point: exclude trailing unanswered tool calls
         // from the compaction range so they aren't lost when apply_compaction runs.
@@ -732,7 +735,7 @@ where
         // inherited history.
         let spawn_tool_call = InfinityMessage::ToolCall {
             call: infinity_provider_protocol::message::ToolCall {
-                id: spawn_call_id.clone(),
+                id: spawn_call_id.as_str().to_owned(),
                 call_id: None,
                 function: infinity_provider_protocol::message::ToolFunction {
                     name: "__harness_begin_compaction__".to_owned(),
@@ -755,7 +758,7 @@ where
         // Send child its instructions via message sender
         let child_msg = InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                id: spawn_call_id.clone(),
+                id: spawn_call_id.as_str().to_owned(),
                 call_id: None,
                 content: vec![ToolResultContent::Text(
                     infinity_provider_protocol::message::Text {
@@ -776,7 +779,7 @@ where
             subscription: false,
         };
         message_sender
-            .send_to_input_queue(child_msg, &spawn_call_id)
+            .send_to_input_queue(child_msg, spawn_call_id.as_str())
             .await
             .map_err(|e| Box::new(e) as BoxError)?;
 
@@ -821,7 +824,7 @@ where
 
     // Handle synthetic tool results (subscription events / thread reports)
     // Capture metadata for SubscriptionEvent variant before synthetic_kind is consumed.
-    let subscription_event_meta: Option<(String, Option<ThreadId>)> =
+    let subscription_event_meta: Option<(ToolCallId, Option<ThreadId>)> =
         input_msg.synthetic.as_ref().and_then(|s| {
             if s.is_thread_report() || s.is_associative() || s.is_parent_message() {
                 let child_id = if let SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
@@ -852,7 +855,7 @@ where
 
         let original_call = current_history.history.borrow().iter().find_map(|msg| {
             if let InfinityMessage::ToolCall { call, .. } = msg
-                && call.id == original_tool_call_id
+                && call.id == original_tool_call_id.as_str()
             {
                 Some(call.clone())
             } else {
@@ -925,11 +928,11 @@ where
                 input_msg.group_id
             );
 
-            let event_call_id = uuid::Uuid::new_v4().to_string();
-            let spawn_call_id = uuid::Uuid::new_v4().to_string();
+            let event_call_id = ToolCallId::from(uuid::Uuid::new_v4().to_string());
+            let spawn_call_id = ToolCallId::from(uuid::Uuid::new_v4().to_string());
 
             let event_content = if let UserContent::ToolResult(mut tool_result) = user_content {
-                tool_result.id = event_call_id.clone();
+                tool_result.id = event_call_id.as_str().to_owned();
                 tool_result.call_id = None;
                 tool_result
             } else {
@@ -944,7 +947,7 @@ where
             // Write event + spawn tool calls directly to child's store
             let event_tool_call = InfinityMessage::ToolCall {
                 call: infinity_provider_protocol::message::ToolCall {
-                    id: event_call_id.clone(),
+                    id: event_call_id.as_str().to_owned(),
                     call_id: None,
                     function: infinity_provider_protocol::message::ToolFunction {
                         name: "receive_event__injected".to_owned(),
@@ -959,7 +962,7 @@ where
             };
             let spawn_tool_call = InfinityMessage::ToolCall {
                 call: infinity_provider_protocol::message::ToolCall {
-                    id: spawn_call_id.clone(),
+                    id: spawn_call_id.as_str().to_owned(),
                     call_id: None,
                     function: infinity_provider_protocol::message::ToolFunction {
                         name: "spawn_thread".to_owned(),
@@ -972,7 +975,7 @@ where
             };
             let spawn_tool_result = InfinityMessage::ToolResult {
                 result: ToolResult {
-                    id: spawn_call_id.clone(),
+                    id: spawn_call_id.as_str().to_owned(),
                     call_id: None,
                     content: vec![ToolResultContent::Text(
                         infinity_provider_protocol::message::Text {
@@ -1005,7 +1008,7 @@ where
                 subscription: false,
             };
             message_sender
-                .send_to_input_queue(child_msg, &event_call_id)
+                .send_to_input_queue(child_msg, event_call_id.as_str())
                 .await
                 .map_err(|e| Box::new(e) as BoxError)?;
 
@@ -1069,7 +1072,9 @@ where
             tool_call_id,
             current_history.thread_id
         );
-        current_history.track_subscription(tool_call_id).await?;
+        current_history
+            .track_subscription(ToolCallId::from_ref(tool_call_id))
+            .await?;
     }
 
     Ok(PrepareResult::Ready)
@@ -1094,7 +1099,7 @@ where
                 if let Message::Assistant { content, .. } = h
                     && let Some(AssistantContent::ToolCall(c)) = content.first()
                 {
-                    c.id == synth.tool_call_id()
+                    c.id == synth.tool_call_id().as_str()
                 } else {
                     false
                 }
@@ -1487,8 +1492,8 @@ where
 
                                 let res = tool.execute_synchronous(
                                     &call.function.arguments,
-                                    &call.id,
-                                    call.call_id.as_deref(),
+                                    ToolCallId::from_ref(&call.id),
+                                    call.call_id.as_deref().map(ProviderCallId::from_ref),
                                     tool_context,
                                 ).await.expect("bug: synchronous tool execution failed");
 
@@ -1513,8 +1518,8 @@ where
                                 yield CompletionEvent::Action(CompletionAction::ExecuteToolCall {
                                     tool_name: call.function.name.clone(),
                                     tool_args: call.function.arguments.clone(),
-                                    tool_call_id: call.id.clone(),
-                                    call_id: call.call_id.clone(),
+                                    tool_call_id: ToolCallId::from(call.id.clone()),
+                                    call_id: call.call_id.clone().map(ProviderCallId::from),
                                     display_as: tool_display_as,
                                 });
                             }
@@ -2017,7 +2022,7 @@ mod tests {
         let input = InputMessage {
             content: InputMessageContent::OAuth(OAuthRequired {
                 content_type: "oauth_required".to_owned(),
-                id: "oauth-1".to_owned(),
+                id: "oauth-1".into(),
                 call_id: None,
                 auth_url: "https://example.com/auth".to_owned(),
             }),
@@ -2149,7 +2154,7 @@ mod tests {
             "tc-sub",
             "thread report data",
             Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
-                tool_call_id: "tc-sub".to_owned(),
+                tool_call_id: "tc-sub".into(),
                 child_thread_id: "thread-1".into(),
             })),
         );
@@ -2187,7 +2192,7 @@ mod tests {
             "tc-sub",
             "thread report data",
             Some(SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
-                tool_call_id: "tc-sub".to_owned(),
+                tool_call_id: "tc-sub".into(),
                 child_thread_id: "thread-1".into(),
             })),
         );
@@ -2236,7 +2241,7 @@ mod tests {
             "event payload",
             Some(SyntheticKind::Tagged(
                 TaggedSyntheticKind::SubscriptionEvent {
-                    tool_call_id: "tc-sub".to_owned(),
+                    tool_call_id: "tc-sub".into(),
                     associative: false,
                     r#final: false,
                 },
@@ -2273,7 +2278,7 @@ mod tests {
             "event payload",
             Some(SyntheticKind::Tagged(
                 TaggedSyntheticKind::SubscriptionEvent {
-                    tool_call_id: "tc-sub".to_owned(),
+                    tool_call_id: "tc-sub".into(),
                     associative: false,
                     r#final: false,
                 },
@@ -2300,7 +2305,7 @@ mod tests {
             "some data",
             Some(SyntheticKind::Tagged(
                 TaggedSyntheticKind::SubscriptionEvent {
-                    tool_call_id: "nonexistent-tc".to_owned(),
+                    tool_call_id: "nonexistent-tc".into(),
                     associative: false,
                     r#final: false,
                 },
@@ -2368,7 +2373,7 @@ mod tests {
             "build output chunk\n[exit code: 0]",
             Some(SyntheticKind::Tagged(
                 TaggedSyntheticKind::SubscriptionEvent {
-                    tool_call_id: "tc-cmd".to_owned(),
+                    tool_call_id: "tc-cmd".into(),
                     associative: true,
                     r#final: false,
                 },
@@ -2411,7 +2416,7 @@ mod tests {
             "build output chunk\n[exit code: 0]",
             Some(SyntheticKind::Tagged(
                 TaggedSyntheticKind::SubscriptionEvent {
-                    tool_call_id: "tc-cmd".to_owned(),
+                    tool_call_id: "tc-cmd".into(),
                     associative: true,
                     r#final: false,
                 },
@@ -2753,8 +2758,8 @@ mod tests {
         async fn execute(
             &self,
             _: serde_json::Value,
-            _: String,
-            _: Option<String>,
+            _: ToolCallId,
+            _: Option<ProviderCallId>,
             _: &ToolContext<StubSender>,
         ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Ok(())
@@ -2765,14 +2770,14 @@ mod tests {
         async fn execute_synchronous(
             &self,
             args: &serde_json::Value,
-            id: &str,
-            call_id: Option<&str>,
+            id: &ToolCallId<str>,
+            call_id: Option<&ProviderCallId<str>>,
             _ctx: &ToolContext<StubSender>,
         ) -> Option<ToolResult> {
             let text = args["text"].as_str().unwrap_or("?");
             Some(ToolResult {
-                id: id.to_owned(),
-                call_id: call_id.map(String::from),
+                id: id.as_str().to_owned(),
+                call_id: call_id.map(|c| c.as_str().to_owned()),
                 content: vec![ToolResultContent::Text(
                     infinity_provider_protocol::message::Text {
                         text: format!("echo: {}", text),
@@ -3130,8 +3135,8 @@ mod tests {
                     async fn execute(
                         &self,
                         _: serde_json::Value,
-                        _: String,
-                        _: Option<String>,
+                        _: ToolCallId,
+                        _: Option<ProviderCallId>,
                         _: &ToolContext<StubSender>,
                     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         Ok(())
@@ -3233,8 +3238,8 @@ mod tests {
                     async fn execute(
                         &self,
                         _: serde_json::Value,
-                        _: String,
-                        _: Option<String>,
+                        _: ToolCallId,
+                        _: Option<ProviderCallId>,
                         _: &ToolContext<StubSender>,
                     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         Ok(())
@@ -3778,8 +3783,8 @@ mod tests {
                     async fn execute(
                         &self,
                         _: serde_json::Value,
-                        _: String,
-                        _: Option<String>,
+                        _: ToolCallId,
+                        _: Option<ProviderCallId>,
                         _: &ToolContext<StubSender>,
                     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         Ok(())
@@ -3988,8 +3993,8 @@ mod tests {
         async fn execute(
             &self,
             _: serde_json::Value,
-            _: String,
-            _: Option<String>,
+            _: ToolCallId,
+            _: Option<ProviderCallId>,
             _: &ToolContext<CapturingSender>,
         ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Err("stub".into())
@@ -4092,7 +4097,7 @@ mod tests {
         let input = InputMessage {
             content: InputMessageContent::UserChoice(crate::message::UserChoiceRequired {
                 content_type: "user_choice_required".to_owned(),
-                id: "choice-1".to_owned(),
+                id: "choice-1".into(),
                 call_id: None,
                 prompt: "pick one".to_owned(),
                 choices: vec!["a".to_owned(), "b".to_owned()],
@@ -4120,7 +4125,7 @@ mod tests {
         else {
             panic!("expected UserChoiceRequired, got {result:?}");
         };
-        assert_eq!(id, "choice-1");
+        assert_eq!(id.as_str(), "choice-1");
         assert_eq!(prompt, "pick one");
         assert_eq!(choices, vec!["a".to_owned(), "b".to_owned()]);
         assert_eq!(default, 0);
