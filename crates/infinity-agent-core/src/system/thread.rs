@@ -237,6 +237,17 @@ where
             .is_some_and(|(_, name)| name != CLOSE_THREAD_TOOL)
     }
 
+    /// Whether the thread holds inputs that were consumed from the transport
+    /// but not yet validated by model output (see
+    /// [`HistoryManager`] phase docs). They exist only in this thread's
+    /// memory: they were never persisted, and their delivery is already
+    /// settled, so dropping them (by letting the driver exit) would lose
+    /// them forever — e.g. a tool result whose call would then dangle in
+    /// the store, wedging the thread on events deferred against it.
+    pub fn has_unvalidated_inputs(&self) -> bool {
+        self.history.unvalidated_len() > 0
+    }
+
     /// Apply the deferral policy to a batch of inputs.
     ///
     /// While the thread waits on a pending active tool call, deferrable

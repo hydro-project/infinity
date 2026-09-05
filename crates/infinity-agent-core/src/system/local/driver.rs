@@ -353,7 +353,14 @@ where
             batch.push(item);
         }
         IdleDecision::Continue
-    } else if thread.awaiting_tool_result() {
+    } else if thread.awaiting_tool_result() || thread.has_unvalidated_inputs() {
+        // `has_unvalidated_inputs`: inputs consumed from the queue but not
+        // yet validated by model output (e.g. the completion round for them
+        // failed) exist only in this driver's memory. Exiting would drop
+        // them forever — a lost tool result leaves its call dangling in the
+        // store, and the reloaded thread would defer every synthetic event
+        // against a result that can never arrive again. Stay parked so the
+        // next input retries them.
         IdleDecision::AwaitInput
     } else {
         // Active subscriptions do not keep the driver resident. Their events

@@ -260,6 +260,30 @@ pub(crate) async fn wait_idle<Sub: Send + 'static>(running: &mut RunningSystem<S
     }
 }
 
+/// Wait until exactly one driver — `thread_id`'s — remains live (draining
+/// lifecycle notifications until the active set settles).
+pub(crate) async fn wait_until_only_active<Sub: Send + 'static>(
+    running: &mut RunningSystem<Sub>,
+    thread_id: &str,
+) {
+    let active = running.active_threads();
+    loop {
+        {
+            let set = active.lock().expect("bug: mutex poisoned");
+            if set.len() == 1 && set.iter().any(|t| t.as_str() == thread_id) {
+                return;
+            }
+        }
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            running.next_lifecycle_event(),
+        )
+        .await
+        .expect("timed out waiting for drivers to settle")
+        .expect("thread lifecycle channel closed");
+    }
+}
+
 /// The tool-result texts in a completion request's chat history.
 pub(crate) fn tool_result_texts(
     req: &infinity_provider_protocol::CompletionRequest,
