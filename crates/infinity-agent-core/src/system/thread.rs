@@ -511,6 +511,9 @@ where
             callback_url: self.inner.callback_url.clone(),
             user_id,
             thread_stack: self.history.get_thread_stack(),
+            // Stamped per-call during synchronous tool execution (see
+            // `run_completion`); meaningless at step scope.
+            safe_spawn_point: None,
         };
 
         observer.on_event(&thread_id, &AgentEvent::CompletionStarted);

@@ -622,7 +622,7 @@ async fn child_pending_choice_updates_root_session_status() {
                     &session_id,
                     rap_protocol::ToolCallId::from_ref("spawn-call"),
                     false,
-                    SpawnContext::Inherit,
+                    SpawnContext::InheritUpTo(0),
                 )
                 .await
                 .expect("spawn child thread");
