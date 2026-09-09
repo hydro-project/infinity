@@ -1506,3 +1506,413 @@ async fn overflow_after_interrupt_drops_user_inputs_and_stops() {
         })
         .await;
 }
+
+/// Reproduction: a child thread parked on `sleep_until_event_or_input`
+/// receives a parent message, but the provider fails the completion with a
+/// fatal error (e.g. expired auth). Once the provider recovers, a later
+/// parent message must still reach the child.
+#[tokio::test(flavor = "current_thread")]
+async fn parent_message_after_fatal_error_still_reaches_sleeping_child() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (mut running, mut _rx, mut ctrl, _conv) = start_system(vec![], None);
+
+            // ── Spawn a child thread from the root ──
+            running
+                .send_user_text(ThreadId::from_ref("root"), "spawn a child")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_tool_call(
+                "tc-spawn",
+                "spawn_thread",
+                serde_json::json!({
+                    "instructions": "wait for my messages",
+                    "child_of": ["root"]
+                }),
+            );
+            ctrl.finish();
+
+            // Parent loops back after the sync spawn — extract the child id.
+            let parent_followup = ctrl.next_request().await;
+            let child_thread_id = tool_result_texts(&parent_followup)
+                .iter()
+                .find_map(|t| {
+                    let after =
+                        t.strip_prefix("Child thread is successfully spawned and has ID: ")?;
+                    Some(after.split('.').next()?.to_owned())
+                })
+                .expect("should find child thread ID in spawn result");
+            ctrl.send_text("ok, child spawned");
+            ctrl.finish();
+
+            // ── Child's first round: it goes to sleep ──
+            let child_req = ctrl.next_request().await;
+            assert!(
+                format!("{:?}", child_req.chat_history).contains("INSIDE the thread"),
+                "expected the child's seed round"
+            );
+            ctrl.send_tool_call(
+                "tc-sleep",
+                "sleep_until_event_or_input",
+                serde_json::json!({}),
+            );
+            ctrl.finish();
+
+            // ── Parent sends a message to the sleeping child ──
+            running
+                .send_user_text(ThreadId::from_ref("root"), "message the child")
+                .await;
+            let _parent_req = ctrl.next_request().await;
+            ctrl.send_tool_call(
+                "tc-msg1",
+                "send_message_to_child",
+                serde_json::json!({
+                    "thread_id": child_thread_id,
+                    "message": "hello child"
+                }),
+            );
+            ctrl.finish();
+
+            // Two rounds follow in scheduling-dependent order: the parent's
+            // follow-up (send_message_to_child tool result) and the child's
+            // wake-up with the parent message. The child's round fails with a
+            // FATAL provider error (auth).
+            for _ in 0..2 {
+                let req = ctrl.next_request().await;
+                let history = format!("{:?}", req.chat_history);
+                if history.contains("Message from parent thread: hello child") {
+                    ctrl.send_error(
+                        infinity_provider_protocol::CompletionError::provider(
+                            infinity_provider_protocol::ErrorClass::Fatal,
+                            "auth expired",
+                        ),
+                    );
+                    ctrl.drop_stream();
+                } else {
+                    ctrl.send_text("message sent");
+                    ctrl.finish();
+                }
+            }
+            // The child driver must stay resident: it holds inputs that were
+            // consumed from the queue but never persisted (the fatal round
+            // produced no model output to validate them). Wait until only
+            // the child remains active.
+            wait_until_only_active(&mut running, &child_thread_id).await;
+
+            // ── Provider "recovers"; parent sends another message ──
+            running
+                .send_user_text(ThreadId::from_ref("root"), "message the child again")
+                .await;
+            let _parent_req = ctrl.next_request().await;
+            ctrl.send_tool_call(
+                "tc-msg2",
+                "send_message_to_child",
+                serde_json::json!({
+                    "thread_id": child_thread_id,
+                    "message": "hello again"
+                }),
+            );
+            ctrl.finish();
+
+            // Again two rounds: the parent's follow-up and (hopefully) the
+            // child's wake-up containing "hello again". Match on the
+            // child-side text — the parent's own history also contains
+            // "hello again" inside the send_message_to_child call args.
+            let mut child_got_message = false;
+            for _ in 0..2 {
+                let req = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    ctrl.next_request(),
+                )
+                .await
+                .expect("timed out waiting for a model round after provider recovery");
+                let history = format!("{:?}", req.chat_history);
+                if history.contains("Message from parent thread: hello again") {
+                    // The first message was consumed while the provider was
+                    // failing; it must have been retained (in memory) and
+                    // retried in this round rather than silently lost.
+                    assert!(
+                        history.contains("Message from parent thread: hello child"),
+                        "the message consumed during the fatal error must be retried, not lost; got {history}"
+                    );
+                    child_got_message = true;
+                    ctrl.send_text("got it");
+                    ctrl.finish();
+                } else {
+                    ctrl.send_text("message sent");
+                    ctrl.finish();
+                }
+            }
+            assert!(
+                child_got_message,
+                "the child must receive parent messages after the provider recovers"
+            );
+        })
+        .await;
+}
+
+/// Variant: the child is waiting on an *active* tool call when the parent
+/// message arrives (so the message is deferred). The tool result then lands
+/// together with the drained parent message, but the completion fails with a
+/// fatal provider error: both inputs were consumed from the queue yet never
+/// persisted. The store still ends with the dangling tool call, so after the
+/// driver exits every later parent message defers forever against a tool
+/// result that can never arrive again.
+#[tokio::test(flavor = "current_thread")]
+async fn parent_message_after_fatal_error_during_active_tool_call() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (mut running, mut _rx, mut ctrl, _conv) =
+                start_system(vec![Box::new(AsyncTool)], None);
+
+            // ── Spawn a child thread from the root ──
+            running
+                .send_user_text(ThreadId::from_ref("root"), "spawn a child")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_tool_call(
+                "tc-spawn",
+                "spawn_thread",
+                serde_json::json!({
+                    "instructions": "work then wait",
+                    "child_of": ["root"]
+                }),
+            );
+            ctrl.finish();
+
+            let parent_followup = ctrl.next_request().await;
+            let child_thread_id = tool_result_texts(&parent_followup)
+                .iter()
+                .find_map(|t| {
+                    let after =
+                        t.strip_prefix("Child thread is successfully spawned and has ID: ")?;
+                    Some(after.split('.').next()?.to_owned())
+                })
+                .expect("should find child thread ID in spawn result");
+            ctrl.send_text("ok, child spawned");
+            ctrl.finish();
+
+            // ── Child's first round: it starts an async (active) tool call ──
+            let _child_req = ctrl.next_request().await;
+            ctrl.send_tool_call("tc-work", "async_tool", serde_json::json!({}));
+            ctrl.finish();
+
+            // ── Parent messages the child while tc-work is pending: deferred ──
+            running
+                .send_user_text(ThreadId::from_ref("root"), "message the child")
+                .await;
+            let _parent_req = ctrl.next_request().await;
+            ctrl.send_tool_call(
+                "tc-msg1",
+                "send_message_to_child",
+                serde_json::json!({
+                    "thread_id": child_thread_id,
+                    "message": "hello child"
+                }),
+            );
+            ctrl.finish();
+            // Parent's follow-up round after the tool result.
+            let parent_req = ctrl.next_request().await;
+            assert!(
+                format!("{:?}", parent_req.chat_history).contains("Message sent to child thread"),
+                "expected the parent's follow-up round"
+            );
+            ctrl.send_text("message sent");
+            ctrl.finish();
+
+            // ── The async tool result arrives; the batch settles the pending
+            //    call and drains the deferred parent message. This completion
+            //    fails with a FATAL provider error (auth). ──
+            running
+                .send(
+                    tool_result_input(&child_thread_id, "tc-work", "work finished").0,
+                    "res-work",
+                )
+                .await;
+            let child_req = ctrl.next_request().await;
+            let history = format!("{:?}", child_req.chat_history);
+            assert!(
+                history.contains("work finished")
+                    && history.contains("Message from parent thread: hello child"),
+                "the child round must include the tool result and the drained parent message; got {history}"
+            );
+            ctrl.send_error(infinity_provider_protocol::CompletionError::provider(
+                infinity_provider_protocol::ErrorClass::Fatal,
+                "auth expired",
+            ));
+            ctrl.drop_stream();
+            // The child driver must stay resident: it consumed the tool
+            // result and the deferred parent message, neither of which was
+            // persisted. Wait until only the child remains active.
+            wait_until_only_active(&mut running, &child_thread_id).await;
+
+            // ── Provider "recovers"; parent sends another message ──
+            running
+                .send_user_text(ThreadId::from_ref("root"), "message the child again")
+                .await;
+            let _parent_req = ctrl.next_request().await;
+            ctrl.send_tool_call(
+                "tc-msg2",
+                "send_message_to_child",
+                serde_json::json!({
+                    "thread_id": child_thread_id,
+                    "message": "hello again"
+                }),
+            );
+            ctrl.finish();
+
+            // The parent's follow-up and (hopefully) the child's wake-up.
+            // Match on the child-side text — the parent's own history also
+            // contains "hello again" inside the send_message_to_child args.
+            let mut child_got_message = false;
+            for _ in 0..2 {
+                let Ok(req) = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    ctrl.next_request(),
+                )
+                .await
+                else {
+                    break;
+                };
+                let history = format!("{:?}", req.chat_history);
+                if history.contains("Message from parent thread: hello again") {
+                    // The tool result and the deferred first message were
+                    // consumed during the fatal round; they must have been
+                    // retained and retried rather than silently lost (a lost
+                    // tool result would leave tc-work dangling forever).
+                    assert!(
+                        history.contains("work finished")
+                            && history.contains("Message from parent thread: hello child"),
+                        "inputs consumed during the fatal error must be retried, not lost; got {history}"
+                    );
+                    child_got_message = true;
+                    ctrl.send_text("got it");
+                    ctrl.finish();
+                } else {
+                    ctrl.send_text("message sent");
+                    ctrl.finish();
+                }
+            }
+            assert!(
+                child_got_message,
+                "the child must receive parent messages after the provider recovers"
+            );
+        })
+        .await;
+}
+
+/// Regression: a sleeping parent must be woken by its child's close report
+/// even after a compaction folded the child's `spawn_thread` tool call into
+/// the summary. Compaction never deletes store rows, so the original call
+/// must be found by unwinding past the compaction boundary instead of
+/// dropping the report.
+#[tokio::test(flavor = "current_thread")]
+async fn child_close_report_wakes_sleeping_parent_after_compaction() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (running, mut rx, mut ctrl, _conv) = start_system(vec![], None);
+
+            // ── Parent spawns a child, then goes to sleep ──
+            running
+                .send_user_text(ThreadId::from_ref("root"), "spawn a child")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_tool_call(
+                "tc-spawn",
+                "spawn_thread",
+                serde_json::json!({
+                    "instructions": "work, then close when asked",
+                    "child_of": ["root"]
+                }),
+            );
+            ctrl.finish();
+
+            let parent_followup = ctrl.next_request().await;
+            let child_thread_id = tool_result_texts(&parent_followup)
+                .iter()
+                .find_map(|t| {
+                    let after =
+                        t.strip_prefix("Child thread is successfully spawned and has ID: ")?;
+                    Some(after.split('.').next()?.to_owned())
+                })
+                .expect("should find child thread ID in spawn result");
+            ctrl.send_tool_call(
+                "tc-sleep",
+                "sleep_until_event_or_input",
+                serde_json::json!({}),
+            );
+            ctrl.finish();
+
+            // ── Child's seed round: it acknowledges and idles ──
+            let child_req = ctrl.next_request().await;
+            assert!(
+                format!("{:?}", child_req.chat_history).contains("INSIDE the thread"),
+                "expected the child's seed round"
+            );
+            ctrl.send_text("child ready");
+            ctrl.finish();
+
+            // ── Manually trigger compaction on the sleeping parent ──
+            running
+                .send(
+                    InputMessage {
+                        content: InputMessageContent::User(UserContent::text("")),
+                        group_id: "root".into(),
+                        metadata: None,
+                        synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::Compaction)),
+                        display_as: None,
+                        subscription: false,
+                    },
+                    "compact-1",
+                )
+                .await;
+            let creq = ctrl.next_request().await;
+            assert!(is_compaction_req(&creq), "expected the compaction child");
+            handle_compaction_child(&mut ctrl, &creq, "parent spawned a child and went to sleep");
+
+            // Wait until the parent has actually applied the compaction, so
+            // the child's report arrives strictly after the spawn call was
+            // folded into the summary.
+            loop {
+                if let Evt::E(AgentEvent::CompactionApplied) = next_evt(&mut rx).await {
+                    break;
+                }
+            }
+
+            // ── The child closes with a report ──
+            running
+                .send_user_text(ThreadId::from_ref(&child_thread_id), "close now")
+                .await;
+            let _child_req = ctrl.next_request().await;
+            ctrl.send_tool_call(
+                "tc-close",
+                "close_thread",
+                serde_json::json!({
+                    "thread_id": child_thread_id,
+                    "report_to_parent": "child finished its work",
+                }),
+            );
+            ctrl.finish();
+
+            // ── The sleeping parent must be woken by the close report ──
+            let parent_req =
+                tokio::time::timeout(std::time::Duration::from_secs(5), ctrl.next_request())
+                    .await
+                    .expect("the sleeping parent must be woken by the child's close report");
+            let history = format!("{:?}", parent_req.chat_history);
+            assert!(
+                history.contains("child finished its work"),
+                "the parent's wake-up round must include the child's report; got {history}"
+            );
+            assert!(
+                history.contains("[Compacted conversation summary]"),
+                "the parent's history must be the compacted view; got {history}"
+            );
+            ctrl.send_text("resumed");
+            ctrl.finish();
+        })
+        .await;
+}

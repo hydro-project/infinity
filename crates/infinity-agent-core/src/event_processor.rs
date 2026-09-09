@@ -758,6 +758,105 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         std::mem::take(&mut *self.interrupted_tool_calls.borrow_mut())
     }
 
+    /// Find a tool call by ID, unwinding past compaction boundaries.
+    ///
+    /// Compaction folds old messages into a summary in the loaded *view*
+    /// only — the store still holds every row. A synthetic event that
+    /// references a summarized-away call (e.g. a child's close report whose
+    /// `spawn_thread` call was compacted while the parent slept) must still
+    /// resolve it, so the search order is:
+    ///
+    /// 1. the live in-memory history (the common case);
+    /// 2. this thread's own persisted rows, which a compaction summary may
+    ///    hide from the view;
+    /// 3. each ancestor's inherited slice (nearest first), which the loaded
+    ///    view may likewise hide behind a compaction boundary.
+    ///
+    /// Store errors are logged and treated as "keep looking": a flaky store
+    /// should not fail the caller when a later slice may still match.
+    pub async fn find_tool_call(
+        &self,
+        tool_call_id: &str,
+    ) -> Option<infinity_provider_protocol::message::ToolCall> {
+        let in_view = self.history.borrow().iter().find_map(|msg| {
+            if let InfinityMessage::ToolCall { call, .. } = msg
+                && call.id == tool_call_id
+            {
+                Some(call.clone())
+            } else {
+                None
+            }
+        });
+        if in_view.is_some() {
+            return in_view;
+        }
+
+        let find_in = |messages: Vec<InfinityMessage>| {
+            messages.into_iter().find_map(|msg| {
+                if let InfinityMessage::ToolCall { call, .. } = msg
+                    && call.id == tool_call_id
+                {
+                    Some(call)
+                } else {
+                    None
+                }
+            })
+        };
+
+        // This thread's own rows, including any compacted-away prefix.
+        match self
+            .conversation_store
+            .load_history_up_to(&self.thread_id, None, None)
+            .await
+        {
+            Ok(messages) => {
+                if let Some(call) = find_in(messages) {
+                    return Some(call);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "failed to load own history while resolving tool call {tool_call_id}: {e}"
+                );
+            }
+        }
+
+        // Ancestor slices, nearest ancestor first.
+        let ancestors = match self
+            .conversation_store
+            .get_ancestor_chain(&self.thread_id)
+            .await
+        {
+            Ok(ancestors) => ancestors,
+            Err(e) => {
+                tracing::warn!(
+                    "failed to load ancestor chain while resolving tool call {tool_call_id}: {e}"
+                );
+                return None;
+            }
+        };
+        for (ancestor_id, cutoff) in ancestors.iter().rev() {
+            match self
+                .conversation_store
+                .load_history_up_to(ancestor_id, None, Some(*cutoff))
+                .await
+            {
+                Ok(messages) => {
+                    if let Some(call) = find_in(messages) {
+                        return Some(call);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "failed to load ancestor {ancestor_id} history while resolving tool \
+                         call {tool_call_id}: {e}"
+                    );
+                }
+            }
+        }
+        None
+    }
+
     /// Compute a safe spawn point that excludes trailing unanswered tool calls
     /// and any unvalidated (not yet persistable) inputs. Returns an absolute
     /// store order (accounting for prior compaction offset and ancestor
@@ -1014,15 +1113,12 @@ where
             original_tool_call_id
         );
 
-        let original_call = current_history.history.borrow().iter().find_map(|msg| {
-            if let InfinityMessage::ToolCall { call, .. } = msg
-                && call.id == original_tool_call_id
-            {
-                Some(call.clone())
-            } else {
-                None
-            }
-        });
+        // Resolve the originating tool call, unwinding past compaction
+        // boundaries: the call may have been folded into a compaction
+        // summary in the loaded view, but the store still holds it (and
+        // dropping the event would lose e.g. a child's close report
+        // forever, leaving a sleeping parent parked with no wake-up).
+        let original_call = current_history.find_tool_call(&original_tool_call_id).await;
 
         let Some(original_call) = original_call else {
             tracing::warn!(
@@ -1240,8 +1336,7 @@ where
 }
 
 /// Compute the [`AgentEvent`] for an input that was just accepted into
-/// history. Returns `None` for inputs with no display representation (e.g. a
-/// synthetic event whose originating tool call is no longer in history).
+/// history. Returns `None` for inputs with no display representation.
 pub fn input_event<C, S>(
     current_history: &HistoryManager<C, S>,
     input_msg: &InputMessage,
@@ -1254,33 +1349,40 @@ where
         if let InputMessageContent::User(UserContent::ToolResult(res)) = &input_msg.content
             && let Some(ToolResultContent::Text(text)) = res.content.first()
         {
-            let orig_call = current_history.get_history(true).into_iter().find(|h| {
-                if let Message::Assistant { content, .. } = h
+            // A thread report is named after its child thread; everything
+            // else is named after the originating tool call. That call may
+            // have been folded into a compaction summary (it still resolves
+            // from the store for processing, see
+            // [`HistoryManager::find_tool_call`]), in which case the display
+            // falls back to the call ID rather than hiding the event.
+            let name = if let SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
+                ref child_thread_id,
+                ..
+            }) = *synth
+            {
+                format!("Report from child thread {}", child_thread_id)
+            } else {
+                let orig_call = current_history.get_history(true).into_iter().find(|h| {
+                    if let Message::Assistant { content, .. } = h
+                        && let Some(AssistantContent::ToolCall(c)) = content.first()
+                    {
+                        c.id == synth.tool_call_id()
+                    } else {
+                        false
+                    }
+                });
+                if let Some(Message::Assistant { content, .. }) = orig_call
                     && let Some(AssistantContent::ToolCall(c)) = content.first()
                 {
-                    c.id == synth.tool_call_id()
-                } else {
-                    false
-                }
-            });
-
-            if let Some(Message::Assistant { content, .. }) = orig_call
-                && let Some(AssistantContent::ToolCall(c)) = content.first()
-            {
-                let name = if let SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
-                    ref child_thread_id,
-                    ..
-                }) = *synth
-                {
-                    format!("Report from child thread {}", child_thread_id)
-                } else {
                     format!("{}({})", c.function.name, c.function.arguments)
-                };
-                return Some(AgentEvent::SubscriptionEvent {
-                    name,
-                    text: text.text.clone(),
-                });
-            }
+                } else {
+                    format!("Event for tool call {}", synth.tool_call_id())
+                }
+            };
+            return Some(AgentEvent::SubscriptionEvent {
+                name,
+                text: text.text.clone(),
+            });
         }
         None
     } else if let InputMessageContent::User(UserContent::ToolResult(res)) = &input_msg.content
