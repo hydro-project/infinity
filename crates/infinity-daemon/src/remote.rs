@@ -402,7 +402,7 @@ async fn open_remote_connection(
     // Ensure no stale socket
     let _ = std::fs::remove_file(&local_sock);
 
-    let child = tokio::process::Command::new("ssh")
+    let mut child = tokio::process::Command::new("ssh")
         .args(ssh_args)
         .arg("-L")
         .arg(format!("{}:{}", local_sock.display(), remote_sock))
@@ -415,11 +415,19 @@ async fn open_remote_connection(
         .map_err(|e| format!("ssh tunnel spawn failed: {e}"))?;
 
     // Wait for the local socket to appear (SSH needs a moment to bind it)
-    for _ in 0..50 {
-        if local_sock.exists() {
-            break;
+    'outer: for _ in 0..10 {
+        for _ in 0..50 {
+            if local_sock.exists() {
+                break 'outer;
+            } else if let Ok(Some(e)) = child.try_wait() {
+                return Err(format!("SSH child exited while waiting for connection, {e}").into());
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        tracing::warn!("SSH tunnel not ready, waiting for 5 seconds");
+        tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
     }
 
     let stream = UnixStream::connect(&local_sock)
