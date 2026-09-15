@@ -24,6 +24,17 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 
+# Not used directly. Pins tokio's features for the sim-test dylib: Hydro's
+# simulator compiles this crate into a dylib from a manifest derived from this
+# Cargo.toml alone, while the host test binary gets the *workspace-unified*
+# tokio features (e.g. `full` from infinity-slack-bot, `test-util` from
+# infinity-agent-cli's dev-deps). If the two disagree, tokio's internals are
+# laid out differently on each side of the dylib boundary — undefined behavior
+# that manifested as a deterministic SIGSEGV in the sim tests on macOS CI.
+# Keep this the union of every tokio feature enabled anywhere in the workspace.
+# Remove once https://github.com/hydro-project/hydro/issues/3183 is fixed.
+tokio = { workspace = true, features = ["full", "test-util"] }
+
 [dev-dependencies]
 hydro_lang = { version = "0.17.0-alpha.2", features = ["sim"] }
 futures = "0.3"
