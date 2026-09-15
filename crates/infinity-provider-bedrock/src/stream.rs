@@ -95,12 +95,12 @@ pub(crate) fn convert_stream(response: ConverseStreamResponse) -> ModelStream {
                         continue;
                     };
                     match delta {
-                        bedrock::ContentBlockDelta::Text(text) => {
+                        bedrock::ContentBlockDelta::Text(text)
                             // Text between tool-use start and stop belongs to
                             // the tool call, not the assistant message.
-                            if tool_call.is_none() {
-                                yield Ok(StreamChunk::Text(text));
-                            }
+                            if tool_call.is_none() =>
+                        {
+                            yield Ok(StreamChunk::Text(text));
                         }
                         bedrock::ContentBlockDelta::ToolUse(delta) => {
                             if let Some(state) = tool_call.as_mut() {
