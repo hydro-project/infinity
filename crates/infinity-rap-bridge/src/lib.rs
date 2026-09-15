@@ -151,7 +151,7 @@ impl RapToolSet {
     /// [`RapCallbackBridge`] or another receiver for RAP callbacks.
     pub async fn connect(
         server_urls: impl IntoIterator<Item = String>,
-        session_id: &str,
+        session_id: &rap_protocol::ThreadId<str>,
         callback_url: impl Into<String>,
     ) -> Result<Self, BoxError> {
         let server_urls: Vec<String> = server_urls.into_iter().collect();

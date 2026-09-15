@@ -47,7 +47,7 @@ use tokio::sync::mpsc;
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// The display-event payload type the harness feeds to the UI.
-pub type DisplayItem = (Option<String>, DisplayEvent);
+pub type DisplayItem = (Option<infinity_protocol::ThreadRef>, DisplayEvent);
 
 // ── Emulator abstraction ────────────────────────────────────────────────────
 
@@ -394,7 +394,7 @@ pub struct HarnessOptions {
     pub model_name: String,
     pub provider_id: String,
     pub context_window: usize,
-    pub initial_sessions: HashMap<String, SessionInfo>,
+    pub initial_sessions: HashMap<infinity_protocol::ThreadRef, SessionInfo>,
     pub available_models: Vec<ModelInfo>,
     pub initial_message: Option<String>,
 }
@@ -435,10 +435,11 @@ pub struct TuiHarness {
     pub display_tx: mpsc::UnboundedSender<DisplayItem>,
     pub session_tx: mpsc::UnboundedSender<SessionChanged>,
     pub model_switched_tx: mpsc::UnboundedSender<terminal::ModelSwitched>,
-    pub sessions_updated_tx: mpsc::UnboundedSender<HashMap<String, SessionInfo>>,
+    pub sessions_updated_tx:
+        mpsc::UnboundedSender<HashMap<infinity_protocol::ThreadRef, SessionInfo>>,
     pub detach_result_tx: mpsc::UnboundedSender<DetachResult>,
     pub input_rx: mpsc::UnboundedReceiver<String>,
-    pub load_session_rx: mpsc::UnboundedReceiver<(Option<String>, bool)>,
+    pub load_session_rx: mpsc::UnboundedReceiver<(Option<infinity_protocol::ThreadRef>, bool)>,
     pub model_switch_rx: mpsc::UnboundedReceiver<usize>,
     pub soft_detach_rx: mpsc::UnboundedReceiver<()>,
     pub choice_answered_rx: mpsc::UnboundedReceiver<(String, usize)>,
@@ -565,7 +566,7 @@ impl TuiHarness {
     /// Send a display event attributed to a child thread.
     pub fn display_for_thread(&self, thread_id: &str, event: DisplayEvent) {
         self.display_tx
-            .send((Some(thread_id.to_owned()), event))
+            .send((Some(thread_id.into()), event))
             .expect("bug: UI task dropped display channel");
     }
 

@@ -6,7 +6,8 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use infinity_protocol::{
-    ClientMessage, DaemonMessage, ModelRef, SessionInfo, TokenUsage, length_delimited_codec,
+    ClientMessage, DaemonMessage, ModelRef, SessionInfo, ThreadRef, TokenUsage,
+    length_delimited_codec,
 };
 use std::path::PathBuf;
 use tokio::io::AsyncBufReadExt;
@@ -35,7 +36,7 @@ fn convert_token_usage(u: &TokenUsage) -> infinity_provider_protocol::Usage {
 
 /// Convert a DaemonMessage into a (thread_id, DisplayEvent) tuple.
 /// Returns None for messages that are handled separately (Connected, Welcome, etc.).
-fn daemon_msg_to_display(msg: DaemonMessage) -> Option<(Option<String>, DisplayEvent)> {
+fn daemon_msg_to_display(msg: DaemonMessage) -> Option<(Option<ThreadRef>, DisplayEvent)> {
     Some(match msg {
         DaemonMessage::StartOutput { thread_id } => (thread_id, DisplayEvent::StartOutput),
         DaemonMessage::TextChunk { thread_id, chunk } => {
@@ -372,7 +373,7 @@ pub async fn run_headless(message: String) -> Result<(), BoxError> {
     // Wait for Connected to get the session ID.
     let session_id = loop {
         match recv(&mut framed).await? {
-            DaemonMessage::Connected { session_id, .. } => break session_id,
+            DaemonMessage::Connected { root_thread_id, .. } => break root_thread_id,
             DaemonMessage::Error { text, .. } => return Err(text.into()),
             _ => continue, // skip SessionsUpdated, etc.
         }
@@ -380,7 +381,7 @@ pub async fn run_headless(message: String) -> Result<(), BoxError> {
 
     // Send the user's message.
     let msg = ClientMessage::UserInput {
-        session_id: session_id.clone(),
+        thread_id: session_id.clone(),
         text: message,
     };
     framed.send(Bytes::from(serde_json::to_vec(&msg)?)).await?;
@@ -540,15 +541,15 @@ where
         _ => return Err("expected Welcome from daemon".into()),
     };
 
-    let (display_tx, display_rx) = mpsc::unbounded_channel::<(Option<String>, DisplayEvent)>();
+    let (display_tx, display_rx) = mpsc::unbounded_channel::<(Option<ThreadRef>, DisplayEvent)>();
     let (input_tx, input_rx) = mpsc::unbounded_channel::<String>();
-    let (load_session_tx, load_session_rx) = mpsc::unbounded_channel::<(Option<String>, bool)>();
+    let (load_session_tx, load_session_rx) = mpsc::unbounded_channel::<(Option<ThreadRef>, bool)>();
     let (model_switch_tx, model_switch_rx) = mpsc::unbounded_channel::<usize>();
     let (session_tx, session_rx) = mpsc::unbounded_channel::<SessionChanged>();
     let (model_switched_tx, model_switched_rx) =
         mpsc::unbounded_channel::<crate::terminal::ModelSwitched>();
     let (sessions_updated_tx, sessions_updated_rx) =
-        mpsc::unbounded_channel::<HashMap<String, SessionInfo>>();
+        mpsc::unbounded_channel::<HashMap<ThreadRef, SessionInfo>>();
     let (soft_detach_tx, soft_detach_rx) = mpsc::unbounded_channel::<()>();
     let (detach_result_tx, detach_result_rx) = mpsc::unbounded_channel::<DetachResult>();
     let (choice_answered_tx, choice_answered_rx) = mpsc::unbounded_channel::<(String, usize)>();
@@ -559,19 +560,20 @@ where
 
     // If --session was provided, connect to it immediately (supports prefix matching).
     if let Some(ref session_id) = session {
-        let matches: Vec<&String> = sessions
+        let matches: Vec<(&ThreadRef, String)> = sessions
             .keys()
-            .filter(|k| k.starts_with(session_id.as_str()))
+            .map(|k| (k, k.to_string()))
+            .filter(|(_, rendered)| rendered.starts_with(session_id.as_str()))
             .collect();
         let resolved = match matches.len() {
             0 => return Err(format!("no session found matching prefix '{session_id}'").into()),
-            1 => matches[0].clone(),
+            1 => matches[0].0.clone(),
             _ => {
                 return Err(format!(
                     "ambiguous session prefix '{session_id}' — matches: {}",
                     matches
                         .iter()
-                        .map(|s| s.as_str())
+                        .map(|(_, rendered)| rendered.as_str())
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -579,7 +581,7 @@ where
             }
         };
         to_daemon.send(ClientMessage::Connect {
-            session_id: resolved,
+            root_thread_id: resolved,
             thread_id: None,
             keeps_session_alive: true,
         })?;
@@ -608,7 +610,7 @@ where
         choice_answered_tx,
     ));
 
-    let mut active_session: Option<String> = None;
+    let mut active_session: Option<ThreadRef> = None;
     let mut pending_input: Vec<String> = Vec::new();
     // The model most recently selected via the model picker. Stored locally so
     // it can be passed when creating new sessions, even if no session is active.
@@ -637,12 +639,12 @@ where
                         break;
                     };
                     match msg {
-                        DaemonMessage::Connected { session_id, title, total_tokens_used, model_name, context_window, provider_id, .. } => {
-                            active_session = Some(session_id.clone());
-                            let _ = session_tx.send(SessionChanged { session_id, title, total_tokens_used, model_name, context_window, provider_id });
+                        DaemonMessage::Connected { root_thread_id, title, total_tokens_used, model_name, context_window, provider_id, .. } => {
+                            active_session = Some(root_thread_id.clone());
+                            let _ = session_tx.send(SessionChanged { session_id: root_thread_id, title, total_tokens_used, model_name, context_window, provider_id });
                             for text in pending_input.drain(..) {
                                 let sid = active_session.as_ref().expect("bug: active_session should be set after Connected").clone();
-                                let _ = to_daemon.send(ClientMessage::UserInput { session_id: sid, text });
+                                let _ = to_daemon.send(ClientMessage::UserInput { thread_id: sid, text });
                             }
                         }
                         DaemonMessage::ModelSwitched { thread_id, model_name, context_window, provider_id } => {
@@ -699,7 +701,7 @@ where
                     let Some(()) = msg else { break };
                     if let Some(ref sid) = active_session {
                         pending_soft_detach = true;
-                        let _ = to_daemon.send(ClientMessage::SoftDetach { session_id: sid.clone() });
+                        let _ = to_daemon.send(ClientMessage::SoftDetach { root_thread_id: sid.clone() });
                     }
                 }
 
@@ -707,7 +709,7 @@ where
                     let Some((maybe_target, shut_down_old)) = maybe_target else { break };
                     if let Some(ref sid) = active_session {
                         if shut_down_old {
-                            let _ = to_daemon.send(ClientMessage::ShutdownSession { session_id: sid.clone() });
+                            let _ = to_daemon.send(ClientMessage::ShutdownSession { root_thread_id: sid.clone() });
                         } else {
                             let _ = to_daemon.send(ClientMessage::Disconnect);
                         }
@@ -721,7 +723,7 @@ where
                     }
 
                     if let Some(target) = maybe_target {
-                        let _ = to_daemon.send(ClientMessage::Connect { session_id: target, thread_id: None, keeps_session_alive: true });
+                        let _ = to_daemon.send(ClientMessage::Connect { root_thread_id: target, thread_id: None, keeps_session_alive: true });
                     } // if none, will be created on next user input
                 }
 
@@ -736,7 +738,7 @@ where
                         selected_model = Some(model.clone());
                         if let Some(sid) = &active_session {
                             let _ = to_daemon.send(ClientMessage::SwitchModel {
-                                session_id: sid.clone(), model,
+                                thread_id: sid.clone(), model,
                             });
                         }
                     }
@@ -756,12 +758,12 @@ where
                     let Some(text) = text else { break };
                     if let Some(ref sid) = active_session {
                         if text == "__compact__" {
-                            let _ = to_daemon.send(ClientMessage::TriggerCompaction { session_id: sid.clone() });
+                            let _ = to_daemon.send(ClientMessage::TriggerCompaction { root_thread_id: sid.clone() });
                         } else if text == "__archive__" {
-                            let _ = to_daemon.send(ClientMessage::ArchiveSession { session_id: sid.clone() });
+                            let _ = to_daemon.send(ClientMessage::ArchiveSession { root_thread_id: sid.clone() });
                             active_session = None;
                         } else {
-                            let _ = to_daemon.send(ClientMessage::UserInput { session_id: sid.clone(), text });
+                            let _ = to_daemon.send(ClientMessage::UserInput { thread_id: sid.clone(), text });
                         }
                     } else {
                         pending_input.push(text);
@@ -789,7 +791,9 @@ where
         if keep_running {
             let _ = to_daemon.send(ClientMessage::Disconnect);
         } else {
-            let _ = to_daemon.send(ClientMessage::ShutdownSession { session_id: sid });
+            let _ = to_daemon.send(ClientMessage::ShutdownSession {
+                root_thread_id: sid,
+            });
         }
     }
 

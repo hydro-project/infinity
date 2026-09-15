@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use infinity_protocol::ThreadRef;
+
 use crate::BoxError;
 
 /// A pending approval/choice waiting for user response.
@@ -10,9 +12,11 @@ pub struct PendingChoice {
     pub choices: Vec<String>,
 }
 
-/// Persists the Slack thread_ts → Infinity session_id mapping to disk.
+/// Persists the Slack thread_ts → Infinity session (root thread) mapping to
+/// disk. `ThreadRef` serializes as the plain id string, so the JSON format is
+/// unchanged.
 pub struct SessionStore {
-    map: HashMap<String, String>,
+    map: HashMap<String, ThreadRef>,
     /// thread_ts → pending choice (not persisted; transient)
     pending_choices: HashMap<String, PendingChoice>,
     path: PathBuf,
@@ -38,11 +42,11 @@ impl SessionStore {
         })
     }
 
-    pub fn get(&self, thread_ts: &str) -> Option<&String> {
+    pub fn get(&self, thread_ts: &str) -> Option<&ThreadRef> {
         self.map.get(thread_ts)
     }
 
-    pub fn insert(&mut self, thread_ts: String, session_id: String) {
+    pub fn insert(&mut self, thread_ts: String, session_id: ThreadRef) {
         self.map.insert(thread_ts, session_id);
         if let Err(e) = self.save() {
             tracing::error!("failed to persist session map: {e}");
@@ -50,7 +54,7 @@ impl SessionStore {
     }
 
     /// Insert without persisting to disk (for use in tests or transient state).
-    pub fn insert_ephemeral(&mut self, thread_ts: String, session_id: String) {
+    pub fn insert_ephemeral(&mut self, thread_ts: String, session_id: ThreadRef) {
         self.map.insert(thread_ts, session_id);
     }
 
@@ -63,7 +67,7 @@ impl SessionStore {
         }
     }
 
-    pub fn values(&self) -> impl Iterator<Item = &String> {
+    pub fn values(&self) -> impl Iterator<Item = &ThreadRef> {
         self.map.values()
     }
 
@@ -114,7 +118,10 @@ mod tests {
 
         // Reload from disk
         let store = SessionStore::load(path.clone()).expect("reload should succeed");
-        assert_eq!(store.get("thread1").expect("key should exist"), "session1");
+        assert_eq!(
+            store.get("thread1").expect("key should exist"),
+            &ThreadRef::from("session1")
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -126,8 +133,14 @@ mod tests {
         std::fs::write(&path, r#"{"t1":"s1","t2":"s2"}"#).expect("write should succeed");
 
         let store = SessionStore::load(path.clone()).expect("load should succeed");
-        assert_eq!(store.get("t1").expect("t1 should exist"), "s1");
-        assert_eq!(store.get("t2").expect("t2 should exist"), "s2");
+        assert_eq!(
+            store.get("t1").expect("t1 should exist"),
+            &ThreadRef::from("s1")
+        );
+        assert_eq!(
+            store.get("t2").expect("t2 should exist"),
+            &ThreadRef::from("s2")
+        );
         assert!(store.get("t3").is_none());
 
         let _ = std::fs::remove_file(&path);
@@ -142,7 +155,7 @@ mod tests {
         store.insert("t1".into(), "s1".into());
         store.insert("t2".into(), "s2".into());
 
-        let mut vals: Vec<&String> = store.values().collect();
+        let mut vals: Vec<String> = store.values().map(|v| v.to_string()).collect();
         vals.sort();
         assert_eq!(vals, vec!["s1", "s2"]);
 

@@ -15,7 +15,7 @@ pub type BroadcastClients = Arc<std::sync::Mutex<Vec<mpsc::UnboundedSender<Daemo
 
 #[derive(serde::Serialize, Deserialize, Clone, Debug)]
 pub struct RemoteConfig {
-    pub name: String,
+    pub name: infinity_protocol::RemoteName,
     pub ssh_args: Vec<String>,
 }
 
@@ -36,14 +36,14 @@ pub enum RemoteStatus {
 
 pub struct RemoteState {
     pub status: RemoteStatus,
-    pub sessions: HashMap<String, SessionInfo>,
+    pub sessions: HashMap<infinity_protocol::ThreadRef, SessionInfo>,
     /// Local socket path for the SSH tunnel (set when connected).
     pub local_sock: Option<std::path::PathBuf>,
     /// SSH args for this remote.
     pub ssh_args: Vec<String>,
 }
 
-type RemoteMap = Arc<std::sync::Mutex<HashMap<String, RemoteState>>>;
+type RemoteMap = Arc<std::sync::Mutex<HashMap<infinity_protocol::RemoteName, RemoteState>>>;
 
 #[derive(Clone)]
 pub struct RemoteDaemons {
@@ -76,7 +76,7 @@ impl RemoteDaemons {
     }
 
     /// Collect all remote sessions with prefixed IDs (used for initial Welcome).
-    pub fn all_remote_sessions(&self) -> HashMap<String, SessionInfo> {
+    pub fn all_remote_sessions(&self) -> HashMap<infinity_protocol::ThreadRef, SessionInfo> {
         let map = self.remotes.lock().expect("bug: mutex poisoned");
         let mut result = HashMap::new();
         for (remote_name, state) in map.iter() {
@@ -87,10 +87,10 @@ impl RemoteDaemons {
                 let mut info = info.clone();
                 info.remote = Some(remote_name.clone());
                 for t in &mut info.threads {
-                    t.thread_id = format!("{remote_name}/{}", t.thread_id);
-                    t.parent_thread_id = format!("{remote_name}/{}", t.parent_thread_id);
+                    t.thread_id = t.thread_id.clone().prefixed(remote_name);
+                    t.parent_thread_id = t.parent_thread_id.clone().prefixed(remote_name);
                 }
-                result.insert(format!("{}/{}", remote_name, sid), info);
+                result.insert(sid.clone().prefixed(remote_name), info);
             }
         }
         result
@@ -100,9 +100,9 @@ impl RemoteDaemons {
     /// Reuses the existing SSH tunnel socket when available.
     pub async fn connect_remote_session(
         &self,
-        remote_name: &str,
-        session_id: &str,
-        thread_id: Option<&str>,
+        remote_name: &infinity_protocol::RemoteName,
+        session_id: &infinity_agent_core::ThreadId<str>,
+        thread_id: Option<&infinity_agent_core::ThreadId<str>>,
     ) -> Result<
         (
             mpsc::UnboundedSender<ClientMessage>,
@@ -114,8 +114,8 @@ impl RemoteDaemons {
 
         res.0
             .send(ClientMessage::Connect {
-                session_id: session_id.to_owned(),
-                thread_id: thread_id.map(|t| t.to_owned()),
+                root_thread_id: infinity_protocol::ThreadRef::local(session_id.to_owned()),
+                thread_id: thread_id.map(|t| infinity_protocol::ThreadRef::local(t.to_owned())),
                 keeps_session_alive: true,
             })
             .map_err(|e| format!("send Connect failed: {e}"))?;
@@ -127,7 +127,7 @@ impl RemoteDaemons {
     /// Used for migration flows where we send custom messages.
     pub async fn open_raw_connection(
         &self,
-        remote_name: &str,
+        remote_name: &infinity_protocol::RemoteName,
     ) -> Result<
         (
             mpsc::UnboundedSender<ClientMessage>,
@@ -208,7 +208,7 @@ impl RemoteDaemons {
     }
 
     /// Get the SSH args for a remote by name.
-    pub fn get_ssh_args(&self, remote_name: &str) -> Option<Vec<String>> {
+    pub fn get_ssh_args(&self, remote_name: &infinity_protocol::RemoteName) -> Option<Vec<String>> {
         let map = self.remotes.lock().expect("bug: mutex poisoned");
         map.get(remote_name).map(|s| s.ssh_args.clone())
     }
@@ -341,18 +341,18 @@ pub struct SshPortForward {
 
 /// Prefix session IDs in a sessions map with the remote name.
 fn prefix_sessions(
-    name: &str,
-    sessions: HashMap<String, SessionInfo>,
-) -> HashMap<String, SessionInfo> {
+    name: &infinity_protocol::RemoteName,
+    sessions: HashMap<infinity_protocol::ThreadRef, SessionInfo>,
+) -> HashMap<infinity_protocol::ThreadRef, SessionInfo> {
     sessions
         .into_iter()
         .map(|(id, mut info)| {
-            info.remote = Some(name.to_owned());
+            info.remote = Some(name.clone());
             for t in &mut info.threads {
-                t.thread_id = format!("{name}/{}", t.thread_id);
-                t.parent_thread_id = format!("{name}/{}", t.parent_thread_id);
+                t.thread_id = t.thread_id.clone().prefixed(name);
+                t.parent_thread_id = t.parent_thread_id.clone().prefixed(name);
             }
-            (format!("{name}/{id}"), info)
+            (id.prefixed(name), info)
         })
         .collect()
 }
@@ -437,7 +437,7 @@ async fn open_remote_connection(
 /// Long-running control worker for a single remote daemon.
 /// Maintains the connection and directly broadcasts prefixed SessionsUpdated.
 async fn control_worker(
-    name: String,
+    name: infinity_protocol::RemoteName,
     ssh_args: Vec<String>,
     remotes: RemoteMap,
     broadcast_clients: BroadcastClients,
@@ -484,7 +484,7 @@ async fn control_worker(
 }
 
 async fn control_worker_inner(
-    name: &str,
+    name: &infinity_protocol::RemoteName,
     ssh_args: &[String],
     remotes: &RemoteMap,
     broadcast_clients: &BroadcastClients,

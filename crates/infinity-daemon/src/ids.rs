@@ -10,10 +10,12 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use infinity_agent_core::ThreadId;
+
 /// A source of unique ids.
 pub trait IdSource: Send + Sync {
     /// Generate the next id.
-    fn generate(&self) -> String;
+    fn generate(&self) -> ThreadId;
 }
 
 /// Random v4 UUIDs — the production default.
@@ -21,8 +23,8 @@ pub trait IdSource: Send + Sync {
 pub struct UuidIdSource;
 
 impl IdSource for UuidIdSource {
-    fn generate(&self) -> String {
-        uuid::Uuid::new_v4().to_string()
+    fn generate(&self) -> ThreadId {
+        ThreadId::from(uuid::Uuid::new_v4().to_string())
     }
 }
 
@@ -40,9 +42,9 @@ impl SequentialIdSource {
 }
 
 impl IdSource for SequentialIdSource {
-    fn generate(&self) -> String {
+    fn generate(&self) -> ThreadId {
         let n = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
-        format!("00000000-0000-4000-8000-{n:012x}")
+        ThreadId::from(format!("00000000-0000-4000-8000-{n:012x}"))
     }
 }
 
@@ -55,10 +57,19 @@ mod tests {
     #[test]
     fn sequential_ids_are_stable_and_shared() {
         let ids: Arc<dyn IdSource> = Arc::new(SequentialIdSource::new());
-        assert_eq!(ids.generate(), "00000000-0000-4000-8000-000000000001");
+        assert_eq!(
+            ids.generate().as_str(),
+            "00000000-0000-4000-8000-000000000001"
+        );
         let shared = Arc::clone(&ids);
-        assert_eq!(shared.generate(), "00000000-0000-4000-8000-000000000002");
-        assert_eq!(ids.generate(), "00000000-0000-4000-8000-000000000003");
+        assert_eq!(
+            shared.generate().as_str(),
+            "00000000-0000-4000-8000-000000000002"
+        );
+        assert_eq!(
+            ids.generate().as_str(),
+            "00000000-0000-4000-8000-000000000003"
+        );
     }
 
     #[test]

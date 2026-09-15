@@ -246,8 +246,8 @@ fn existing_session_produces_send_input() {
         daemon_tx.send(devent(
             &thread_ts,
             infinity_protocol::DaemonMessage::Connected {
-                session_id: session_id.clone(),
-                thread_id: String::new(),
+                root_thread_id: session_id.clone().into(),
+                thread_id: infinity_protocol::ThreadRef::from(""),
                 model_name: String::new(),
                 context_window: 0,
                 title: Some("My Thread".to_owned()),
@@ -276,7 +276,7 @@ fn existing_session_produces_send_input() {
                 text,
             } => {
                 assert_eq!(t, thread_ts);
-                assert_eq!(s, session_id);
+                assert_eq!(s.to_string(), session_id);
                 assert_eq!(text, "follow up");
             }
             other => panic!("expected SendInput, got {other:?}"),

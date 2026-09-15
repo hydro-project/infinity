@@ -68,7 +68,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
 ];
 
 pub struct SessionChanged {
-    pub session_id: String,
+    pub session_id: infinity_protocol::ThreadRef,
     pub title: Option<String>,
     pub total_tokens_used: usize,
     /// Display name of the model associated with the session's root thread.
@@ -83,7 +83,7 @@ pub struct SessionChanged {
 /// [`infinity_protocol::DaemonMessage::ModelSwitched`]). Updates the status
 /// line when it targets the thread currently being viewed.
 pub struct ModelSwitched {
-    pub thread_id: String,
+    pub thread_id: infinity_protocol::ThreadRef,
     pub model_name: String,
     pub provider_id: String,
     pub context_window: usize,
@@ -99,7 +99,7 @@ pub enum DetachResult {
 
 enum SoftDetachAction {
     Quit,
-    SwitchSession(Option<String>),
+    SwitchSession(Option<infinity_protocol::ThreadRef>),
 }
 
 /// A queued user choice request waiting to be shown in the TUI.
@@ -115,19 +115,22 @@ pub async fn run<T, E>(
     mut term: T,
     mut events: E,
     input_tx: mpsc::UnboundedSender<String>,
-    mut display_rx: mpsc::UnboundedReceiver<(Option<String>, DisplayEvent)>,
+    mut display_rx: mpsc::UnboundedReceiver<(Option<infinity_protocol::ThreadRef>, DisplayEvent)>,
     mut model_name: String,
     mut provider_id: String,
     mut context_window: usize,
-    initial_sessions: std::collections::HashMap<String, infinity_protocol::SessionInfo>,
-    load_session_tx: mpsc::UnboundedSender<(Option<String>, bool)>,
+    initial_sessions: std::collections::HashMap<
+        infinity_protocol::ThreadRef,
+        infinity_protocol::SessionInfo,
+    >,
+    load_session_tx: mpsc::UnboundedSender<(Option<infinity_protocol::ThreadRef>, bool)>,
     model_switch_tx: mpsc::UnboundedSender<usize>,
     available_models: Vec<crate::model_picker::ModelInfo>,
     initial_message: Option<String>,
     mut session_rx: mpsc::UnboundedReceiver<SessionChanged>,
     mut model_switched_rx: mpsc::UnboundedReceiver<ModelSwitched>,
     mut sessions_updated_rx: mpsc::UnboundedReceiver<
-        std::collections::HashMap<String, infinity_protocol::SessionInfo>,
+        std::collections::HashMap<infinity_protocol::ThreadRef, infinity_protocol::SessionInfo>,
     >,
     soft_detach_tx: mpsc::UnboundedSender<()>,
     mut detach_result_rx: mpsc::UnboundedReceiver<DetachResult>,
@@ -180,8 +183,8 @@ where
     let mut spinner_state: Option<SpinnerState> = None;
     let mut thinking_start = Instant::now();
     let mut total_tokens_used = 0;
-    let mut thread_buffers: BTreeMap<String, String> = BTreeMap::new();
-    let mut thread_tool_call_active: HashSet<String> = HashSet::new();
+    let mut thread_buffers: BTreeMap<infinity_protocol::ThreadRef, String> = BTreeMap::new();
+    let mut thread_tool_call_active: HashSet<infinity_protocol::ThreadRef> = HashSet::new();
     let mut thinking_text_buffer = String::new();
     // Number of root-thread tool calls still awaiting their result; the
     // "waiting for tool call result" spinner text is cleared when it hits 0.
@@ -261,7 +264,7 @@ where
 
                 // Only the currently viewed thread's model is shown in the
                 // status line; switches on other threads don't affect it.
-                if thread_id.as_deref() == Some(switched.thread_id.as_str()) {
+                if thread_id.as_ref() == Some(&switched.thread_id) {
                     model_name = switched.model_name;
                     provider_id = switched.provider_id;
                     context_window = switched.context_window;
@@ -292,7 +295,7 @@ where
                 if let Some(session_picker) = session_picker.as_mut() {
                     let last_picked_id = session_picker.sessions.get(session_picker.selected).map(|s| s.0.clone());
 
-                    let mut all_sessions: Vec<(String, infinity_protocol::SessionInfo)> = sessions.iter()
+                    let mut all_sessions: Vec<(infinity_protocol::ThreadRef, infinity_protocol::SessionInfo)> = sessions.iter()
                         .map(|(id, info)| (id.clone(), info.clone()))
                         .collect();
                     all_sessions.sort_by(|a, b| b.1.last_updated.cmp(&a.1.last_updated));
@@ -382,8 +385,10 @@ where
                     return Ok(true);
                 };
                 let is_root = evt_thread_id.is_none() || evt_thread_id.as_ref() == thread_id.as_ref();
-                // For non-root events, the thread_id is always Some.
-                let child_tid = evt_thread_id.unwrap_or_default();
+                // For non-root events, the thread_id is always Some; root
+                // events never consult `child_tid`, so a placeholder is fine.
+                let child_tid =
+                    evt_thread_id.unwrap_or_else(|| infinity_protocol::ThreadRef::local("".into()));
                 match evt {
                     DisplayEvent::ThinkingStart => {
                         if is_root {
@@ -627,7 +632,12 @@ where
                     }
                     DisplayEvent::SubscriptionEvent { name, text } => {
                         end_stream(&mut viewport, &mut mid_stream)?;
-                        let pfx = if !is_root { format!("[{}] ", &child_tid[..child_tid.len().min(8)]) } else { String::new() };
+                        let pfx = if !is_root {
+                            let rendered = child_tid.to_string();
+                            format!("[{}] ", &rendered[..rendered.len().min(8)])
+                        } else {
+                            String::new()
+                        };
                         let name = strip_ansi(&name);
                         let text = strip_ansi(&text);
                         let lines: Vec<&str> = text.lines().collect();
@@ -903,7 +913,7 @@ where
                                                 }
                                             }
                                             Some("/load") => {
-                                                let mut all_sessions: Vec<(String, infinity_protocol::SessionInfo)> = sessions.iter()
+                                                let mut all_sessions: Vec<(infinity_protocol::ThreadRef, infinity_protocol::SessionInfo)> = sessions.iter()
                                                     .filter(|(_, info)| info.status != infinity_protocol::SessionStatus::Archived)
                                                     .map(|(id, info)| (id.clone(), info.clone()))
                                                     .collect();
@@ -1093,10 +1103,10 @@ fn draw_viewport<T: TermOut>(
     provider_id: &str,
     total_tokens_used: usize,
     context_window: usize,
-    thread_buffers: &BTreeMap<String, String>,
+    thread_buffers: &BTreeMap<infinity_protocol::ThreadRef, String>,
     thinking_text: &str,
     tab_complete: &Option<(String, usize)>,
-    thread_id: &Option<String>,
+    thread_id: &Option<infinity_protocol::ThreadRef>,
 ) -> Result<(), BoxError> {
     let max_context = context_window;
     let current_width = viewport.area().width;
@@ -1127,6 +1137,7 @@ fn draw_viewport<T: TermOut>(
         }
         UiMode::Normal { .. } => {
             if let Some(tid) = thread_id {
+                let tid = tid.to_string();
                 let short_id = if tid.len() > 8 {
                     &tid[..8]
                 } else {
@@ -1143,7 +1154,7 @@ fn draw_viewport<T: TermOut>(
     let thread_lines: Vec<Line<'_>> = thread_buffers
         .iter()
         .map(|(id, buf)| {
-            let prefix_len = unicode_width::UnicodeWidthStr::width(id.as_str()) + 1;
+            let prefix_len = unicode_width::UnicodeWidthStr::width(id.to_string().as_str()) + 1;
             let avail = (current_width as usize).saturating_sub(prefix_len);
             let tail = wrap_tail(buf, avail);
             Line::from(vec![

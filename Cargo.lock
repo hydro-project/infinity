@@ -3359,6 +3359,7 @@ dependencies = [
  "rap-protocol",
  "serde",
  "serde_json",
+ "strkind",
  "tokio-util",
 ]
 

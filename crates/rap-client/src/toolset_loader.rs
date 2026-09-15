@@ -35,7 +35,7 @@ impl<H: HttpClient, C: ToolsetCache> ToolsetLoader<H, C> {
     pub async fn load_toolsets(
         &self,
         server_urls: &[String],
-        session_id: &str,
+        session_id: &rap_protocol::ThreadId<str>,
     ) -> Result<Vec<LoadedToolset>, Box<dyn std::error::Error + Send + Sync>> {
         let mut results = Vec::new();
         for url in server_urls {
@@ -48,7 +48,7 @@ impl<H: HttpClient, C: ToolsetCache> ToolsetLoader<H, C> {
     async fn load_single(
         &self,
         server_url: &str,
-        session_id: &str,
+        session_id: &rap_protocol::ThreadId<str>,
     ) -> Result<LoadedToolset, Box<dyn std::error::Error + Send + Sync>> {
         let cache_key = format!("__toolset__{}_{}", session_id, server_url);
 

@@ -149,10 +149,10 @@ impl ThreadObserver for DaemonObserver {
             // the replay instead of appearing idle.
             if let Some(thinking) = snapshot.current_thinking {
                 history.push(DaemonMessage::ThinkingStart {
-                    thread_id: Some(thread_id.to_string()),
+                    thread_id: Some(infinity_protocol::ThreadRef::local(thread_id.to_owned())),
                 });
                 history.push(DaemonMessage::ThinkingChunk {
-                    thread_id: Some(thread_id.to_string()),
+                    thread_id: Some(infinity_protocol::ThreadRef::local(thread_id.to_owned())),
                     chunk: thinking,
                 });
             }
@@ -160,7 +160,7 @@ impl ThreadObserver for DaemonObserver {
                 .pending_choices
                 .iter()
                 .map(|choice| DaemonMessage::UserChoiceRequired {
-                    thread_id: Some(thread_id.to_string()),
+                    thread_id: Some(infinity_protocol::ThreadRef::local(thread_id.to_owned())),
                     id: choice.id.clone(),
                     prompt: choice.prompt.clone(),
                     choices: choice.choices.clone(),

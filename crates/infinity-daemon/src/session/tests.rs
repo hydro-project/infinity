@@ -640,7 +640,7 @@ async fn child_pending_choice_updates_root_session_status() {
                 manager
                     .list_sessions(None)
                     .await
-                    .get(session_id.as_str())
+                    .get(&infinity_protocol::ThreadRef::local(session_id.clone()))
                     .expect("created session is listed")
                     .status,
                 SessionStatus::WaitingForChoice
@@ -655,7 +655,7 @@ async fn child_pending_choice_updates_root_session_status() {
                 manager
                     .list_sessions(None)
                     .await
-                    .get(session_id.as_str())
+                    .get(&infinity_protocol::ThreadRef::local(session_id.clone()))
                     .expect("created session is still listed")
                     .status,
                 SessionStatus::Running
@@ -672,7 +672,7 @@ async fn child_pending_choice_updates_root_session_status() {
                 manager
                     .list_sessions(None)
                     .await
-                    .get(session_id.as_str())
+                    .get(&infinity_protocol::ThreadRef::local(session_id.clone()))
                     .expect("cleaned-up session is listed")
                     .status,
                 SessionStatus::Stopped

@@ -137,11 +137,11 @@ export function App() {
       clearConnectRetry();
       setSessionConnected(false);
       sendRef.current({
-        Connect: { session_id: sessionId, thread_id: threadId },
+        Connect: { root_thread_id: sessionId, thread_id: threadId },
       });
       connectRetryRef.current = setInterval(() => {
         sendRef.current({
-          Connect: { session_id: sessionId, thread_id: threadId },
+          Connect: { root_thread_id: sessionId, thread_id: threadId },
         });
       }, 5000);
     },
@@ -154,7 +154,7 @@ export function App() {
   const isForCurrentView = useCallback(
     (msgThreadId: string | null) => {
       const viewing = viewThreadId ?? threadRef.current;
-      // null thread_id = root, session_id = root
+      // null thread_id = root, root_thread_id = root
       return msgThreadId === null || msgThreadId === viewing;
     },
     [viewThreadId],
@@ -240,7 +240,7 @@ export function App() {
           }
           case "Connected": {
             const p = msgPayload<{
-              session_id: string;
+              root_thread_id: string;
               thread_id: string;
               model_name: string;
               context_window: number;
@@ -248,7 +248,7 @@ export function App() {
               total_tokens_used: number;
               provider_id: string;
             }>(m);
-            sessionRef.current = p.session_id;
+            sessionRef.current = p.root_thread_id;
             threadRef.current = p.thread_id;
             setModelName(p.model_name);
             setProviderName(p.provider_id);
@@ -259,7 +259,7 @@ export function App() {
             // Flush pending inputs
             for (const text of pendingInputRef.current) {
               sendRef.current({
-                UserInput: { session_id: p.thread_id, text },
+                UserInput: { thread_id: p.thread_id, text },
               });
             }
             pendingInputRef.current = [];
@@ -579,10 +579,10 @@ export function App() {
           }
           case "MigrateComplete": {
             const p = msgPayload<{
-              session_id: string;
-              new_session_id: string;
+              root_thread_id: string;
+              new_root_thread_id: string;
             }>(m);
-            if (sessionRef.current === p.session_id) {
+            if (sessionRef.current === p.root_thread_id) {
               sendRef.current("Disconnect");
               sessionRef.current = null;
               threadRef.current = null;
@@ -595,13 +595,13 @@ export function App() {
               setActiveTab(null);
               setChatAsTab(false);
               streamingRef.current = false;
-              sendConnect(p.new_session_id, null);
+              sendConnect(p.new_root_thread_id, null);
             }
             appendMessage({ type: "info", text: "Migration complete" });
             break;
           }
           case "MigrateError": {
-            const p = msgPayload<{ session_id: string; error: string }>(m);
+            const p = msgPayload<{ root_thread_id: string; error: string }>(m);
             appendMessage({
               type: "error",
               text: `Migration failed: ${p.error}`,
@@ -631,7 +631,7 @@ export function App() {
   const handleSend = useCallback(
     (text: string) => {
       if (threadRef.current) {
-        send({ UserInput: { session_id: threadRef.current, text } });
+        send({ UserInput: { thread_id: threadRef.current, text } });
       } else {
         pendingInputRef.current.push(text);
         setNewSessionPickerOpen(true);
@@ -685,7 +685,7 @@ export function App() {
 
   const handleArchiveSession = useCallback(() => {
     if (!sessionRef.current) return;
-    send({ ArchiveSession: { session_id: sessionRef.current } });
+    send({ ArchiveSession: { root_thread_id: sessionRef.current } });
     sessionRef.current = null;
     threadRef.current = null;
     setViewThreadId(null);
@@ -759,7 +759,7 @@ export function App() {
         // with ModelSwitched.
         send({
           SwitchModel: {
-            session_id: target,
+            thread_id: target,
             model: { provider_id: m.provider_id, model_id: m.model_id },
           },
         });
@@ -788,7 +788,7 @@ export function App() {
       if (sessionRef.current) {
         send({
           RequestMigrate: {
-            session_id: sessionRef.current,
+            root_thread_id: sessionRef.current,
             to: destination,
             dest_cwd: cwd,
           },

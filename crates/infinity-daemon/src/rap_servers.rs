@@ -461,7 +461,7 @@ impl SessionRapManager {
     /// Send an informational message to the session's subscribers.
     fn info(&self, session_id: &ThreadId<str>, text: String) {
         let msg = DaemonMessage::Info {
-            thread_id: Some(session_id.to_string()),
+            thread_id: Some(infinity_protocol::ThreadRef::local(session_id.to_owned())),
             text,
         };
         crate::session::observer::broadcast_to_thread(&self.subscriber_map, session_id, &msg, None);

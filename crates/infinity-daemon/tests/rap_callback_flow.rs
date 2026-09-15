@@ -99,7 +99,7 @@ async fn wait_for_message(
 }
 
 /// Create a session, run one chat round, and return the session id.
-async fn create_session_and_chat(h: &mut TestHarness) -> String {
+async fn create_session_and_chat(h: &mut TestHarness) -> infinity_protocol::ThreadRef {
     h.client_tx
         .send(ClientMessage::CreateSession {
             cwd: h.cwd.path().to_path_buf(),
@@ -113,13 +113,17 @@ async fn create_session_and_chat(h: &mut TestHarness) -> String {
         matches!(m, DaemonMessage::Connected { .. })
     })
     .await;
-    let DaemonMessage::Connected { session_id, .. } = connected else {
+    let DaemonMessage::Connected {
+        root_thread_id: session_id,
+        ..
+    } = connected
+    else {
         unreachable!()
     };
 
     h.client_tx
         .send(ClientMessage::UserInput {
-            session_id: session_id.clone(),
+            thread_id: session_id.clone(),
             text: "hello".to_owned(),
         })
         .expect("send UserInput");
@@ -139,7 +143,7 @@ async fn create_session_and_chat(h: &mut TestHarness) -> String {
 /// Wait until a `SessionsUpdated` broadcast reports the given status.
 async fn wait_for_status(
     rx: &mut mpsc::UnboundedReceiver<DaemonMessage>,
-    session_id: &str,
+    session_id: &infinity_protocol::ThreadRef,
     status: SessionStatus,
 ) {
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -187,13 +191,17 @@ async fn session_status_follows_thread_activity() {
                 matches!(m, DaemonMessage::Connected { .. })
             })
             .await;
-            let DaemonMessage::Connected { session_id, .. } = connected else {
+            let DaemonMessage::Connected {
+                root_thread_id: session_id,
+                ..
+            } = connected
+            else {
                 unreachable!()
             };
 
             h.client_tx
                 .send(ClientMessage::UserInput {
-                    session_id: session_id.clone(),
+                    thread_id: session_id.clone(),
                     text: "hello".to_owned(),
                 })
                 .expect("send UserInput");
@@ -249,12 +257,12 @@ async fn view_update_is_broadcast_without_waking_the_session() {
             else {
                 unreachable!()
             };
-            assert_eq!(thread_id.as_deref(), Some(session_id.as_str()));
+            assert_eq!(thread_id.as_ref(), Some(&session_id));
             assert_eq!(view_type, "diff");
 
             let mgr = h.manager.lock().await;
             assert!(
-                mgr.is_session_idle(rap_protocol::ThreadId::from_ref(&session_id)),
+                mgr.is_session_idle(&session_id.id),
                 "a view update must not wake any thread driver"
             );
         })

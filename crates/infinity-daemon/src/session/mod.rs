@@ -207,7 +207,10 @@ impl SessionManager {
                     };
                     drop(store);
                     let mut sessions = HashMap::new();
-                    sessions.insert(session_id.to_string(), info);
+                    sessions.insert(
+                        infinity_protocol::ThreadRef::local(session_id.to_owned()),
+                        info,
+                    );
                     let msg = DaemonMessage::SessionsUpdated { sessions };
                     bc.lock()
                         .expect("bug: mutex poisoned")
@@ -433,7 +436,7 @@ impl SessionManager {
             .set_view(group_id, view_type, content.clone());
 
         let msg = DaemonMessage::ViewUpdate {
-            thread_id: Some(group_id.to_string()),
+            thread_id: Some(infinity_protocol::ThreadRef::local(group_id.to_owned())),
             view_type: view_type.to_owned(),
             content,
         };
@@ -449,7 +452,7 @@ impl SessionManager {
         model: ModelRef,
         emit: &mut impl AsyncFnMut(DaemonMessage),
     ) -> Result<ThreadId, BoxError> {
-        let session_id = ThreadId::from(self.id_source.generate());
+        let session_id = self.id_source.generate();
         {
             let mut store = self.session_store.lock().await;
             store.create(&session_id, cwd.to_path_buf());
@@ -495,8 +498,8 @@ impl SessionManager {
         let selected = self.conversation_store.get_thread_model(thread_id);
         let (model_ref, entry, _) = self.catalog.resolve(&selected);
         DaemonMessage::Connected {
-            session_id: session_id.to_string(),
-            thread_id: thread_id.to_string(),
+            root_thread_id: infinity_protocol::ThreadRef::local(session_id.to_owned()),
+            thread_id: infinity_protocol::ThreadRef::local(thread_id.to_owned()),
             model_name: entry.display_name.clone(),
             context_window: entry.context_window,
             title: self.conversation_store.get_thread_title(session_id),
@@ -596,7 +599,7 @@ impl SessionManager {
             .set_thread_model(thread_id, model.clone());
 
         let msg = DaemonMessage::ModelSwitched {
-            thread_id: thread_id.to_string(),
+            thread_id: infinity_protocol::ThreadRef::local(thread_id.to_owned()),
             model_name: entry.display_name.clone(),
             context_window: entry.context_window,
             provider_id: model.provider_id.clone(),
@@ -617,7 +620,7 @@ impl SessionManager {
     pub async fn list_sessions(
         &self,
         subscribe: Option<mpsc::UnboundedSender<DaemonMessage>>,
-    ) -> HashMap<String, SessionInfo> {
+    ) -> HashMap<infinity_protocol::ThreadRef, SessionInfo> {
         if let Some(tx) = subscribe {
             self.broadcast_clients
                 .lock()
@@ -626,12 +629,12 @@ impl SessionManager {
         }
 
         let store = self.session_store.lock().await;
-        let mut result: HashMap<String, SessionInfo> = HashMap::new();
+        let mut result: HashMap<infinity_protocol::ThreadRef, SessionInfo> = HashMap::new();
 
         for (id, entry) in &store.sessions {
             let threads = self.conversation_store.get_open_subthreads(id);
             result.insert(
-                id.to_string(),
+                infinity_protocol::ThreadRef::local(id.to_owned()),
                 SessionInfo {
                     title: self.conversation_store.get_thread_title(id),
                     last_updated: self.conversation_store.get_last_updated(id),
