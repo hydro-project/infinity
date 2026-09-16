@@ -99,7 +99,7 @@ pub(crate) fn history_message_to_daemon(
                     .iter()
                     .find_map(|m| {
                         if let InfinityMessage::ToolCall { call, .. } = m
-                            && call.id == *tool_call_id
+                            && call.id == tool_call_id.as_str()
                         {
                             Some(format!(
                                 "{}({})",
@@ -109,7 +109,7 @@ pub(crate) fn history_message_to_daemon(
                             None
                         }
                     })
-                    .unwrap_or_else(|| tool_call_id.clone())
+                    .unwrap_or_else(|| tool_call_id.as_str().to_owned())
             };
             Some(DaemonMessage::SubscriptionEvent {
                 name,

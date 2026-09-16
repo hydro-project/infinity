@@ -205,7 +205,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
                 entry.required_choices.push(choice);
             }
             AgentEvent::UserChoiceDismissed { choice_id } => {
-                entry.completed_choices.push(choice_id);
+                entry.completed_choices.push(choice_id.into_inner());
             }
             _ => {}
         }
@@ -250,7 +250,7 @@ pub(crate) async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(),
         for choice in required_choices {
             let message = event_processor::UserChoiceOutputMessage {
                 message_type: "user_choice_required".to_owned(),
-                id: choice.id,
+                id: choice.id.into_inner(),
                 prompt: choice.prompt,
                 choices: choice.choices,
                 default: choice.default,

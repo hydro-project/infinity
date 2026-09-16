@@ -394,8 +394,8 @@ impl Tool<ChannelSender> for ManagedRapTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        id: String,
-        call_id: Option<String>,
+        id: rap_protocol::ToolCallId,
+        call_id: Option<rap_protocol::ProviderCallId>,
         context: &infinity_agent_core::tools::ToolContext<ChannelSender>,
     ) -> Result<(), BoxError> {
         let endpoint = self.server.invoke_endpoint().await?;

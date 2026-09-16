@@ -91,11 +91,11 @@ pub fn slack_dataflow<'a, P: 'a>(
         rt.choice_messages
             .lock()
             .expect("bug: lock poisoned")
-            .remove(&choice_id);
+            .remove(choice_id.as_str());
 
         Some(crate::daemon_sidecar::DaemonCommand::AnswerChoice {
             thread_ts: event.thread_ts,
-            choice_id,
+            choice_id: choice_id.into(),
             selected,
         })
     }));

@@ -158,8 +158,8 @@ impl Tool<ChannelSender> for AsyncTool {
     async fn execute(
         &self,
         _: serde_json::Value,
-        _: String,
-        _: Option<String>,
+        _: rap_protocol::ToolCallId,
+        _: Option<rap_protocol::ProviderCallId>,
         _: &ToolContext<ChannelSender>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(())
@@ -183,8 +183,8 @@ impl Tool<ChannelSender> for FailingTool {
     async fn execute(
         &self,
         _: serde_json::Value,
-        _: String,
-        _: Option<String>,
+        _: rap_protocol::ToolCallId,
+        _: Option<rap_protocol::ProviderCallId>,
         _: &ToolContext<ChannelSender>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Err("boom".into())
@@ -354,15 +354,15 @@ impl Tool<ChannelSender> for SubscribeTool {
     async fn execute(
         &self,
         _: serde_json::Value,
-        id: String,
-        call_id: Option<String>,
+        id: rap_protocol::ToolCallId,
+        call_id: Option<rap_protocol::ProviderCallId>,
         ctx: &ToolContext<ChannelSender>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let msg = InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(
                 infinity_provider_protocol::message::ToolResult {
-                    id: id.clone(),
-                    call_id,
+                    id: id.clone().into_inner(),
+                    call_id: call_id.map(|c| c.into_inner()),
                     content: vec![
                         infinity_provider_protocol::message::ToolResultContent::Text(
                             infinity_provider_protocol::message::Text {
@@ -378,7 +378,9 @@ impl Tool<ChannelSender> for SubscribeTool {
             display_as: None,
             subscription: true,
         };
-        ctx.message_sender.send_to_input_queue(msg, &id).await?;
+        ctx.message_sender
+            .send_to_input_queue(msg, id.as_str())
+            .await?;
         Ok(())
     }
 }
@@ -420,8 +422,8 @@ impl Tool<ChannelSender> for NamedTool {
     async fn execute(
         &self,
         _: serde_json::Value,
-        _: String,
-        _: Option<String>,
+        _: rap_protocol::ToolCallId,
+        _: Option<rap_protocol::ProviderCallId>,
         _: &ToolContext<ChannelSender>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(())

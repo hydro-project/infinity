@@ -809,7 +809,7 @@ impl ConversationStore for PersistentConversationStore {
     async fn spawn_thread(
         &self,
         parent_thread_id: &ThreadId<str>,
-        spawn_tool_call_id: &str,
+        spawn_tool_call_id: &rap_protocol::ToolCallId<str>,
         is_for_subscription_event: bool,
         spawn_order_override: Option<usize>,
     ) -> Result<ThreadId, MemoryError> {
@@ -879,7 +879,7 @@ impl ConversationStore for PersistentConversationStore {
     async fn get_thread_parent_info(
         &self,
         thread_id: &ThreadId<str>,
-    ) -> Result<Option<(ThreadId, String)>, MemoryError> {
+    ) -> Result<Option<(ThreadId, rap_protocol::ToolCallId)>, MemoryError> {
         self.ensure_thread_metadata_loaded(thread_id);
         Ok(self.core.get_thread_parent_info(thread_id).await?)
     }
@@ -1006,13 +1006,17 @@ impl PersistentStateStore {
             .any(|thread_id| self.has_pending_choices(thread_id))
     }
 
-    pub fn pending_choice(&self, thread_id: &ThreadId<str>, choice_id: &str) -> Option<UserChoice> {
+    pub fn pending_choice(
+        &self,
+        thread_id: &ThreadId<str>,
+        choice_id: &rap_protocol::ChoiceId<str>,
+    ) -> Option<UserChoice> {
         self.ensure_loaded(thread_id);
         self.core
             .thread_state(thread_id)
             .pending_user_choices
             .into_iter()
-            .find(|choice| choice.id == choice_id)
+            .find(|choice| choice.id == *choice_id)
     }
 
     pub async fn clear_pending_choices(
@@ -1114,7 +1118,7 @@ impl StateStore for PersistentStateStore {
     async fn get_active_subscriptions(
         &self,
         thread_id: &ThreadId<str>,
-    ) -> Result<Vec<String>, MemoryError> {
+    ) -> Result<Vec<rap_protocol::ToolCallId>, MemoryError> {
         self.ensure_loaded(thread_id);
         Ok(self.core.get_active_subscriptions(thread_id).await?)
     }
@@ -1122,7 +1126,7 @@ impl StateStore for PersistentStateStore {
     async fn add_active_subscription(
         &self,
         thread_id: &ThreadId<str>,
-        tool_call_id: &str,
+        tool_call_id: &rap_protocol::ToolCallId<str>,
     ) -> Result<(), MemoryError> {
         self.ensure_loaded(thread_id);
         self.core
@@ -1135,7 +1139,7 @@ impl StateStore for PersistentStateStore {
     async fn remove_active_subscription(
         &self,
         thread_id: &ThreadId<str>,
-        tool_call_id: &str,
+        tool_call_id: &rap_protocol::ToolCallId<str>,
     ) -> Result<(), MemoryError> {
         self.ensure_loaded(thread_id);
         self.core
@@ -1160,7 +1164,7 @@ impl StateStore for PersistentStateStore {
     async fn remove_pending_user_choice(
         &self,
         thread_id: &ThreadId<str>,
-        choice_id: &str,
+        choice_id: &rap_protocol::ChoiceId<str>,
     ) -> Result<(), MemoryError> {
         self.ensure_loaded(thread_id);
         self.core
@@ -1264,7 +1268,12 @@ mod tests {
             .expect("append root messages");
 
         let child = store
-            .spawn_thread(ThreadId::from_ref("root"), "tc-1", false, None)
+            .spawn_thread(
+                ThreadId::from_ref("root"),
+                rap_protocol::ToolCallId::from_ref("tc-1"),
+                false,
+                None,
+            )
             .await
             .expect("spawn child thread");
 
@@ -1322,7 +1331,12 @@ mod tests {
             .expect("append root messages");
 
         let child = store
-            .spawn_thread(ThreadId::from_ref("root"), "tc-1", false, None)
+            .spawn_thread(
+                ThreadId::from_ref("root"),
+                rap_protocol::ToolCallId::from_ref("tc-1"),
+                false,
+                None,
+            )
             .await
             .expect("spawn child thread");
         store
@@ -1334,7 +1348,12 @@ mod tests {
             .expect("append child messages");
 
         let grandchild = store
-            .spawn_thread(&child, "tc-2", false, None)
+            .spawn_thread(
+                &child,
+                rap_protocol::ToolCallId::from_ref("tc-2"),
+                false,
+                None,
+            )
             .await
             .expect("spawn grandchild thread");
         store
@@ -1425,7 +1444,12 @@ mod tests {
             .expect("save compaction summary");
 
         let child = store
-            .spawn_thread(ThreadId::from_ref("root"), "tc-1", false, None)
+            .spawn_thread(
+                ThreadId::from_ref("root"),
+                rap_protocol::ToolCallId::from_ref("tc-1"),
+                false,
+                None,
+            )
             .await
             .expect("spawn child thread");
         store
@@ -1483,7 +1507,12 @@ mod tests {
             .expect("save later compaction summary");
 
         let child = store
-            .spawn_thread(ThreadId::from_ref("root"), "tc-1", false, None)
+            .spawn_thread(
+                ThreadId::from_ref("root"),
+                rap_protocol::ToolCallId::from_ref("tc-1"),
+                false,
+                None,
+            )
             .await
             .expect("spawn child thread");
         store
@@ -1531,7 +1560,12 @@ mod tests {
             .expect("save root compaction summary");
 
         let child = store
-            .spawn_thread(ThreadId::from_ref("root"), "tc-1", false, None)
+            .spawn_thread(
+                ThreadId::from_ref("root"),
+                rap_protocol::ToolCallId::from_ref("tc-1"),
+                false,
+                None,
+            )
             .await
             .expect("spawn child thread");
         store

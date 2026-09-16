@@ -39,8 +39,8 @@ impl<M: InputSender + 'static> Tool<M> for SleepUntilEventOrInputTool {
     async fn execute(
         &self,
         _args: serde_json::Value,
-        _id: String,
-        _call_id: Option<String>,
+        _id: rap_protocol::ToolCallId,
+        _call_id: Option<rap_protocol::ProviderCallId>,
         _context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tracing::info!("sleep_until_event_or_input invoked, agent will pause until next input");
@@ -87,8 +87,8 @@ impl<M: InputSender + 'static> Tool<M> for TokioSleepTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        id: String,
-        call_id: Option<String>,
+        id: rap_protocol::ToolCallId,
+        call_id: Option<rap_protocol::ProviderCallId>,
         context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let seconds = args["seconds"].as_f64().unwrap_or(0.0);
@@ -101,8 +101,8 @@ impl<M: InputSender + 'static> Tool<M> for TokioSleepTool {
             }
             let msg = InputMessage {
                 content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                    id: id.clone(),
-                    call_id,
+                    id: id.clone().into_inner(),
+                    call_id: call_id.map(|c| c.into_inner()),
                     content: vec![ToolResultContent::Text(Text {
                         text: format!("Slept for {} seconds", seconds),
                     })],
@@ -113,7 +113,7 @@ impl<M: InputSender + 'static> Tool<M> for TokioSleepTool {
                 display_as: None,
                 subscription: false,
             };
-            if let Err(e) = sender.send_to_input_queue(msg, &id).await {
+            if let Err(e) = sender.send_to_input_queue(msg, id.as_str()).await {
                 tracing::error!("Failed to deliver sleep result: {}", e);
             }
         }));
@@ -162,8 +162,8 @@ impl<M: InputSender + 'static> Tool<M> for TokioSleepUntilTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        id: String,
-        call_id: Option<String>,
+        id: rap_protocol::ToolCallId,
+        call_id: Option<rap_protocol::ProviderCallId>,
         context: &ToolContext<M>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let date_str = args["date"].as_str().unwrap_or("").to_owned();
@@ -208,8 +208,8 @@ impl<M: InputSender + 'static> Tool<M> for TokioSleepUntilTool {
             }
             let msg = InputMessage {
                 content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-                    id: id.clone(),
-                    call_id,
+                    id: id.clone().into_inner(),
+                    call_id: call_id.map(|c| c.into_inner()),
                     content: vec![ToolResultContent::Text(Text { text: result_text })],
                 })),
                 group_id: group_id.clone(),
@@ -218,7 +218,7 @@ impl<M: InputSender + 'static> Tool<M> for TokioSleepUntilTool {
                 display_as: None,
                 subscription: false,
             };
-            if let Err(e) = sender.send_to_input_queue(msg, &id).await {
+            if let Err(e) = sender.send_to_input_queue(msg, id.as_str()).await {
                 tracing::error!("Failed to deliver sleep_until result: {}", e);
             }
         }));

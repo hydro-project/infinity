@@ -14,7 +14,30 @@ strkind::strkind! {
     /// root thread ID is the caller-chosen conversation key (which doubles as
     /// the SQS FIFO `MessageGroupId`). Treat the contents as opaque.
     pub ThreadId;
+
+    /// Identifies one tool call within a thread.
+    ///
+    /// This is the `id` field on RAP invocations and callbacks. It
+    /// originates from the model provider's tool-call stream (e.g. Bedrock
+    /// `tooluse_...` IDs) or, for runtime-synthesized calls (thread spawns,
+    /// subscription events), from a minted UUID. Treat the contents as
+    /// opaque; formats are provider-controlled.
+    pub ToolCallId;
+
+    /// The provider-scoped companion ID of a tool call (`call_id` on RAP
+    /// invocations and callbacks). Some providers issue a second identifier
+    /// alongside the tool-call ID; it must be echoed back verbatim in tool
+    /// results. Absent for providers that do not use one.
+    pub ProviderCallId;
 }
+
+/// Identifies a pending user choice.
+///
+/// Currently an alias of [`ToolCallId`]: a choice is keyed by the tool call
+/// that requested it (`RapUserChoice.id` is copied from the invocation).
+/// Tracked as a candidate for becoming a distinct kind in
+/// <https://github.com/hydro-project/infinity/issues/109>.
+pub type ChoiceId<T = String> = ToolCallId<T>;
 
 // ── RAP protocol types ──
 
@@ -23,8 +46,8 @@ pub struct RapInvocation {
     pub operation: String,
     #[serde(default)]
     pub arguments: serde_json::Value,
-    pub id: String,
-    pub call_id: Option<String>,
+    pub id: ToolCallId,
+    pub call_id: Option<ProviderCallId>,
     pub callback_url: String,
     pub group_id: ThreadId,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -106,9 +129,9 @@ pub enum RapToolResultContent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RapToolResult {
     pub group_id: ThreadId,
-    pub id: String,
+    pub id: ToolCallId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub call_id: Option<String>,
+    pub call_id: Option<ProviderCallId>,
     /// Plain-text result — the shorthand for a text-only result. A tool MUST
     /// provide either `text` or `content`. When `content` is also present it
     /// supersedes `text` for the model-facing result.
@@ -129,9 +152,9 @@ pub struct RapToolResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RapUserChoice {
     pub group_id: ThreadId,
-    pub id: String,
+    pub id: ChoiceId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub call_id: Option<String>,
+    pub call_id: Option<ProviderCallId>,
     pub prompt: String,
     pub choices: Vec<String>,
     #[serde(default)]
@@ -142,7 +165,7 @@ pub struct RapUserChoice {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RapSubscriptionEvent {
     pub group_id: ThreadId,
-    pub tool_call_id: String,
+    pub tool_call_id: ToolCallId,
     pub text: String,
     #[serde(default)]
     pub associative: bool,
@@ -164,9 +187,9 @@ pub struct RapViewUpdate {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RapOAuth {
     pub group_id: ThreadId,
-    pub id: String,
+    pub id: ToolCallId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub call_id: Option<String>,
+    pub call_id: Option<ProviderCallId>,
     pub auth_url: String,
 }
 
@@ -315,7 +338,7 @@ pub async fn send_subscription_event<C: CallbackClient>(
     client: &C,
     callback_url: &str,
     group_id: ThreadId,
-    tool_call_id: String,
+    tool_call_id: ToolCallId,
     text: &str,
     associative: bool,
     r#final: bool,

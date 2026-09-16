@@ -106,7 +106,11 @@ impl DaemonClient {
         Ok(())
     }
 
-    pub async fn answer_choice(&self, choice_id: &str, selected: usize) -> Result<(), BoxError> {
+    pub async fn answer_choice(
+        &self,
+        choice_id: &infinity_protocol::ChoiceId<str>,
+        selected: usize,
+    ) -> Result<(), BoxError> {
         self.tx
             .send(ClientMessage::UserChoiceAnswered {
                 choice_id: choice_id.to_owned(),

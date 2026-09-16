@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use rap_protocol::ThreadId;
+use rap_protocol::{ChoiceId, ThreadId, ToolCallId};
 use serde::{Deserialize, Serialize};
 
 use crate::message::InfinityMessage;
@@ -44,7 +44,7 @@ pub struct ThreadInfo {
     pub root_thread_id: ThreadId,
     /// Number of parent messages the child inherits (history cutoff).
     pub spawn_message_order: Option<i64>,
-    pub spawn_tool_call_id: Option<String>,
+    pub spawn_tool_call_id: Option<ToolCallId>,
     pub closed: bool,
     pub is_subscription_event: bool,
     #[serde(default)]
@@ -159,7 +159,7 @@ impl InMemoryConversationStore {
         &self,
         new_thread_id: &ThreadId<str>,
         parent_thread_id: &ThreadId<str>,
-        spawn_tool_call_id: &str,
+        spawn_tool_call_id: &ToolCallId<str>,
         is_for_subscription_event: bool,
         spawn_order_override: Option<usize>,
     ) {
@@ -251,7 +251,7 @@ impl ConversationStore for InMemoryConversationStore {
     async fn spawn_thread(
         &self,
         parent_thread_id: &ThreadId<str>,
-        spawn_tool_call_id: &str,
+        spawn_tool_call_id: &ToolCallId<str>,
         is_for_subscription_event: bool,
         spawn_order_override: Option<usize>,
     ) -> Result<ThreadId, Self::Error> {
@@ -293,7 +293,7 @@ impl ConversationStore for InMemoryConversationStore {
     async fn get_thread_parent_info(
         &self,
         thread_id: &ThreadId<str>,
-    ) -> Result<Option<(ThreadId, String)>, Self::Error> {
+    ) -> Result<Option<(ThreadId, ToolCallId)>, Self::Error> {
         let threads = self.threads.lock().expect("bug: mutex poisoned");
         Ok(threads.get(thread_id).and_then(|t| {
             match (&t.parent_thread_id, &t.spawn_tool_call_id) {
@@ -395,7 +395,7 @@ pub struct ThreadState {
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
     #[serde(default)]
-    pub subscriptions: HashSet<String>,
+    pub subscriptions: HashSet<ToolCallId>,
     #[serde(default)]
     pub pending_user_choices: Vec<UserChoice>,
 }
@@ -406,7 +406,7 @@ pub struct ThreadState {
 pub struct InMemoryStateStore {
     processed_ids: Arc<Mutex<HashMap<ThreadId, HashSet<String>>>>,
     metadata: Arc<Mutex<HashMap<ThreadId, serde_json::Value>>>,
-    subscriptions: Arc<Mutex<HashMap<ThreadId, HashSet<String>>>>,
+    subscriptions: Arc<Mutex<HashMap<ThreadId, HashSet<ToolCallId>>>>,
     pending_user_choices: Arc<Mutex<HashMap<ThreadId, Vec<UserChoice>>>>,
 }
 
@@ -508,7 +508,7 @@ impl StateStore for InMemoryStateStore {
     async fn get_active_subscriptions(
         &self,
         thread_id: &ThreadId<str>,
-    ) -> Result<Vec<String>, Self::Error> {
+    ) -> Result<Vec<ToolCallId>, Self::Error> {
         let store = self.subscriptions.lock().expect("bug: mutex poisoned");
         Ok(store
             .get(thread_id)
@@ -519,7 +519,7 @@ impl StateStore for InMemoryStateStore {
     async fn add_active_subscription(
         &self,
         thread_id: &ThreadId<str>,
-        tool_call_id: &str,
+        tool_call_id: &ToolCallId<str>,
     ) -> Result<(), Self::Error> {
         let mut store = self.subscriptions.lock().expect("bug: mutex poisoned");
         store
@@ -532,7 +532,7 @@ impl StateStore for InMemoryStateStore {
     async fn remove_active_subscription(
         &self,
         thread_id: &ThreadId<str>,
-        tool_call_id: &str,
+        tool_call_id: &ToolCallId<str>,
     ) -> Result<(), Self::Error> {
         let mut store = self.subscriptions.lock().expect("bug: mutex poisoned");
         if let Some(s) = store.get_mut(thread_id) {
@@ -562,7 +562,7 @@ impl StateStore for InMemoryStateStore {
     async fn remove_pending_user_choice(
         &self,
         thread_id: &ThreadId<str>,
-        choice_id: &str,
+        choice_id: &ChoiceId<str>,
     ) -> Result<(), Self::Error> {
         if let Some(choices) = self
             .pending_user_choices
@@ -570,7 +570,7 @@ impl StateStore for InMemoryStateStore {
             .expect("bug: mutex poisoned")
             .get_mut(thread_id)
         {
-            choices.retain(|choice| choice.id != choice_id);
+            choices.retain(|choice| choice.id != *choice_id);
         }
         Ok(())
     }
