@@ -27,7 +27,7 @@ pub mod mock;
 pub mod remote;
 
 pub use completion::{
-    CompletionError, CompletionRequest, FinalResponse, ModelStream, StreamChunk,
+    CompletionError, CompletionRequest, ErrorClass, FinalResponse, ModelStream, StreamChunk,
     ToolCallDeltaContent, ToolDefinition, Usage,
 };
 pub use message::{

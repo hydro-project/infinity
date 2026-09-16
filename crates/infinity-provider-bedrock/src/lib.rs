@@ -14,11 +14,19 @@ mod stream;
 use async_trait::async_trait;
 use aws_sdk_bedrockruntime::error::{DisplayErrorContext, ProvideErrorMetadata, SdkError};
 use infinity_provider_protocol::{
-    CompletionError, CompletionRequest, ModelEntry, ModelProvider, ModelStream,
+    CompletionError, CompletionRequest, ErrorClass, ModelEntry, ModelProvider, ModelStream,
 };
 use tokio::sync::OnceCell;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// How long to wait for Bedrock to accept a `ConverseStream` request before
+/// giving up. Bedrock occasionally black-holes a request (it neither
+/// responds nor fails); classifying the timeout as [`ErrorClass::Transient`]
+/// lets the caller retry. This deliberately only covers request
+/// *initiation* — once a response stream is live it is never artificially
+/// cut off by us.
+const REQUEST_INITIATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Extract a useful message from an AWS SDK error: the service error message
 /// when present (the SDK's plain `Display` omits it), otherwise the full
@@ -32,6 +40,79 @@ where
         Some(message) => message.to_owned(),
         None => DisplayErrorContext(err).to_string(),
     }
+}
+
+/// Classify a Bedrock error into the retry classification declared to
+/// callers, from the service error code (when the failure reached the
+/// service) and the error message.
+///
+/// The message heuristics live *here*, in the provider — the agent runtime
+/// only ever sees the resulting [`ErrorClass`].
+pub(crate) fn classify_bedrock_error(code: Option<&str>, message: &str) -> ErrorClass {
+    let msg = message.to_ascii_lowercase();
+    if matches!(
+        code,
+        Some("ThrottlingException" | "ServiceQuotaExceededException")
+    ) || msg.contains("please wait before trying again")
+        || msg.contains("too many requests")
+        || msg.contains("please try again")
+    {
+        return ErrorClass::Throttled;
+    }
+    // Context overflow: Bedrock reports it as a ValidationException
+    // ("Input is too long for requested model."), anthropic models as
+    // "input length and `max_tokens` exceed context limit".
+    if msg.contains("too long")
+        || msg.contains("too large")
+        || msg.contains("input length")
+        || (msg.contains("exceed") && msg.contains("context"))
+    {
+        return ErrorClass::ContextOverflow;
+    }
+    if matches!(
+        code,
+        Some(
+            "InternalServerException"
+                | "ServiceUnavailableException"
+                | "ModelTimeoutException"
+                | "ModelNotReadyException"
+                | "ModelStreamErrorException"
+                | "ModelErrorException"
+        )
+    ) || msg.contains("unexpected end of stream")
+        || msg.contains("unexpected error when processing the request")
+        || msg.contains("is unable to process your request")
+    {
+        return ErrorClass::Transient;
+    }
+    ErrorClass::Fatal
+}
+
+/// Classify a full [`SdkError`]: service errors go through
+/// [`classify_bedrock_error`]; transport-level failures (dispatch, timeout,
+/// unparsable response) are transient; request construction failures are
+/// ours and fatal.
+pub(crate) fn classify_sdk_error<E, R>(err: &SdkError<E, R>) -> ErrorClass
+where
+    E: ProvideErrorMetadata + std::error::Error + 'static,
+    R: std::fmt::Debug,
+{
+    match err {
+        SdkError::ConstructionFailure(_) => ErrorClass::Fatal,
+        SdkError::TimeoutError(_) | SdkError::DispatchFailure(_) | SdkError::ResponseError(_) => {
+            ErrorClass::Transient
+        }
+        _ => classify_bedrock_error(err.code(), &sdk_error_message(err)),
+    }
+}
+
+/// Convert an [`SdkError`] into a classified [`CompletionError`].
+pub(crate) fn completion_error<E, R>(err: &SdkError<E, R>) -> CompletionError
+where
+    E: ProvideErrorMetadata + std::error::Error + 'static,
+    R: std::fmt::Debug,
+{
+    CompletionError::provider(classify_sdk_error(err), sdk_error_message(err))
 }
 
 /// A model offered by the Bedrock provider, along with the Bedrock-specific
@@ -244,7 +325,7 @@ impl ModelProvider for BedrockProvider {
     ) -> Result<ModelStream, CompletionError> {
         let prepared = prepare_request(&self.models, model_id, request)?;
 
-        let response = self
+        let send = self
             .client()
             .await
             .converse_stream()
@@ -254,11 +335,28 @@ impl ModelProvider for BedrockProvider {
             .set_tool_config(prepared.tool_config)
             .set_inference_config(Some(prepared.inference_config))
             .set_additional_model_request_fields(prepared.additional_params)
-            .send()
+            .send();
+
+        // Guard request *initiation* only (see REQUEST_INITIATION_TIMEOUT);
+        // the returned stream itself is never timed out.
+        let response = tokio::time::timeout(REQUEST_INITIATION_TIMEOUT, send)
             .await
+            .map_err(|_| {
+                tracing::error!(
+                    "Bedrock ConverseStream request initiation timed out after {:?}",
+                    REQUEST_INITIATION_TIMEOUT
+                );
+                CompletionError::provider(
+                    ErrorClass::Transient,
+                    format!(
+                        "timed out waiting {}s for Bedrock to accept the request",
+                        REQUEST_INITIATION_TIMEOUT.as_secs()
+                    ),
+                )
+            })?
             .map_err(|e| {
                 tracing::error!(error = %DisplayErrorContext(&e), "Bedrock ConverseStream SDK error");
-                CompletionError::ProviderError(sdk_error_message(&e))
+                completion_error(&e)
             })?;
 
         Ok(stream::convert_stream(response))
@@ -381,5 +479,64 @@ mod tests {
             panic!("expected object params");
         };
         assert!(obj.contains_key("anthropic_beta"));
+    }
+
+    // ── Error classification ──
+    //
+    // Classification is mostly string/code matching against real Bedrock
+    // responses, so asserting the match table here would be tautological.
+    // The real assertions live in `tests/live.rs` (feature `live-tests`),
+    // which classifies actual Bedrock service errors using local AWS
+    // credentials.
+
+    /// A black-holed `ConverseStream` request must fail with a transient
+    /// (retryable) error after the initiation timeout instead of hanging
+    /// forever. Uses a Bedrock client whose HTTP connector never responds.
+    #[tokio::test(start_paused = true)]
+    async fn request_initiation_times_out_with_transient_error() {
+        #[derive(Debug)]
+        struct NeverRespond;
+        impl aws_smithy_runtime_api::client::http::HttpConnector for NeverRespond {
+            fn call(
+                &self,
+                _request: aws_smithy_runtime_api::client::orchestrator::HttpRequest,
+            ) -> aws_smithy_runtime_api::client::http::HttpConnectorFuture {
+                aws_smithy_runtime_api::client::http::HttpConnectorFuture::new(
+                    std::future::pending(),
+                )
+            }
+        }
+        impl aws_smithy_runtime_api::client::http::HttpClient for NeverRespond {
+            fn http_connector(
+                &self,
+                _settings: &aws_smithy_runtime_api::client::http::HttpConnectorSettings,
+                _components: &aws_smithy_runtime_api::client::runtime_components::RuntimeComponents,
+            ) -> aws_smithy_runtime_api::client::http::SharedHttpConnector {
+                aws_smithy_runtime_api::client::http::SharedHttpConnector::new(NeverRespond)
+            }
+        }
+
+        let config = aws_sdk_bedrockruntime::Config::builder()
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .region(aws_sdk_bedrockruntime::config::Region::new("us-east-1"))
+            .credentials_provider(aws_sdk_bedrockruntime::config::Credentials::for_tests())
+            .http_client(NeverRespond)
+            .build();
+        let provider = BedrockProvider::new(aws_sdk_bedrockruntime::Client::from_conf(config));
+
+        let started = tokio::time::Instant::now();
+        let Err(err) = provider
+            .invoke_model("global.anthropic.claude-sonnet-4-6", request("hi"))
+            .await
+        else {
+            panic!("black-holed request must time out")
+        };
+        assert_eq!(err.class(), ErrorClass::Transient);
+        assert!(
+            err.to_string().contains("timed out"),
+            "unexpected message: {err}"
+        );
+        // The timeout must be the initiation timeout, not some other layer.
+        assert!(started.elapsed() >= REQUEST_INITIATION_TIMEOUT);
     }
 }

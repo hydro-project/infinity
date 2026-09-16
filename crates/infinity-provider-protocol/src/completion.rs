@@ -54,6 +54,27 @@ pub struct Usage {
     pub cached_input_tokens: u64,
 }
 
+/// Provider-declared classification of a completion error, telling callers
+/// how to react. Classification is the provider's job — it knows its own
+/// failure modes — so the agent runtime never has to parse error message
+/// strings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ErrorClass {
+    /// Transient failure (dropped stream, backend hiccup, request timeout);
+    /// retrying the same request may succeed.
+    Transient,
+    /// Rate limited / throttled; retrying the same request may succeed
+    /// after a longer backoff.
+    Throttled,
+    /// The request's input does not fit the model's context window;
+    /// retrying the same request can never succeed. Callers must shrink the
+    /// input (drop or truncate oversized messages, compact history).
+    ContextOverflow,
+    /// Permanent failure (bad request, unknown model, access denied); do
+    /// not retry.
+    Fatal,
+}
+
 /// Error invoking a completion model.
 #[derive(Debug, thiserror::Error)]
 pub enum CompletionError {
@@ -65,13 +86,41 @@ pub enum CompletionError {
     #[error("ResponseError: {0}")]
     ResponseError(String),
 
-    /// Error returned by the completion model provider.
-    #[error("ProviderError: {0}")]
-    ProviderError(String),
+    /// Error returned by the completion model provider, with the provider's
+    /// retry classification.
+    #[error("ProviderError: {message}")]
+    ProviderError { message: String, class: ErrorClass },
 
     /// JSON (de)serialization error.
     #[error("JsonError: {0}")]
     JsonError(#[from] serde_json::Error),
+}
+
+impl CompletionError {
+    /// A provider error with an explicit retry classification.
+    pub fn provider(class: ErrorClass, message: impl Into<String>) -> Self {
+        Self::ProviderError {
+            message: message.into(),
+            class,
+        }
+    }
+
+    /// How callers should treat this error.
+    ///
+    /// * [`RequestError`](Self::RequestError) and
+    ///   [`JsonError`](Self::JsonError) are our side failing to build or
+    ///   parse — retrying the same request cannot help ([`ErrorClass::Fatal`]).
+    /// * [`ResponseError`](Self::ResponseError) is a transport/framing
+    ///   failure while reading the response — typically transient.
+    /// * [`ProviderError`](Self::ProviderError) carries the provider's own
+    ///   classification.
+    pub fn class(&self) -> ErrorClass {
+        match self {
+            Self::RequestError(_) | Self::JsonError(_) => ErrorClass::Fatal,
+            Self::ResponseError(_) => ErrorClass::Transient,
+            Self::ProviderError { class, .. } => *class,
+        }
+    }
 }
 
 /// One streamed item of a completion response.
