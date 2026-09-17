@@ -4666,7 +4666,7 @@ mod tests {
                                     },
                                 )],
                             }),
-                            tool_call_id: "sub-1".to_owned(),
+                            tool_call_id: "sub-1".into(),
                             child_thread_id: None,
                             invocation: Some(Box::new(ToolCall::new(
                                 "evt-1",
