@@ -1576,3 +1576,101 @@ async fn fresh_context_spawn_has_no_parent_history() {
         })
         .await;
 }
+
+/// An inheriting grandchild sees its fresh parent's context, but nothing
+/// from before the fresh-context boundary: t1 → fresh t2 → inheriting t3.
+#[tokio::test(flavor = "current_thread")]
+async fn nested_spawn_inherits_only_fresh_parent_context() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (mut running, mut _rx, mut ctrl, _conv) = start_system(vec![], None);
+
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "t1 private user message")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_text("t1 private assistant response");
+            ctrl.finish();
+            wait_idle(&mut running).await;
+
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "spawn a fresh child")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_tool_call(
+                "tc-spawn-t2",
+                "spawn_thread",
+                serde_json::json!({
+                    "instructions": "t2 independent task",
+                    "child_of": ["t1"],
+                    "fresh_context": true
+                }),
+            );
+            ctrl.finish();
+
+            let root_followup = ctrl.next_request().await;
+            let t2 = tool_result_texts(&root_followup)
+                .iter()
+                .find_map(|text| {
+                    let after =
+                        text.strip_prefix("Child thread is successfully spawned and has ID: ")?;
+                    Some(after.split('.').next()?.to_owned())
+                })
+                .expect("should find t2 ID in spawn result");
+            ctrl.send_text("t1 spawned t2");
+            ctrl.finish();
+
+            let _child_req = ctrl.next_request().await;
+            ctrl.send_text("t2 findings to share with descendants");
+            ctrl.finish();
+            wait_idle(&mut running).await;
+
+            running
+                .send_user_text(
+                    ThreadId::from_ref(&t2),
+                    "t2 follow-up: delegate the next step",
+                )
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_tool_call(
+                "tc-spawn-t3",
+                "spawn_thread",
+                serde_json::json!({
+                    "instructions": "t3 continue using t2 findings",
+                    "child_of": ["t1", t2],
+                    "fresh_context": false
+                }),
+            );
+            ctrl.finish();
+
+            let _child_followup = ctrl.next_request().await;
+            ctrl.send_text("t2 spawned t3");
+            ctrl.finish();
+
+            let grandchild_req = ctrl.next_request().await;
+            let history =
+                serde_json::to_string(&grandchild_req.chat_history).expect("serialize t3 history");
+            assert!(
+                !history.contains("t1 private user message")
+                    && !history.contains("t1 private assistant response"),
+                "t3 must not inherit t1 context across the fresh boundary: {history}"
+            );
+            assert!(
+                history.contains("t2 independent task")
+                    && history.contains("t2 findings to share with descendants")
+                    && history.contains("t2 follow-up: delegate the next step"),
+                "t3 must inherit t2 instructions and conversation: {history}"
+            );
+            assert!(
+                tool_result_texts(&grandchild_req)
+                    .iter()
+                    .any(|text| text.contains("t3 continue using t2 findings")),
+                "t3 must receive its own spawn instructions: {history}"
+            );
+            ctrl.send_text("t3 done");
+            ctrl.finish();
+            wait_idle(&mut running).await;
+        })
+        .await;
+}
