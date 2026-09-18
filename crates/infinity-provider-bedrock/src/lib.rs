@@ -28,6 +28,29 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// cut off by us.
 const REQUEST_INITIATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// Anthropic beta flag enabling fine-grained tool streaming. Without it the
+/// backend buffers and validates each tool-input parameter server-side
+/// before streaming it back, so a large tool call produces a long silent
+/// gap after the tool-use block starts — long enough for Bedrock's stream
+/// watchdog to kill the request with a `ModelTimeoutException`. With the
+/// flag, input fragments stream as they are generated and the stream never
+/// goes idle. The modern per-tool `eager_input_streaming` field replaces
+/// this header on the Anthropic-native API, but Bedrock's Converse
+/// `ToolSpecification` does not model it (checked through
+/// aws-sdk-bedrockruntime 1.145.0 — only `strict` has been added), so the
+/// legacy header is the only Bedrock-expressible mechanism; switch to the
+/// per-tool field in `convert::tool_config` once the SDK exposes it. The
+/// header is incompatible only with computer-use/browser-use system
+/// toolsets, which this provider never emits.
+///
+/// Trade-off: streamed fragments are not validated server-side, so the
+/// accumulated tool input may not parse — see `finish_tool_call` in
+/// `stream.rs` for how that is classified.
+const FINE_GRAINED_TOOL_STREAMING_BETA: &str = "fine-grained-tool-streaming-2025-05-14";
+
+/// Anthropic beta flag enabling the 1M-token context window.
+const CONTEXT_1M_BETA: &str = "context-1m-2025-08-07";
+
 /// Extract a useful message from an AWS SDK error: the service error message
 /// when present (the SDK's plain `Display` omits it), otherwise the full
 /// error chain.
@@ -173,12 +196,14 @@ fn default_models() -> Vec<BedrockModel> {
         "thinking": {
             "type": "adaptive",
             "display": "summarized"
-        }
+        },
+        "anthropic_beta": [FINE_GRAINED_TOOL_STREAMING_BETA]
     });
     let adaptive_thinking = serde_json::json!({
         "thinking": {
             "type": "adaptive"
-        }
+        },
+        "anthropic_beta": [FINE_GRAINED_TOOL_STREAMING_BETA]
     });
     vec![
         BedrockModel {
@@ -219,7 +244,7 @@ fn default_models() -> Vec<BedrockModel> {
                 "thinking": {
                     "type": "adaptive"
                 },
-                "anthropic_beta": ["context-1m-2025-08-07"]
+                "anthropic_beta": [CONTEXT_1M_BETA, FINE_GRAINED_TOOL_STREAMING_BETA]
             })),
         },
         BedrockModel {
@@ -405,6 +430,15 @@ mod tests {
             panic!("expected object params");
         };
         assert!(obj.contains_key("thinking"));
+        // Fine-grained tool streaming is enabled so large tool calls stream
+        // fragments continuously instead of buffering (which would stall the
+        // stream long enough for Bedrock to kill it).
+        assert_eq!(
+            obj.get("anthropic_beta"),
+            Some(&convert::json_to_document(serde_json::json!([
+                FINE_GRAINED_TOOL_STREAMING_BETA
+            ])))
+        );
         // System prompt present.
         assert!(prepared.system.is_some());
         // Cache point on the last (only) message.
@@ -478,7 +512,36 @@ mod tests {
         else {
             panic!("expected object params");
         };
-        assert!(obj.contains_key("anthropic_beta"));
+        assert_eq!(
+            obj.get("anthropic_beta"),
+            Some(&convert::json_to_document(serde_json::json!([
+                CONTEXT_1M_BETA,
+                FINE_GRAINED_TOOL_STREAMING_BETA
+            ]))),
+            "the 1m alias must keep both beta flags"
+        );
+    }
+
+    /// Every default (anthropic) model must enable fine-grained tool
+    /// streaming: without it, Bedrock buffers large tool inputs server-side
+    /// and its stream watchdog kills the idle stream mid-tool-call.
+    #[test]
+    fn all_default_models_enable_fine_grained_tool_streaming() {
+        for model in default_models() {
+            let params = model
+                .additional_request_params
+                .as_ref()
+                .unwrap_or_else(|| panic!("{}: params missing", model.entry.model_id));
+            let betas = params
+                .get("anthropic_beta")
+                .and_then(|v| v.as_array())
+                .unwrap_or_else(|| panic!("{}: anthropic_beta missing", model.entry.model_id));
+            assert!(
+                betas.contains(&serde_json::json!(FINE_GRAINED_TOOL_STREAMING_BETA)),
+                "{}: fine-grained tool streaming flag missing",
+                model.entry.model_id
+            );
+        }
     }
 
     // ── Error classification ──
