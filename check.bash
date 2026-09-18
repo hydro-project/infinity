@@ -53,6 +53,13 @@ step "Tests"
 cargo test --all-targets || fail "tests failed"
 pass "All tests passed"
 
+step "Doctests"
+# `--all-targets` does not include doctests. This covers rustdoc examples in
+# library crates and the documentation code examples, which the
+# infinity-mdtests crate turns into doctests via `include_mdtests`.
+cargo test --doc || fail "doctests failed"
+pass "All doctests passed"
+
 step "Web UI e2e (Playwright)"
 # Requires npm (the bundled-web build script runs vite) and the Playwright
 # chromium build matching playwright-rs's bundled driver (1.60 → r1223):

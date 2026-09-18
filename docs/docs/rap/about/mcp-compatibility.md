@@ -36,7 +36,7 @@ sequenceDiagram
 
 This turns a synchronous MCP call into an asynchronous RAP call. An MCP tool that takes 30 seconds to respond no longer blocks the agent for 30 seconds; the runtime hibernates at zero cost and resumes when the result arrives.
 
-There are two proxy implementations. The Lambda proxy described on this page ships with the [CDK constructs](/docs/infinity-runtime/deploying-on-lambda#adding-rap-servers) for cloud deployments. The Infinity Code daemon includes an equivalent in-process proxy for local development, configured through `rap.json`; see [Configuring MCP Servers](/docs/infinity-code/configuring-mcp). Both expose the same `{name}_list_tools` / `{name}_invoke_tool` interface and support stdio and Streamable HTTP transports. OAuth support is currently specific to the Lambda proxy.
+There are two proxy implementations. The Lambda proxy described on this page ships with the [CDK constructs](/docs/infinity-runtime/serverless/rap-mcp-servers) for cloud deployments. The Infinity Code daemon includes an equivalent in-process proxy for local development, configured through `rap.json`; see [Configuring MCP Servers](/docs/infinity-code/configuring-mcp). Both expose the same `{name}_list_tools` / `{name}_invoke_tool` interface and support stdio and Streamable HTTP transports. OAuth support is currently specific to the Lambda proxy.
 
 ## MCP Transport Modes
 

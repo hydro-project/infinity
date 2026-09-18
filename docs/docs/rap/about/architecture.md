@@ -37,7 +37,7 @@ This is possible because RAP has no long-lived connections between the runtime a
 
 Because there's nothing to keep alive, the runtime can exit after every tool dispatch. An agent waiting for a 3-day CI pipeline costs exactly the same as one that was never created. Cost is proportional to work done, not time elapsed. An agent monitoring GitHub PRs, reacting to Slack messages, and tracking stock prices can stay alive for months, waking only when something happens.
 
-The runtime also provides explicit sleep tools (`sleep`, `sleep_until`, `sleep_until_event_or_input`) that schedule future wake-ups or wait for external events. These build on the same hibernation mechanism. See [Built-in Tools](/docs/infinity-runtime/built-in-tools) for details.
+The runtime also provides explicit sleep tools (`sleep`, `sleep_until`, `sleep_until_event_or_input`) that schedule future wake-ups or wait for external events. These build on the same hibernation mechanism. See [Built-in Tools](/docs/infinity-runtime/built-in/built-in-tools) for details.
 
 ## Subscriptions
 
@@ -49,7 +49,7 @@ The runtime handles subscription events using synthetic tool calls, which presen
 
 Agents can spawn child threads for parallel work. Each thread runs independently with its own context window and message stream. Children inherit the parent's conversation history up to the spawn point, process their task, and report results back.
 
-Threading is how the runtime handles concurrent work (review multiple files in parallel), context isolation (process a subscription event without polluting the main conversation), and divide-and-conquer patterns. See [Threading](/docs/infinity-runtime/threading) for how threads are spawned, how they communicate, and how subscription events are routed.
+Threading is how the runtime handles concurrent work (review multiple files in parallel), context isolation (process a subscription event without polluting the main conversation), and divide-and-conquer patterns. See [Threading](/docs/infinity-runtime/built-in/threading) for how threads are spawned, how they communicate, and how subscription events are routed.
 
 ## MCP compatibility
 

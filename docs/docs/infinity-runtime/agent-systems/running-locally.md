@@ -1,10 +1,10 @@
 ---
-sidebar_position: 3
+sidebar_position: 2
 title: Launching Local Threads
 ---
 
 # Launching Local Threads
-A **local agent system** runs for the lifetime of a Tokio process and exposes each conversation through a `ThreadHandle`. A thread builder creates a new root thread and its configuration in one operation:
+A **local agent system** runs for the lifetime of a Tokio process and exposes each conversation through a `ThreadHandle`. To create a new root thread and configure it in one operation, use a thread builder:
 
 ```rust
 let system = AgentSystemBuilder::new_local(conversation_store, state_store, model)
@@ -25,7 +25,7 @@ while let Some(event) = reviewer.recv().await {
 }
 ```
 
-`start()` returns a `LaunchingSystem`. Its `thread_builder()` generates a thread ID, records the launch configuration, attaches to the new thread, and returns its handle.
+`start()` returns a `LaunchingSystem`. Calling `thread_builder()` on it will generate a thread ID, record the launch configuration, attach to the new thread, and return its handle.
 
 ## Configuring a New Thread
 `ThreadBuilder` accepts four kinds of launch-time configuration:
@@ -41,9 +41,9 @@ let mut thread = system
     .await;
 ```
 
-`tool` and `tools` add capabilities to the tools registered on the system. `extra_system_prompt` appends instructions after the system-wide extra prompt. `model` replaces the system-wide `ModelSource` for this root thread.
+`tool` and `tools` add capabilities on top of the tools registered on the system. `extra_system_prompt` appends instructions after the system-wide extra prompt, and `model` replaces the system-wide `ModelSource` for this root thread.
 
-Subagents spawned by the thread inherit its added tools, prompt, and model. This keeps a root conversation and its child work on the same repository or tenant configuration.
+Subagents spawned by the thread will inherit its added tools, prompt, and model, so a root conversation and its child work stay on the same repository or tenant configuration.
 
 :::caution
 
@@ -52,7 +52,6 @@ Launch configuration is stored in the current process. Conversation history rema
 :::
 
 ## Sending Input and Receiving Events
-<a id="talking-to-threads"></a>
 A **`ThreadHandle`** combines the thread ID, a replay snapshot, an event receiver, and methods for sending input:
 
 ```rust
@@ -71,14 +70,14 @@ while let Some(event) = thread.recv().await {
 }
 ```
 
-`replay()` contains the committed conversation plus any partial turn that was active when the handle attached. `recv()` begins at the same boundary. Rendering replay first and then live events produces each event once.
+`replay()` contains the committed conversation plus any partial turn that was active when the handle attached, and `recv()` begins at the same boundary. This means that if you render the replay first and then the live events, each event will be rendered exactly once.
 
-`send_user_text` marks the input as user-driven. If a completion is already streaming, the local system interrupts it, persists the partial turn, and begins a new completion with the latest text. `send` accepts a complete `InputMessage` for tool results, timers, and other synthetic inputs.
+`send_user_text` marks the input as user-driven. If a completion is already streaming, the local system will interrupt it, persist the partial turn, and begin a new completion with the latest text. For tool results, timers, and other synthetic inputs, `send` accepts a complete `InputMessage`.
 
-A handle can outlive the `LaunchingSystem`. Its send methods therefore return `ChannelSendError` if the system has shut down.
+A handle can outlive the `LaunchingSystem`, so its send methods will return `ChannelSendError` if the system has already shut down.
 
 ## Attaching to an Existing Thread
-Store a thread's ID when another client or a later part of the application must attach:
+If another client or a later part of the application must attach to a conversation, store the thread's ID:
 
 ```rust
 let Some(mut thread) = system.thread_handle(&saved_thread_id).await? else {
@@ -91,8 +90,6 @@ while let Some(event) = thread.recv().await {
 }
 ```
 
-`LaunchingSystem::thread_handle` returns an error when the conversation store lookup fails and `None` when the ID was not launched in this process and does not exist in the store. This prevents a mistyped ID from creating a new unconfigured conversation. New threads always come from `thread_builder()`.
+`LaunchingSystem::thread_handle` returns an error when the conversation store lookup fails, and it returns `None` when the ID was not launched in this process and does not exist in the store. This prevents a mistyped ID from creating a new unconfigured conversation; new threads always come from `thread_builder()`.
 
-Multiple handles may attach to one thread. Each receives its own replay boundary and every later event. Dropping a handle detaches that receiver without stopping the thread.
-
-Use [Connecting MCP Servers](./mcp-servers.md) to expose a stdio or HTTP MCP server as tools before launching a thread. Use [Writing Custom Tools](./custom-tools.md) for local Rust tools, including tools that emit subscription streams. Applications that need protocol-specific replay or fan-out can replace handles with [Observers](./observers.md).
+Multiple handles may attach to one thread, and each will receive its own replay boundary and every later event. Dropping a handle detaches that receiver without stopping the thread. When handles are not enough, for example when replay must be rendered in a protocol-specific format or events must fan out to many clients, you can implement an [observer](./observers.md) instead.

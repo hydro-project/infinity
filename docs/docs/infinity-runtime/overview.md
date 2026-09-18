@@ -5,9 +5,9 @@ title: Overview
 
 # Infinity Runtime
 
-The Infinity Runtime is the reference runtime for the [Reactive Agent Protocol](/docs/rap/what-is-rap). It is a Rust library, `infinity-agent-core`, that runs agents as a sequence of short **execution slices**: each slice loads conversation state from durable storage, runs one model completion, dispatches any tool call as a fire-and-forget HTTP request, persists state, and yields. Between slices, nothing runs.
+The Infinity Runtime is a Rust framework for building **massively concurrent** agentic systems, light enough to fit **75k agents in the memory of a Raspberry Pi**. Infinity does for agents what async did for threads: instead of blocking on slow tools, Infinity agents run them concurrently, yield while they wait, and cost nothing until the next event arrives.
 
-This yielding architecture makes Infinity the first agent runtime that runs natively on serverless platforms. A conventional agent runtime holds a process open while it awaits tool results, which rules out platforms like AWS Lambda where invocations are short-lived and billed by the millisecond. Because an Infinity slice never blocks on anything external, every slice fits inside a single serverless invocation, and an agent that is waiting (on a tool result, a webhook, a human, or a three-day CI pipeline) costs exactly nothing.
+The runtime executes each agent as a sequence of short **execution slices**. During a slice, the runtime loads the thread's conversation from a pluggable store, runs one model completion, and persists the resulting turn. If the model calls a tool, the runtime dispatches the invocation as a fire-and-forget HTTP request and the slice ends. The tool result will arrive later as a message on the thread's input queue, which also carries user messages, subscription events, child-thread reports, and timer wake-ups. This means that between slices, an agent exists only as stored history (roughly 100 KB after twenty tool-calling turns). [Architecture](./architecture.md) covers the slice lifecycle, turn durability, and message ordering.
 
 ```mermaid
 flowchart LR
@@ -19,51 +19,10 @@ flowchart LR
     Y -.->|process exits / idles| Q
 ```
 
-The cycle repeats when the next message arrives. Tool results, user messages, subscription events, thread reports, and timer wake-ups all enter through the same input queue, so at the execution level the runtime has exactly one job: take the next message for a thread, run a slice, yield.
+Threads are grouped into [agent systems](./agent-systems/overview.md), which are pools of threads that share stores, tools, and model providers. As in an actor system, threads share no state and communicate only through in-order messages to each thread's queue. A root thread holds a user-facing conversation, while subagents, compaction workers, and subscription-event handlers run as child threads in the same conversation tree. The [quickstart](./quickstart/launching-your-first-agent.md) builds a system with in-memory stores, then adds [custom Rust tools](./quickstart/adding-tools.md) and [external tool servers](./quickstart/connecting-rap-and-mcp.md).
 
-## Why yielding matters
+Because a slice never blocks, the same agent code can run embedded in a resident process or on serverless infrastructure. When embedded, the built-in local driver gives each thread a channel and a worker task, and streams events to your code through thread handles; the Infinity Code daemon embeds the runtime this way. On AWS Lambda, each SQS FIFO delivery drives one step of the runtime, and the process exits afterward. In that deployment, conversation history lives in Aurora DSQL, deduplication state lives in DynamoDB, and durable timers are backed by SQS delays and EventBridge schedules; the included CDK constructs provision all of this, as described in [Serverless Deployments](./serverless/quickstart.mdx). Tools, providers, and tests written against the core will run unchanged in both environments.
 
-Under RAP, a tool call is not a request/response round trip. The runtime POSTs the invocation, the tool server acknowledges immediately, and the result arrives later as a new message on the input queue. The runtime treats the completion of a tool call as the end of its work:
+In-process tools implement the `Tool` trait in Rust. Networked tools speak the [Reactive Agent Protocol](/docs/rap/what-is-rap) (RAP), which delivers results and subscription events through callbacks instead of held connections; this means that a tool server can answer an agent that currently has no process. MCP servers connect in process through the `infinity-mcp-bridge` crate, or run unchanged behind a RAP proxy in cloud deployments. Every agent also receives [built-in tools](./built-in/built-in-tools.md) for sleeping and for [spawning child threads](./built-in/threading.md). All inference goes through the [`ModelProvider` trait](./model-providers.md), so model backends are as pluggable as stores.
 
-1. **Load**: restore conversation history and deduplication state from durable storage, and append the new input message.
-2. **Complete**: stream a model completion. Text and reasoning are buffered; a tool call ends the turn.
-3. **Dispatch and yield**: fire off the tool call over HTTP, persist the updated history, and stop.
-
-Nothing in this cycle waits. The consequences compound:
-
-- **Hibernation is free.** An agent subscribed to GitHub webhooks can stay "alive" for months while consuming zero compute. Waking up is processing the next message.
-- **Serverless is a first-class deployment target.** Each slice is one Lambda invocation. Hundreds of agents share one function, and scale-to-zero is the default rather than an optimization.
-- **Agents are durable.** All state lives in storage, not process memory, so agents survive restarts, redeploys, and cold starts by construction.
-- **Interruptions are ordinary messages.** If a user sends a message while a tool is still running, the runtime processes it in the next slice. The pending tool result arrives later and is appended to history normally.
-
-The [Architecture](./architecture.md) page walks through the yielding machinery in detail, including how synchronous tools loop back within a slice and how per-thread FIFO ordering keeps concurrent threads safe.
-
-## One core, two ways to run it
-
-`infinity-agent-core` contains the agent loop, history management, tool dispatch, threading, and compaction. It has no dependency on any particular storage, transport, or model backend; those are trait parameters. You run it in one of two ways:
-
-**Deploy it on AWS Lambda.** The `infinity-agent-lambda` crate binds the core to SQS FIFO queues, Aurora DSQL, DynamoDB, and Bedrock, and the included CDK constructs provision the whole stack. This is the production path. See [Deploying on AWS Lambda](./deploying-on-lambda.mdx).
-
-**Embed it through the Rust API.** Build an *agent system* with the high-level builder API (stores, tools, a model source) and either run it as a self-contained local runtime (an internal queue with per-thread drivers) or drive single steps from your own scheduler. The Infinity Code daemon is a full example: it runs a single long-lived agent system whose threads are grouped into sessions, backed by file-backed in-memory stores. See [The Agent System API](./agent-systems/overview.md).
-
-| | AWS Lambda | Embedded (Rust API) |
-|---|---|---|
-| Driving the loop | `AgentSystem::step` per queue delivery | Built-in local driver (`LocalAgentSystem::start`) |
-| Conversation history | Aurora DSQL | Anything implementing `ConversationStore` |
-| Dedup & subscription state | DynamoDB | Anything implementing `StateStore` |
-| Message delivery | SQS FIFO queue | Built-in in-process queue (`ChannelSender`) |
-| Yield | Process exits | Task idles on a channel |
-| Timers (`sleep`) | SQS delay / EventBridge Scheduler | `tokio::time::sleep` |
-| Tool auth | SigV4-signed HTTP | Plain HTTP |
-
-The execution model is identical in both. Code written against the core (tools, providers, tests) runs unchanged in either environment.
-
-## What's in these docs
-
-- **[Architecture](./architecture.md)**: the slice lifecycle, the yielding mechanism, turn durability, and message ordering, with diagrams.
-- **[The Agent System API](./agent-systems/overview.md)**: the builder, the local driver and step modes, observers and durability, and the patterns the production embeddings use.
-- **[The Low-Level API](./low-level/overview.md)**: the platform traits and the loop pieces underneath the agent system, for custom embeddings.
-- **[Deploying on AWS Lambda](./deploying-on-lambda.mdx)**: the CDK constructs and the AWS architecture.
-- **[Model Providers](./model-providers.md)**: the `ModelProvider` trait and how to add model backends.
-- **[Built-in Tools](./built-in-tools.md)**: sleep and threading tools the runtime provides to every agent.
-- **[Threading](./threading.md)**: durable child threads, reports, and subscription event isolation.
+Start with the [quickstart](./quickstart/launching-your-first-agent.md), then read [Agent Systems](./agent-systems/overview.md) for the full API. [The Low-Level API](./low-level/overview.md) documents the pieces underneath, for applications that need to arrange them differently.

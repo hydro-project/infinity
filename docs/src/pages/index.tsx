@@ -139,7 +139,7 @@ export default function Home(): React.JSX.Element {
             </p>
             <div className="hero-buttons">
               <a
-                href="/docs/infinity-runtime/agent-systems/building-a-system"
+                href="/docs/infinity-runtime/quickstart/launching-your-first-agent"
                 className="primary"
               >
                 Get Started
@@ -238,7 +238,7 @@ export default function Home(): React.JSX.Element {
                 </p>
               </>
             }
-            link="/docs/infinity-runtime/deploying-on-lambda"
+            link="/docs/infinity-runtime/serverless/quickstart"
             linkLabel="Deploy on AWS Lambda →"
           >
             {(active) => <RuntimeDiagram active={active} />}

@@ -1,0 +1,152 @@
+---
+sidebar_position: 1
+title: Quickstart
+---
+
+# Deploying on AWS Lambda
+
+The Lambda deployment is the production way to run the Infinity Runtime, and it takes the fullest advantage of the [yielding architecture](../architecture.md): when a slice ends, the Lambda invocation ends, so an idle agent consumes no compute at all. In this tutorial, you will create a CDK app from an empty directory, deploy a complete conversational agent using the `InfinityAgent` construct, and talk to it over SQS.
+
+The deployment is driven by the `infinity-agents-cdk` library. Its `InfinityAgent` construct provisions the full stack (Lambda, SQS, DSQL, Function URLs, and IAM permissions), and tools can be added as child constructs, so a single `cdk deploy` will create everything. [AWS Architecture](./architecture.mdx) describes what gets provisioned and how messages flow through it. If you want to run the runtime inside your own process instead, you should start with [Agent Systems](../agent-systems/overview.md).
+
+## Prerequisites
+
+The infrastructure is defined in CDK (TypeScript), and the agent itself is a Rust binary compiled for ARM64 Lambda. To follow along, you will need:
+
+- Node.js 20+ and [pnpm](https://pnpm.io/installation). pnpm is required because the CDK library is installed as a [git dependency from a subdirectory](https://pnpm.io/cli/add#install-from-git-repository) of the Infinity repo, which npm does not support. (If you prefer npm, you can clone the repo and use the `agent/` package directly instead.)
+- Either [cargo-lambda](https://www.cargo-lambda.info/) (plus a stable Rust toolchain from [rustup.rs](https://rustup.rs/)) for building the agent binary locally, **or** Docker. If cargo-lambda is not installed, the CDK construct will compile the agent inside the `ghcr.io/cargo-lambda/cargo-lambda` container instead.
+
+```bash
+brew install cargo-lambda/tap/cargo-lambda
+# OR
+pip install cargo-lambda
+# OR install nothing and let CDK build in Docker
+```
+
+Finally, you will need AWS credentials with permission to deploy CloudFormation stacks and to create Lambda functions, SQS queues, DynamoDB tables, DSQL clusters, and IAM roles:
+
+```bash
+aws sso login --profile your-profile
+export AWS_PROFILE=your-profile
+export CDK_DEFAULT_ACCOUNT=123456789012
+export CDK_DEFAULT_REGION=us-east-1
+```
+
+:::caution
+
+You will also need Bedrock model access enabled in your target region. The Lambda runtime currently invokes a fixed Claude Sonnet model through the Bedrock provider (see `MODEL_ID` in `crates/infinity-agent-lambda`), so make sure that the Anthropic models are enabled.
+
+:::
+
+## Creating the CDK App
+
+To get started, create a fresh package and install the construct library straight from the Infinity repository. The library lives in the `agent/` subdirectory of the repo, which pnpm can install directly using the `#path:` suffix:
+
+```bash
+mkdir my-agent && cd my-agent
+pnpm init
+pnpm add aws-cdk-lib constructs
+pnpm add "github:hydro-project/infinity#path:agent"
+pnpm add -D aws-cdk ts-node "typescript@^5" @types/node esbuild
+```
+
+Installing `infinity-agents-cdk` will take a couple of minutes the first time. This is because pnpm clones the repo and runs the package's `prepare` script, which compiles the constructs and vendors the Rust workspace into the package so that the agent Lambda can be built outside the repo.
+
+:::info
+
+`esbuild` is optional but recommended: without it, the small Node.js helper Lambdas (such as the delay relay and MCP proxies) will be bundled in Docker instead. TypeScript is pinned to 5.x because `ts-node` does not yet support TypeScript 7.
+
+:::
+
+Next, we can set up the CDK app itself, which consists of three files. `cdk.json` tells the CDK CLI how to run the app:
+
+```json
+{
+  "app": "npx ts-node bin/app.ts"
+}
+```
+
+`tsconfig.json`:
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["es2020"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true
+  },
+  "exclude": ["node_modules", "cdk.out"]
+}
+```
+
+Finally, `bin/app.ts` defines the agent itself. An `InfinityAgent` with no tool sets is already a complete conversational agent:
+
+```typescript
+import * as cdk from 'aws-cdk-lib';
+import { Construct } from 'constructs';
+import { InfinityAgent } from 'infinity-agents-cdk';
+
+class MyAgentStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    const agent = new InfinityAgent(this, 'Agent');
+
+    new cdk.CfnOutput(this, 'InputQueueUrl', { value: agent.inputQueue.queueUrl });
+    new cdk.CfnOutput(this, 'OutputQueueUrl', { value: agent.outputQueue.queueUrl });
+  }
+}
+
+const app = new cdk.App();
+new MyAgentStack(app, 'MyAgentStack', {
+  env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
+});
+```
+
+Tools can be added as child constructs of the agent, as shown in [Adding RAP & MCP Servers](./rap-mcp-servers.md). For a fully assembled example with several tool sets (time, EC2, GitHub webhooks, finance subscriptions, and code sandboxes), you can look at [`agent/lib/example-agent.ts`](https://github.com/hydro-project/infinity/blob/main/agent/lib/example-agent.ts) in the repo.
+
+## Deploying
+
+If you haven't used CDK in this account/region before, bootstrap it once:
+
+```bash
+npx cdk bootstrap "aws://$CDK_DEFAULT_ACCOUNT/$CDK_DEFAULT_REGION"
+```
+
+Then deploy:
+
+```bash
+npx cdk deploy
+```
+
+The first deploy will take a few minutes, since the Rust agent binary has to be compiled for ARM64 (locally via cargo-lambda, or in Docker). CDK will show you the resources being created and ask for confirmation on IAM changes. Once the deploy completes, it will print the `InputQueueUrl` and `OutputQueueUrl` outputs, which you will need in order to interact with the agent.
+
+## Talking to the Agent
+
+The deployed agent has no HTTP frontend of its own; instead, you talk to it through the queues. To start a conversation, send a JSON message to the input FIFO queue, with `MessageGroupId` selecting the conversation and a unique `MessageDeduplicationId`:
+
+```bash
+aws sqs send-message \
+  --queue-url "$INPUT_QUEUE_URL" \
+  --message-group-id my-conversation \
+  --message-deduplication-id "$(date +%s)" \
+  --message-body '{
+    "content": { "type": "text", "text": "Write a haiku about serverless agents" },
+    "group_id": "my-conversation"
+  }'
+```
+
+Each `group_id` is an independent conversation thread with its own persisted history, so you can reuse the same value to continue a conversation. The agent's replies (and notices such as OAuth challenges) will arrive as JSON messages on the output queue, each carrying the response `text` and the conversation `metadata`:
+
+```bash
+aws sqs receive-message --queue-url "$OUTPUT_QUEUE_URL" --wait-time-seconds 20
+```
+
+If you want to give the agent a chat frontend instead of raw queues, see [Slack Integration](./slack-integration.md).
+
+## What's Next
+
+So far, the agent has only the built-in tools. [Adding RAP & MCP Servers](./rap-mcp-servers.md) covers the three constructs for attaching tool servers, and [Build a RAP Tool](/docs/rap/using-rap/building-a-rap-tool) covers writing your own. [AWS Architecture](./architecture.mdx) explains what was provisioned and how messages, tool calls, and timers flow through it.

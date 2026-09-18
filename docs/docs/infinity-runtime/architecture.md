@@ -5,13 +5,13 @@ title: Architecture
 
 # Architecture
 
-The Infinity Runtime is organized around one invariant: **an execution slice never blocks on anything external**. This page walks through what happens inside a slice, how the runtime yields, and how the surrounding machinery (turn durability, deduplication, message ordering) keeps the whole thing correct on infrastructure that only offers at-least-once delivery.
+The Infinity Runtime is organized around one invariant: **an execution slice never blocks on anything external**. This invariant determines what happens inside a slice, how the runtime yields, and how turn durability, deduplication, and message ordering keep a conversation correct on infrastructure that only offers at-least-once delivery.
 
 ## Everything is a message
 
-The runtime consumes exactly one kind of input: an `InputMessage` on the input queue. User text, tool results, subscription events, reports from child threads, OAuth challenges, and timer wake-ups are all the same type, distinguished by their content and an optional `synthetic` tag. Each message carries a `group_id` identifying the conversation thread it belongs to.
+The runtime consumes exactly one kind of input: an `InputMessage` on the input queue. User text, tool results, subscription events, reports from child threads, OAuth challenges, and timer wake-ups are all represented by this same type, and they are distinguished by their content and an optional `synthetic` tag. Each message also carries a `group_id`, which identifies the conversation thread it belongs to.
 
-This uniformity is what lets the runtime shut down completely between slices. There is no in-process state machine tracking "waiting for tool X" or "sleeping until 9am". Whatever the agent is waiting for will eventually show up as a message, and the slice that processes it reconstructs everything it needs from storage.
+This uniformity is what lets the runtime shut down completely between slices. There is no in-process state machine that tracks "waiting for tool X" or "sleeping until 9am". Whatever the agent is waiting for will eventually show up as a message, and the slice that processes it will reconstruct everything it needs from storage.
 
 ## Anatomy of a slice
 
@@ -44,15 +44,15 @@ The three phases map directly onto the core API:
 
 2. **Prepare and complete.** A [step](./agent-systems/step-mode.md) runs each input through `prepare_input`, which deduplicates redelivered messages, drops messages for closed threads, routes subscription events (see below), and appends actionable content to history. If any input was actionable, `run_completion` streams a completion from the `ModelProvider`.
 
-3. **Dispatch and yield.** If the model produced a tool call, `execute_action` invokes the matching `Tool` implementation. For RAP tools this is a single HTTP POST containing the arguments and a `callback_url`; the tool server acknowledges and the call returns. The slice persists any remaining state and ends. On Lambda the process exits; in an embedded runtime the worker task goes back to awaiting its channel.
+3. **Dispatch and yield.** If the model produced a tool call, `execute_action` invokes the matching `Tool` implementation. For RAP tools, this is a single HTTP POST containing the arguments and a `callback_url`; the tool server acknowledges the request and the call returns immediately. The slice then persists any remaining state and ends. On Lambda, the process exits; in an embedded runtime, the worker task goes back to awaiting its channel.
 
-The model's decision to call a tool is what ends the slice. This is the yield point, and it is why the runtime never needs to hold a connection open: the tool result re-enters through the front door as a fresh `InputMessage`, whether it takes 100 milliseconds or three days.
+The model's decision to call a tool is what ends the slice. This is the yield point, and it is the reason the runtime never needs to hold a connection open: the tool result will re-enter through the front door as a fresh `InputMessage`, whether it takes 100 milliseconds or three days.
 
 ## Synchronous tools loop back
 
-Not every tool should yield. `spawn_thread` completes in microseconds against the conversation store, and yielding for it would waste a full store round trip and risk a race: a concurrent event could arrive between the dispatch and the result, making the call appear cancelled even though it ran.
+Not every tool should yield. For example, `spawn_thread` completes in microseconds against the conversation store, so yielding for it would waste a full store round trip. It would also risk a race: a concurrent event could arrive between the dispatch and the result, which would make the call appear cancelled even though it ran.
 
-Tools can therefore opt into synchronous execution by implementing `Tool::execute_synchronous`. When the completion stream encounters a call to such a tool, the runtime executes it inline, injects the result directly into history, and **loops back** into another completion within the same slice instead of yielding:
+Tools can therefore opt into synchronous execution by implementing `Tool::execute_synchronous`. When the completion stream encounters a call to such a tool, the runtime will execute it inline, inject the result directly into history, and **loop back** into another completion within the same slice instead of yielding:
 
 ```mermaid
 flowchart TD
@@ -63,19 +63,19 @@ flowchart TD
     TC -->|async RAP tool| DISPATCH[Flush turn,\nPOST invocation] --> YIELD[Yield]
 ```
 
-Unknown tool names take the same loop-back path with an injected error, so a hallucinated tool call costs one extra completion rather than a stuck conversation.
+Unknown tool names take the same loop-back path with an injected error result, so a hallucinated tool call will cost one extra completion rather than a stuck conversation.
 
 ## Turns and durability
 
-Streaming output is buffered in a **turn buffer** and only committed when the turn completes: either the model finishes without a tool call, or a tool call ends the turn. If the stream errors mid-turn, the buffer is discarded and the completion retries, so half-streamed assistant messages never reach storage. When a tool call ends a turn, the runtime flushes the buffer *before* dispatching the invocation, guaranteeing the call is durable in history before its result can possibly arrive.
+Streaming output is buffered in a **turn buffer** and is only committed when the turn completes, either because the model finishes without a tool call or because a tool call ends the turn. If the stream errors mid-turn, the buffer is discarded and the completion retries, so half-streamed assistant messages will never reach storage. When a tool call ends a turn, the runtime flushes the buffer *before* dispatching the invocation, which guarantees that the call is durable in history before its result can possibly arrive.
 
-Durability alone is not enough, because queues redeliver. Every input message and completion carries a stable ID, and the `StateStore` tracks which IDs each thread has already processed. A redelivered message is recognized in `prepare_input` and skipped, making slices effectively idempotent on top of at-least-once delivery.
+Durability alone is not enough, because queues redeliver. Every input message and completion carries a stable ID, and the `StateStore` tracks which IDs each thread has already processed. A redelivered message will be recognized in `prepare_input` and skipped, which makes slices effectively idempotent on top of at-least-once delivery.
 
 ## Ordering: FIFO per thread, concurrency across threads
 
-Within a single thread, slices must be serialized; two slices loading and writing the same history concurrently would corrupt it. Across threads there is no shared state, so they should run in parallel.
+Within a single thread, slices must be serialized, since two slices that load and write the same history concurrently would corrupt it. Across threads there is no shared state, so threads should run in parallel.
 
-The runtime encodes this directly in the queue: messages are grouped by `group_id`, and the transport guarantees per-group FIFO ordering. On AWS this is an SQS FIFO queue with `MessageGroupId`, where Lambda automatically runs one invocation per active group and scales groups independently. In an embedded runtime it is one `mpsc` channel and worker task per thread.
+To achieve this, the runtime encodes the ordering requirement directly in the queue: messages are grouped by `group_id`, and the transport guarantees per-group FIFO ordering. On AWS, this is an SQS FIFO queue with `MessageGroupId`, where Lambda will automatically run one invocation per active group and scale groups independently. In an embedded runtime, it is one `mpsc` channel and worker task per thread.
 
 ```mermaid
 flowchart LR
@@ -87,11 +87,11 @@ flowchart LR
     B2 -->|group: thread B| WB[Slice for thread B]
 ```
 
-This is also how [threading](./threading.md) gets its concurrency: spawning a child thread creates a new message group. Children inherit the parent's history up to the spawn point, run their own slices in parallel, and report back with messages tagged as thread reports, which the parent sees as synthetic tool results.
+This is also how [threading](./built-in/threading.md) gets its concurrency: spawning a child thread creates a new message group. Children inherit the parent's history up to the spawn point and run their own slices in parallel. When a child reports back, its report is tagged as a thread report, which the parent will see as a synthetic tool result.
 
 ## Subscription events
 
-RAP [subscriptions](/docs/rap/about/subscription-events) deliver an open-ended stream of events against a single tool call. When an event arrives for a thread, `prepare_input` does not append it to that thread's history. Instead it spawns a temporary child thread seeded with the event and instructions to process it, then re-enqueues the event for the child:
+RAP [subscriptions](/docs/rap/about/subscription-events) deliver an open-ended stream of events against a single tool call. When an event arrives for a thread, `prepare_input` does not append it to that thread's history. Instead, it spawns a temporary child thread that is seeded with the event and instructions for processing it, and then re-enqueues the event for the child:
 
 ```mermaid
 sequenceDiagram
@@ -108,11 +108,11 @@ sequenceDiagram
     Q->>P: slice: synthetic tool result with report
 ```
 
-The parent's context stays clean: it sees a report if the event mattered and nothing at all if it didn't. Events marked *associative* skip the child thread and inject inline, for streams where every event belongs in the subscribing thread's own history (such as log lines from a long-running command).
+This keeps the parent's context clean: it will see a report if the event mattered, and nothing at all if it did not. Events marked *associative* skip the child thread and are injected inline; this is intended for streams where every event belongs in the subscribing thread's own history, such as log lines from a long-running command.
 
 ## Compaction
 
-Long-lived agents eventually outgrow the model's context window. When a thread's history approaches the limit (the local driver triggers at roughly three quarters of the model's context window), the runtime spawns a compaction thread that summarizes the conversation and stores the summary in the `ConversationStore`, tagged with the history index it covers. Subsequent slices load the summary plus only the messages after that index. Because summaries are indexed by position, child threads spawned before a compaction still reconstruct the exact history they inherited.
+Long-lived agents eventually outgrow the model's context window. When a thread's history approaches the limit (the local driver triggers at roughly three quarters of the model's context window), the runtime will spawn a compaction thread that summarizes the conversation and stores the summary in the `ConversationStore`, tagged with the history index it covers. Subsequent slices will load the summary plus only the messages after that index. Because summaries are indexed by position, child threads that were spawned before a compaction can still reconstruct the exact history they inherited.
 
 ## Why this runs on serverless
 
@@ -123,4 +123,4 @@ Putting the pieces together, the runtime satisfies every constraint a serverless
 - **At-least-once delivery.** Processed-ID tracking makes redelivery harmless.
 - **Concurrency control without locks.** FIFO message groups serialize each thread at the queue layer, so the runtime itself needs no distributed locking.
 
-Runtimes that block on tool calls can be *hosted* on serverless platforms only by holding invocations open while tools run, paying for idle wall-clock time and hitting invocation timeouts. The Infinity Runtime is the first agent runtime that fits the platform's execution model directly: the platform's own scale-to-zero behavior is the hibernation mechanism.
+Runtimes that block on tool calls can be *hosted* on serverless platforms only by holding invocations open while tools run, which pays for idle wall-clock time and runs into invocation timeouts. The Infinity Runtime is the first agent runtime that fits the platform's execution model directly: the platform's own scale-to-zero behavior serves as the hibernation mechanism.

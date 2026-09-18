@@ -44,7 +44,43 @@ const config: Config = {
     ],
   ],
 
-  plugins: ["./plugins/transpile-deps"],
+  plugins: [
+    "./plugins/transpile-deps",
+    [
+      "@docusaurus/plugin-client-redirects",
+      {
+        redirects: [
+          {
+            from: "/docs/infinity-runtime/agent-systems/building-a-system",
+            to: "/docs/infinity-runtime/quickstart/launching-your-first-agent",
+          },
+          {
+            from: "/docs/infinity-runtime/agent-systems/custom-tools",
+            to: "/docs/infinity-runtime/quickstart/adding-tools",
+          },
+          {
+            from: [
+              "/docs/infinity-runtime/agent-systems/rap-servers",
+              "/docs/infinity-runtime/agent-systems/mcp-servers",
+            ],
+            to: "/docs/infinity-runtime/quickstart/connecting-rap-and-mcp",
+          },
+          {
+            from: "/docs/infinity-runtime/deploying-on-lambda",
+            to: "/docs/infinity-runtime/serverless/quickstart",
+          },
+          {
+            from: "/docs/infinity-runtime/built-in-tools",
+            to: "/docs/infinity-runtime/built-in/built-in-tools",
+          },
+          {
+            from: "/docs/infinity-runtime/threading",
+            to: "/docs/infinity-runtime/built-in/threading",
+          },
+        ],
+      },
+    ],
+  ],
 
   themeConfig: {
     colorMode: {
@@ -94,7 +130,7 @@ const config: Config = {
           items: [
             {
               label: "Quickstart",
-              to: "/docs/infinity-runtime/agent-systems/building-a-system",
+              to: "/docs/infinity-runtime/quickstart/launching-your-first-agent",
             },
             {
               label: "Architecture",
@@ -102,7 +138,7 @@ const config: Config = {
             },
             {
               label: "Deploy on AWS Lambda",
-              to: "/docs/infinity-runtime/deploying-on-lambda",
+              to: "/docs/infinity-runtime/serverless/quickstart",
             },
           ],
         },

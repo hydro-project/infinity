@@ -96,6 +96,12 @@ jobs:
       - name: Run tests
         run: cargo test --all-targets
 
+      # `--all-targets` does not include doctests, which cover the rustdoc
+      # examples in library crates and the documentation example tests
+      # (crates/infinity-mdtests).
+      - name: Run doctests
+        run: cargo test --doc
+
       # Web UI e2e tests run only on Linux: they need a Playwright browser
       # and the goldens are rendered with Linux font rendering.
       - name: Setup Node.js (Linux)
