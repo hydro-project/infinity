@@ -12,7 +12,7 @@ use infinity_agent_core::message::{InputMessage, InputMessageContent, UserChoice
 use infinity_agent_core::system::local::{ChannelSender, RunningSystem, ThreadLifecycleState};
 use infinity_agent_core::system::{AgentSystemBuilder, UserChoice};
 use infinity_agent_core::tools::Tool;
-use infinity_agent_core::traits::{ConversationStore, StateStore};
+use infinity_agent_core::traits::{ConversationStore, SpawnContext, StateStore};
 use infinity_protocol::{DaemonMessage, SessionStatus};
 use infinity_provider_protocol::message::UserContent;
 use infinity_provider_protocol::mock::mock_model;
@@ -622,7 +622,7 @@ async fn child_pending_choice_updates_root_session_status() {
                     &session_id,
                     rap_protocol::ToolCallId::from_ref("spawn-call"),
                     false,
-                    None,
+                    SpawnContext::Inherit,
                 )
                 .await
                 .expect("spawn child thread");
