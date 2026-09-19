@@ -24,12 +24,28 @@ struct ReasoningState {
 }
 
 /// Finalize a completed tool-use content block into a full tool call.
+///
+/// With fine-grained tool streaming enabled (see
+/// `FINE_GRAINED_TOOL_STREAMING_BETA` in `lib.rs`) the input fragments are
+/// *not* validated server-side, so the accumulated string may fail to
+/// parse. That is classified [`ErrorClass::Transient`]: a retry regenerates
+/// the whole turn and will usually produce valid JSON. (A truncation caused
+/// by hitting max tokens additionally surfaces as its own fatal error at
+/// `MessageStop`.)
 fn finish_tool_call(state: ToolCallState) -> Result<StreamChunk, CompletionError> {
     // Tools without parameters stream no input at all.
     let arguments = if state.input_json.is_empty() {
         serde_json::json!({})
     } else {
-        serde_json::from_str(&state.input_json)?
+        serde_json::from_str(&state.input_json).map_err(|e| {
+            CompletionError::provider(
+                ErrorClass::Transient,
+                format!(
+                    "streamed input for tool {} was not valid JSON: {e}",
+                    state.name
+                ),
+            )
+        })?
     };
     Ok(StreamChunk::ToolCall(ToolCall::new(
         state.id, state.name, arguments,
@@ -203,13 +219,20 @@ mod tests {
     }
 
     #[test]
-    fn malformed_tool_input_is_an_error() {
+    fn malformed_tool_input_is_a_transient_error() {
         let result = finish_tool_call(ToolCallState {
             id: "tc-3".to_owned(),
             name: "broken".to_owned(),
             input_json: "{not json".to_owned(),
         });
-        assert!(matches!(result, Err(CompletionError::JsonError(_))));
+        // Fine-grained tool streaming skips server-side validation, so a
+        // parse failure is retryable, not fatal.
+        let err = result.expect_err("malformed input must error");
+        assert_eq!(err.class(), ErrorClass::Transient);
+        assert!(
+            err.to_string().contains("broken"),
+            "error should name the tool: {err}"
+        );
     }
 
     #[test]
