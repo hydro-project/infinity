@@ -686,6 +686,104 @@ async fn child_pending_choice_updates_root_session_status() {
         .await;
 }
 
+/// Reproduction of the "shutting down from the CLI doesn't stop the agent"
+/// bug.
+///
+/// `ClientMessage::ShutdownSession` → [`SessionManager::cleanup_session`]
+/// only stops the session's RAP servers and marks it `shut_down` in the
+/// session store; it never signals the running agent system. The
+/// stopped-session policy is enforced solely by the router's admission
+/// check, which runs only when the thread has **no live driver**. But a
+/// thread that is actively working keeps its driver live the whole time — a
+/// driver awaiting an async tool result parks instead of exiting — so the
+/// pending tool-result callback is forwarded straight to the live driver and
+/// the agent keeps looping model → tool → model, even though the session is
+/// listed as Stopped.
+///
+/// This test asserts the *desired* behavior (after shutdown, the pending
+/// tool result must not start another completion round) and currently fails,
+/// so it is `#[ignore]`d as a bug reproduction. Run it with:
+/// `cargo test -p infinity-daemon shut_down_session_with_live_driver -- --ignored`
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "known bug: shutting down a session does not stop a thread with a live driver"]
+async fn shut_down_session_with_live_driver_stops_agent() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (model, mut ctrl) = mock_model();
+            let (model2, _ctrl2) = mock_model();
+            let catalog = two_model_catalog(model, model2).await;
+            let (conv, _state, dir) = tmp_stores(model1_ref());
+            conv.ensure_root_thread(ThreadId::from_ref("s"))
+                .await
+                .expect("ensure root");
+
+            let (change_tx, _change_rx) = mpsc::unbounded_channel();
+            let session_store = Arc::new(tokio::sync::Mutex::new(
+                crate::session_store::SessionStore::load(
+                    &dir.path().join("sessions.json").to_string_lossy(),
+                    change_tx,
+                ),
+            ));
+            session_store
+                .lock()
+                .await
+                .create(ThreadId::from_ref("s"), dir.path().to_path_buf());
+            let state = PersistentStateStore::new(
+                dir.path().join("state"),
+                conv.clone(),
+                session_store.clone(),
+            );
+
+            let (running, mut display_rx, _smap) = start_daemon_system(
+                ThreadId::from_ref("s"),
+                conv.clone(),
+                state,
+                catalog,
+                vec![Box::new(AsyncStubTool)],
+            );
+
+            // The agent is mid-task: the model issued an async tool call, so
+            // the driver parks awaiting the result and stays live.
+            running
+                .send_user_text(ThreadId::from_ref("s"), "use the tool")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_tool_call("tc-1", "async_tool", serde_json::json!({}));
+            ctrl.finish();
+            collect_until_done(&mut display_rx).await;
+
+            // The user shuts the session down from the CLI (ShutdownSession →
+            // cleanup_session; its effect on routing state is exactly this
+            // flag — the running system is not told anything).
+            session_store
+                .lock()
+                .await
+                .mark_shut_down(ThreadId::from_ref("s"));
+
+            // The pending tool result arrives (e.g. a RAP callback). The
+            // stopped-thread policy should refuse to process it, but that
+            // check only guards driver respawns: the live parked driver
+            // receives the event directly and starts another completion
+            // round.
+            running
+                .send(
+                    tool_result_input(ThreadId::from_ref("s"), "tc-1", "tool done"),
+                    "cb-1",
+                )
+                .await;
+
+            let another_round =
+                tokio::time::timeout(std::time::Duration::from_secs(2), ctrl.next_request()).await;
+            assert!(
+                another_round.is_err(),
+                "a shut-down session must not keep driving the model, but the live \
+                 driver accepted the tool result and started another completion round"
+            );
+        })
+        .await;
+}
+
 /// A callback-style event (a tool result with no live driver) for a session
 /// the user shut down is refused by the stopped-thread policy inside the
 /// router, while the same event for a live session wakes its thread. This
