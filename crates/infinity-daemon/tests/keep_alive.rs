@@ -185,16 +185,22 @@ async fn non_keep_alive_client_does_not_keep_session_warm() {
                 "session should idle out despite the connected non-keep-alive client"
             );
             let mgr = h.manager.lock().await;
-            assert!(
-                mgr.session_store.lock().await.is_idle(&session_id),
-                "session should be marked idle in the store"
+            let sessions = mgr.list_sessions(None).await;
+            let status = &sessions
+                .get(&infinity_protocol::ThreadRef::local(session_id.clone()))
+                .expect("session is listed")
+                .status;
+            assert_eq!(
+                *status,
+                infinity_protocol::SessionStatus::Idle,
+                "an inactive session should derive as Idle"
             );
         })
         .await;
 }
 
-/// User text is admitted for a stopped session, and the driver's `Live`
-/// transition reactivates the session before the response completes.
+/// User text is admitted for a stopped session and clears its shut-down flag
+/// at the input surface, before the response completes.
 #[tokio::test(flavor = "current_thread")]
 async fn user_input_restarts_stopped_session() {
     let local = tokio::task::LocalSet::new();
@@ -221,7 +227,7 @@ async fn user_input_restarts_stopped_session() {
                 let mgr = h.manager.lock().await;
                 assert!(
                     !mgr.session_store.lock().await.is_shut_down(&session_id),
-                    "the Live transition must reactivate the stopped session"
+                    "user input must reactivate the stopped session"
                 );
             }
             h.ctrl.send_text("resumed");
