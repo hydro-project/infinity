@@ -7,29 +7,39 @@ use tokio::sync::mpsc;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SessionEntry {
     pub cwd: PathBuf,
-    /// When true, only user text input should re-awaken the agent.
+    /// When true, the session was explicitly shut down and is quiescent
+    /// (nothing running); only user text input re-awakens the agent. Set by
+    /// `SessionManager::cleanup_session` *after* the session's drivers have
+    /// been stopped, and cleared when new user input arrives — so the flag
+    /// is only ever true while the session is actually not running.
     #[serde(default)]
     pub shut_down: bool,
-    /// When true, the agent is idle (no active work).
-    #[serde(default)]
-    pub idle: bool,
     /// When true, the session has been migrated away and should not be displayed.
     #[serde(default)]
     pub archived: bool,
 }
 
 impl SessionEntry {
-    pub fn status(&self, has_pending_choices: bool) -> infinity_protocol::SessionStatus {
+    /// Derive the session's status. `Running`/`Idle` come from live runtime
+    /// state (`is_active`: does the session have active threads right now?),
+    /// never from a persisted flag — persisted runtime state would go stale
+    /// the moment the daemon restarts. Only durable facts (`archived`,
+    /// pending choices, the enforced `shut_down` flag) are read from storage.
+    pub fn status(
+        &self,
+        has_pending_choices: bool,
+        is_active: bool,
+    ) -> infinity_protocol::SessionStatus {
         if self.archived {
             infinity_protocol::SessionStatus::Archived
         } else if has_pending_choices {
             infinity_protocol::SessionStatus::WaitingForChoice
-        } else if self.idle {
-            infinity_protocol::SessionStatus::Idle
+        } else if is_active {
+            infinity_protocol::SessionStatus::Running
         } else if self.shut_down {
             infinity_protocol::SessionStatus::Stopped
         } else {
-            infinity_protocol::SessionStatus::Running
+            infinity_protocol::SessionStatus::Idle
         }
     }
 }
@@ -72,7 +82,6 @@ impl SessionStore {
                                     cwd: std::env::current_dir()
                                         .expect("failed to get current directory"),
                                     shut_down: false,
-                                    idle: false,
                                     archived: false,
                                 },
                             )
@@ -109,7 +118,6 @@ impl SessionStore {
             SessionEntry {
                 cwd,
                 shut_down: false,
-                idle: false,
                 archived: false,
             },
         );
@@ -141,33 +149,6 @@ impl SessionStore {
             return true;
         }
         false
-    }
-
-    pub fn mark_idle(&mut self, session_id: &ThreadId<str>) {
-        if let Some(entry) = self.sessions.get_mut(session_id)
-            && !entry.idle
-        {
-            entry.idle = true;
-            self.notify(session_id);
-        }
-    }
-
-    pub fn clear_idle(&mut self, session_id: &ThreadId<str>) -> bool {
-        if let Some(entry) = self.sessions.get_mut(session_id)
-            && entry.idle
-        {
-            entry.idle = false;
-            self.notify(session_id);
-            return true;
-        }
-        false
-    }
-
-    pub fn is_idle(&self, session_id: &ThreadId<str>) -> bool {
-        self.sessions
-            .get(session_id)
-            .map(|e| e.idle)
-            .unwrap_or(false)
     }
 
     pub fn is_shut_down(&self, session_id: &ThreadId<str>) -> bool {

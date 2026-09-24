@@ -976,6 +976,12 @@ pub struct PersistentStateStore {
     // Used to resolve child threads for stopped-session policy.
     conversation_store: PersistentConversationStore,
     session_store: Arc<tokio::sync::Mutex<crate::session_store::SessionStore>>,
+    /// Sessions currently being wound down by an explicit shutdown. The
+    /// stopped-thread policy honors this transient mark so event-style input
+    /// is refused during the wind-down, before the durable `shut_down` flag
+    /// is set (which only happens once the session is quiescent — see
+    /// `SessionManager::cleanup_session`).
+    stopping_sessions: Arc<Mutex<HashSet<ThreadId>>>,
 }
 
 impl PersistentStateStore {
@@ -992,6 +998,22 @@ impl PersistentStateStore {
             loaded: Arc::new(Mutex::new(HashSet::new())),
             conversation_store,
             session_store,
+            stopping_sessions: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+
+    /// Mark (or unmark) a session as being wound down by an explicit
+    /// shutdown. While marked, `is_thread_stopped` reports `true` for all of
+    /// the session's threads, so the router refuses event-style wakeups.
+    pub fn set_session_stopping(&self, session_id: &ThreadId<str>, stopping: bool) {
+        let mut set = self
+            .stopping_sessions
+            .lock()
+            .expect("bug: mutex poisoned");
+        if stopping {
+            set.insert(session_id.to_owned());
+        } else {
+            set.remove(session_id);
         }
     }
 
@@ -1193,6 +1215,14 @@ impl StateStore for PersistentStateStore {
 
     async fn is_thread_stopped(&self, thread_id: &ThreadId<str>) -> Result<bool, MemoryError> {
         let session_id = self.conversation_store.get_root_thread_id(thread_id);
+        if self
+            .stopping_sessions
+            .lock()
+            .expect("bug: mutex poisoned")
+            .contains(&session_id)
+        {
+            return Ok(true);
+        }
         Ok(self.session_store.lock().await.is_shut_down(&session_id))
     }
 }

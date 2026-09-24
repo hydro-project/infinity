@@ -553,6 +553,146 @@ async fn shutdown_does_not_persist_unvalidated_tool_result() {
         .await;
 }
 
+/// Stopping a single thread mid-completion interrupts it exactly like a
+/// whole-system shutdown: the partial turn is flushed to the store and the
+/// driver exits — while the rest of the system keeps running.
+#[tokio::test(flavor = "current_thread")]
+async fn stop_thread_interrupts_in_flight_completion_and_flushes() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (running, mut rx, mut ctrl, conv) = start_system(vec![], None);
+
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "start")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_text("partial reply");
+            loop {
+                if let Evt::E(AgentEvent::TextChunk { .. }) = next_evt(&mut rx).await {
+                    break;
+                }
+            }
+
+            // Stop the thread while the model is mid-response.
+            running.stop_thread(ThreadId::from_ref("t1")).await;
+            assert!(
+                running.is_idle(),
+                "the stopped thread's driver must be gone once stop_thread resolves"
+            );
+            let stored = persisted(&conv, "t1");
+            assert!(
+                stored.contains("partial reply"),
+                "partial model output must be flushed when a thread is stopped; history: {stored}"
+            );
+
+            // The system itself keeps running: another thread works normally.
+            running
+                .send_user_text(ThreadId::from_ref("t2"), "hello")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_text("hi");
+            ctrl.finish();
+            collect_until_finished(&mut rx).await;
+        })
+        .await;
+}
+
+/// A driver parked on a pending async tool result is live (it would receive
+/// the result directly, bypassing router admission). Stopping the thread
+/// winds the parked driver down; whether the thread *stays* stopped is the
+/// embedding's stopped-thread policy, not the stop operation's job.
+#[tokio::test(flavor = "current_thread")]
+async fn stop_thread_winds_down_parked_driver() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (running, mut rx, mut ctrl, _conv) = start_system(vec![Box::new(AsyncTool)], None);
+
+            // The model issues an async tool call; the driver parks awaiting
+            // the result and stays live.
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "do something")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_tool_call("tc-1", "async_tool", serde_json::json!({}));
+            ctrl.finish();
+            collect_until_finished(&mut rx).await;
+            assert!(
+                !running.is_idle(),
+                "a driver awaiting an async tool result parks and stays live"
+            );
+
+            running.stop_thread(ThreadId::from_ref("t1")).await;
+            assert!(
+                running.is_idle(),
+                "the parked driver must exit once stop_thread resolves"
+            );
+
+            // Core-level stop is a runtime operation only: with no stopped
+            // policy in the state store, a later event may legitimately
+            // respawn the thread.
+            running
+                .send(tool_result_input("t1", "tc-1", "late result").0, "res-1")
+                .await;
+            let _req2 = ctrl.next_request().await;
+            ctrl.send_text("resumed");
+            ctrl.finish();
+            collect_until_finished(&mut rx).await;
+        })
+        .await;
+}
+
+/// Stopping a thread with no live driver (idle or never seen) resolves
+/// immediately without spawning anything.
+#[tokio::test(flavor = "current_thread")]
+async fn stop_thread_without_live_driver_resolves_immediately() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (running, _rx, _ctrl, _conv) = start_system(vec![], None);
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                running.stop_thread(ThreadId::from_ref("never-seen")),
+            )
+            .await
+            .expect("stop of an unknown thread must resolve immediately");
+            assert!(running.is_idle(), "a stop must never spawn a driver");
+        })
+        .await;
+}
+
+/// After a barrier resolves, every driver spawned by previously-enqueued
+/// inputs is registered in the active set (registration is synchronous with
+/// routing). This is what lets an embedding quiesce a group of threads
+/// without racing its own queued messages.
+#[tokio::test(flavor = "current_thread")]
+async fn barrier_makes_previously_enqueued_drivers_visible() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (running, _rx, mut ctrl, _conv) = start_system(vec![], None);
+            let active = running.active_threads();
+
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "hello")
+                .await;
+            running.stop_handle().barrier().await;
+            assert!(
+                active
+                    .lock()
+                    .expect("bug: active_threads mutex poisoned")
+                    .contains(&ThreadId::from(String::from("t1"))),
+                "after a barrier the driver spawned by an earlier input must be visible"
+            );
+
+            let _req = ctrl.next_request().await;
+            ctrl.send_text("hi");
+            ctrl.finish();
+        })
+        .await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn subscription_event_deferred_during_async_tool_wait() {
     let local = tokio::task::LocalSet::new();
