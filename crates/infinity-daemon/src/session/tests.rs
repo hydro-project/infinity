@@ -663,7 +663,9 @@ async fn child_pending_choice_updates_root_session_status() {
                     .get(&infinity_protocol::ThreadRef::local(session_id.clone()))
                     .expect("created session is still listed")
                     .status,
-                SessionStatus::Running
+                // Status is derived from runtime state: no thread of this
+                // session has ever run, so it is Idle (not Running).
+                SessionStatus::Idle
             );
 
             manager
@@ -686,100 +688,113 @@ async fn child_pending_choice_updates_root_session_status() {
         .await;
 }
 
-/// Reproduction of the "shutting down from the CLI doesn't stop the agent"
-/// bug.
-///
-/// `ClientMessage::ShutdownSession` → [`SessionManager::cleanup_session`]
-/// only stops the session's RAP servers and marks it `shut_down` in the
-/// session store; it never signals the running agent system. The
-/// stopped-session policy is enforced solely by the router's admission
-/// check, which runs only when the thread has **no live driver**. But a
-/// thread that is actively working keeps its driver live the whole time — a
-/// driver awaiting an async tool result parks instead of exiting — so the
-/// pending tool-result callback is forwarded straight to the live driver and
-/// the agent keeps looping model → tool → model, even though the session is
-/// listed as Stopped.
-///
-/// This test asserts the *desired* behavior (after shutdown, the pending
-/// tool result must not start another completion round) and currently fails,
-/// so it is `#[ignore]`d as a bug reproduction. Run it with:
-/// `cargo test -p infinity-daemon shut_down_session_with_live_driver -- --ignored`
+/// End-to-end regression test for "shutting down from the CLI doesn't stop
+/// the agent": a session whose driver is live (parked on a pending async
+/// tool call — here the built-in `sleep` tool) is genuinely wound down by
+/// `cleanup_session`. The pending tool result must not start another
+/// completion round, the session must list as Stopped (a flag now written
+/// only after quiescence), and new user text must resume it.
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "known bug: shutting down a session does not stop a thread with a live driver"]
-async fn shut_down_session_with_live_driver_stops_agent() {
+async fn cleanup_session_stops_live_agent_and_user_input_resumes_it() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
             let (model, mut ctrl) = mock_model();
-            let (model2, _ctrl2) = mock_model();
-            let catalog = two_model_catalog(model, model2).await;
-            let (conv, _state, dir) = tmp_stores(model1_ref());
-            conv.ensure_root_thread(ThreadId::from_ref("s"))
+            let entry = ModelEntry {
+                model_id: "model1".to_owned(),
+                display_name: "model1".to_owned(),
+                context_window: 100_000,
+                max_output_tokens: None,
+                supports_image_input: false,
+            };
+            let state_dir = tempfile::tempdir().expect("create daemon state dir");
+            let cwd = tempfile::tempdir().expect("create session cwd");
+            let manager = SessionManager::with_providers(
+                SessionManagerConfig {
+                    state_dir: state_dir.path().to_path_buf(),
+                    callback_url: "http://127.0.0.1:0".to_owned(),
+                    user_rap_config: None,
+                    id_source: Arc::new(SequentialIdSource::new()),
+                },
+                vec![(
+                    "provider1".to_owned(),
+                    Arc::new(SingleModelProvider::new(entry, model)) as Arc<dyn ModelProvider>,
+                )],
+                vec![],
+            )
+            .await
+            .expect("build session manager");
+
+            let mut emit = |_message| async {};
+            let session_id = manager
+                .create_session(cwd.path(), model1_ref(), &mut emit)
                 .await
-                .expect("ensure root");
+                .expect("create session");
+            async fn status(mgr: &SessionManager, id: &ThreadId) -> SessionStatus {
+                mgr.list_sessions(None)
+                    .await
+                    .get(&infinity_protocol::ThreadRef::local(id.to_owned()))
+                    .expect("session is listed")
+                    .status
+                    .clone()
+            }
 
-            let (change_tx, _change_rx) = mpsc::unbounded_channel();
-            let session_store = Arc::new(tokio::sync::Mutex::new(
-                crate::session_store::SessionStore::load(
-                    &dir.path().join("sessions.json").to_string_lossy(),
-                    change_tx,
-                ),
-            ));
-            session_store
-                .lock()
-                .await
-                .create(ThreadId::from_ref("s"), dir.path().to_path_buf());
-            let state = PersistentStateStore::new(
-                dir.path().join("state"),
-                conv.clone(),
-                session_store.clone(),
-            );
+            // Watch the thread so we can observe the round completing.
+            let (display_tx, mut display_rx) = mpsc::unbounded_channel();
+            manager
+                .attach_client(&session_id, display_tx, false, true)
+                .await;
 
-            let (running, mut display_rx, _smap) = start_daemon_system(
-                ThreadId::from_ref("s"),
-                conv.clone(),
-                state,
-                catalog,
-                vec![Box::new(AsyncStubTool)],
-            );
-
-            // The agent is mid-task: the model issued an async tool call, so
-            // the driver parks awaiting the result and stays live.
-            running
-                .send_user_text(ThreadId::from_ref("s"), "use the tool")
+            // The agent starts working: the model calls the async `sleep`
+            // tool, so the driver parks awaiting the result and stays live.
+            manager
+                .send_input((InputMessage::user_text(session_id.clone(), "wait"), None))
                 .await;
             let _req = ctrl.next_request().await;
-            ctrl.send_tool_call("tc-1", "async_tool", serde_json::json!({}));
+            ctrl.send_tool_call("tc-sleep", "sleep", serde_json::json!({"seconds": 300}));
             ctrl.finish();
             collect_until_done(&mut display_rx).await;
-
-            // The user shuts the session down from the CLI (ShutdownSession →
-            // cleanup_session; its effect on routing state is exactly this
-            // flag — the running system is not told anything).
-            session_store
-                .lock()
-                .await
-                .mark_shut_down(ThreadId::from_ref("s"));
-
-            // The pending tool result arrives (e.g. a RAP callback). The
-            // stopped-thread policy should refuse to process it, but that
-            // check only guards driver respawns: the live parked driver
-            // receives the event directly and starts another completion
-            // round.
-            running
-                .send(
-                    tool_result_input(ThreadId::from_ref("s"), "tc-1", "tool done"),
-                    "cb-1",
-                )
-                .await;
-
-            let another_round =
-                tokio::time::timeout(std::time::Duration::from_secs(2), ctrl.next_request()).await;
-            assert!(
-                another_round.is_err(),
-                "a shut-down session must not keep driving the model, but the live \
-                 driver accepted the tool result and started another completion round"
+            assert_eq!(
+                status(&manager, &session_id).await,
+                SessionStatus::Running,
+                "a session with a parked (live) driver derives as Running"
             );
+
+            // The user shuts the session down. This must actually stop the
+            // live driver, and the Stopped flag is only written afterwards.
+            manager.cleanup_session(&session_id).await;
+            assert!(
+                manager.is_session_idle(&session_id),
+                "cleanup must leave the session with no active threads"
+            );
+            assert_eq!(
+                status(&manager, &session_id).await,
+                SessionStatus::Stopped,
+                "a quiesced, shut-down session lists as Stopped"
+            );
+
+            // No event may start another completion round.
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            assert!(
+                ctrl.try_next_request().is_none(),
+                "a shut-down session must not keep driving the model"
+            );
+
+            // New user text resumes the session: the flag clears at the
+            // input surface and a fresh driver spawns.
+            manager
+                .send_input((InputMessage::user_text(session_id.clone(), "hello?"), None))
+                .await;
+            let _req = ctrl.next_request().await;
+            assert!(
+                !manager.session_store.lock().await.is_shut_down(&session_id),
+                "user input must clear the shut-down flag"
+            );
+            ctrl.send_text("resumed");
+            ctrl.finish();
+            collect_until_done(&mut display_rx).await;
         })
         .await;
 }
