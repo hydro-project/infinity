@@ -95,7 +95,6 @@ impl StopHandle {
     }
 }
 
-
 /// A clonable handle for attaching subscribers to a running system's threads.
 pub struct SubscribeHandle<Sub: Send + 'static> {
     tx: mpsc::UnboundedSender<SubscribeMessage<Sub>>,
