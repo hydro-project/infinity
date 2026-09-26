@@ -84,11 +84,16 @@ fn is_compaction_complete(msg: &InputMessage) -> bool {
         .is_some_and(SyntheticKind::is_compaction_complete)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal entry point wiring one channel per concern"
+)]
 pub(crate) async fn drive_thread<C, S, H, O>(
     inner: Rc<SystemInner<C, S, ChannelSender, H>>,
     thread_id: ThreadId,
     mut rx: mpsc::UnboundedReceiver<(InputMessage, String)>,
     mut subscribe_rx: mpsc::UnboundedReceiver<(O::SubscribeRequest, oneshot::Sender<()>)>,
+    mut stop_rx: mpsc::UnboundedReceiver<()>,
     observer: O,
     active_threads: ActiveThreads,
     lifecycle_tx: mpsc::UnboundedSender<ThreadLifecycleEvent>,
@@ -98,17 +103,9 @@ pub(crate) async fn drive_thread<C, S, H, O>(
     H: HttpClient + 'static,
     O: ThreadObserver + 'static,
 {
-    active_threads
-        .lock()
-        .expect("bug: mutex poisoned")
-        .insert(thread_id.to_owned());
-    // Report liveness transitions at the same two points where
-    // `active_threads` changes, so the channel and the set can never
-    // disagree about a driver's state.
-    let _ = lifecycle_tx.send(ThreadLifecycleEvent {
-        thread_id: thread_id.clone(),
-        state: ThreadLifecycleState::Live,
-    });
+    // The router registered this thread in `active_threads` (and reported
+    // the Live transition) when it spawned the driver, synchronously with
+    // routing; the guard is the matching removal, covering every exit path.
     let _guard = DriverGuard {
         thread_id: thread_id.clone(),
         active_threads,
@@ -141,9 +138,37 @@ pub(crate) async fn drive_thread<C, S, H, O>(
     let mut in_flight: Option<InFlightStep<'_>> = None;
 
     loop {
+        // A queued stop wins before any new work starts (otherwise it would
+        // only be observed once the next step is already in flight). A
+        // disconnected stop channel means router teardown — wind down the
+        // same way.
+        match stop_rx.try_recv() {
+            Ok(()) | Err(mpsc::error::TryRecvError::Disconnected) => {
+                if let Some(flight) = in_flight.take() {
+                    let _ = flight.cancel().await;
+                }
+                return;
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {}
+        }
+
         let new_inputs: Vec<(InputMessage, String)> = if let Some(flight) = in_flight.as_mut() {
             tokio::select! {
                 biased;
+
+                // A stop request — or router teardown, when the channel
+                // drops — interrupts the in-flight completion. The cancel
+                // path flushes everything that already streamed to the
+                // store, exactly like a whole-system shutdown.
+                stop = stop_rx.recv() => {
+                    let _: Option<()> = stop;
+                    let _ = in_flight
+                        .take()
+                        .expect("bug: in-flight step missing during stop")
+                        .cancel()
+                        .await;
+                    return;
+                },
 
                 res = &mut flight.fut => {
                     in_flight = None;
@@ -254,6 +279,9 @@ pub(crate) async fn drive_thread<C, S, H, O>(
                         loop {
                             tokio::select! {
                                 biased;
+                                // Stop request or router teardown: nothing is
+                                // in flight while parked, so just exit.
+                                _ = stop_rx.recv() => return,
                                 msg = rx.recv() => {
                                     match msg {
                                         Some(m) => {

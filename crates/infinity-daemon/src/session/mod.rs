@@ -6,7 +6,7 @@ use infinity_agent_core::ThreadId;
 use infinity_agent_core::message::InputMessage;
 use infinity_agent_core::system::AgentSystemBuilder;
 use infinity_agent_core::system::local::{
-    ChannelSender, SubscribeHandle, ThreadLifecycleEvent, ThreadLifecycleState,
+    ChannelSender, StopHandle, SubscribeHandle, ThreadLifecycleEvent, ThreadLifecycleState,
 };
 use infinity_agent_core::traits::{ConversationStore, InputSender, StateStore};
 use infinity_protocol::{DaemonMessage, ModelRef, SessionInfo};
@@ -69,11 +69,12 @@ pub struct SessionManagerConfig {
 /// Manages all sessions on top of a single, daemon-lifetime agent system.
 ///
 /// The agent system itself never shuts down: threads idle out individually
-/// and respawn on demand, so message delivery never races a teardown. What
-/// starts and stops with session activity are the session's RAP tool servers,
-/// managed lazily by [`SessionRapManager`] — "shutting down" a session just
-/// means stopping its servers (they reboot transparently on the next tool
-/// invocation) and flagging it in the session store.
+/// and respawn on demand, so message delivery never races a teardown.
+/// Shutting down a *session* ([`cleanup_session`](Self::cleanup_session))
+/// stops its live thread drivers, then its RAP tool servers (managed lazily
+/// by [`SessionRapManager`]; they reboot transparently on the next tool
+/// invocation), and only then flags it in the session store — so the flag
+/// always describes the session's actual state.
 pub struct SessionManager {
     pub session_store: SessionStoreHandle,
     conversation_store: PersistentConversationStore,
@@ -96,6 +97,16 @@ pub struct SessionManager {
     sender: ChannelSender,
     /// Attaches subscribers to threads (resolves once installed).
     subscribe: SubscribeHandle<SubscribeRequest>,
+    /// Stops individual thread drivers (interrupting in-flight completions);
+    /// used by [`cleanup_session`](Self::cleanup_session) to quiesce a
+    /// session before marking it shut down.
+    stop_handle: StopHandle,
+    /// The core system's live-driver set: threads whose driver is currently
+    /// running (registered synchronously with routing). This is the ground
+    /// truth [`cleanup_session`](Self::cleanup_session) quiesces against —
+    /// unlike [`active_threads`](Self::active_threads), it never includes
+    /// driverless threads that are merely holding subscriptions.
+    driver_threads: infinity_agent_core::system::local::ActiveThreads,
     /// Threads that are live or waiting on subscription events (see
     /// [`ActiveThreadSet`]).
     active_threads: ActiveThreadSet,
@@ -179,10 +190,14 @@ impl SessionManager {
         let subscription_state = state_store.clone();
         let state_store_for_updates = state_store.clone();
 
-        // Task: listen for session store changes and broadcast to clients
+        // Task: listen for session store changes and broadcast to clients.
+        // Created before the broadcaster so it can derive Running/Idle from
+        // live thread activity (see the session activity watcher below).
+        let active_threads: ActiveThreadSet = Default::default();
         let bc = broadcast_clients.clone();
         let ss = session_store.clone();
         let cs = conversation_store.clone();
+        let active_for_updates = active_threads.clone();
         tokio::task::spawn_local(rap_protocol::log_panic(
             "session_change_broadcaster",
             async move {
@@ -198,6 +213,11 @@ impl SessionManager {
                                 status: e.status(
                                     state_store_for_updates
                                         .has_pending_choices_for_session(&session_id),
+                                    session_has_active_threads(
+                                        &active_for_updates,
+                                        &cs,
+                                        &session_id,
+                                    ),
                                 ),
                                 threads,
                                 remote: None,
@@ -272,21 +292,25 @@ impl SessionManager {
         let mut running = system.start_with_observer(make_observer);
         let sender = running.sender();
         let subscribe = running.subscribe_handle();
+        let stop_handle = running.stop_handle();
+        let driver_threads = running.active_threads();
 
         // ── Session activity watcher ──
         //
-        // The single owner of the session store's idle flag and of the
-        // daemon's view of thread activity. Every driver spawn (`Live`)
-        // marks the thread active and its session non-idle, covering user
-        // input and RAP callbacks alike. Every driver exit (`Idle`) asks the
-        // state store whether the thread still holds active subscriptions:
-        // if it does, the thread stays active (its subscription events will
+        // The single owner of the daemon's view of thread activity. Every
+        // driver spawn (`Live`) marks the thread active, covering user input
+        // and RAP callbacks alike. Every driver exit (`Idle`) asks the state
+        // store whether the thread still holds active subscriptions: if it
+        // does, the thread stays active (its subscription events will
         // respawn the driver, and its RAP servers must stay up to deliver
         // them); if not, the thread is retired and the session is evaluated
         // for teardown. Stopping servers is always safe: they reboot lazily
         // on the next tool invocation, so there is no teardown/wakeup race
         // to coordinate.
-        let active_threads: ActiveThreadSet = Default::default();
+        //
+        // Session status (Running/Idle) is *derived* from this activity view
+        // at read time, never persisted; the watcher only notifies the store
+        // on transitions so status changes are broadcast to clients.
         let (idle_eval_tx, mut idle_eval_rx) = mpsc::unbounded_channel::<ThreadId>();
         {
             let conversation_store = conversation_store.clone();
@@ -324,16 +348,14 @@ impl SessionManager {
                                     .lock()
                                     .expect("bug: mutex poisoned")
                                     .insert(thread_id);
-                                let mut store = session_store.lock().await;
-                                let changed = store.clear_idle(&session_id)
-                                    | store.clear_shut_down(&session_id);
-                                if changed && let Err(error) = store.save() {
-                                    tracing::warn!(
-                                        %session_id,
-                                        %error,
-                                        "failed to persist reactivated session",
-                                    );
-                                }
+                                // Status is derived, so a wake needs no flag
+                                // write — just broadcast the transition. (The
+                                // shut_down flag is cleared where user input
+                                // enters, in `send_input`, not here: a driver
+                                // spawn is an *effect* of resuming, and stray
+                                // spawns during a shutdown wind-down must not
+                                // resurrect the session.)
+                                session_store.lock().await.notify(&session_id);
                             }
                             Activity::Lifecycle(ThreadLifecycleEvent {
                                 thread_id,
@@ -391,6 +413,8 @@ impl SessionManager {
             remote_daemons: None,
             sender,
             subscribe,
+            stop_handle,
+            driver_threads,
             active_threads,
             subscriber_map,
             rap_manager,
@@ -544,10 +568,21 @@ impl SessionManager {
     ///
     /// All input surfaces enqueue blindly. The router drops event-style input
     /// for unknown or stopped threads, while user text may create or resume a
-    /// thread. A resulting `Live` lifecycle transition clears the root
-    /// session's idle and stopped flags, including when a child thread wakes.
+    /// thread. Genuine user text is the *only* thing that clears a session's
+    /// shut-down flag — cleared here at the ingress, before the input is
+    /// enqueued, so by the time a driver runs the flag already tells the
+    /// truth (a session with anything running is never marked shut down).
     pub async fn send_input(&self, msg: (InputMessage, Option<String>)) -> bool {
         let (input, dedup) = msg;
+        if infinity_agent_core::system::is_user_text_input(&input) {
+            let session_id = self.conversation_store.get_root_thread_id(&input.group_id);
+            let mut store = self.session_store.lock().await;
+            if store.clear_shut_down(&session_id)
+                && let Err(error) = store.save()
+            {
+                tracing::warn!(%session_id, %error, "failed to persist resumed session");
+            }
+        }
         let dedup_id = dedup.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         self.sender
             .send_to_input_queue(input, &dedup_id)
@@ -639,7 +674,14 @@ impl SessionManager {
                     title: self.conversation_store.get_thread_title(id),
                     last_updated: self.conversation_store.get_last_updated(id),
                     total_tokens_used: self.conversation_store.get_total_tokens_used(id),
-                    status: entry.status(self.state_store.has_pending_choices_for_session(id)),
+                    status: entry.status(
+                        self.state_store.has_pending_choices_for_session(id),
+                        session_has_active_threads(
+                            &self.active_threads,
+                            &self.conversation_store,
+                            id,
+                        ),
+                    ),
                     threads,
                     remote: None,
                 },
@@ -654,16 +696,59 @@ impl SessionManager {
         result
     }
 
-    /// Shut down a session: stop its RAP servers, drop its cached toolset
-    /// (so a later restart re-reads the RAP config), clear pending choices,
-    /// and mark it shut down in the store.
+    /// Shut down a session: stop every one of its live thread drivers
+    /// (interrupting in-flight completions, which flushes partial turns to
+    /// the store), stop its RAP servers, drop its cached toolset (so a later
+    /// restart re-reads the RAP config), clear pending choices, and mark it
+    /// shut down in the store.
     ///
-    /// The agent system keeps running — a thread that is mid-completion
-    /// finishes and flushes its turn, then parks. Sending new user input
-    /// clears the flag and picks the session back up (its servers reboot
-    /// lazily); RAP callbacks arriving while shut down are ignored.
+    /// The `shut_down` flag is only written *after* the session is quiescent,
+    /// so it always describes reality: `shut_down == true` implies nothing is
+    /// running. While the wind-down is in progress, a transient "stopping"
+    /// mark makes the router refuse event-style wakeups (RAP callbacks,
+    /// timers); sending new user input afterwards clears the flag and picks
+    /// the session back up (its servers reboot lazily).
     #[tracing::instrument(skip(self))]
     pub async fn cleanup_session(&self, session_id: &ThreadId<str>) {
+        // 1. Gate event-style wakeups for the whole wind-down. The durable
+        //    flag is only set after quiescence (a premature flag would claim
+        //    a state that doesn't hold yet); this transient mark covers the
+        //    gap.
+        self.state_store.set_session_stopping(session_id, true);
+
+        // 2. Quiesce: stop every live driver belonging to the session. Loop,
+        //    because inputs already queued at the router (e.g. a spawn_thread
+        //    seed enqueued by a driver we just stopped) may spawn new
+        //    drivers; the barrier makes each pass observe them. The loop
+        //    terminates because stopped drivers enqueue nothing new — only
+        //    already-queued work (or racing user input, in which case the
+        //    shutdown wins) can extend it.
+        loop {
+            self.stop_handle.barrier().await;
+            let live: Vec<ThreadId> = self
+                .driver_threads
+                .lock()
+                .expect("bug: mutex poisoned")
+                .iter()
+                .filter(|t| self.conversation_store.get_root_thread_id(t) == *session_id)
+                .cloned()
+                .collect();
+            if live.is_empty() {
+                break;
+            }
+            for thread_id in live {
+                self.stop_handle.stop_thread(&thread_id).await;
+            }
+        }
+
+        // 3. Retire the session's threads from the daemon's activity view
+        //    (a driverless thread holding subscriptions would otherwise keep
+        //    the session "active" — and thus listed as Running — forever).
+        self.active_threads
+            .lock()
+            .expect("bug: mutex poisoned")
+            .retain(|t| self.conversation_store.get_root_thread_id(t) != *session_id);
+
         if let Err(error) = self
             .state_store
             .clear_pending_choices_for_session(session_id)
@@ -672,14 +757,20 @@ impl SessionManager {
             tracing::error!(%error, "failed to clear pending choices for {session_id}");
         }
         self.rap_manager.evict_session(session_id).await;
-        let mut store = self.session_store.lock().await;
-        if store.sessions.contains_key(session_id) {
-            store.mark_shut_down(session_id);
-            let _ = store.save();
-            tracing::info!("Cleanup complete");
-        } else {
-            tracing::warn!("Session not found");
+
+        // 4. Only now is "shut down" true; persist it, then lift the
+        //    transient gate (the durable flag takes over with no gap).
+        {
+            let mut store = self.session_store.lock().await;
+            if store.sessions.contains_key(session_id) {
+                store.mark_shut_down(session_id);
+                let _ = store.save();
+                tracing::info!("Cleanup complete");
+            } else {
+                tracing::warn!("Session not found");
+            }
         }
+        self.state_store.set_session_stopping(session_id, false);
     }
 
     /// Returns true if the session has no active threads: none with a live
@@ -716,11 +807,12 @@ fn session_has_active_threads(
 ///
 /// Runs on every thread-driver exit and on explicit idle pings. "Idle" means
 /// the session has no active threads: none with a live driver and none
-/// waiting on subscription events. The session is then flagged idle in the
-/// store, and, if no keep-alive client is attached, its RAP servers are
-/// stopped. Stopping is always safe (never a race): a message that arrives a
-/// moment later simply respawns a driver, and the first tool interaction
-/// boots the servers back up.
+/// waiting on subscription events. Status is derived from that activity view
+/// at read time, so this only notifies the store (broadcasting the derived
+/// transition to clients) and, if no keep-alive client is attached, stops
+/// the session's RAP servers. Stopping is always safe (never a race): a
+/// message that arrives a moment later simply respawns a driver, and the
+/// first tool interaction boots the servers back up.
 async fn evaluate_session_idle(
     session_id: &ThreadId<str>,
     conversation_store: &PersistentConversationStore,
@@ -733,14 +825,13 @@ async fn evaluate_session_idle(
         return;
     }
 
-    // Mark idle in the store so listing shows Idle status.
+    // Broadcast the derived transition (Running → Idle/Stopped) to clients.
     {
-        let mut store = session_store.lock().await;
+        let store = session_store.lock().await;
         if !store.sessions.contains_key(session_id) {
             return;
         }
-        store.mark_idle(session_id);
-        let _ = store.save();
+        store.notify(session_id);
     }
 
     // If a keep-alive client is attached to any of the session's threads,
