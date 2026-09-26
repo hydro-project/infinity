@@ -51,13 +51,19 @@ pub async fn jj_resolve_revision(dir: &Path, rev: &str) -> Result<String, Sandbo
     .await
 }
 
-/// Create a jj workspace at `dest` based on `revision`, set and edit the bookmark.
-/// Detects the repo's configured user and configures the workspace identity.
+/// Create a jj workspace at `dest` based on `starting_revision`.
+///
+/// When `resume_revision` is present, it is checked out directly instead of
+/// resolving the sandbox bookmark. This lets a suspended sandbox resume its
+/// actual working-copy change after the ephemeral workspace and visible
+/// bookmark have been removed. Detects the repo's configured user and
+/// configures the workspace identity.
 pub async fn jj_git_clone(
     remote: &str,
     dest: &Path,
     bookmark_name: &str,
-    revision: &str,
+    starting_revision: &str,
+    resume_revision: Option<&str>,
 ) -> Result<(), SandboxError> {
     let (name, email) = jj_configured_user(Path::new(remote))
         .await
@@ -75,6 +81,10 @@ pub async fn jj_git_clone(
     let mut cmd = jj_command(
         Path::new(remote),
         &[
+            "--config",
+            &format!("user.name={name}"),
+            "--config",
+            &format!("user.email={email}"),
             "workspace",
             "add",
             "-r",
@@ -83,10 +93,6 @@ pub async fn jj_git_clone(
                 .expect("bug: sandbox dest path is not valid UTF-8"),
         ],
     );
-    cmd.arg("--config")
-        .arg(format!("user.name={name}"))
-        .arg("--config")
-        .arg(format!("user.email={email}"));
     let output = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -109,20 +115,29 @@ pub async fn jj_git_clone(
     )
     .await?;
 
-    // Edit (checkout) the bookmark, creating it if it doesn't yet exist.
-    tracing::info!(bookmark_name, "Edit bookmark");
-    if run_jj(dest, &["edit", bookmark_name]).await.is_err() {
-        tracing::info!(bookmark_name, revision, "Bookmark not found, creating new");
-        run_jj(dest, &["new", revision]).await?;
+    // A persisted change ID identifies the previous WIP directly. Do not use
+    // the bookmark to resume: it is intentionally allowed to disappear when
+    // the workspace is suspended.
+    if let Some(resume_revision) = resume_revision {
+        run_jj(dest, &["edit", resume_revision]).await?;
+    } else if run_jj(dest, &["edit", bookmark_name]).await.is_err() {
+        tracing::info!(
+            bookmark_name,
+            starting_revision,
+            "Bookmark not found, creating new"
+        );
+        run_jj(dest, &["new", starting_revision]).await?;
         run_jj(dest, &["bookmark", "set", bookmark_name]).await?;
     }
 
     Ok(())
 }
 /// Push the current working copy to the remote.
-pub async fn jj_push_working_copy(dir: &Path, bookmark_name: &str) -> Result<(), SandboxError> {
+pub async fn jj_push_working_copy(dir: &Path, bookmark_name: &str) -> Result<String, SandboxError> {
     run_jj(dir, &["bookmark", "set", bookmark_name, "-B"]).await?;
-    Ok(())
+    jj_resolve_revision(dir, "@").await.map_err(|error| {
+        SandboxError::JujutsuError(format!("failed to resolve sandbox WIP: {error}"))
+    })
 }
 
 /// Check if a bookmark has been moved externally (i.e. no longer points to `@`).
@@ -231,7 +246,7 @@ pub async fn detect_mode(
     } else {
         "@"
     };
-    let Ok(base_revision) =
+    let Ok(starting_revision) =
         jj_resolve_revision(repo_path, base_bookmark.unwrap_or(default_rev)).await
     else {
         return Err(SandboxError::Other(
@@ -250,7 +265,7 @@ pub async fn detect_mode(
     // compares it against a canonicalized requested path.
     let repo_root = repo_path.canonicalize().map_err(SandboxError::Io)?;
     Ok(Some(ModeInit {
-        mode: SandboxMode::Jj { base_revision },
+        mode: SandboxMode::Jj { starting_revision },
         repo_root,
         message,
         precreate: false,
