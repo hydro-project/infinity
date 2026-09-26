@@ -146,6 +146,12 @@ where
     // Event::Paste rather than a stream of individual key events (which
     // would submit on the first newline).
     queue!(term, event::EnableBracketedPaste)?;
+    // Enable focus reporting: a terminal multiplexer restoring a detached
+    // session (e.g. zellij after an SSH drop) delivers a focus-in on
+    // re-attach, which is the only signal we get when the replayed pane
+    // state diverged from our tracked anchor without a size change. The
+    // focus-in triggers an anchor re-verification (see below).
+    queue!(term, event::EnableFocusChange)?;
     term.flush()?;
 
     let mut viewport = InlineViewport::new(term, VIEWPORT_HEIGHT)?;
@@ -722,6 +728,14 @@ where
                     match event {
                         Event::Resize(_, _) => {
                             got_resize = true;
+                        }
+                        Event::FocusGained => {
+                            // Re-attach / focus regained: the terminal (or a
+                            // multiplexer replaying a detached session) may
+                            // have mangled the saved cursor or scroll state
+                            // behind our back with no resize event. Re-verify
+                            // the anchor and repaint.
+                            viewport.refresh_anchor();
                         }
                         Event::Paste(text) => {
                             if matches!(ui_mode, UiMode::Normal { .. }) {
@@ -1646,6 +1660,7 @@ pub(crate) fn cleanup(term: &mut impl TermOut) -> Result<(), BoxError> {
     // Reset terminal title
     write!(term, "\x1b]0;\x07")?;
     queue!(term, event::DisableBracketedPaste)?;
+    queue!(term, event::DisableFocusChange)?;
     queue!(term, ResetScrollRegion)?;
     term.disable_raw_mode()?;
     let rows = term.size()?.1;

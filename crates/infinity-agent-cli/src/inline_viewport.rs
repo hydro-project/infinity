@@ -439,6 +439,35 @@ impl<T: TermOut> InlineViewport<T> {
         Ok(())
     }
 
+    /// Force the anchor to be re-verified (and re-saved) before the next
+    /// draw or print, with a full repaint.
+    ///
+    /// Used when the terminal's drawing state may have changed behind our
+    /// back *without* a resize: a terminal multiplexer replaying a detached
+    /// session on re-attach (e.g. zellij) can corrupt the saved-cursor /
+    /// scroll-region state the viewport relies on while the pane size — and
+    /// with it the resize-based repair path — stays unchanged. Re-deriving
+    /// the anchor re-saves it at absolute coordinates and repaints from
+    /// scratch, converging the viewport back to a consistent state.
+    ///
+    /// Costs one cursor query on the next draw/print; call it on rare
+    /// events only (focus gained).
+    pub fn refresh_anchor(&mut self) {
+        // Capture the drawn rows for `re_anchor`, exactly like
+        // `handle_resize` does (a resize may still race the re-anchor, so
+        // the rewrap emulation data must be available).
+        if !self.anchor_stale {
+            let frame = &self.buffers[1 - self.current];
+            let lens: Vec<u16> = (0..frame.area.height)
+                .map(|row| occupied_row_len(frame, row))
+                .collect();
+            self.pre_resize_row_lens = Some(lens);
+            self.pre_resize_width = self.terminal_size.0;
+        }
+        self.request_clear = true;
+        self.anchor_stale = true;
+    }
+
     /// Re-derive the anchor after a resize, with a cursor query.
     ///
     /// See the type-level docs for the strategy. Ends with the live cursor
