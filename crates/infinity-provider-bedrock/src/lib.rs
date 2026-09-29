@@ -104,6 +104,8 @@ pub(crate) fn classify_bedrock_error(code: Option<&str>, message: &str) -> Error
         )
     ) || msg.contains("unexpected end of stream")
         || msg.contains("unexpected error when processing the request")
+        || msg.contains("unexpected error during processing")
+        || msg.contains("try your request again")
         || msg.contains("is unable to process your request")
     {
         return ErrorClass::Transient;
