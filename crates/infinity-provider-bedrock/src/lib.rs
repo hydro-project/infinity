@@ -210,6 +210,28 @@ fn default_models() -> Vec<BedrockModel> {
     vec![
         BedrockModel {
             entry: ModelEntry {
+                model_id: "global.anthropic.claude-fable-5-1".to_owned(),
+                display_name: "claude-fable-5.1".to_owned(),
+                context_window: 1_000_000,
+                max_output_tokens: Some(128_000),
+                supports_image_input: true,
+            },
+            bedrock_model_id: "global.anthropic.claude-fable-5-1".to_owned(),
+            additional_request_params: Some(summarized_adaptive_thinking.clone()),
+        },
+        BedrockModel {
+            entry: ModelEntry {
+                model_id: "global.anthropic.claude-opus-5-5".to_owned(),
+                display_name: "claude-opus-5.5".to_owned(),
+                context_window: 1_000_000,
+                max_output_tokens: Some(128_000),
+                supports_image_input: true,
+            },
+            bedrock_model_id: "global.anthropic.claude-opus-5-5".to_owned(),
+            additional_request_params: Some(summarized_adaptive_thinking.clone()),
+        },
+        BedrockModel {
+            entry: ModelEntry {
                 model_id: "global.anthropic.claude-fable-5".to_owned(),
                 display_name: "claude-fable-5".to_owned(),
                 context_window: 1_000_000,
