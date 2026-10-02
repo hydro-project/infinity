@@ -1285,7 +1285,7 @@ mod tests {
                 ThreadId::from_ref("root"),
                 rap_protocol::ToolCallId::from_ref("tc-1"),
                 false,
-                SpawnContext::Inherit,
+                SpawnContext::InheritUpTo(2),
             )
             .await
             .expect("spawn child thread");
@@ -1348,7 +1348,7 @@ mod tests {
                 ThreadId::from_ref("root"),
                 rap_protocol::ToolCallId::from_ref("tc-1"),
                 false,
-                SpawnContext::Inherit,
+                SpawnContext::InheritUpTo(1),
             )
             .await
             .expect("spawn child thread");
@@ -1365,7 +1365,7 @@ mod tests {
                 &child,
                 rap_protocol::ToolCallId::from_ref("tc-2"),
                 false,
-                SpawnContext::Inherit,
+                SpawnContext::InheritUpTo(2),
             )
             .await
             .expect("spawn grandchild thread");
@@ -1461,7 +1461,7 @@ mod tests {
                 ThreadId::from_ref("root"),
                 rap_protocol::ToolCallId::from_ref("tc-1"),
                 false,
-                SpawnContext::Inherit,
+                SpawnContext::InheritUpTo(3),
             )
             .await
             .expect("spawn child thread");
@@ -1524,7 +1524,7 @@ mod tests {
                 ThreadId::from_ref("root"),
                 rap_protocol::ToolCallId::from_ref("tc-1"),
                 false,
-                SpawnContext::Inherit,
+                SpawnContext::InheritUpTo(5),
             )
             .await
             .expect("spawn child thread");
@@ -1577,7 +1577,7 @@ mod tests {
                 ThreadId::from_ref("root"),
                 rap_protocol::ToolCallId::from_ref("tc-1"),
                 false,
-                SpawnContext::Inherit,
+                SpawnContext::InheritUpTo(2),
             )
             .await
             .expect("spawn child thread");

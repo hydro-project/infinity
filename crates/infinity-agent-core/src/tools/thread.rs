@@ -100,10 +100,20 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             .get("fresh_context")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        // Spawn the child right *before* the spawn call and give the child
+        // its own copy of the call (seeded below), instead of letting the
+        // child see the parent's copy through its inherited slice. The child
+        // then owns the call its seed instructions (and later parent
+        // messages) resolve against, even after the parent's copy — or the
+        // child's inherited prefix — is folded into a compaction summary.
         let spawn_context = if fresh_context {
             SpawnContext::Fresh
         } else {
-            SpawnContext::Inherit
+            // spawn_thread only executes synchronously, and the runtime
+            // always provides the safe spawn point on that path.
+            SpawnContext::InheritUpTo(context.safe_spawn_point.expect(
+                "bug: spawn_thread executed without a safe spawn point in the tool context",
+            ))
         };
 
         let new_thread_id = match self
@@ -131,37 +141,34 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
             .as_str()
             .expect("bug: 'instructions' arg is not a string");
 
-        if fresh_context {
-            // The child inherits no history, so the instruction tool result
-            // sent below would dangle without a matching tool call. Write a
-            // synthetic spawn call directly into the child's (empty) store
-            // to pair with it, mirroring how subscription-event threads are
-            // seeded.
-            let spawn_tool_call = InfinityMessage::ToolCall {
-                call: infinity_provider_protocol::message::ToolCall {
-                    id: id.as_str().to_owned(),
-                    call_id: None,
-                    function: infinity_provider_protocol::message::ToolFunction {
-                        name: "spawn_thread".to_owned(),
-                        arguments: serde_json::json!({
-                            "instructions": instructions,
-                            "fresh_context": true,
-                        }),
-                    },
+        // Write the child's own copy of the spawn call into its (so far
+        // empty) store, pairing with the instruction tool result sent below.
+        // Fresh threads need it because they inherit nothing; inherit
+        // threads because their cutoff excludes the parent's copy (see
+        // `spawn_context` above). The call is duplicated verbatim — same
+        // provider call_id and arguments — so the child's model-facing
+        // history is exactly what the provider originally emitted.
+        let spawn_tool_call = InfinityMessage::ToolCall {
+            call: infinity_provider_protocol::message::ToolCall {
+                id: id.as_str().to_owned(),
+                call_id: call_id.map(|c| c.as_str().to_owned()),
+                function: infinity_provider_protocol::message::ToolFunction {
+                    name: "spawn_thread".to_owned(),
+                    arguments: args.clone(),
                 },
-                display_as: None,
-            };
-            if let Err(e) = self
-                .conversation_store
-                .append_messages(
-                    &new_thread_id,
-                    vec![(spawn_tool_call, format!("{}-spawn-call", id))],
-                )
-                .await
-            {
-                tracing::error!("failed to seed fresh thread with spawn call: {e}");
-                return error_result(format!("Error: failed to seed fresh thread: {e}"));
-            }
+            },
+            display_as: None,
+        };
+        if let Err(e) = self
+            .conversation_store
+            .append_messages(
+                &new_thread_id,
+                vec![(spawn_tool_call, format!("{}-spawn-call", id))],
+            )
+            .await
+        {
+            tracing::error!("failed to seed child thread with spawn call: {e}");
+            return error_result(format!("Error: failed to seed child thread: {e}"));
         }
 
         let child_instructions = if fresh_context {
@@ -179,13 +186,8 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
         let child_result = InputMessage {
             content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
                 id: id.as_str().to_owned(),
-                // The seeded call in fresh mode carries no provider call_id,
-                // so its result must not either.
-                call_id: if fresh_context {
-                    None
-                } else {
-                    call_id.map(|c| c.as_str().to_owned())
-                },
+                // Must match the seeded call's call_id (preserved above).
+                call_id: call_id.map(|c| c.as_str().to_owned()),
                 content: vec![ToolResultContent::Text(Text {
                     text: child_instructions,
                 })],

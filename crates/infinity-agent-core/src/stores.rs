@@ -157,8 +157,7 @@ impl InMemoryConversationStore {
     /// (the trait-level [`spawn_thread`](ConversationStore::spawn_thread)
     /// generates a UUID and delegates here). The spawn order — how much of
     /// the parent's history the child inherits — is derived from `context`:
-    /// the parent's current message count for [`SpawnContext::Inherit`], the
-    /// given cutoff for [`SpawnContext::InheritUpTo`], and zero for
+    /// the given cutoff for [`SpawnContext::InheritUpTo`], and zero for
     /// [`SpawnContext::Fresh`] (which additionally marks the thread as a
     /// fresh-context boundary).
     pub fn spawn_thread_with_id(
@@ -170,11 +169,6 @@ impl InMemoryConversationStore {
         context: SpawnContext,
     ) {
         let (spawn_message_order, fresh_context) = match context {
-            SpawnContext::Inherit => {
-                let msgs = self.messages.lock().expect("bug: mutex poisoned");
-                let count = msgs.get(parent_thread_id).map(|v| v.len()).unwrap_or(0);
-                (count as i64, false)
-            }
             SpawnContext::InheritUpTo(order) => (order as i64, false),
             SpawnContext::Fresh => (0, true),
         };
@@ -714,7 +708,7 @@ mod tests {
                 &fresh,
                 ToolCallId::from_ref("tc-inherit"),
                 false,
-                SpawnContext::Inherit,
+                SpawnContext::InheritUpTo(1),
             )
             .await
             .expect("spawn grandchild");
@@ -755,7 +749,7 @@ mod tests {
                 ThreadId::from_ref("root"),
                 ToolCallId::from_ref("tc-1"),
                 false,
-                SpawnContext::Inherit,
+                SpawnContext::InheritUpTo(1),
             )
             .await
             .expect("spawn child");
