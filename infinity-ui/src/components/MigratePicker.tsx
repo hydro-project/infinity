@@ -5,7 +5,12 @@ import {
   useCallback,
   type KeyboardEvent,
 } from "react";
-import type { RemoteInfo, ClientMessage } from "../types";
+import {
+  remoteStatusKind,
+  type RemoteInfo,
+  type RemoteStatusKind,
+  type ClientMessage,
+} from "../types";
 import css from "./MigratePicker.module.css";
 
 interface Props {
@@ -19,13 +24,7 @@ interface Props {
   onClearEntries?: () => void;
 }
 
-type StatusKind = "connected" | "connecting" | "disconnected";
-
-function statusKind(status: string): StatusKind {
-  if (status === "connected") return "connected";
-  if (status === "connecting") return "connecting";
-  return "disconnected";
-}
+type StatusKind = RemoteStatusKind;
 
 export function MigratePicker({
   remotes,
@@ -104,7 +103,7 @@ export function MigratePicker({
     ...remotes.map((r) => ({
       name: r.name,
       displayName: r.name,
-      status: statusKind(r.status),
+      status: remoteStatusKind(r.status),
       isCurrent: currentHost !== undefined && r.name === currentHost,
     })),
   ];
