@@ -5,14 +5,105 @@
   padding: 8px 0;
 }
 
-.canvas {
-  flex-shrink: 0;
-  height: 20px;
-  image-rendering: pixelated;
-}
-
 .label {
   font-size: 12px;
   color: var(--text-muted);
   font-style: italic;
+}
+
+/* ── Compositor-driven animation (transform/opacity only) ──
+   No per-frame JS or main-thread paint: the animations run on the GPU at
+   the display's native refresh rate. easeInOutSine segments approximate the
+   sine waves of the original canvas animation. */
+
+.anim {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.anim[data-paused] * {
+  animation-play-state: paused;
+}
+
+.row {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  gap: 2px;
+}
+
+.bar {
+  position: relative;
+  width: 8px;
+  height: 100%;
+  border-radius: 2px;
+}
+
+/* tool: crossfade between the dim and bright breathing colors */
+.breathe {
+  animation: fadeInOut cubic-bezier(0.37, 0, 0.63, 1) infinite;
+}
+
+/* loading: bars bounce from the baseline while brightening */
+.bounce {
+  transform-origin: bottom;
+  animation: bounceY cubic-bezier(0.37, 0, 0.63, 1) infinite;
+}
+
+.fade {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  animation: fadeInOut cubic-bezier(0.37, 0, 0.63, 1) infinite;
+}
+
+/* thinking: an oversized gradient strip sliding one wavelength per loop */
+.clip {
+  position: absolute;
+  inset: 0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.strip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background-repeat: repeat-x;
+  will-change: transform;
+  animation: slideX linear infinite;
+}
+
+@keyframes fadeInOut {
+  0% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes bounceY {
+  0% {
+    transform: scaleY(0.15);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+  100% {
+    transform: scaleY(0.15);
+  }
+}
+
+@keyframes slideX {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(var(--slide-x));
+  }
 }

@@ -170,8 +170,9 @@
    libraries) when the user prefers reduced motion. Scoped to the UI root so
    we don't override a host page's own animation policy. Also relied upon by
    screenshot-based e2e tests, which emulate this preference to get
-   deterministic renders. Canvas animations (e.g. the Spinner) check the
-   same media query in JS. */
+   deterministic renders. Animated components (e.g. the Spinner) declare
+   their t=0 frame as base styles, which these overrides make them fall
+   back to. */
 @media (prefers-reduced-motion: reduce) {
   .infinity-ui-root,
   .infinity-ui-root *,
