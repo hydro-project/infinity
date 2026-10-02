@@ -39,7 +39,7 @@ The LLM sees what looks like a natural tool call / result pair in its history:
 
 The synthetic tool name and `original_tool_call_id` tell the LLM that this is an event from an existing subscription, not a new tool invocation. The `original_args` provide context about which subscription produced the event. The LLM can then reason about the event and decide what to do.
 
-The same mechanism carries reports from child threads back to their parents: the report is injected as a `receive_event__injected` call referencing the original `spawn_thread` invocation. See [Threading](/docs/infinity-runtime/threading).
+The same mechanism carries reports from child threads back to their parents: the report is injected as a `receive_event__injected` call referencing the original `spawn_thread` invocation. See [Threading](/docs/infinity-runtime/built-in/threading).
 
 ## Inline vs. threaded processing
 

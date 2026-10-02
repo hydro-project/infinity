@@ -12,6 +12,41 @@ import { RustFunction } from 'cargo-lambda-cdk';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { ToolSetConfig } from './tools/tool-set';
 import * as path from 'path';
+import * as fs from 'fs';
+
+/**
+ * Locate the Cargo workspace that contains the `infinity-agent-lambda` crate.
+ *
+ * Inside the Infinity repository that workspace is the repo root. When this
+ * library is installed as an npm package (e.g.
+ * `pnpm add "github:hydro-project/infinity#path:agent"`), the `prepare`
+ * script vendors the Rust workspace into `rust/` inside the package, so the
+ * workspace is found there instead.
+ *
+ * The workspace root (rather than the crate directory) is what gets handed to
+ * `cargo lambda build`, so path dependencies and the workspace-level
+ * `Cargo.lock` resolve correctly, including under Docker bundling which only
+ * mounts the manifest directory.
+ */
+function resolveAgentLambdaManifestPath(): string {
+  const candidates = [
+    // In-repo development: <repo>/crates/infinity-agent-lambda
+    path.join(__dirname, '..', '..', '..'),
+    // Installed package: <package>/rust/crates/infinity-agent-lambda
+    path.join(__dirname, '..', '..', 'rust'),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(candidate, 'crates', 'infinity-agent-lambda', 'Cargo.toml'))) {
+      return candidate;
+    }
+  }
+  throw new Error(
+    'Could not find the infinity-agent-lambda crate. Looked in:\n' +
+      candidates.map((c) => `  - ${path.join(c, 'crates', 'infinity-agent-lambda')}`).join('\n') +
+      '\nIf you installed this package from git, make sure the `prepare` script ran ' +
+      '(it vendors the Rust workspace into the package); otherwise pass `codePath` explicitly.'
+  );
+}
 
 /** Shared bundling defaults for all Node.js lambdas in this project. */
 export const NODEJS_BUNDLING_DEFAULTS = {
@@ -140,7 +175,7 @@ export class InfinityAgent extends Construct {
     // SQS. Implemented in Rust (crates/infinity-agent-lambda, `rap-receiver`
     // binary) so callback conversion is shared with the rest of the runtime.
     const rapReceiverFunction = new RustFunction(this, 'RapReceiverFunction', {
-      manifestPath: props.codePath || path.join(__dirname, '../../../crates/infinity-agent-lambda'),
+      manifestPath: props.codePath || resolveAgentLambdaManifestPath(),
       binaryName: 'rap-receiver',
       architecture: lambda.Architecture.ARM_64,
       timeout: cdk.Duration.seconds(30),
@@ -162,7 +197,7 @@ export class InfinityAgent extends Construct {
 
     // Create the leader Lambda function using cargo-lambda-cdk
     this.lambdaFunction = new RustFunction(this, 'LeaderFunction', {
-      manifestPath: props.codePath || path.join(__dirname, '../../../crates/infinity-agent-lambda'),
+      manifestPath: props.codePath || resolveAgentLambdaManifestPath(),
       binaryName: 'infinity-agent-lambda',
       architecture: lambda.Architecture.ARM_64,
       timeout: cdk.Duration.minutes(15),

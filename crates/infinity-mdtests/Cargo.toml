@@ -1,0 +1,25 @@
+[package]
+name = "infinity-mdtests"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Compiles the documentation code examples as doctests via include_mdtests."
+
+[dependencies]
+include_mdtests = "0.0.0"
+
+infinity-agent-core = { path = "../infinity-agent-core" }
+infinity-mcp-bridge = { path = "../infinity-mcp-bridge" }
+infinity-provider-bedrock = { path = "../infinity-provider-bedrock" }
+infinity-provider-protocol = { path = "../infinity-provider-protocol" }
+infinity-rap-bridge = { path = "../infinity-rap-bridge" }
+rap-protocol = { path = "../rap-protocol" }
+
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

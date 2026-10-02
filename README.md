@@ -24,7 +24,7 @@ Between turns, an agent is pure data, just its conversation history with no task
 
 ## Learn More
 
-- **[Infinity Runtime](https://infinity.hydro.run/docs/infinity-runtime/overview)**: Build your first agent with the [quickstart](https://infinity.hydro.run/docs/infinity-runtime/agent-systems/building-a-system), see how yielding turns and hibernation work in the [architecture guide](https://infinity.hydro.run/docs/infinity-runtime/architecture), and [deploy on AWS Lambda](https://infinity.hydro.run/docs/infinity-runtime/deploying-on-lambda) with the included CDK constructs.
+- **[Infinity Runtime](https://infinity.hydro.run/docs/infinity-runtime/overview)**: Build your first agent with the [quickstart](https://infinity.hydro.run/docs/infinity-runtime/quickstart/launching-your-first-agent), see how yielding turns and hibernation work in the [architecture guide](https://infinity.hydro.run/docs/infinity-runtime/architecture), and [deploy on AWS Lambda](https://infinity.hydro.run/docs/infinity-runtime/serverless/quickstart) with the included CDK constructs.
 
 - **[Reactive Agent Protocol (RAP)](https://infinity.hydro.run/docs/rap/what-is-rap)**: Serve tools over the network without holding a connection open: results and subscription events are delivered whenever they are ready, even to agents that currently have no process at all. Existing MCP servers run unchanged through a compatibility layer, and anyone can implement the open [specification](https://infinity.hydro.run/docs/rap/spec/overview).
 
