@@ -483,14 +483,22 @@ async fn route_loop<C, S, H, O, F>(
                             let _ = ack.send(());
                         } else {
                             // Await the wind-downs off-loop, then re-enqueue
-                            // the request: the stopped drivers may already
-                            // have enqueued inputs that spawn new subtree
-                            // drivers (e.g. spawn_thread seeds), and the
-                            // re-enqueued request is handled only after those
-                            // are routed, so the next pass observes them.
-                            // Terminates because stopped drivers enqueue
-                            // nothing new — only already-queued work (or
-                            // racing user input) can extend the wind-down.
+                            // the request. The re-check is needed because a
+                            // stop cannot reach a driver that does not exist
+                            // yet: a driver stopped by this pass may complete
+                            // an in-flight spawn tool during its wind-down
+                            // (tool execution is not a stop point) and enqueue
+                            // the child's seed input. Membership is never the
+                            // issue — spawn_thread writes the parent link to
+                            // the conversation store before the seed is even
+                            // enqueued — but the child's *driver* only comes
+                            // into existence when the seed is routed. The
+                            // re-enqueued request is handled only after all
+                            // such seeds are routed, so the next pass observes
+                            // (and stops) their drivers. Terminates because
+                            // stopped drivers enqueue nothing new after their
+                            // wind-down completes — only already-queued work
+                            // (or racing user input) can extend it.
                             let stop_tx = stop_tx.clone();
                             tokio::task::spawn_local(async move {
                                 for done in wind_downs {
