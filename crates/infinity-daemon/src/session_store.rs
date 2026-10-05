@@ -7,11 +7,13 @@ use tokio::sync::mpsc;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SessionEntry {
     pub cwd: PathBuf,
-    /// When true, the session was explicitly shut down and is quiescent
-    /// (nothing running); only user text input re-awakens the agent. Set by
-    /// `SessionManager::cleanup_session` *after* the session's drivers have
-    /// been stopped, and cleared when new user input arrives — so the flag
-    /// is only ever true while the session is actually not running.
+    /// When true, the user explicitly shut the session down: the router
+    /// refuses event-style wakeups (RAP callbacks, timers) for its threads,
+    /// and only genuine user text re-awakens the agent (cleared at the input
+    /// surface, `SessionManager::send_input`). This is a policy bit, not a
+    /// status: `SessionManager::cleanup_session` sets it at the *start* of
+    /// the wind-down, and the displayed status is derived from live thread
+    /// activity, so a session still winding down keeps listing as Running.
     #[serde(default)]
     pub shut_down: bool,
     /// When true, the session has been migrated away and should not be displayed.
@@ -24,7 +26,9 @@ impl SessionEntry {
     /// state (`is_active`: does the session have active threads right now?),
     /// never from a persisted flag — persisted runtime state would go stale
     /// the moment the daemon restarts. Only durable facts (`archived`,
-    /// pending choices, the enforced `shut_down` flag) are read from storage.
+    /// pending choices, the `shut_down` policy flag) are read from storage;
+    /// `is_active` takes precedence over `shut_down`, so a session still
+    /// winding down lists as Running until it is actually quiescent.
     pub fn status(
         &self,
         has_pending_choices: bool,
