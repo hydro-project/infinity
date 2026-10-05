@@ -692,8 +692,8 @@ async fn child_pending_choice_updates_root_session_status() {
 /// the agent": a session whose driver is live (parked on a pending async
 /// tool call — here the built-in `sleep` tool) is genuinely wound down by
 /// `cleanup_session`. The pending tool result must not start another
-/// completion round, the session must list as Stopped (a flag now written
-/// only after quiescence), and new user text must resume it.
+/// completion round, the session must list as Stopped once quiescent, and
+/// new user text must resume it.
 #[tokio::test(flavor = "current_thread")]
 async fn cleanup_session_stops_live_agent_and_user_input_resumes_it() {
     let local = tokio::task::LocalSet::new();
@@ -761,7 +761,7 @@ async fn cleanup_session_stops_live_agent_and_user_input_resumes_it() {
             );
 
             // The user shuts the session down. This must actually stop the
-            // live driver, and the Stopped flag is only written afterwards.
+            // live driver before cleanup_session resolves.
             manager.cleanup_session(&session_id).await;
             assert!(
                 manager.is_session_idle(&session_id),
