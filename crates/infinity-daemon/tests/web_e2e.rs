@@ -9,7 +9,8 @@
 //!
 //! Rendering determinism: the browser context emulates
 //! `prefers-reduced-motion: reduce`, which the UI honors (theme.css freezes
-//! CSS animations/transitions; the canvas spinner renders a static frame),
+//! CSS animations/transitions; animated elements like the spinner declare
+//! their t=0 frame as base styles, so they render it statically),
 //! session/thread ids come from a deterministic sequence, and screenshot
 //! assertions additionally disable animations and retry until the page
 //! settles.
