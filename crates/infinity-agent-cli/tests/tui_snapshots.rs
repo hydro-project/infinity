@@ -140,16 +140,16 @@ async fn child_thread_activity_rows() {
 
     h.display(Evt::UserInput("do things in parallel".to_owned()));
     h.display(Evt::StartOutput);
-    h.display_for_thread("thread-aaaa1111", Evt::StartOutput);
+    h.display_for_thread("aaaa1111-thread", Evt::StartOutput);
     h.display_for_thread(
-        "thread-aaaa1111",
+        "aaaa1111-thread",
         Evt::ThinkingChunk {
             chunk: "child one is thinking about its task".to_owned(),
         },
     );
-    h.display_for_thread("thread-bbbb2222", Evt::StartOutput);
+    h.display_for_thread("bbbb2222-thread", Evt::StartOutput);
     h.display_for_thread(
-        "thread-bbbb2222",
+        "bbbb2222-thread",
         Evt::ToolCall {
             name: "execute_command".to_owned(),
             args: serde_json::json!({"command": "ls"}),

@@ -1,5 +1,6 @@
 ---
 source: crates/infinity-agent-cli/tests/tui_widechar_snapshots.rs
+assertion_line: 31
 expression: h.screen_with_scrollback()
 ---
 ~ 
@@ -23,7 +24,7 @@ expression: h.screen_with_scrollback()
 │> translate things                                                              │
 │                                                                                │
 │▄▄▄▄▄▄▄▄▄▄                                                                      │
-│child-cjk 溢出这是一个很长的中文句子用来测试宽字符在线程行中的显示效果应该会溢出│
+│child-cj 溢出这是一个很长的中文句子用来测试宽字符在线程行中的显示效果应该会溢出 │
 │────────────────────────────────────────────────────────────────────────────────│
 │                                                                                │
 │                                                                                │
