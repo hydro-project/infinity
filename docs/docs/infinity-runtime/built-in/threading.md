@@ -17,16 +17,16 @@ Threads are useful for concurrent processing and for context management:
 
 When the agent needs to do something in parallel, such as reviewing multiple files or researching while implementing, it calls `spawn_thread`:
 
-```
+```text
 🤖 Agent:  I'll review these three files in parallel.
 
 🔧 Tool call:  spawn_thread({ instructions: "Review src/auth.ts for security issues",
                               child_of: ["thread_root"] })
-📥 Result:     "Child thread spawned with ID: thread_a1b2"
+📥 Result:     "Child thread is successfully spawned and has ID: thread_a1b2. ..."
 
 🔧 Tool call:  spawn_thread({ instructions: "Review src/api.ts for error handling",
                               child_of: ["thread_root"] })
-📥 Result:     "Child thread spawned with ID: thread_c3d4"
+📥 Result:     "Child thread is successfully spawned and has ID: thread_c3d4. ..."
 ```
 
 The required `child_of` argument is the caller's full thread stack, from the root thread to itself. Because children inherit the parent's context (including any plans to spawn threads), a child can get confused and try to execute the parent's spawns. The stack check will reject those calls with an error telling the child to focus on its own task.
@@ -35,7 +35,7 @@ Each child thread starts with the parent's conversation history up to the point 
 
 The child thread inherits context from its ancestors. For example, if the parent had a 30-message conversation before spawning, the child will see those 30 messages truncated at the spawn point, followed by its own spawn instruction and result:
 
-```
+```text
 ── inherited from parent (messages 1–30) ──
 
 👤 User:       Please review src/auth.ts and src/api.ts for issues.
@@ -44,17 +44,32 @@ The child thread inherits context from its ancestors. For example, if the parent
 
 ── child thread starts here ──
 
-📥 Result:     "You are now inside the spawned thread. Follow the
-                instructions in the tool call. Your thread ID is thread_a1b2."
+📥 Result:     "You are now INSIDE the thread that you requested to create.
+                Your thread ID is thread_a1b2. Your next task is to exactly
+                follow these instructions: Review src/auth.ts for security
+                issues ..."
 ```
 
 This gives the child enough context to understand the task without the parent having to repeat anything. However, the child will not see any messages that the parent produces after the spawn point.
+
+### Fresh-context threads
+
+Inheriting the parent's history is not always helpful: for an independent sub-task, a long parent conversation is mostly noise that costs tokens and can distract the child. Passing `fresh_context: true` spawns a child with an **empty** history instead:
+
+```text
+🔧 Tool call:  spawn_thread({ instructions: "In the repo at ~/src/api, list every
+                              handler in src/routes/ that lacks input validation.",
+                              child_of: ["thread_root"],
+                              fresh_context: true })
+```
+
+The child sees only its spawn call and the instructions, so the instructions must be self-contained: any file paths, IDs, and background that the child needs have to be spelled out. Freshness is a property of the thread, so threads that a fresh child spawns in turn will not see anything from before the fresh boundary either.
 
 ## Reporting back
 
 Children can send results to the parent at any time using `report_to_parent`:
 
-```
+```text
 [Child thread_a1b2]
 
 🤖 Agent:      Found a SQL injection vulnerability in the auth handler.
@@ -66,7 +81,7 @@ Children can send results to the parent at any time using `report_to_parent`:
 
 The parent sees this as a [synthetic tool call](/docs/rap/about/subscription-events#synthetic-tool-calls), which is the same mechanism used for subscription events. The runtime will inject a synthetic `receive_event__injected` call and result into the parent's history:
 
-```
+```text
 [Parent thread]
 
 🔧 Synthetic:  receive_event__injected({
@@ -87,7 +102,7 @@ The report is tied to the original `spawn_thread` call, so the LLM knows which c
 
 When a child is done, it calls `close_thread` with an optional final report:
 
-```
+```text
 [Child thread_a1b2]
 
 🔧 Tool call:  close_thread({
@@ -98,7 +113,7 @@ When a child is done, it calls `close_thread` with an optional final report:
 
 The parent will see the report via the same synthetic tool call mechanism:
 
-```
+```text
 [Parent thread]
 
 🔧 Synthetic:  receive_event__injected({
@@ -108,18 +123,28 @@ The parent will see the report via the same synthetic tool call mechanism:
                    instructions: "Review src/auth.ts for security issues"
                  }
                })
-📥 Result:     "Child thread thread_a1b2 has shut down. Report:
-                Review complete. 1 critical issue, 2 warnings."
+📥 Result:     "Child thread with ID thread_a1b2 has shut down. Report from
+                child thread: Review complete. 1 critical issue, 2 warnings."
 ```
 
 ## Subscription event threads
 
 When a [subscription event](/docs/rap/about/subscription-events) arrives, the Infinity Runtime automatically spawns a temporary child thread to process it. This keeps the parent's context clean, since each event gets its own fresh context window.
 
-The child is seeded with the event data and instructions to process it:
+The child inherits the parent's history up to the last settled point, and is then seeded with instructions to process the event, followed by the event itself:
 
-```
+```text
 [Auto-spawned child for subscription event]
+
+🔧 Synthetic:  spawn_thread({
+                 instructions: "Spawning thread to process incoming event."
+               })
+📥 Result:     "You are now INSIDE the thread for processing the single event
+                above. Your thread ID is thread_e5f6, the parent which is
+                still subscribing is thread_root. Process the single
+                subscription event above, report to the parent if
+                appropriate, then close the thread after processing this
+                event. ..."
 
 🔧 Synthetic:  receive_event__injected({
                  original_tool_name: "subscribe_github_events",
@@ -127,13 +152,6 @@ The child is seeded with the event data and instructions to process it:
                  original_args: { owner: "acme", repo: "api" }
                })
 📥 Result:     {"event_type": "pull_request", "action": "opened", "number": 42}
-
-🔧 Synthetic:  spawn_thread({
-                 instructions: "Process the subscription event above, then
-                 close with a report."
-               })
-📥 Result:     "You are in a new thread created for processing a
-                subscription event."
 ```
 
 The child processes the event (e.g. it reads the PR diff, runs checks, and posts a review) and then closes with a report. The parent sees the report without its context being cluttered by the raw event data. If an event is irrelevant to the parent, the child can also shut down without providing a report; in that case, the parent thread will continue running as if the event never happened.

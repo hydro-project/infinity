@@ -7,6 +7,39 @@ title: Launching Local Threads
 A **local agent system** runs for the lifetime of a Tokio process and exposes each conversation through a `ThreadHandle`. To create a new root thread and configure it in one operation, use a thread builder:
 
 ```rust
+# use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
+# use infinity_agent_core::system::{AgentEvent, AgentSystemBuilder, StaticModel};
+# use infinity_agent_core::system::local::ChannelSender;
+# use infinity_agent_core::tools::{Tool, ToolContext};
+# #[derive(Clone)]
+# struct FetchDiffTool { repo: String }
+# #[async_trait::async_trait]
+# impl Tool<ChannelSender> for FetchDiffTool {
+#     fn name(&self) -> &str { "FetchDiffTool" }
+#     fn description(&self) -> &str { "" }
+#     fn parameters(&self) -> serde_json::Value { serde_json::json!({}) }
+#     async fn execute(
+#         &self,
+#         _: serde_json::Value,
+#         _: rap_protocol::ToolCallId,
+#         _: Option<rap_protocol::ProviderCallId>,
+#         _: &ToolContext<ChannelSender>,
+#     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+#         Ok(())
+#     }
+# }
+# fn render_event(_: AgentEvent) {}
+# fn render_text(_: String) {}
+# fn render_tool_call(_: String) {}
+# fn render_history(_: &infinity_agent_core::system::ReplaySnapshot) {}
+# async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+# let provider = infinity_mdtests::mock_provider();
+# let model = StaticModel::new(provider.clone(), "global.anthropic.claude-sonnet-4-6").await?;
+# let (conversation_store, state_store) =
+#     (InMemoryConversationStore::new(), InMemoryStateStore::new());
+# let review_model = StaticModel::new(provider, "global.anthropic.claude-opus-4-8").await?;
+# let shared_tools: Vec<Box<dyn Tool<ChannelSender>>> = Vec::new();
+# let repo = String::new();
 let system = AgentSystemBuilder::new_local(conversation_store, state_store, model)
     .tools(shared_tools)
     .start();
@@ -21,8 +54,14 @@ let mut reviewer = system
 
 reviewer.send_user_text("Review PR #92").await?;
 while let Some(event) = reviewer.recv().await {
+#   let finished = matches!(event, AgentEvent::CompletionFinished { .. });
     render_event(event);
+#   if finished { break; }
 }
+# system.shutdown().await;
+# Ok(())
+# }
+# fn main() { infinity_mdtests::run(example()); }
 ```
 
 `start()` returns a `LaunchingSystem`. Calling `thread_builder()` on it will generate a thread ID, record the launch configuration, attach to the new thread, and return its handle.
@@ -31,6 +70,36 @@ while let Some(event) = reviewer.recv().await {
 `ThreadBuilder` accepts four kinds of launch-time configuration:
 
 ```rust
+# use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
+# use infinity_agent_core::system::{AgentEvent, AgentSystemBuilder, StaticModel};
+# use infinity_agent_core::system::local::ChannelSender;
+# use infinity_agent_core::tools::{Tool, ToolContext};
+# #[derive(Clone)]
+# struct ReadIssue { client: String }
+# #[async_trait::async_trait]
+# impl Tool<ChannelSender> for ReadIssue {
+#     fn name(&self) -> &str { "ReadIssue" }
+#     fn description(&self) -> &str { "" }
+#     fn parameters(&self) -> serde_json::Value { serde_json::json!({}) }
+#     async fn execute(
+#         &self,
+#         _: serde_json::Value,
+#         _: rap_protocol::ToolCallId,
+#         _: Option<rap_protocol::ProviderCallId>,
+#         _: &ToolContext<ChannelSender>,
+#     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+#         Ok(())
+#     }
+# }
+# async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+# let provider = infinity_mdtests::mock_provider();
+# let model = StaticModel::new(provider.clone(), "global.anthropic.claude-sonnet-4-6").await?;
+# let (conversation_store, state_store) =
+#     (InMemoryConversationStore::new(), InMemoryStateStore::new());
+# let payments_model = StaticModel::new(provider, "global.anthropic.claude-opus-4-8").await?;
+# let system = AgentSystemBuilder::new_local(conversation_store, state_store, model).start();
+# let repository_tools: Vec<Box<dyn Tool<ChannelSender>>> = Vec::new();
+# let github = String::new();
 let mut thread = system
     .thread_builder()
     .tool(Box::new(ReadIssue { client: github.clone() }))
@@ -39,6 +108,10 @@ let mut thread = system
     .model(payments_model)
     .launch()
     .await;
+# let _ = &mut thread;
+# Ok(())
+# }
+# fn main() { infinity_mdtests::run(example()); }
 ```
 
 `tool` and `tools` add capabilities on top of the tools registered on the system. `extra_system_prompt` appends instructions after the system-wide extra prompt, and `model` replaces the system-wide `ModelSource` for this root thread.
@@ -55,6 +128,21 @@ Launch configuration is stored in the current process. Conversation history rema
 A **`ThreadHandle`** combines the thread ID, a replay snapshot, an event receiver, and methods for sending input:
 
 ```rust
+# use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
+# use infinity_agent_core::system::{AgentEvent, AgentSystemBuilder, StaticModel};
+# use infinity_agent_core::system::local::ChannelSender;
+# use infinity_agent_core::tools::{Tool, ToolContext};
+# fn render_event(_: AgentEvent) {}
+# fn render_text(_: String) {}
+# fn render_tool_call(_: String) {}
+# fn render_history(_: &infinity_agent_core::system::ReplaySnapshot) {}
+# async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+# let provider = infinity_mdtests::mock_provider();
+# let model = StaticModel::new(provider.clone(), "global.anthropic.claude-sonnet-4-6").await?;
+# let (conversation_store, state_store) =
+#     (InMemoryConversationStore::new(), InMemoryStateStore::new());
+# let system = AgentSystemBuilder::new_local(conversation_store, state_store, model).start();
+# let mut thread = system.thread_builder().launch().await;
 let thread_id = thread.thread_id().to_owned();
 render_history(thread.replay());
 
@@ -68,6 +156,10 @@ while let Some(event) = thread.recv().await {
         other => render_event(other),
     }
 }
+# let _ = thread_id;
+# Ok(())
+# }
+# fn main() { infinity_mdtests::run(example()); }
 ```
 
 `replay()` contains the committed conversation plus any partial turn that was active when the handle attached, and `recv()` begins at the same boundary. This means that if you render the replay first and then the live events, each event will be rendered exactly once.
@@ -80,14 +172,41 @@ A handle can outlive the `LaunchingSystem`, so its send methods will return `Cha
 If another client or a later part of the application must attach to a conversation, store the thread's ID:
 
 ```rust
+# use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
+# use infinity_agent_core::system::{AgentEvent, AgentSystemBuilder, StaticModel};
+# fn render_event(_: AgentEvent) {}
+# fn render_history(_: &infinity_agent_core::system::ReplaySnapshot) {}
+# async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+# let provider = infinity_mdtests::mock_provider();
+# let model = StaticModel::new(provider, "global.anthropic.claude-sonnet-4-6").await?;
+# let (conversation_store, state_store) =
+#     (InMemoryConversationStore::new(), InMemoryStateStore::new());
+# let system = AgentSystemBuilder::new_local(conversation_store, state_store, model).start();
+# let saved_thread_id = {
+#     let mut first = system.thread_builder().launch().await;
+#     first.send_user_text("Hello").await?;
+#     while let Some(event) = first.recv().await {
+#         if matches!(event, AgentEvent::CompletionFinished { .. }) {
+#             break;
+#         }
+#     }
+#     first.thread_id().to_owned()
+# };
 let Some(mut thread) = system.thread_handle(&saved_thread_id).await? else {
     return Err("conversation does not exist".into());
 };
 
 render_history(thread.replay());
+# thread.send_user_text("Hello again").await?;
 while let Some(event) = thread.recv().await {
+#   let finished = matches!(event, AgentEvent::CompletionFinished { .. });
     render_event(event);
+#   if finished { break; }
 }
+# system.shutdown().await;
+# Ok(())
+# }
+# fn main() { infinity_mdtests::run(example()); }
 ```
 
 `LaunchingSystem::thread_handle` returns an error when the conversation store lookup fails, and it returns `None` when the ID was not launched in this process and does not exist in the store. This prevents a mistyped ID from creating a new unconfigured conversation; new threads always come from `thread_builder()`.

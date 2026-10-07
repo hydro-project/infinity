@@ -26,7 +26,7 @@ function useInView(
   return [ref, inView];
 }
 
-// Trimmed from the real quickstart; see /docs/infinity-runtime/agent-systems.
+// Trimmed from the real quickstart; see /docs/infinity-runtime/quickstart/launching-your-first-agent.
 const HERO_CODE = `let system = AgentSystemBuilder::new_local(
     InMemoryConversationStore::new(),
     InMemoryStateStore::new(),

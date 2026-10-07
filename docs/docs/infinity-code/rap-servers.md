@@ -14,7 +14,7 @@ The core sandbox server that powers all the coding tools: `clone_repo`, `execute
 This is installed during the [quickstart](/docs/infinity-code/overview#quickstart) setup.
 
 ```bash
-infinity rap install --user --git https://github.com/hydro-project/infinity --crate sandbox-local
+infinity rap install --user --crate sandbox-local
 ```
 
 A few behaviors worth knowing:
@@ -35,7 +35,7 @@ Discovers and loads project steering files so the agent can follow your project'
 Provides two tools: `list_steering` (find all steering files in the project) and `load_steering` (read a specific file's content).
 
 ```bash
-infinity rap install --user --git https://github.com/hydro-project/infinity --crate rap-steering-server
+infinity rap install --user --crate rap-steering-server
 ```
 
 ## GitHub Event Poller
@@ -47,7 +47,7 @@ Events are delivered as subscription events that wake the agent automatically. U
 Set `GITHUB_TOKEN` in the daemon's environment; without it, GitHub's unauthenticated rate limit (60 requests/hour) makes polling impractical.
 
 ```bash
-infinity rap install --user --git https://github.com/hydro-project/infinity --crate rap-github-event-poller
+infinity rap install --user --crate rap-github-event-poller
 ```
 
 ## Connecting a Running RAP Server

@@ -17,12 +17,40 @@ An agent system uses two stores with separate responsibilities:
 The runtime can resume a thread whenever both stores retain their state. The in-memory implementations are complete stores, but their contents belong to a single process, so a service with multiple workers should provide shared implementations:
 
 ```rust
+# use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
+# use infinity_agent_core::system::{AgentSystemBuilder, StaticModel};
+# type BoxError = Box<dyn std::error::Error + Send + Sync>;
+# // Stand-ins for your own store implementations.
+# struct PostgresConversationStore;
+# impl PostgresConversationStore {
+#     async fn connect(_: &str) -> Result<InMemoryConversationStore, BoxError> {
+#         Ok(InMemoryConversationStore::new())
+#     }
+# }
+# struct RedisStateStore;
+# impl RedisStateStore {
+#     async fn connect(_: &str) -> Result<InMemoryStateStore, BoxError> {
+#         Ok(InMemoryStateStore::new())
+#     }
+# }
+# async fn example(database_url: String, redis_url: String) -> Result<(), BoxError> {
+# let provider = infinity_mdtests::mock_provider();
+# let model = StaticModel::new(provider, "global.anthropic.claude-sonnet-4-6").await?;
 let system = AgentSystemBuilder::new_local(
     PostgresConversationStore::connect(&database_url).await?,
     RedisStateStore::connect(&redis_url).await?,
     model,
 )
 .start();
+# system.shutdown().await;
+# Ok(())
+# }
+# fn main() {
+#     infinity_mdtests::run(example(
+#         "postgres://localhost/infinity".to_owned(),
+#         "redis://localhost".to_owned(),
+#     ));
+# }
 ```
 
 The store methods define the runtime's ordering, deduplication, and thread-tree contract. When adding a persistence provider, implement both traits directly, and make sure to test interrupted turns, duplicate inputs, child threads, compaction, and active subscriptions. The [platform traits](../low-level/overview.md#the-platform-traits) document the complete interfaces.
@@ -39,6 +67,23 @@ Conversation history and runtime state must describe the same logical deployment
 A **`ModelSource`** chooses one `ResolvedModel` at the start of each completion round:
 
 ```rust
+# use async_trait::async_trait;
+# use infinity_agent_core::ThreadId;
+# use infinity_agent_core::system::{ModelSource, ResolvedModel};
+# type BoxError = Box<dyn std::error::Error + Send + Sync>;
+# struct Selection;
+# struct Selections;
+# impl Selections {
+#     async fn load(&self, _: &ThreadId<str>) -> Result<Selection, BoxError> { Ok(Selection) }
+# }
+# struct Catalog;
+# impl Catalog {
+#     fn resolve(&self, _: &Selection) -> Result<ResolvedModel, BoxError> { todo!() }
+# }
+# struct SelectedModelSource {
+#     selections: Selections,
+#     catalog: Catalog,
+# }
 #[async_trait(?Send)]
 impl ModelSource for SelectedModelSource {
     async fn resolve(&self, thread_id: &ThreadId<str>) -> Result<ResolvedModel, BoxError> {
@@ -56,6 +101,25 @@ Use `StaticModel` when every round uses one model, or a root-aware source when s
 `new_local` owns an in-process queue and drives threads for the life of the process. Use `AgentSystemBuilder::new` when a platform already provides the input queue and scheduler:
 
 ```rust
+# use infinity_agent_core::message::InputMessage;
+# use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
+# use infinity_agent_core::system::{AgentSystemBuilder, StaticModel};
+# use infinity_agent_core::traits::InputSender;
+# #[derive(Clone)]
+# struct PlatformSender;
+# #[async_trait::async_trait]
+# impl InputSender for PlatformSender {
+#     type Error = std::io::Error;
+#     async fn send_to_input_queue(&self, _: InputMessage, _: &str) -> Result<(), Self::Error> {
+#         Ok(())
+#     }
+# }
+# async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+# let provider = infinity_mdtests::mock_provider();
+# let model_source = StaticModel::new(provider, "global.anthropic.claude-sonnet-4-6").await?;
+# let (conversation_store, state_store) =
+#     (InMemoryConversationStore::new(), InMemoryStateStore::new());
+# let platform_sender = PlatformSender;
 let mut system = AgentSystemBuilder::new(
     conversation_store,
     state_store,
@@ -63,6 +127,10 @@ let mut system = AgentSystemBuilder::new(
     platform_sender,
 )
 .build();
+# let _ = &mut system;
+# Ok(())
+# }
+# fn main() { infinity_mdtests::run(example()); }
 ```
 
 The platform then calls `AgentSystem::step` for each delivered batch. This mode fits SQS and Lambda because all thread state is reloaded from the stores for each call. [Step Mode](./step-mode.md) covers batching, observers, deferral, and outcomes.

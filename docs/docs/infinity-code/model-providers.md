@@ -14,12 +14,12 @@ At least one provider must be installed before the agent can start.
 Providers are installed with `infinity provider install`, which `cargo install`s the provider crate and registers it in `~/.infinity/providers.json`:
 
 ```bash
-infinity provider install bedrock --git https://github.com/hydro-project/infinity --crate infinity-provider-bedrock
+infinity provider install bedrock --crate infinity-provider-bedrock
 ```
 
 - The first argument (`bedrock`) is the **provider id**, a name you choose. Models are tracked as `provider id + model id`, so pick a stable name.
 - `--crate` is the crate to install; its binary becomes the provider's command.
-- `--git` / `--path` record where the crate comes from, exactly like `infinity rap install`, so the provider can be updated later.
+- By default the crate is installed from [crates.io](https://crates.io). Pass `--git <url>` or `--path <dir>` to install from a git repository or a local checkout instead. The source is recorded, exactly like `infinity rap install`, so the provider can be updated later.
 
 ### The Bedrock provider
 
@@ -33,8 +33,7 @@ Providers live in `~/.infinity/providers.json`, a JSON object mapping provider i
 {
   "bedrock": {
     "command": ["infinity-provider-bedrock"],
-    "crate_name": "infinity-provider-bedrock",
-    "git": "https://github.com/hydro-project/infinity"
+    "crate_name": "infinity-provider-bedrock"
   },
   "my-provider": {
     "command": ["/usr/local/bin/my-provider", "--some-flag"]
@@ -43,7 +42,7 @@ Providers live in `~/.infinity/providers.json`, a JSON object mapping provider i
 ```
 
 - **`command`**: the command (argv) the daemon runs to start the provider. Bare names are looked up on `PATH`; absolute paths are used as-is.
-- **`crate_name`**, **`git`**, **`path`** *(optional)*: installation source, recorded by `infinity provider install` and used by `infinity provider update`. Hand-written entries without these still work; they just can't be auto-updated.
+- **`crate_name`**, **`git`**, **`path`** *(optional)*: installation source, recorded by `infinity provider install` and used by `infinity provider update`. A `crate_name` without `git` or `path` is installed from crates.io. Hand-written entries without `crate_name` still work; they just can't be auto-updated.
 
 **Order matters**: providers are registered in the order they appear in the file, and the first model of the first provider is the default model for new sessions. You can edit the file by hand. The daemon reads it at startup, so run `infinity daemon restart` after changes.
 

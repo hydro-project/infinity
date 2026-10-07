@@ -6,7 +6,7 @@ Infinity is a Rust framework for building massively concurrent agentic systems, 
 let system = AgentSystemBuilder::new_local(
     InMemoryConversationStore::new(),
     InMemoryStateStore::new(),
-    StaticModel::new(provider, "claude-sonnet-4-5").await?,
+    StaticModel::new(provider, "global.anthropic.claude-sonnet-4-6").await?,
 )
 .start();
 

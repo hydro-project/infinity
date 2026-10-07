@@ -15,6 +15,12 @@ For configuration chosen when a process creates a new thread, local systems also
 **`ThreadConfigSource`** returns the configuration used when a thread is loaded:
 
 ```rust
+# use async_trait::async_trait;
+# use infinity_agent_core::ThreadId;
+# use infinity_agent_core::system::ThreadConfig;
+# use infinity_agent_core::traits::InputSender;
+# use rap_client::http::HttpClient;
+# type BoxError = Box<dyn std::error::Error + Send + Sync>;
 #[async_trait(?Send)]
 pub trait ThreadConfigSource<M: InputSender, H: HttpClient> {
     async fn resolve(
@@ -56,6 +62,12 @@ struct TenantThreadConfig<C> {
     conversations: C,
     tenants: TenantRegistry,
 }
+# struct TenantRegistry;
+# impl TenantRegistry {
+#     async fn for_root_thread(&self, _: &ThreadId<str>) -> Result<TenantConfig, BoxError> {
+#         Ok(TenantConfig { name: String::new(), tools: Vec::new(), notifier: None })
+#     }
+# }
 
 #[async_trait(?Send)]
 impl<C> ThreadConfigSource<ChannelSender, SimpleHttpClient>
@@ -89,6 +101,34 @@ where
 Register the source when building the system:
 
 ```rust
+# use async_trait::async_trait;
+# use infinity_agent_core::ThreadId;
+# use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
+# use infinity_agent_core::system::{AgentSystemBuilder, StaticModel, ThreadConfig, ThreadConfigSource};
+# use infinity_agent_core::system::local::ChannelSender;
+# use rap_client::http::SimpleHttpClient;
+# type BoxError = Box<dyn std::error::Error + Send + Sync>;
+# struct TenantRegistry;
+# struct TenantThreadConfig<C> {
+#     conversations: C,
+#     tenants: TenantRegistry,
+# }
+# #[async_trait(?Send)]
+# impl<C> ThreadConfigSource<ChannelSender, SimpleHttpClient> for TenantThreadConfig<C> {
+#     async fn resolve(
+#         &self,
+#         _: &ThreadId<str>,
+#     ) -> Result<ThreadConfig<ChannelSender, SimpleHttpClient>, BoxError> {
+#         let _ = (&self.conversations, &self.tenants);
+#         Ok(ThreadConfig { tools: Vec::new(), extra_system_prompt: None, rap_notifier: None })
+#     }
+# }
+# async fn example() -> Result<(), BoxError> {
+# let provider = infinity_mdtests::mock_provider();
+# let model_source = StaticModel::new(provider, "global.anthropic.claude-sonnet-4-6").await?;
+# let (conversation_store, state_store) =
+#     (InMemoryConversationStore::new(), InMemoryStateStore::new());
+# let tenants = TenantRegistry;
 let system = AgentSystemBuilder::new_local(
     conversation_store.clone(),
     state_store,
@@ -99,6 +139,10 @@ let system = AgentSystemBuilder::new_local(
     tenants,
 })
 .start();
+# system.shutdown().await;
+# Ok(())
+# }
+# fn main() { infinity_mdtests::run(example()); }
 ```
 
 :::note
@@ -120,6 +164,10 @@ Resolution receives the ID of the thread that is about to run. For a root conver
 **`ModelSource`** resolves one `ResolvedModel` at the beginning of every completion round:
 
 ```rust
+# use async_trait::async_trait;
+# use infinity_agent_core::ThreadId;
+# use infinity_agent_core::system::ResolvedModel;
+# type BoxError = Box<dyn std::error::Error + Send + Sync>;
 #[async_trait(?Send)]
 pub trait ModelSource {
     async fn resolve(&self, thread_id: &ThreadId<str>) -> Result<ResolvedModel, BoxError>;
@@ -149,6 +197,20 @@ struct TenantModelSource<C> {
     selections: ModelSelections,
     catalog: ModelCatalog,
 }
+# type BoxError = Box<dyn std::error::Error + Send + Sync>;
+# struct Selection;
+# struct ModelSelections;
+# impl ModelSelections {
+#     async fn for_root_thread(&self, _: &ThreadId<str>) -> Result<Selection, BoxError> {
+#         Ok(Selection)
+#     }
+# }
+# struct ModelCatalog;
+# impl ModelCatalog {
+#     fn resolve(&self, _: &Selection) -> Result<SelectedModel, BoxError> {
+#         Err("unknown model".into())
+#     }
+# }
 
 #[async_trait(?Send)]
 impl<C> ModelSource for TenantModelSource<C>
@@ -182,6 +244,21 @@ The same root-versus-leaf decision applies here: resolve through the root when s
 **Launch-time configuration** belongs to a root thread created through `thread_builder()`. It is suited to process-local jobs where the caller already has the tool instances and model source:
 
 ```rust
+# use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
+# use infinity_agent_core::system::{AgentSystemBuilder, StaticModel};
+# use infinity_agent_core::system::local::ChannelSender;
+# use infinity_agent_core::tools::Tool;
+# async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+# let provider = infinity_mdtests::mock_provider();
+# let model = StaticModel::new(provider.clone(), "global.anthropic.claude-sonnet-4-6").await?;
+# let review_model = StaticModel::new(provider, "global.anthropic.claude-opus-4-8").await?;
+# let system = AgentSystemBuilder::new_local(
+#     InMemoryConversationStore::new(),
+#     InMemoryStateStore::new(),
+#     model,
+# )
+# .start();
+# let review_tools: Vec<Box<dyn Tool<ChannelSender>>> = Vec::new();
 let mut reviewer = system
     .thread_builder()
     .tools(review_tools)
@@ -189,6 +266,10 @@ let mut reviewer = system
     .model(review_model)
     .launch()
     .await;
+# let _ = &mut reviewer;
+# Ok(())
+# }
+# fn main() { infinity_mdtests::run(example()); }
 ```
 
 The launched tools and prompt are added to the system-wide configuration, while the launched model replaces the system-wide model for that root. Subagents inherit all three from the launched root.

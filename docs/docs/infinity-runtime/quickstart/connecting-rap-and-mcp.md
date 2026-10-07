@@ -9,8 +9,8 @@ In the final part of the quickstart, you will connect your agent to external too
 Add the bridge crates to `Cargo.toml`:
 
 ```toml
-infinity-rap-bridge = { git = "https://github.com/hydro-project/infinity" }
-infinity-mcp-bridge = { git = "https://github.com/hydro-project/infinity" }
+infinity-rap-bridge = "0.1"
+infinity-mcp-bridge = "0.1"
 ```
 
 ## Connecting a RAP Server
@@ -18,9 +18,10 @@ First, bind the callback destination, so that every tool discovered afterwards w
 
 ```rust,no_run
 # use std::sync::Arc;
+# use infinity_provider_bedrock::BedrockProvider;
 # use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
 # use infinity_agent_core::system::{AgentSystemBuilder, StaticModel};
-# use infinity_provider_bedrock::BedrockProvider;
+use infinity_agent_core::ThreadId;
 use infinity_rap_bridge::{RapCallbackBridge, RapToolSet};
 
 # async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -32,7 +33,7 @@ let bridge = RapCallbackBridge::bind().await?;
 let server_urls = vec!["http://127.0.0.1:9000".to_owned()];
 let rap = RapToolSet::connect(
     server_urls,
-    "local-agent",
+    ThreadId::from_ref("local-agent"),
     bridge.callback_url().to_owned(),
 )
 .await?;
@@ -52,7 +53,7 @@ let (mut views, callback_server_task) = bridge.serve_into(system.sender());
 
 View updates are display state rather than agent history, so they are returned separately. Consume `views` in your display or persistence task:
 
-```rust,no_run
+```rust
 # use rap_protocol::RapViewUpdate;
 # struct ViewStore;
 # impl ViewStore {
@@ -62,17 +63,25 @@ View updates are display state rather than agent history, so they are returned s
 # }
 # async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 # let view_store = ViewStore;
-# let (_view_tx, mut views) = tokio::sync::mpsc::unbounded_channel::<RapViewUpdate>();
+# let (view_tx, mut views) = tokio::sync::mpsc::unbounded_channel::<RapViewUpdate>();
+# view_tx.send(RapViewUpdate {
+#     group_id: "thread-1".into(),
+#     view_type: "diff".to_owned(),
+#     content: serde_json::json!({ "patch": "" }),
+# })?;
+# drop(view_tx);
 while let Some(update) = views.recv().await {
     view_store.store(update).await?;
 }
 # Ok(())
 # }
+# fn main() { infinity_mdtests::run(example()); }
 ```
 
 A single bridge can serve several servers at once. Pass every base URL in one call:
 
 ```rust,no_run
+# use infinity_agent_core::ThreadId;
 # use infinity_rap_bridge::{RapCallbackBridge, RapToolSet};
 # async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 # let bridge = RapCallbackBridge::bind().await?;
@@ -81,7 +90,7 @@ let rap = RapToolSet::connect(
         "http://127.0.0.1:9000".to_owned(),
         "https://tools.example.com".to_owned(),
     ],
-    "workspace-42",
+    ThreadId::from_ref("workspace-42"),
     bridge.callback_url().to_owned(),
 )
 .await?;
@@ -90,7 +99,7 @@ let rap = RapToolSet::connect(
 # }
 ```
 
-The second argument identifies this connected tool set's application session; use a value that is stable for the lifetime of the connection, so that its manifest entries share one cache scope. The third argument is the callback destination that all discovered tools will include in their invocations.
+The second argument is a `ThreadId` that identifies this connected tool set's application session; use a value that is stable for the lifetime of the connection, so that its manifest entries share one cache scope. The third argument is the callback destination that all discovered tools will include in their invocations.
 
 Tool names from all manifests share one namespace, so give tools distinct names when connecting multiple servers.
 
@@ -119,17 +128,15 @@ For example, the Infinity Code daemon uses `RapCallbackBridge` with a wake polic
 ## Connecting an MCP Server
 An **`McpToolSet`** exposes an MCP server to a local agent system as two tools: one that discovers the server's tools, and one that invokes them. The toolset connects to the MCP server on first use, so setup will not start a subprocess or make a network request. For a stdio server, create the toolset from the launch command and then register its tools on the system:
 
-```rust,no_run
+```rust
 use std::collections::HashMap;
-# use std::sync::Arc;
 # use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
 # use infinity_agent_core::system::{AgentSystemBuilder, StaticModel};
-# use infinity_provider_bedrock::BedrockProvider;
 
 use infinity_mcp_bridge::McpToolSet;
 
 # async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-# let provider = Arc::new(BedrockProvider::from_env());
+# let provider = infinity_mdtests::mock_provider();
 # let model = StaticModel::new(provider, "global.anthropic.claude-sonnet-4-6").await?;
 # let (conversation_store, state_store) =
 #     (InMemoryConversationStore::new(), InMemoryStateStore::new());
@@ -150,6 +157,7 @@ let system = AgentSystemBuilder::new_local(conversation_store, state_store, mode
 # let _ = system;
 # Ok(())
 # }
+# fn main() { infinity_mdtests::run(example()); }
 ```
 
 The model sees `filesystem_list_tools` and `filesystem_invoke_tool`. It can call the first tool to read the MCP server's native tool definitions, and then pass a selected name and arguments to the second.
@@ -158,15 +166,13 @@ The model sees `filesystem_list_tools` and `filesystem_invoke_tool`. It can call
 
 To expose the server to one conversation instead of every thread, add the same tools through `thread_builder()`:
 
-```rust,no_run
+```rust
 # use std::collections::HashMap;
-# use std::sync::Arc;
 # use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
 # use infinity_agent_core::system::{AgentSystemBuilder, StaticModel};
 # use infinity_mcp_bridge::McpToolSet;
-# use infinity_provider_bedrock::BedrockProvider;
 # async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-# let provider = Arc::new(BedrockProvider::from_env());
+# let provider = infinity_mdtests::mock_provider();
 # let model = StaticModel::new(provider, "global.anthropic.claude-sonnet-4-6").await?;
 # let system = AgentSystemBuilder::new_local(
 #     InMemoryConversationStore::new(),
@@ -184,21 +190,20 @@ let mut thread = system
 # let _ = &mut thread;
 # Ok(())
 # }
+# fn main() { infinity_mdtests::run(example()); }
 ```
 
 The launched thread's subagents inherit both MCP tools. See [Launching Local Threads](../agent-systems/running-locally.md#configuring-a-new-thread) for the other launch-time options.
 
 A remote MCP endpoint connects the same way through `McpToolSet::http`, which applies the supplied headers to initialization and tool requests:
 
-```rust,no_run
+```rust
 # use std::collections::HashMap;
-# use std::sync::Arc;
 # use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
 # use infinity_agent_core::system::{AgentSystemBuilder, StaticModel};
 # use infinity_mcp_bridge::McpToolSet;
-# use infinity_provider_bedrock::BedrockProvider;
 # async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-# let provider = Arc::new(BedrockProvider::from_env());
+# let provider = infinity_mdtests::mock_provider();
 # let model = StaticModel::new(provider, "global.anthropic.claude-sonnet-4-6").await?;
 # let (conversation_store, state_store) =
 #     (InMemoryConversationStore::new(), InMemoryStateStore::new());
@@ -218,6 +223,7 @@ let system = AgentSystemBuilder::new_local(conversation_store, state_store, mode
 # let _ = system;
 # Ok(())
 # }
+# fn main() { infinity_mdtests::run(example()); }
 ```
 
 The client retains the MCP session ID returned by the server and sends it on later requests. Credentials should be stored in transport headers rather than in prompts or tool arguments.
