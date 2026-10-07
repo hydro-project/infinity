@@ -1,0 +1,26 @@
+---
+sidebar_position: 2
+title: AWS Architecture
+---
+
+import CloudArchitecture from '@site/static/img/cloud-architecture.svg';
+
+# AWS Architecture
+
+The agent runs as a short-lived Lambda function that starts when a message arrives. Each invocation loads conversation history from Aurora DSQL, runs the model via Bedrock, dispatches any tool calls, saves state back, and exits. This means that between messages, nothing is running at all.
+
+<CloudArchitecture style={{width: '100%', maxWidth: '960px', margin: '1.5rem 0'}} />
+
+Everything flows through a single SQS FIFO queue: user messages, tool results, subscription events, and sleep wake-ups all enter through the same channel. The queue serializes messages per thread (via `MessageGroupId`), so a single conversation will process in order while independent threads run concurrently on separate Lambda invocations.
+
+Tools are independent HTTP services. The runtime POSTs an invocation to a tool's Function URL and moves on without waiting for a response. When the tool finishes, it POSTs the result to a RAP Receiver Lambda, which enqueues it back on the input queue. This closes the loop: the agent wakes up again, picks up the tool result, and continues the conversation. The receiver accepts `tool_result`, `oauth`, `subscription_event`, and `user_choice` callbacks. `view_update` [server callbacks](/docs/rap/spec/server/view-updates) are acknowledged and dropped, since views are a display feature of the embedded daemon runtime.
+
+## Durable Timers
+
+The `sleep` and `sleep_until` tools use AWS infrastructure for durable timers. Delays of 900 seconds or less go through an SQS queue with `DelaySeconds`, which then submits the tool call result to the input queue. Longer delays create a one-time EventBridge schedule that sends a message directly to the input queue.
+
+Both mechanisms are interruptible. If a user message or subscription event arrives while the agent is sleeping, the runtime will process it immediately; the pending sleep result arrives later and is appended to history normally.
+
+## What's Next
+
+[Architecture](../architecture.md) explains the runtime side of this picture: slices, yielding, and message ordering. Each Lambda invocation drives one [`AgentSystem::step`](../agent-systems/step-mode.md), and the sleep and threading tools that it dispatches are described in [Built-in Tools](../built-in/built-in-tools.md).

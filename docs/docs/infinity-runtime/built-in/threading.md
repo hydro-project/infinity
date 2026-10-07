@@ -1,5 +1,5 @@
 ---
-sidebar_position: 8
+sidebar_position: 2
 title: Threading
 ---
 
@@ -7,16 +7,15 @@ title: Threading
 
 The Infinity Runtime lets agents spawn child threads for parallel work. Each thread runs independently with its own context, and can report results back to the parent.
 
-Threads are useful for concurrent processing and context management:
-- **Parallel code review**: spawn one thread per file, each reviews independently, reports back
-- **Research and execute**: one thread researches the approach while another starts implementing
-- **Event processing**: subscription events are handled in isolated threads without polluting the parent context
-- **Divide and conquer**: break a large task into sub-tasks, each in its own thread with focused context
-
+Threads are useful for concurrent processing and for context management:
+- **Parallel code review**: the agent spawns one thread per file, and each thread reviews its file independently and reports back.
+- **Research and execute**: one thread researches the approach while another starts implementing.
+- **Event processing**: subscription events are handled in isolated threads, so they do not pollute the parent context.
+- **Divide and conquer**: a large task can be broken into sub-tasks, each in its own thread with a focused context.
 
 ## Spawning a thread
 
-When the agent needs to do something in parallel (review multiple files, research while implementing, process a subscription event) it calls `spawn_thread`:
+When the agent needs to do something in parallel, such as reviewing multiple files or researching while implementing, it calls `spawn_thread`:
 
 ```
 🤖 Agent:  I'll review these three files in parallel.
@@ -30,11 +29,11 @@ When the agent needs to do something in parallel (review multiple files, researc
 📥 Result:     "Child thread spawned with ID: thread_c3d4"
 ```
 
-The required `child_of` argument is the caller's full thread stack, from the root thread to itself. Because children inherit the parent's context (including any plans to spawn threads), a child can get confused and try to execute the parent's spawns; the stack check rejects those calls with an error telling the child to focus on its own task.
+The required `child_of` argument is the caller's full thread stack, from the root thread to itself. Because children inherit the parent's context (including any plans to spawn threads), a child can get confused and try to execute the parent's spawns. The stack check will reject those calls with an error telling the child to focus on its own task.
 
-Each child thread starts with the parent's conversation history up to the point it was spawned, plus the instructions. The parent continues immediately; it doesn't wait for children to finish.
+Each child thread starts with the parent's conversation history up to the point it was spawned, plus the instructions. The parent continues immediately, without waiting for its children to finish.
 
-The child thread inherits context from its ancestors. If the parent had a 30-message conversation before spawning, the child sees those 30 messages truncated at the spawn point, followed by its own spawn instruction and result:
+The child thread inherits context from its ancestors. For example, if the parent had a 30-message conversation before spawning, the child will see those 30 messages truncated at the spawn point, followed by its own spawn instruction and result:
 
 ```
 ── inherited from parent (messages 1–30) ──
@@ -49,7 +48,7 @@ The child thread inherits context from its ancestors. If the parent had a 30-mes
                 instructions in the tool call. Your thread ID is thread_a1b2."
 ```
 
-The child has enough context to understand the task without the parent having to repeat anything. It doesn't see any messages the parent produces after the spawn point.
+This gives the child enough context to understand the task without the parent having to repeat anything. However, the child will not see any messages that the parent produces after the spawn point.
 
 ## Reporting back
 
@@ -65,7 +64,7 @@ Children can send results to the parent at any time using `report_to_parent`:
 📥 Result:     "Report sent to parent thread."
 ```
 
-The parent sees this as a [synthetic tool call](/docs/rap/about/subscription-events#synthetic-tool-calls), the same mechanism used for subscription events. The runtime injects a synthetic `receive_event__injected` call and result into the parent's history:
+The parent sees this as a [synthetic tool call](/docs/rap/about/subscription-events#synthetic-tool-calls), which is the same mechanism used for subscription events. The runtime will inject a synthetic `receive_event__injected` call and result into the parent's history:
 
 ```
 [Parent thread]
@@ -97,7 +96,7 @@ When a child is done, it calls `close_thread` with an optional final report:
                })
 ```
 
-The parent sees the report via the same synthetic tool call mechanism:
+The parent will see the report via the same synthetic tool call mechanism:
 
 ```
 [Parent thread]
@@ -115,7 +114,7 @@ The parent sees the report via the same synthetic tool call mechanism:
 
 ## Subscription event threads
 
-When a [subscription event](/docs/rap/about/subscription-events) arrives, the Infinity Runtime automatically spawns a temporary child thread to process it. This keeps the parent's context clean: each event gets its own fresh context window.
+When a [subscription event](/docs/rap/about/subscription-events) arrives, the Infinity Runtime automatically spawns a temporary child thread to process it. This keeps the parent's context clean, since each event gets its own fresh context window.
 
 The child is seeded with the event data and instructions to process it:
 
@@ -137,6 +136,6 @@ The child is seeded with the event data and instructions to process it:
                 subscription event."
 ```
 
-The child processes the event (reads the PR diff, runs checks, posts a review) and then closes with a report. The parent sees the report without its context being cluttered by the raw event data. If an event is irrelevant to the parent, the child can also shut down without providing a report, in which case the parent thread continues running as if the event never happened.
+The child processes the event (e.g. it reads the PR diff, runs checks, and posts a review) and then closes with a report. The parent sees the report without its context being cluttered by the raw event data. If an event is irrelevant to the parent, the child can also shut down without providing a report; in that case, the parent thread will continue running as if the event never happened.
 
-If multiple events arrive close together, each gets its own child thread and they process concurrently.
+If multiple events arrive close together, each one will get its own child thread, and the threads will process the events concurrently.

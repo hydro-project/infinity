@@ -1,30 +1,67 @@
 {
-  "name": "infinity-agents-leader-cdk",
+  "name": "infinity-agents-cdk",
   "version": "0.1.0",
+  "description": "AWS CDK constructs for deploying Infinity agents on AWS Lambda",
   "license": "Apache-2.0",
-  "bin": {
-    "cdk": "bin/cdk.js"
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hydro-project/infinity.git",
+    "directory": "agent"
   },
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./mcp": {
+      "types": "./lib/infinity-agents/mcp/index.d.ts",
+      "default": "./lib/infinity-agents/mcp/index.js"
+    },
+    "./tools": {
+      "types": "./lib/infinity-agents/tools/index.d.ts",
+      "default": "./lib/infinity-agents/tools/index.js"
+    },
+    "./slack": {
+      "types": "./lib/infinity-agents/slack/index.d.ts",
+      "default": "./lib/infinity-agents/slack/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/index.d.ts",
+    "lib/infinity-agents/**/*.js",
+    "lib/infinity-agents/**/*.d.ts",
+    "lib/infinity-agents/**/*.mjs",
+    "rust"
+  ],
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w",
     "cdk": "cdk",
-    "deploy": "source .env 2>/dev/null || true && cdk deploy"
+    "deploy": "source .env 2>/dev/null || true && cdk deploy",
+    "prepare": "node scripts/prepare-package.mjs"
   },
-  "devDependencies": {
-    "@types/node": "^20.0.0",
-    "aws-cdk": "^2.1033.0",
-    "esbuild": "^0.24.0",
-    "ts-node": "^10.9.0",
-    "typescript": "^5.0.0"
+  "peerDependencies": {
+    "aws-cdk-lib": "^2.231.0",
+    "constructs": "^10.0.0"
   },
   "dependencies": {
     "@aws-crypto/sha256-js": "^5.0.0",
     "@smithy/protocol-http": "^4.0.0",
     "@smithy/signature-v4": "^4.0.0",
+    "cargo-lambda-cdk": "^0.0.31"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1033.0",
     "aws-cdk-lib": "^2.231.0",
-    "cargo-lambda-cdk": "^0.0.31",
     "constructs": "^10.0.0",
-    "fast-xml-parser": "^4.5.0"
+    "esbuild": "^0.24.0",
+    "fast-xml-parser": "^4.5.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
   }
 }
