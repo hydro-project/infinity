@@ -78,6 +78,17 @@ impl ThreadRef {
             _ => self,
         }
     }
+
+    /// A short, human-friendly label for this thread: the first 8 characters
+    /// of its thread ID (without any remote prefix). Used when displaying a
+    /// thread that has no title.
+    pub fn short_id(&self) -> &str {
+        let id = self.id.as_str();
+        match id.char_indices().nth(8) {
+            Some((end, _)) => &id[..end],
+            None => id,
+        }
+    }
 }
 
 impl std::fmt::Display for ThreadRef {
@@ -588,6 +599,16 @@ mod tests {
         let r: ThreadRef = "devbox/abc-123".parse().expect("remote ref should parse");
         assert_eq!(r, ThreadRef::remote("devbox".into(), "abc-123".into()));
         assert_eq!(r.to_string(), "devbox/abc-123");
+    }
+
+    #[test]
+    fn thread_ref_short_id_strips_remote_and_truncates() {
+        let local: ThreadRef = "0123456789abcdef".into();
+        assert_eq!(local.short_id(), "01234567");
+        let remote: ThreadRef = "devbox/0123456789abcdef".into();
+        assert_eq!(remote.short_id(), "01234567");
+        let short: ThreadRef = "abc".into();
+        assert_eq!(short.short_id(), "abc");
     }
 
     #[test]

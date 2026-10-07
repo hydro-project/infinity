@@ -1,6 +1,6 @@
 ---
 source: crates/infinity-agent-cli/tests/tui_flow_snapshots.rs
-assertion_line: 101
+assertion_line: 98
 expression: h.screen_with_scrollback()
 ---
 ~ 
@@ -40,7 +40,7 @@ expression: h.screen_with_scrollback()
 │replayed answer two                                                             │
 │                                                                                │
 │                                                                                │
-│replay-child replayed child activity                                            │
+│replay-c replayed child activity                                                │
 │────────────────────────────────────────────────────────────────────────────────│
 │                                                                                │
 │                                                                                │
