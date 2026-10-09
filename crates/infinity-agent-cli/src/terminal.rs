@@ -1137,13 +1137,7 @@ fn draw_viewport<T: TermOut>(
         }
         UiMode::Normal { .. } => {
             if let Some(tid) = thread_id {
-                let tid = tid.to_string();
-                let short_id = if tid.len() > 8 {
-                    &tid[..8]
-                } else {
-                    tid.as_str()
-                };
-                format!("{} | /help for commands", short_id)
+                format!("{} | /help for commands", tid.short_id())
             } else {
                 "/help for commands".to_owned()
             }
@@ -1154,12 +1148,13 @@ fn draw_viewport<T: TermOut>(
     let thread_lines: Vec<Line<'_>> = thread_buffers
         .iter()
         .map(|(id, buf)| {
-            let prefix_len = unicode_width::UnicodeWidthStr::width(id.to_string().as_str()) + 1;
+            let short_id = id.short_id();
+            let prefix_len = unicode_width::UnicodeWidthStr::width(short_id) + 1;
             let avail = (current_width as usize).saturating_sub(prefix_len);
             let tail = wrap_tail(buf, avail);
             Line::from(vec![
                 Span::styled(
-                    format!("{} ", id),
+                    format!("{} ", short_id),
                     Style::default().fg(Color::Rgb(130, 90, 200)),
                 ),
                 Span::styled(tail, Style::default().fg(Color::DarkGray)),

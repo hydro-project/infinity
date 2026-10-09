@@ -14,9 +14,20 @@ import {
   ChevronDownIcon,
 } from "./icons";
 
+/** Strip the `remote/` prefix from a composite thread ref, if present. */
+function bareThreadId(id: string): string {
+  const slash = id.indexOf("/");
+  return slash === -1 ? id : id.slice(slash + 1);
+}
+
+/** Short label for an untitled thread: first 8 chars of the bare thread ID. */
+function shortThreadId(id: string): string {
+  return bareThreadId(id).slice(0, 8);
+}
+
 function CopyThreadId({ id }: { id: string }) {
-  const bare = id.includes("/") ? id.split("/").pop()! : id;
-  const short = bare.slice(0, 8);
+  const bare = bareThreadId(id);
+  const short = shortThreadId(id);
   const [copied, setCopied] = useState(false);
   const copy = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -88,7 +99,7 @@ function ThreadTree({
           >
             <span className={css.threadLine} />
             <span className={css.threadTitle}>
-              {t.title || t.thread_id.slice(0, 8)}
+              {t.title || shortThreadId(t.thread_id)}
             </span>
           </button>
           <ThreadTree
@@ -136,10 +147,7 @@ const SessionItem = memo(function SessionItem({
       >
         <span className={css.itemTitle}>
           <span className={css.itemTitleText}>
-            {info.title ||
-              (id.includes("/")
-                ? id.split("/").pop()!.slice(0, 8)
-                : id.slice(0, 8))}
+            {info.title || shortThreadId(id)}
           </span>
           {info.remote && <span className={css.remotePill}>{info.remote}</span>}
         </span>
