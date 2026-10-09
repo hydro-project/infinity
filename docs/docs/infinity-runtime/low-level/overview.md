@@ -36,6 +36,8 @@ Porting the runtime to a new platform means implementing four traits, which are 
 You should start with `InputSender`. It is the smallest trait but the most consequential, because it defines the yield boundary:
 
 ```rust
+# use async_trait::async_trait;
+# use infinity_agent_core::message::InputMessage;
 #[async_trait]
 pub trait InputSender: Send + Sync + Clone {
     type Error: std::error::Error + Send + Sync + 'static;
@@ -51,7 +53,7 @@ pub trait InputSender: Send + Sync + Clone {
 
 Anything that the runtime wants to happen later (such as a child thread's seed message, a report to a parent, or a timer wake-up) goes through `send_to_input_queue` rather than a function call. The message's `group_id` selects the target thread, and the `dedup_id` makes redelivery safe. Your implementation must guarantee one property: delivery has to be FIFO within a group, because per-group ordering is the concurrency control for the whole runtime. The core ships with one implementation, `ChannelSender`, which is the in-process queue behind [local systems](../agent-systems/running-locally.md).
 
-`ConversationStore` is the largest trait, but the subtle part is provided for you. You only need to supply the primitive queries: appending and loading messages (`append_messages`, `load_history_up_to`), the thread tree (`spawn_thread`, `get_ancestor_chain`, `close_thread`), and compaction summaries (`save_compaction_summary`, `load_latest_compaction_summary_up_to`). The `load_history_with_ancestors` default method will then reconstruct a child thread's inherited history with the most recent compaction summary applied, which is the part that is easy to get wrong. The core's `InMemoryConversationStore` and `InMemoryStateStore` are complete implementations (the daemon runs on them), so you will only need a custom store for durable multi-process storage.
+`ConversationStore` is the largest trait, but the subtle part is provided for you. You only need to supply the primitive queries: appending and loading messages (`append_messages`, `load_history_up_to`), the thread tree (`spawn_thread`, `get_ancestor_chain`, `close_thread`, plus flags such as `is_fresh_context_thread`; `spawn_thread` takes a `SpawnContext` that says whether the child inherits the parent's history, inherits it only up to a given point, or starts fresh), and compaction summaries (`save_compaction_summary`, `load_latest_compaction_summary_up_to`). The `load_history_with_ancestors` default method will then reconstruct a child thread's inherited history with the most recent compaction summary applied (and stop at the nearest fresh-context ancestor), which is the part that is easy to get wrong. The core's `InMemoryConversationStore` and `InMemoryStateStore` are complete implementations (the daemon runs on them), so you will only need a custom store for durable multi-process storage.
 
 `StateStore` keeps the bookkeeping that makes redelivery and wake-ups safe: processed message and tool-call IDs, per-conversation metadata, and active subscriptions. Its implementations are typically thin key-value mappings, since the semantics that matter (which IDs get recorded when) are driven by the [`HistoryManager`](./history-manager.md), not by your store.
 

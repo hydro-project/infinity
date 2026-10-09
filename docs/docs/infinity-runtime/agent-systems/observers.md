@@ -9,6 +9,29 @@ A `ThreadObserver` receives everything a thread does. [Thread handles](./running
 For example, a chat server that broadcasts every thread's activity to connected WebSocket clients, while keeping a per-thread token counter in a database, can be written as one observer:
 
 ```rust
+# use async_trait::async_trait;
+# use infinity_agent_core::ThreadId;
+# use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
+# use infinity_agent_core::system::{
+#     AgentEvent, AgentSystemBuilder, ReplaySnapshot, StaticModel, ThreadObserver,
+# };
+# #[derive(Clone, Default)]
+# struct ClientRegistry;
+# impl ClientRegistry {
+#     fn broadcast(&self, _: String) {}
+#     fn register(&self, _: WebSocketClient) {}
+# }
+# #[derive(Clone, Default)]
+# struct TokenCounter;
+# impl TokenCounter {
+#     fn add(&self, _: &ThreadId<str>, _: u64) {}
+# }
+# struct WebSocketClient;
+# impl WebSocketClient {
+#     fn send(&self, _: String) {}
+# }
+# fn render(_: &ThreadId<str>, _: &AgentEvent) -> String { String::new() }
+# fn render_replay(_: &ThreadId<str>, _: &ReplaySnapshot) -> String { String::new() }
 struct MyObserver {
     clients: ClientRegistry,          // your fan-out list
     token_counter: TokenCounter,      // your storage
@@ -32,7 +55,23 @@ impl ThreadObserver for MyObserver {
     }
 }
 
-let running = system.start_with_observer(|thread_id| MyObserver::new(thread_id));
+# async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+# let provider = infinity_mdtests::mock_provider();
+# let model = StaticModel::new(provider, "global.anthropic.claude-sonnet-4-6").await?;
+# let system = AgentSystemBuilder::new_local(
+#     InMemoryConversationStore::new(),
+#     InMemoryStateStore::new(),
+#     model,
+# );
+# let (clients, token_counter) = (ClientRegistry::default(), TokenCounter::default());
+let running = system.start_with_observer(move |_thread_id| MyObserver {
+    clients: clients.clone(),
+    token_counter: token_counter.clone(),
+});
+# running.shutdown().await;
+# Ok(())
+# }
+# fn main() { infinity_mdtests::run(example()); }
 ```
 
 `start_with_observer` takes a factory rather than an observer because each thread's driver receives its own instance, created when the driver spawns. State that must outlive a driver, such as the client registry above, should live outside the observer and be cloned into each instance. For the trivial case there is a provided implementation: `EventCollector` buffers `(thread_id, event)` pairs in memory, which suits a [step-mode](./step-mode.md) handler that inspects them after the slice.

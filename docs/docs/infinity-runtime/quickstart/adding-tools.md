@@ -6,9 +6,10 @@ title: Adding Tools
 # Adding Tools
 In this tutorial, you will give your agent a **custom tool**: an implementation of the `Tool<ChannelSender>` trait that runs inside your process. Tool servers that live outside the process connect through [RAP or MCP](./connecting-rap-and-mcp.md) instead.
 
-The tool implementation will use three more crates, so add them to `Cargo.toml`:
+The tool implementation will use four more crates, so add them to `Cargo.toml`:
 
 ```toml
+rap-protocol = "0.1"
 async-trait = "0.1"
 serde_json = "1"
 tracing = "0.1"
@@ -16,7 +17,7 @@ tracing = "0.1"
 
 The example tool looks up a build and reports its status. `execute` starts the lookup and returns immediately, so the agent can yield while the work runs; the result will arrive later as a message on the input queue.
 
-```rust,no_run
+```rust
 # #[derive(Clone)]
 # struct BuildClient;
 # impl BuildClient {
@@ -31,6 +32,7 @@ use infinity_agent_core::system::local::ChannelSender;
 use infinity_agent_core::tools::{Tool, ToolContext};
 use infinity_agent_core::traits::InputSender;
 use infinity_provider_protocol::message::{Text, ToolResult, ToolResultContent, UserContent};
+use rap_protocol::{ProviderCallId, ToolCallId};
 use serde_json::json;
 
 struct GetBuildStatus {
@@ -67,8 +69,8 @@ impl Tool<ChannelSender> for GetBuildStatus {
     async fn execute(
         &self,
         args: serde_json::Value,
-        id: String,
-        call_id: Option<String>,
+        id: ToolCallId,
+        call_id: Option<ProviderCallId>,
         context: &ToolContext<ChannelSender>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let Some(build_id) = args.get("build_id").and_then(|value| value.as_str()) else {
@@ -110,14 +112,14 @@ impl Tool<ChannelSender> for GetBuildStatus {
 async fn send_result(
     sender: ChannelSender,
     group_id: ThreadId,
-    id: String,
-    call_id: Option<String>,
+    id: ToolCallId,
+    call_id: Option<ProviderCallId>,
     text: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let message = InputMessage {
         content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-            id: id.clone(),
-            call_id,
+            id: id.as_str().to_owned(),
+            call_id: call_id.map(ProviderCallId::into_inner),
             content: vec![ToolResultContent::Text(Text { text })],
         })),
         group_id,
@@ -128,7 +130,7 @@ async fn send_result(
     };
 
     sender
-        .send_to_input_queue(message, &id)
+        .send_to_input_queue(message, id.as_str())
         .await
         .map_err(Into::into)
 }
@@ -141,8 +143,8 @@ You should validate arguments again in `execute`, because the model can produce 
 
 The result path must preserve three values from the invocation:
 
-- `ToolResult::id` is the `id` passed to `execute`.
-- `ToolResult::call_id` preserves the optional `call_id`.
+- `ToolResult::id` is the `id` passed to `execute` (a typed `ToolCallId`, stored in the result as a plain string).
+- `ToolResult::call_id` preserves the optional provider-scoped `call_id` (`ProviderCallId`).
 - `InputMessage::group_id` is `ToolContext::group_id`.
 
 The message is sent through `ToolContext::message_sender`. The final argument to `send_to_input_queue` is the deduplication ID; if you retry delivering this one result, reuse the tool-call ID so the state store will drop the duplicate.
@@ -151,14 +153,12 @@ An error returned directly from `execute` becomes a generic failed tool result, 
 
 To let a conversation call the tool, register it on the thread:
 
-```rust,no_run
-# use std::sync::Arc;
+```rust
 # use async_trait::async_trait;
 # use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
 # use infinity_agent_core::system::local::ChannelSender;
 # use infinity_agent_core::system::{AgentSystemBuilder, StaticModel};
 # use infinity_agent_core::tools::{Tool, ToolContext};
-# use infinity_provider_bedrock::BedrockProvider;
 # #[derive(Clone)]
 # struct BuildClient;
 # struct GetBuildStatus {
@@ -178,8 +178,8 @@ To let a conversation call the tool, register it on the thread:
 #     async fn execute(
 #         &self,
 #         _args: serde_json::Value,
-#         _id: String,
-#         _call_id: Option<String>,
+#         _id: rap_protocol::ToolCallId,
+#         _call_id: Option<rap_protocol::ProviderCallId>,
 #         _context: &ToolContext<ChannelSender>,
 #     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 #         let _ = &self.builds;
@@ -187,7 +187,7 @@ To let a conversation call the tool, register it on the thread:
 #     }
 # }
 # async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-# let provider = Arc::new(BedrockProvider::from_env());
+# let provider = infinity_mdtests::mock_provider();
 # let model = StaticModel::new(provider, "global.anthropic.claude-sonnet-4-6").await?;
 # let system = AgentSystemBuilder::new_local(
 #     InMemoryConversationStore::new(),
@@ -204,6 +204,7 @@ let mut thread = system
 # let _ = &mut thread;
 # Ok(())
 # }
+# fn main() { infinity_mdtests::run(example()); }
 ```
 
 The launched root and its subagents can now call the tool. When every thread in the system should receive the same tool, register it with `AgentSystemBuilder::tool` instead; both paths accept the same `Box<dyn Tool<ChannelSender>>`.
@@ -216,11 +217,12 @@ Two trait methods can opt out of this default: `supports_sync()` with `execute_s
 ### Returning an Inline Result
 A **synchronous tool** returns a `ToolResult` without using the input queue. The runtime records the result and lets the model continue in the same slice, which avoids scheduling another slice for a value that is already available in memory.
 
-```rust,no_run
+```rust
 # use async_trait::async_trait;
 # use infinity_agent_core::system::local::ChannelSender;
 # use infinity_agent_core::tools::{Tool, ToolContext};
 # use infinity_provider_protocol::message::{Text, ToolResult, ToolResultContent};
+# use rap_protocol::{ProviderCallId, ToolCallId};
 # fn calculate(args: &serde_json::Value) -> String {
 #     args.to_string()
 # }
@@ -239,8 +241,8 @@ A **synchronous tool** returns a `ToolResult` without using the input queue. The
 #     async fn execute(
 #         &self,
 #         _args: serde_json::Value,
-#         _id: String,
-#         _call_id: Option<String>,
+#         _id: rap_protocol::ToolCallId,
+#         _call_id: Option<rap_protocol::ProviderCallId>,
 #         _context: &ToolContext<ChannelSender>,
 #     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 #         unreachable!("synchronous tools do not use the dispatched path")
@@ -252,13 +254,13 @@ fn supports_sync(&self) -> bool {
 async fn execute_synchronous(
     &self,
     args: &serde_json::Value,
-    id: &str,
-    call_id: Option<&str>,
+    id: &ToolCallId<str>,
+    call_id: Option<&ProviderCallId<str>>,
     _context: &ToolContext<ChannelSender>,
 ) -> Option<ToolResult> {
     Some(ToolResult {
-        id: id.to_owned(),
-        call_id: call_id.map(str::to_owned),
+        id: id.as_str().to_owned(),
+        call_id: call_id.map(|call_id| call_id.as_str().to_owned()),
         content: vec![ToolResultContent::Text(Text {
             text: calculate(args),
         })],
@@ -274,7 +276,7 @@ An unanswered non-passive call means that the agent is waiting for active work t
 
 Return `true` from `is_passive()` when the call itself represents an idle wait:
 
-```rust,no_run
+```rust
 # use async_trait::async_trait;
 # use infinity_agent_core::system::local::ChannelSender;
 # use infinity_agent_core::tools::{Tool, ToolContext};
@@ -293,8 +295,8 @@ Return `true` from `is_passive()` when the call itself represents an idle wait:
 #     async fn execute(
 #         &self,
 #         _args: serde_json::Value,
-#         _id: String,
-#         _call_id: Option<String>,
+#         _id: rap_protocol::ToolCallId,
+#         _call_id: Option<rap_protocol::ProviderCallId>,
 #         _context: &ToolContext<ChannelSender>,
 #     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 #         Ok(())
@@ -314,7 +316,7 @@ A **subscription tool** sends an initial result with `subscription: true`, and t
 
 The following execution body starts a finite counter stream:
 
-```rust,no_run
+```rust
 # use async_trait::async_trait;
 # use infinity_agent_core::ThreadId;
 # use infinity_agent_core::message::{
@@ -324,18 +326,19 @@ The following execution body starts a finite counter stream:
 # use infinity_agent_core::tools::{Tool, ToolContext};
 # use infinity_agent_core::traits::InputSender;
 # use infinity_provider_protocol::message::{Text, ToolResult, ToolResultContent, UserContent};
+# use rap_protocol::{ProviderCallId, ToolCallId};
 # fn subscription_result(
 #     group_id: &ThreadId<str>,
-#     id: &str,
-#     call_id: Option<String>,
+#     id: &ToolCallId<str>,
+#     call_id: Option<ProviderCallId>,
 #     text: String,
 #     event: Option<TaggedSyntheticKind>,
 #     starts_subscription: bool,
 # ) -> InputMessage {
 #     InputMessage {
 #         content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-#             id: id.to_owned(),
-#             call_id,
+#             id: id.as_str().to_owned(),
+#             call_id: call_id.map(ProviderCallId::into_inner),
 #             content: vec![ToolResultContent::Text(Text { text })],
 #         })),
 #         group_id: group_id.to_owned(),
@@ -360,8 +363,8 @@ The following execution body starts a finite counter stream:
 async fn execute(
     &self,
     args: serde_json::Value,
-    id: String,
-    call_id: Option<String>,
+    id: ToolCallId,
+    call_id: Option<ProviderCallId>,
     context: &ToolContext<ChannelSender>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let updates = args
@@ -380,7 +383,7 @@ async fn execute(
     );
     context
         .message_sender
-        .send_to_input_queue(started, &id)
+        .send_to_input_queue(started, id.as_str())
         .await?;
 
     let sender = context.message_sender.clone();
@@ -418,24 +421,25 @@ async fn execute(
 
 The `subscription_result` helper differs from `send_result` in that it accepts a synthetic event and a subscription flag:
 
-```rust,no_run
+```rust
 # use infinity_agent_core::ThreadId;
 # use infinity_agent_core::message::{InputMessage, InputMessageContent};
 # use infinity_provider_protocol::message::{Text, ToolResult, ToolResultContent, UserContent};
 use infinity_agent_core::message::{SyntheticKind, TaggedSyntheticKind};
+use rap_protocol::{ProviderCallId, ToolCallId};
 
 fn subscription_result(
     group_id: &ThreadId<str>,
-    id: &str,
-    call_id: Option<String>,
+    id: &ToolCallId<str>,
+    call_id: Option<ProviderCallId>,
     text: String,
     event: Option<TaggedSyntheticKind>,
     starts_subscription: bool,
 ) -> InputMessage {
     InputMessage {
         content: InputMessageContent::User(UserContent::ToolResult(ToolResult {
-            id: id.to_owned(),
-            call_id,
+            id: id.as_str().to_owned(),
+            call_id: call_id.map(ProviderCallId::into_inner),
             content: vec![ToolResultContent::Text(Text { text })],
         })),
         group_id: group_id.to_owned(),

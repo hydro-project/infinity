@@ -22,6 +22,8 @@ All workspace crates are published in lockstep, **except** for the following, wh
   crates only as a path-only dev-dependency, which cargo strips when publishing.)
 - `infinity-agent-lambda` — AWS Lambda deployment artifact.
 - `infinity-slack-bot` — deployment artifact for the Hydro project's own Slack.
+- `infinity-slack-dataflow` — the Hydro dataflow embedded into `infinity-slack-bot`.
+- `infinity-mdtests` — compiles the documentation's Rust examples as doctests.
 
 The published crates are all listed explicitly (every one is a primary release target, no
 secondaries) in the `Determine crates to publish` step of

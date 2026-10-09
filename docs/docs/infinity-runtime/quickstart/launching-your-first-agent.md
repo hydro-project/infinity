@@ -14,12 +14,12 @@ cargo new my-agent
 cd my-agent
 ```
 
-The project needs two Infinity crates: `infinity-agent-core`, which is the runtime itself, and `infinity-provider-bedrock`, which is the model provider used in this tutorial. Neither is published to crates.io yet, so you will add both as git dependencies. The runtime is async, so you will also need Tokio:
+The project needs two Infinity crates: `infinity-agent-core`, which is the runtime itself, and `infinity-provider-bedrock`, which is the model provider used in this tutorial. Both are published on [crates.io](https://crates.io/crates/infinity-agent-core). The runtime is async, so you will also need Tokio:
 
 ```toml
 [dependencies]
-infinity-agent-core = { git = "https://github.com/hydro-project/infinity" }
-infinity-provider-bedrock = { git = "https://github.com/hydro-project/infinity" }
+infinity-agent-core = "0.1"
+infinity-provider-bedrock = "0.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -86,13 +86,11 @@ Bedrock requires [model access](https://docs.aws.amazon.com/bedrock/latest/userg
 ## Configuring the Thread
 The first thread used the system defaults, but `thread_builder()` can also configure each conversation before it starts. The most common option is an extra system prompt, which is appended to the runtime's base instructions:
 
-```rust,no_run
-# use std::sync::Arc;
+```rust
 # use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
 # use infinity_agent_core::system::{AgentSystemBuilder, StaticModel};
-# use infinity_provider_bedrock::BedrockProvider;
 # async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-# let provider = Arc::new(BedrockProvider::from_env());
+# let provider = infinity_mdtests::mock_provider();
 # let model = StaticModel::new(provider, "global.anthropic.claude-sonnet-4-6").await?;
 # let system = AgentSystemBuilder::new_local(
 #     InMemoryConversationStore::new(),
@@ -109,6 +107,7 @@ let mut thread = system
 thread.send_user_text("Summarize the open release blockers").await?;
 # Ok(())
 # }
+# fn main() { infinity_mdtests::run(example()); }
 ```
 
 `launch()` generates the thread ID and returns its `ThreadHandle`. Instructions and tools that are set here will also apply to any subagents the thread spawns. [Launching Local Threads](../agent-systems/running-locally.md) covers the rest of the `ThreadBuilder` API, including replay, attaching to existing threads, and per-thread models.

@@ -17,7 +17,7 @@ The agent never modifies your working copy directly. Every change lives on a `sa
 
 First install the prerequisites:
 
-- [Rust](https://rustup.rs) (for building from source)
+- [Rust](https://rustup.rs) (the CLI and its plugins are installed with `cargo install`)
 - [Ripgrep](https://github.com/BurntSushi/ripgrep): `brew install ripgrep`
 - [Jujutsu](https://docs.jj-vcs.dev/latest) (optional, recommended): `brew install jj`
 
@@ -25,13 +25,15 @@ Then install:
 
 ```bash
 
-# Install the CLI (includes the desktop web UI; remove --features bundled-web if you don't have npm)
+# Install the CLI with the desktop web UI (requires npm; the web UI is built from the repo sources)
 cargo install infinity-agent-cli --git https://github.com/hydro-project/infinity --features bundled-web
+# OR, without the web UI, install the published crate
+cargo install infinity-agent-cli
 
 # Install a model provider; Bedrock invokes models with your AWS credentials
-infinity provider install bedrock --git https://github.com/hydro-project/infinity --crate infinity-provider-bedrock
+infinity provider install bedrock --crate infinity-provider-bedrock
 
-infinity rap install --user --git https://github.com/hydro-project/infinity --crate sandbox-local
+infinity rap install --user --crate sandbox-local
 ```
 
 [Model providers](./model-providers.md) run as separate processes managed by the daemon and are registered in `~/.infinity/providers.json`; at least one must be installed. The Bedrock provider uses your ambient AWS configuration (e.g. `AWS_PROFILE` or environment credentials).

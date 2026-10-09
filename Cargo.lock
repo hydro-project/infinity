@@ -2820,13 +2820,17 @@ name = "infinity-mdtests"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures-util",
  "include_mdtests",
  "infinity-agent-core",
  "infinity-mcp-bridge",
  "infinity-provider-bedrock",
  "infinity-provider-protocol",
+ "infinity-provider-rig",
  "infinity-rap-bridge",
+ "rap-client",
  "rap-protocol",
+ "rig-core",
  "serde_json",
  "tokio",
  "tracing",

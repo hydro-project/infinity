@@ -9,11 +9,40 @@ title: Step Mode
 A step-mode system takes your platform's [`InputSender`](../low-level/overview.md#the-platform-traits) instead of creating an internal queue:
 
 ```rust
-let system = AgentSystemBuilder::new(conversation_store, state_store, model, sqs_sender)
+# use infinity_agent_core::message::InputMessage;
+# use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
+# use infinity_agent_core::system::{AgentSystemBuilder, EventCollector, NoDeferral, StaticModel};
+# use infinity_agent_core::traits::InputSender;
+# #[derive(Clone)]
+# struct SqsSender;
+# #[async_trait::async_trait]
+# impl InputSender for SqsSender {
+#     type Error = std::io::Error;
+#     async fn send_to_input_queue(&self, _: InputMessage, _: &str) -> Result<(), Self::Error> {
+#         Ok(())
+#     }
+# }
+# use infinity_agent_core::tools::Tool;
+# use rap_client::http::SimpleHttpClient;
+# use rap_client::notifier::RapNotifier;
+# async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+# let provider = infinity_mdtests::mock_provider();
+# let model = StaticModel::new(provider, "global.anthropic.claude-sonnet-4-6").await?;
+# let (conversation_store, state_store) =
+#     (InMemoryConversationStore::new(), InMemoryStateStore::new());
+# let sqs_sender = SqsSender;
+# let tool_impls: Vec<Box<dyn Tool<SqsSender>>> = Vec::new();
+# let callback_url = "https://callbacks.example.com".to_owned();
+# let rap_notifier = RapNotifier::new(Vec::new(), SimpleHttpClient::new());
+let mut system = AgentSystemBuilder::new(conversation_store, state_store, model, sqs_sender)
     .tools(tool_impls)
     .callback_url(callback_url)
     .rap_notifier(rap_notifier)
     .build();
+# let _ = &mut system;
+# Ok(())
+# }
+# fn main() { infinity_mdtests::run(example()); }
 ```
 
 The sender is the loopback path. Everything the runtime wants to happen *later* (e.g. a child thread's seed message, a report to a parent, or a timer wake-up) is sent through it rather than called directly, which is what leaves the slice free to end. On Lambda, the sender is an SQS client pointed at the same FIFO queue that triggered the invocation, so the message will come back around as a future delivery.
@@ -22,6 +51,28 @@ The sender is the loopback path. Everything the runtime wants to happen *later* 
 Once the system is built, the handler body is one call:
 
 ```rust
+# use infinity_agent_core::message::InputMessage;
+# use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
+# use infinity_agent_core::system::{AgentSystemBuilder, EventCollector, NoDeferral, StaticModel};
+# use infinity_agent_core::traits::InputSender;
+# #[derive(Clone)]
+# struct SqsSender;
+# #[async_trait::async_trait]
+# impl InputSender for SqsSender {
+#     type Error = std::io::Error;
+#     async fn send_to_input_queue(&self, _: InputMessage, _: &str) -> Result<(), Self::Error> {
+#         Ok(())
+#     }
+# }
+# async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+# let provider = infinity_mdtests::mock_provider();
+# let model = StaticModel::new(provider, "global.anthropic.claude-sonnet-4-6").await?;
+# let (conversation_store, state_store) =
+#     (InMemoryConversationStore::new(), InMemoryStateStore::new());
+# let sqs_sender = SqsSender;
+# let mut system =
+#     AgentSystemBuilder::new(conversation_store, state_store, model, sqs_sender).build();
+# let inputs: Vec<(InputMessage, String)> = Vec::new();
 let collector = EventCollector::new();
 let outcomes = system
     .step(inputs, &collector, &mut NoDeferral)
@@ -29,7 +80,12 @@ let outcomes = system
 
 for (thread_id, event) in collector.take() {
     // turn each thread's events into your platform's output
+#   let _ = (thread_id, event);
 }
+# let _ = outcomes;
+# Ok(())
+# }
+# fn main() { infinity_mdtests::run(example()); }
 ```
 
 `inputs` is a `Vec<(InputMessage, String)>`, pairing each message with a stable dedup ID (on SQS, the message ID) so that redeliveries will be absorbed idempotently. The batch may span multiple threads, because an SQS FIFO delivery with a batch size above 1 can interleave several message groups (order is guaranteed only within a group). `step` partitions the batch by thread and runs the per-thread slices concurrently. Each slice loads its thread's history and dedup state from the stores, applies the deferral policy, prepares its inputs into history, runs at most one completion (with synchronous-tool loopback), syncs history durably, and dispatches at most one asynchronous tool call. Because nothing is cached between calls, the process is free to exit afterwards.
@@ -51,6 +107,39 @@ While a thread waits on a non-passive tool call, subscription events and child r
 Each invocation builds the stores, model source, tools, sender, and system before processing its batch:
 
 ```rust
+# use infinity_agent_core::message::InputMessage;
+# use infinity_agent_core::stores::{InMemoryConversationStore, InMemoryStateStore};
+# use infinity_agent_core::system::{AgentSystemBuilder, EventCollector, NoDeferral, StaticModel};
+# use infinity_agent_core::traits::InputSender;
+# #[derive(Clone)]
+# struct SqsSender;
+# #[async_trait::async_trait]
+# impl InputSender for SqsSender {
+#     type Error = std::io::Error;
+#     async fn send_to_input_queue(&self, _: InputMessage, _: &str) -> Result<(), Self::Error> {
+#         Ok(())
+#     }
+# }
+# use infinity_agent_core::ThreadId;
+# use infinity_agent_core::system::{AgentEvent, StaticThreadConfig};
+# use rap_client::http::SimpleHttpClient;
+# async fn publish_events(
+#     _: Vec<(ThreadId, AgentEvent)>,
+# ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+#     Ok(())
+# }
+# async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+# let provider = infinity_mdtests::mock_provider();
+# let model = StaticModel::new(provider, "global.anthropic.claude-sonnet-4-6").await?;
+# let (dsql_conversations, dynamodb_state) =
+#     (InMemoryConversationStore::new(), InMemoryStateStore::new());
+# let sqs_sender = SqsSender;
+# let thread_config = StaticThreadConfig::<SqsSender, SimpleHttpClient> {
+#     tools: Vec::new(),
+#     extra_system_prompt: None,
+#     rap_notifier: None,
+# };
+# let inputs: Vec<(InputMessage, String)> = Vec::new();
 let mut system = AgentSystemBuilder::new(
     dsql_conversations,
     dynamodb_state,
@@ -63,6 +152,9 @@ let mut system = AgentSystemBuilder::new(
 let collector = EventCollector::new();
 system.step(inputs, &collector, &mut NoDeferral).await?;
 publish_events(collector.take()).await?;
+# Ok(())
+# }
+# fn main() { infinity_mdtests::run(example()); }
 ```
 
 The real handler uses DSQL and DynamoDB stores, Bedrock behind `StaticModel`, and the same SQS queue as the loopback sender. A [`ThreadConfigSource`](./dynamic-configuration.md) loads each thread's RAP toolsets through a DynamoDB manifest cache and adds the platform sleep tools, so a batch that spans several sessions will resolve each session's own tools.
