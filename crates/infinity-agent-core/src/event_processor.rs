@@ -758,6 +758,62 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         std::mem::take(&mut *self.interrupted_tool_calls.borrow_mut())
     }
 
+    /// Find a tool call by ID, unwinding past this thread's compaction
+    /// boundary.
+    ///
+    /// Compaction folds old messages into a summary in the loaded *view*
+    /// only — the store still holds every row. A synthetic event that
+    /// references a summarized-away call (e.g. a child's close report whose
+    /// `spawn_thread` call was compacted while the parent slept) must still
+    /// resolve it, so on an in-memory miss the thread's own persisted rows
+    /// are searched as well.
+    ///
+    /// Own rows suffice because every synthetic event resolves against a
+    /// call the receiving thread owns: reports name the parent's own
+    /// `spawn_thread` call, subscription events the subscribing thread's own
+    /// call, and parent messages the copy of the spawn call seeded into the
+    /// child's store at spawn time. (Threads spawned before spawn-call
+    /// seeding saw the call only through their inherited slice; for those,
+    /// an event referencing a compacted-away inherited call is still
+    /// dropped.)
+    pub async fn find_tool_call(
+        &self,
+        tool_call_id: &str,
+    ) -> Option<infinity_provider_protocol::message::ToolCall> {
+        // Search each slice backwards: the referenced call is almost always
+        // recent (e.g. the spawn call of a still-open child).
+        let find_in = |messages: &[InfinityMessage]| {
+            messages.iter().rev().find_map(|msg| {
+                if let InfinityMessage::ToolCall { call, .. } = msg
+                    && call.id == tool_call_id
+                {
+                    Some(call.clone())
+                } else {
+                    None
+                }
+            })
+        };
+
+        if let Some(call) = find_in(&self.history.borrow()) {
+            return Some(call);
+        }
+
+        // This thread's own rows, including any compacted-away prefix.
+        match self
+            .conversation_store
+            .load_history_up_to(&self.thread_id, None, None)
+            .await
+        {
+            Ok(messages) => find_in(&messages),
+            Err(e) => {
+                tracing::warn!(
+                    "failed to load own history while resolving tool call {tool_call_id}: {e}"
+                );
+                None
+            }
+        }
+    }
+
     /// Compute a safe spawn point that excludes trailing unanswered tool calls
     /// and any unvalidated (not yet persistable) inputs. Returns an absolute
     /// store order (accounting for prior compaction offset and ancestor
@@ -1022,15 +1078,14 @@ where
             original_tool_call_id
         );
 
-        let original_call = current_history.history.borrow().iter().find_map(|msg| {
-            if let InfinityMessage::ToolCall { call, .. } = msg
-                && call.id == original_tool_call_id.as_str()
-            {
-                Some(call.clone())
-            } else {
-                None
-            }
-        });
+        // Resolve the originating tool call, unwinding past compaction
+        // boundaries: the call may have been folded into a compaction
+        // summary in the loaded view, but the store still holds it (and
+        // dropping the event would lose e.g. a child's close report
+        // forever, leaving a sleeping parent parked with no wake-up).
+        let original_call = current_history
+            .find_tool_call(original_tool_call_id.as_str())
+            .await;
 
         let Some(original_call) = original_call else {
             tracing::warn!(
@@ -1250,8 +1305,7 @@ where
 }
 
 /// Compute the [`AgentEvent`] for an input that was just accepted into
-/// history. Returns `None` for inputs with no display representation (e.g. a
-/// synthetic event whose originating tool call is no longer in history).
+/// history. Returns `None` for inputs with no display representation.
 pub fn input_event<C, S>(
     current_history: &HistoryManager<C, S>,
     input_msg: &InputMessage,
@@ -1264,33 +1318,40 @@ where
         if let InputMessageContent::User(UserContent::ToolResult(res)) = &input_msg.content
             && let Some(ToolResultContent::Text(text)) = res.content.first()
         {
-            let orig_call = current_history.get_history(true).into_iter().find(|h| {
-                if let Message::Assistant { content, .. } = h
+            // A thread report is named after its child thread; everything
+            // else is named after the originating tool call. That call may
+            // have been folded into a compaction summary (it still resolves
+            // from the store for processing, see
+            // [`HistoryManager::find_tool_call`]), in which case the display
+            // falls back to the call ID rather than hiding the event.
+            let name = if let SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
+                ref child_thread_id,
+                ..
+            }) = *synth
+            {
+                format!("Report from child thread {}", child_thread_id)
+            } else {
+                let orig_call = current_history.get_history(true).into_iter().find(|h| {
+                    if let Message::Assistant { content, .. } = h
+                        && let Some(AssistantContent::ToolCall(c)) = content.first()
+                    {
+                        c.id == synth.tool_call_id().as_str()
+                    } else {
+                        false
+                    }
+                });
+                if let Some(Message::Assistant { content, .. }) = orig_call
                     && let Some(AssistantContent::ToolCall(c)) = content.first()
                 {
-                    c.id == synth.tool_call_id().as_str()
-                } else {
-                    false
-                }
-            });
-
-            if let Some(Message::Assistant { content, .. }) = orig_call
-                && let Some(AssistantContent::ToolCall(c)) = content.first()
-            {
-                let name = if let SyntheticKind::Tagged(TaggedSyntheticKind::ThreadReport {
-                    ref child_thread_id,
-                    ..
-                }) = *synth
-                {
-                    format!("Report from child thread {}", child_thread_id)
-                } else {
                     format!("{}({})", c.function.name, c.function.arguments)
-                };
-                return Some(AgentEvent::SubscriptionEvent {
-                    name,
-                    text: text.text.clone(),
-                });
-            }
+                } else {
+                    format!("Event for tool call {}", synth.tool_call_id())
+                }
+            };
+            return Some(AgentEvent::SubscriptionEvent {
+                name,
+                text: text.text.clone(),
+            });
         }
         None
     } else if let InputMessageContent::User(UserContent::ToolResult(res)) = &input_msg.content
@@ -1775,11 +1836,20 @@ where
                             if tool.supports_sync() {
                                 history.sync().await?; // we must sync the history so that thread spawning uses the correct state
 
+                                // The call being executed is the (unanswered)
+                                // history tail, so the safe spawn point cuts
+                                // right before it — `spawn_thread` spawns the
+                                // child there and seeds the child's own store
+                                // with a copy of the call.
+                                let sync_context = ToolContext {
+                                    safe_spawn_point: Some(history.safe_spawn_point()),
+                                    ..tool_context.clone()
+                                };
                                 let res = tool.execute_synchronous(
                                     &call.function.arguments,
                                     ToolCallId::from_ref(&call.id),
                                     call.call_id.as_deref().map(ProviderCallId::from_ref),
-                                    tool_context,
+                                    &sync_context,
                                 ).await.expect("bug: synchronous tool execution failed");
 
                                 yield CompletionEvent::SyncToolCall {
@@ -2738,6 +2808,7 @@ mod tests {
             callback_url: String::new(),
             user_id: None,
             thread_stack: vec!["thread-1".into()],
+            safe_spawn_point: None,
         }
     }
 
@@ -4301,6 +4372,7 @@ mod tests {
                 callback_url: String::new(),
                 user_id: None,
                 thread_stack,
+                safe_spawn_point: None,
             },
             rx,
         )

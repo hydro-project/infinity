@@ -276,6 +276,7 @@ mod tests {
                 .into_iter()
                 .map(rap_protocol::ThreadId::from)
                 .collect(),
+            safe_spawn_point: None,
         }
     }
 

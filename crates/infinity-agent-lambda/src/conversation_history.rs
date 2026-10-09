@@ -296,17 +296,6 @@ impl ConversationStore for DsqlConversationStore {
         let (spawn_message_order, fresh_context) = match context {
             SpawnContext::InheritUpTo(order) => (order as i64, false),
             SpawnContext::Fresh => (0, true),
-            SpawnContext::Inherit => {
-                let order: Option<i64> = sqlx::query_scalar(
-                    r#"SELECT COALESCE(MAX(message_order), 0)
-                    FROM conversation_history WHERE session_id = $1"#,
-                )
-                .bind(parent_thread_id.as_str())
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| DsqlError(format!("Failed to get current message order: {}", e)))?;
-                (order.unwrap_or(0), false)
-            }
         };
 
         let root_thread_id: String = sqlx::query_scalar(

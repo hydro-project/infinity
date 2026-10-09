@@ -53,6 +53,15 @@ pub struct ToolContext<M: InputSender> {
     pub user_id: Option<String>,
     /// Full thread stack: [root, ..ancestors, current_thread].
     pub thread_stack: Vec<rap_protocol::ThreadId>,
+    /// The current thread's safe spawn point at the moment of a synchronous
+    /// tool execution: the absolute store order cutting right *before* the
+    /// tool call being executed (see
+    /// [`HistoryManager::safe_spawn_point`](crate::event_processor::HistoryManager::safe_spawn_point)).
+    /// `spawn_thread` uses it to exclude its own call from the child's
+    /// inherited history (the child gets a duplicated copy in its own store
+    /// instead, so the call survives parent-side compaction). Only set
+    /// during synchronous tool execution; `None` elsewhere.
+    pub safe_spawn_point: Option<usize>,
 }
 
 #[async_trait]

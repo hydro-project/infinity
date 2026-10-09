@@ -10,10 +10,11 @@ use crate::system::UserChoice;
 /// thread inherits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpawnContext {
-    /// Inherit the parent's full history up to the moment of the spawn.
-    Inherit,
-    /// Inherit the parent's history up to the given message order. Used to
-    /// exclude trailing unanswered tool calls from the child's view.
+    /// Inherit the parent's history up to the given message order
+    /// (exclusive). Callers pass the safe spawn point — the cutoff right
+    /// before the spawn tool call itself and any trailing unanswered tool
+    /// calls — and seed the child's own store with whatever the child needs
+    /// past the cutoff (e.g. a copy of the spawn call).
     InheritUpTo(usize),
     /// Start with an empty history: the child sees none of the parent's (or
     /// any ancestor's) messages. Instructions sent to the child must be
@@ -32,8 +33,19 @@ pub trait ConversationStore: Send + Sync + Clone {
     /// creating it.
     async fn thread_exists(&self, thread_id: &ThreadId<str>) -> Result<bool, Self::Error>;
 
-    /// Load history for a session. `start_from` (exclusive) and `up_to`
-    /// (inclusive) are optional bounds on message order. `None` means unbounded.
+    /// Load history for a session. Both bounds are counted in messages from
+    /// the start of the thread: `start_from` skips that many leading
+    /// messages, `up_to` truncates to that many leading messages (so
+    /// `start_from: Some(a), up_to: Some(b)` yields the a-th through b-1-th
+    /// messages, zero-based). `None` means unbounded.
+    ///
+    /// Implementations may number rows internally however they like (the
+    /// in-memory store uses zero-based indexes with an inclusive-start/
+    /// exclusive-end slice; the DSQL store uses one-based orders with an
+    /// exclusive-start/inclusive-end predicate) as long as the parameters
+    /// are interpreted as leading-row counts. All persisted "order" values
+    /// (spawn cutoffs, compaction `up_to_order`s) follow this same
+    /// count-based convention.
     async fn load_history_up_to(
         &self,
         session_id: &ThreadId<str>,
