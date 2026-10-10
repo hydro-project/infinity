@@ -41,7 +41,7 @@ pub use defer::{DeferQueue, InMemoryDeferQueue, NoDeferral};
 pub use events::{AgentEvent, ReplaySnapshot, UserChoice};
 pub use model::{ModelSource, ResolvedModel, StaticModel};
 pub use observer::{EventCollector, ThreadObserver};
-pub use thread::StepOutcome;
+pub use thread::{StepOutcome, is_user_text_input};
 
 #[cfg(test)]
 pub(crate) mod test_support;

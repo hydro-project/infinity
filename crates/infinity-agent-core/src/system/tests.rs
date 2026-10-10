@@ -553,6 +553,292 @@ async fn shutdown_does_not_persist_unvalidated_tool_result() {
         .await;
 }
 
+/// Stopping a single thread mid-completion interrupts it exactly like a
+/// whole-system shutdown: the partial turn is flushed to the store and the
+/// driver exits — while the rest of the system keeps running.
+#[tokio::test(flavor = "current_thread")]
+async fn stop_thread_interrupts_in_flight_completion_and_flushes() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (running, mut rx, mut ctrl, conv) = start_system(vec![], None);
+
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "start")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_text("partial reply");
+            loop {
+                if let Evt::E(AgentEvent::TextChunk { .. }) = next_evt(&mut rx).await {
+                    break;
+                }
+            }
+
+            // Stop the thread while the model is mid-response.
+            running.stop_thread(ThreadId::from_ref("t1")).await;
+            assert!(
+                running.is_idle(),
+                "the stopped thread's driver must be gone once stop_thread resolves"
+            );
+            let stored = persisted(&conv, "t1");
+            assert!(
+                stored.contains("partial reply"),
+                "partial model output must be flushed when a thread is stopped; history: {stored}"
+            );
+
+            // The system itself keeps running: another thread works normally.
+            running
+                .send_user_text(ThreadId::from_ref("t2"), "hello")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_text("hi");
+            ctrl.finish();
+            collect_until_finished(&mut rx).await;
+        })
+        .await;
+}
+
+/// A driver parked on a pending async tool result is live (it would receive
+/// the result directly, bypassing router admission). Stopping the thread
+/// winds the parked driver down; whether the thread *stays* stopped is the
+/// embedding's stopped-thread policy, not the stop operation's job.
+#[tokio::test(flavor = "current_thread")]
+async fn stop_thread_winds_down_parked_driver() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (running, mut rx, mut ctrl, _conv) = start_system(vec![Box::new(AsyncTool)], None);
+
+            // The model issues an async tool call; the driver parks awaiting
+            // the result and stays live.
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "do something")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_tool_call("tc-1", "async_tool", serde_json::json!({}));
+            ctrl.finish();
+            collect_until_finished(&mut rx).await;
+            assert!(
+                !running.is_idle(),
+                "a driver awaiting an async tool result parks and stays live"
+            );
+
+            running.stop_thread(ThreadId::from_ref("t1")).await;
+            assert!(
+                running.is_idle(),
+                "the parked driver must exit once stop_thread resolves"
+            );
+
+            // Core-level stop is a runtime operation only: with no stopped
+            // policy in the state store, a later event may legitimately
+            // respawn the thread.
+            running
+                .send(tool_result_input("t1", "tc-1", "late result").0, "res-1")
+                .await;
+            let _req2 = ctrl.next_request().await;
+            ctrl.send_text("resumed");
+            ctrl.finish();
+            collect_until_finished(&mut rx).await;
+        })
+        .await;
+}
+
+/// Stopping a thread with no live driver (idle or never seen) resolves
+/// immediately without spawning anything.
+#[tokio::test(flavor = "current_thread")]
+async fn stop_thread_without_live_driver_resolves_immediately() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (running, _rx, _ctrl, _conv) = start_system(vec![], None);
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                running.stop_thread(ThreadId::from_ref("never-seen")),
+            )
+            .await
+            .expect("stop of an unknown thread must resolve immediately");
+            assert!(running.is_idle(), "a stop must never spawn a driver");
+        })
+        .await;
+}
+
+/// A subtree stop winds down the thread itself and its descendants (resolved
+/// through the conversation store's parent links) while leaving unrelated
+/// threads running.
+#[tokio::test(flavor = "current_thread")]
+async fn stop_subtree_stops_descendants_but_not_other_threads() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (running, _rx, mut ctrl, _conv) = start_system(vec![Box::new(AsyncTool)], None);
+            let active = running.active_threads();
+
+            // Root spawns a child thread...
+            running
+                .send_user_text(ThreadId::from_ref("root"), "spawn a child")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_tool_call(
+                "tc-spawn",
+                "spawn_thread",
+                serde_json::json!({
+                    "instructions": "do child work",
+                    "child_of": ["root"]
+                }),
+            );
+            ctrl.finish();
+
+            // ...then parks on an async tool call, staying live.
+            let _parent_followup = ctrl.next_request().await;
+            ctrl.send_tool_call("tc-park-root", "async_tool", serde_json::json!({}));
+            ctrl.finish();
+
+            // The child parks the same way.
+            let _child_req = ctrl.next_request().await;
+            ctrl.send_tool_call("tc-park-child", "async_tool", serde_json::json!({}));
+            ctrl.finish();
+
+            // An unrelated thread parks too.
+            running
+                .send_user_text(ThreadId::from_ref("other"), "hello")
+                .await;
+            let _other_req = ctrl.next_request().await;
+            ctrl.send_tool_call("tc-park-other", "async_tool", serde_json::json!({}));
+            ctrl.finish();
+
+            assert_eq!(
+                active.lock().expect("bug: mutex poisoned").len(),
+                3,
+                "root, child, and the unrelated thread must all be parked live"
+            );
+
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                running.stop_subtree(ThreadId::from_ref("root")),
+            )
+            .await
+            .expect("subtree stop must resolve once the subtree is quiescent");
+
+            {
+                let live = active.lock().expect("bug: mutex poisoned");
+                assert_eq!(
+                    live.iter().collect::<Vec<_>>(),
+                    vec![&ThreadId::from(String::from("other"))],
+                    "only the unrelated thread may survive a subtree stop"
+                );
+            }
+
+            running.stop_thread(ThreadId::from_ref("other")).await;
+            assert!(running.is_idle());
+        })
+        .await;
+}
+
+/// A subtree stop issued right after a turn that spawned a child absorbs the
+/// child's seed input: even when the seed is still queued at the router (its
+/// driver not yet spawned), the stop resolves only once the whole subtree is
+/// quiescent.
+#[tokio::test(flavor = "current_thread")]
+async fn stop_subtree_absorbs_queued_child_spawns() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (running, _rx, mut ctrl, _conv) = start_system(vec![], None);
+
+            running
+                .send_user_text(ThreadId::from_ref("root"), "spawn a child")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_tool_call(
+                "tc-spawn",
+                "spawn_thread",
+                serde_json::json!({
+                    "instructions": "do child work",
+                    "child_of": ["root"]
+                }),
+            );
+            ctrl.finish();
+
+            // Stop immediately, without waiting for the child to surface: the
+            // spawn tool's seed input may still be queued at the router.
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                running.stop_subtree(ThreadId::from_ref("root")),
+            )
+            .await
+            .expect("subtree stop must resolve once the subtree is quiescent");
+            assert!(
+                running.is_idle(),
+                "no subtree driver may survive the stop, including one spawned by the queued seed"
+            );
+
+            // Requests issued before the stop may linger in the mock's queue;
+            // what must never happen is a *new* round starting afterwards.
+            while ctrl.try_next_request().is_some() {}
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            assert!(
+                ctrl.try_next_request().is_none(),
+                "a stopped subtree must not keep driving the model"
+            );
+            assert!(running.is_idle());
+        })
+        .await;
+}
+
+/// A subtree stop with no live drivers anywhere resolves immediately.
+#[tokio::test(flavor = "current_thread")]
+async fn stop_subtree_without_live_drivers_resolves_immediately() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (running, _rx, _ctrl, _conv) = start_system(vec![], None);
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                running.stop_subtree(ThreadId::from_ref("never-seen")),
+            )
+            .await
+            .expect("a subtree stop of an unknown thread must resolve immediately");
+            assert!(
+                running.is_idle(),
+                "a subtree stop must never spawn a driver"
+            );
+        })
+        .await;
+}
+
+/// After a barrier resolves, every driver spawned by previously-enqueued
+/// inputs is registered in the active set (registration is synchronous with
+/// routing). This is what lets an embedding quiesce a group of threads
+/// without racing its own queued messages.
+#[tokio::test(flavor = "current_thread")]
+async fn barrier_makes_previously_enqueued_drivers_visible() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (running, _rx, mut ctrl, _conv) = start_system(vec![], None);
+            let active = running.active_threads();
+
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "hello")
+                .await;
+            running.stop_handle().barrier().await;
+            assert!(
+                active
+                    .lock()
+                    .expect("bug: active_threads mutex poisoned")
+                    .contains(&ThreadId::from(String::from("t1"))),
+                "after a barrier the driver spawned by an earlier input must be visible"
+            );
+
+            let _req = ctrl.next_request().await;
+            ctrl.send_text("hi");
+            ctrl.finish();
+        })
+        .await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn subscription_event_deferred_during_async_tool_wait() {
     let local = tokio::task::LocalSet::new();
