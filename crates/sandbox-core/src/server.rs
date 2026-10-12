@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1452,6 +1453,112 @@ async fn request_direct_write_approval<B: SandboxBackend, M: MetadataStore, C: C
     }
 }
 
+/// Resolve `path` (relative to `root`, or absolute) to the location a write
+/// would actually land, and verify that location is inside `root`.
+///
+/// Walks the components left to right, mimicking kernel path resolution:
+///
+/// * Whenever the prefix built so far exists on disk (checked with `lstat`,
+///   so a dangling symlink counts as existing), it is `canonicalize`d. That
+///   is `realpath`, which follows every symlink in every component, so no
+///   manual symlink recursion is needed. A dangling symlink makes
+///   `canonicalize` fail and is rejected.
+/// * `..` pops the last component. On an existing prefix this is correct
+///   because the prefix is canonical (symlink-free); on a not-yet-existing
+///   tail it is correct because those components will be created by us as
+///   real directories. Doing this lexically on the *original* path would be
+///   wrong (`link/../x` with `link -> /outside/dir` resolves to
+///   `/outside/x`), and walking up with `Path::parent` would be wrong too
+///   (`a/../../x` with `a` missing has no meaningful "existing ancestor").
+///
+/// Callers must perform the write on the returned path, not the original,
+/// so that what was checked is what is written. A caller creating the final
+/// component should still open it with `create_new(true)`
+/// (`O_CREAT|O_EXCL`), which refuses to follow a symlink in the final
+/// component even if one appears between this check and the open.
+///
+/// Absolute paths are handled naturally: `Path::join` replaces the base, and
+/// the resolved result is simply compared against `root`.
+///
+/// Reads are intentionally *not* subject to this check, matching
+/// `execute_command`, which may read anywhere on the filesystem.
+fn resolve_write_path(
+    root: &Path,
+    path: &str,
+    display_path: &str,
+) -> Result<ResolvedWritePath, SandboxError> {
+    let canonical_root = root.canonicalize().map_err(SandboxError::Io)?;
+
+    let full = canonical_root.join(path);
+    let mut cur = PathBuf::new();
+    for component in full.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => cur.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                cur.pop();
+            }
+            Component::Normal(name) => {
+                cur.push(name);
+                if cur.symlink_metadata().is_ok() {
+                    cur = cur.canonicalize().map_err(|e| {
+                        SandboxError::Other(format!(
+                            "cannot write to {display_path}: failed to resolve {}: {e}",
+                            cur.display()
+                        ))
+                    })?;
+                }
+            }
+        }
+    }
+
+    let relative = cur
+        .strip_prefix(&canonical_root)
+        .map_err(|_| {
+            SandboxError::Other(format!(
+                "cannot write to {display_path}: it resolves to {} which is outside the sandbox ({})",
+                cur.display(),
+                canonical_root.display()
+            ))
+        })?
+        .to_path_buf();
+
+    Ok(ResolvedWritePath {
+        absolute: cur,
+        relative,
+    })
+}
+
+/// The fully resolved location of a write, as returned by
+/// [`resolve_write_path`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedWritePath {
+    /// Canonical absolute path; all I/O must use this.
+    absolute: PathBuf,
+    /// The same location relative to the (canonical) sandbox root. Suitable
+    /// for showing to the user, e.g. in the Direct-mode approval prompt, so a
+    /// symlink or `..` cannot disguise where the write actually lands.
+    relative: PathBuf,
+}
+
+/// In Direct mode, ask the user to approve a write to `resolved`, showing the
+/// repo-relative resolved path (not the raw argument). Returns `Ok(false)` if
+/// the user denied the write; outside Direct mode returns `Ok(true)` without
+/// prompting.
+async fn approve_direct_write<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
+    state: &AppState<B, M, C>,
+    invocation: &RapInvocation,
+    is_direct: bool,
+    resolved: &ResolvedWritePath,
+) -> bool {
+    if !is_direct {
+        return true;
+    }
+    request_direct_write_approval(state, invocation, &resolved.relative.to_string_lossy()).await
+}
+
+const WRITE_DENIED: &str = "Error: file write denied by user.";
+
 async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     state: &AppState<B, M, C>,
     invocation: &RapInvocation,
@@ -1459,23 +1566,28 @@ async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
     let args: EditFileArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
-    // In Direct mode, request user approval before writing
     let repo_state = state.metadata.get(&invocation.group_id).await?;
-    if matches!(
+    let is_direct = matches!(
         repo_state.as_ref().map(|s| &s.mode),
         Some(SandboxMode::Direct)
-    ) && !request_direct_write_approval(state, invocation, &args.path).await
-    {
-        return Ok(("Error: file write denied by user.".to_owned(), None));
-    }
+    );
 
     with_sandbox(
         state,
         invocation,
         None,
         |sandbox_dir| async move {
-            let file_path = sandbox_dir.join(&args.path);
-            let content = tokio::fs::read_to_string(&file_path)
+            // Resolve symlinks / `..` / absolute paths and reject anything that
+            // lands outside the sandbox. All I/O below uses the resolved path.
+            let resolved = resolve_write_path(&sandbox_dir, &args.path, &args.path)?;
+
+            // In Direct mode, ask the user — showing the *resolved* target.
+            if !approve_direct_write(state, invocation, is_direct, &resolved).await {
+                return Ok((WRITE_DENIED.to_owned(), None));
+            }
+
+            let file_path = &resolved.absolute;
+            let content = tokio::fs::read_to_string(file_path)
                 .await
                 .map_err(SandboxError::Io)?;
 
@@ -1534,7 +1646,7 @@ async fn handle_edit_file<B: SandboxBackend, M: MetadataStore, C: CallbackClient
                     )));
                 }
             };
-            tokio::fs::write(&file_path, &new_content)
+            tokio::fs::write(file_path, &new_content)
                 .await
                 .map_err(SandboxError::Io)?;
 
@@ -1555,30 +1667,29 @@ async fn handle_create_file<B: SandboxBackend, M: MetadataStore, C: CallbackClie
     let args: CreateFileArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
-    // In Direct mode, request user approval before writing
     let repo_state = state.metadata.get(&invocation.group_id).await?;
-    if matches!(
+    let is_direct = matches!(
         repo_state.as_ref().map(|s| &s.mode),
         Some(SandboxMode::Direct)
-    ) && !request_direct_write_approval(state, invocation, &args.path).await
-    {
-        return Ok(("Error: file write denied by user.".to_owned(), None));
-    }
+    );
 
     with_sandbox(
         state,
         invocation,
         None,
         |sandbox_dir| async move {
-            let file_path = sandbox_dir.join(&args.path);
+            // Resolve symlinks / `..` / absolute paths and reject anything that
+            // lands outside the sandbox *before* create_dir_all, which would
+            // otherwise happily mkdir through a symlink or `..`. All I/O below
+            // uses the resolved path so what was checked is what is written.
+            let resolved = resolve_write_path(&sandbox_dir, &args.path, &args.path)?;
 
-            // Fail if the file already exists
-            if file_path.exists() {
-                return Err(SandboxError::Other(format!(
-                    "file already exists: {}. Use edit_file to modify existing files.",
-                    args.path
-                )));
+            // In Direct mode, ask the user — showing the *resolved* target.
+            if !approve_direct_write(state, invocation, is_direct, &resolved).await {
+                return Ok((WRITE_DENIED.to_owned(), None));
             }
+
+            let file_path = &resolved.absolute;
 
             // Create parent directories if needed
             if let Some(parent) = file_path.parent() {
@@ -1587,9 +1698,31 @@ async fn handle_create_file<B: SandboxBackend, M: MetadataStore, C: CallbackClie
                     .map_err(SandboxError::Io)?;
             }
 
-            tokio::fs::write(&file_path, &args.content)
+            // O_CREAT|O_EXCL: fails if the final component exists in any form,
+            // including a (possibly dangling) symlink, without following it.
+            // This replaces a racy `exists()` check, which follows symlinks
+            // and reports `false` for dangling ones.
+            let mut file = match tokio::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(file_path)
+                .await
+            {
+                Ok(file) => file,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Err(SandboxError::Other(format!(
+                        "file already exists: {}. Use edit_file to modify existing files.",
+                        args.path
+                    )));
+                }
+                Err(e) => return Err(SandboxError::Io(e)),
+            };
+
+            use tokio::io::AsyncWriteExt as _;
+            file.write_all(args.content.as_bytes())
                 .await
                 .map_err(SandboxError::Io)?;
+            file.flush().await.map_err(SandboxError::Io)?;
 
             let display = build_edit_diff(&args.path, "", &args.content);
 
@@ -2431,5 +2564,231 @@ mod tests {
     fn handles_uri_with_trailing_slash() {
         let uri = "/Users/foo/my-repo/";
         assert!(detect_cd_to_original_repo("cd /Users/foo/my-repo && cargo build", uri).is_some());
+    }
+
+    // ── ensure_write_inside_root ──
+
+    /// Create a fresh `root/` and a sibling `outside/` under a temp dir.
+    fn write_check_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("root");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::create_dir_all(&outside).expect("mkdir outside");
+        (tmp, root, outside)
+    }
+
+    fn check(root: &Path, path: &str) -> Result<PathBuf, SandboxError> {
+        resolve_write_path(root, path, path).map(|r| r.absolute)
+    }
+
+    /// Like [`check`] but returns the root-relative path.
+    fn check_rel(root: &Path, path: &str) -> PathBuf {
+        resolve_write_path(root, path, path)
+            .expect("inside")
+            .relative
+    }
+
+    #[test]
+    fn write_check_allows_new_file_in_root() {
+        let (_tmp, root, _outside) = write_check_fixture();
+        assert!(check(&root, "new.txt").is_ok());
+        assert_eq!(check_rel(&root, "new.txt"), PathBuf::from("new.txt"));
+    }
+
+    #[test]
+    fn write_check_allows_nested_nonexistent_dirs() {
+        let (_tmp, root, _outside) = write_check_fixture();
+        assert!(check(&root, "a/b/c/new.txt").is_ok());
+        assert_eq!(
+            check_rel(&root, "a/b/c/new.txt"),
+            PathBuf::from("a/b/c/new.txt")
+        );
+    }
+
+    #[test]
+    fn write_check_allows_existing_file_in_root() {
+        let (_tmp, root, _outside) = write_check_fixture();
+        std::fs::write(root.join("f.txt"), "x").expect("write");
+        assert!(check(&root, "f.txt").is_ok());
+    }
+
+    #[test]
+    fn write_check_allows_dotdot_that_stays_inside() {
+        let (_tmp, root, _outside) = write_check_fixture();
+        std::fs::create_dir_all(root.join("sub")).expect("mkdir");
+        let resolved = check(&root, "sub/../other/new.txt").expect("inside");
+        assert_eq!(
+            resolved,
+            root.canonicalize().expect("canon").join("other/new.txt")
+        );
+        // The relative form is normalized too — this is what the user sees.
+        assert_eq!(
+            check_rel(&root, "sub/../other/new.txt"),
+            PathBuf::from("other/new.txt")
+        );
+        // `..` through a not-yet-existing component also stays inside.
+        assert!(check(&root, "missing/../other/new.txt").is_ok());
+        assert_eq!(
+            check_rel(&root, "./a/./b/../c.txt"),
+            PathBuf::from("a/c.txt")
+        );
+    }
+
+    #[test]
+    fn write_check_relative_for_absolute_path_inside_root() {
+        let (_tmp, root, _outside) = write_check_fixture();
+        let abs = root.join("sub/new.txt");
+        assert_eq!(
+            check_rel(&root, &abs.to_string_lossy()),
+            PathBuf::from("sub/new.txt")
+        );
+    }
+
+    #[test]
+    fn write_check_allows_absolute_path_inside_root() {
+        let (_tmp, root, _outside) = write_check_fixture();
+        let abs = root.join("sub/new.txt");
+        assert!(check(&root, &abs.to_string_lossy()).is_ok());
+    }
+
+    #[test]
+    fn write_check_rejects_absolute_path_outside() {
+        let (_tmp, root, outside) = write_check_fixture();
+        assert!(check(&root, &outside.join("x.txt").to_string_lossy()).is_err());
+        assert!(check(&root, "/etc/x.txt").is_err());
+    }
+
+    #[test]
+    fn write_check_rejects_dotdot_escape() {
+        let (_tmp, root, _outside) = write_check_fixture();
+        assert!(check(&root, "../outside/x.txt").is_err());
+        // `..` after a *nonexistent* component: walking up with `parent()`
+        // from the deepest existing ancestor would wrongly accept this.
+        assert!(check(&root, "a/../../outside/x.txt").is_err());
+        assert!(check(&root, "a/b/../../../outside/x.txt").is_err());
+        // Climbing past `/` saturates at `/`, still outside.
+        assert!(check(&root, "../../../../../../../../../../tmp/x.txt").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_check_rejects_symlinked_dir_outside() {
+        let (_tmp, root, outside) = write_check_fixture();
+        std::os::unix::fs::symlink(&outside, root.join("link")).expect("symlink");
+        // Through the link, a not-yet-existing nested path.
+        assert!(check(&root, "link/a/b/x.txt").is_err());
+        // Through the link, directly.
+        assert!(check(&root, "link/x.txt").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_check_rejects_dotdot_after_symlink() {
+        // `link/../x` lexically normalizes to `root/x`, but the kernel
+        // resolves `link` first, so it actually lands at `outside/../x`.
+        let (tmp, root, outside) = write_check_fixture();
+        let deep = outside.join("deep");
+        std::fs::create_dir_all(&deep).expect("mkdir");
+        std::os::unix::fs::symlink(&deep, root.join("link")).expect("symlink");
+        let err = check(&root, "link/../x.txt").expect_err("must be rejected");
+        // It should resolve to outside/x.txt, not root/x.txt.
+        let msg = err.to_string();
+        assert!(
+            msg.contains(
+                &tmp.path()
+                    .canonicalize()
+                    .expect("canon")
+                    .join("outside/x.txt")
+                    .to_string_lossy()
+                    .to_string()
+            ),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_check_rejects_symlinked_file_outside() {
+        let (_tmp, root, outside) = write_check_fixture();
+        std::fs::write(outside.join("target.txt"), "x").expect("write");
+        std::os::unix::fs::symlink(outside.join("target.txt"), root.join("link.txt"))
+            .expect("symlink");
+        assert!(check(&root, "link.txt").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_check_rejects_symlink_chain_outside() {
+        let (_tmp, root, outside) = write_check_fixture();
+        std::fs::write(outside.join("target.txt"), "x").expect("write");
+        // a -> b -> outside/target.txt; one-hop resolution would say "b" is inside.
+        std::os::unix::fs::symlink(outside.join("target.txt"), root.join("b")).expect("symlink");
+        std::os::unix::fs::symlink(root.join("b"), root.join("a")).expect("symlink");
+        assert!(check(&root, "a").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_check_rejects_relative_symlink_outside() {
+        let (_tmp, root, _outside) = write_check_fixture();
+        // Relative link target that climbs out of root.
+        std::os::unix::fs::symlink("../outside", root.join("link")).expect("symlink");
+        assert!(check(&root, "link/x.txt").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_check_rejects_dangling_symlink() {
+        let (_tmp, root, outside) = write_check_fixture();
+        // `exists()` would say false here; lstat says it exists, canonicalize fails.
+        std::os::unix::fs::symlink(outside.join("not-yet-there"), root.join("dangling"))
+            .expect("symlink");
+        assert!(check(&root, "dangling").is_err());
+        // A dangling symlink as an intermediate dir component.
+        std::os::unix::fs::symlink(outside.join("no-such-dir"), root.join("dangling-dir"))
+            .expect("symlink");
+        assert!(check(&root, "dangling-dir/x.txt").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_check_allows_symlink_inside_root() {
+        let (_tmp, root, _outside) = write_check_fixture();
+        std::fs::create_dir_all(root.join("real")).expect("mkdir");
+        std::fs::write(root.join("real/f.txt"), "x").expect("write");
+        std::os::unix::fs::symlink(root.join("real"), root.join("link")).expect("symlink");
+        let canon_root = root.canonicalize().expect("canon");
+        assert_eq!(
+            check(&root, "link/f.txt").expect("inside"),
+            canon_root.join("real/f.txt")
+        );
+        assert_eq!(
+            check(&root, "link/new/x.txt").expect("inside"),
+            canon_root.join("real/new/x.txt")
+        );
+        // The user-facing relative path shows the real target, not the link.
+        assert_eq!(check_rel(&root, "link/f.txt"), PathBuf::from("real/f.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_check_tolerates_symlinked_root() {
+        // e.g. macOS /var -> /private/var: the root itself is behind a symlink.
+        let (tmp, root, _outside) = write_check_fixture();
+        let root_link = tmp.path().join("root-link");
+        std::os::unix::fs::symlink(&root, &root_link).expect("symlink");
+        assert!(check(&root_link, "a/new.txt").is_ok());
+        assert!(check(&root_link, "../outside/x.txt").is_err());
+    }
+
+    #[test]
+    fn write_check_rejects_prefix_sibling() {
+        // `/tmp/x/root-other` must not be treated as inside `/tmp/x/root`.
+        let (tmp, root, _outside) = write_check_fixture();
+        let sibling = tmp.path().join("root-other");
+        std::fs::create_dir_all(&sibling).expect("mkdir");
+        assert!(check(&root, &sibling.join("x.txt").to_string_lossy()).is_err());
+        assert!(check(&root, "../root-other/x.txt").is_err());
     }
 }
