@@ -783,6 +783,16 @@ async fn stop_subtree_absorbs_queued_child_spawns() {
                 "a stopped subtree must not keep driving the model"
             );
             assert!(running.is_idle());
+
+            // The stop's input gate is lifted once it resolves: new user text
+            // wakes the thread again (staying stopped is the embedding's
+            // stopped-thread policy, not the stop operation's job).
+            running
+                .send_user_text(ThreadId::from_ref("root"), "hello again")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_text("resumed");
+            ctrl.finish();
         })
         .await;
 }

@@ -38,12 +38,20 @@ pub(crate) enum StopRequest {
     /// discard queued work, and exit. The ack fires once the driver has
     /// fully wound down (immediately if no driver is live).
     Stop(ThreadId, oneshot::Sender<()>),
-    /// Stop the drivers of a thread and all of its descendants. The router
-    /// stops every live subtree driver, then re-enqueues the request to
-    /// absorb drivers spawned by inputs that were already queued (e.g. a
-    /// spawn_thread seed enqueued by a driver this pass stops); the ack
-    /// fires once a pass finds the subtree quiescent.
+    /// Stop the drivers of a thread and all of its descendants. Handling
+    /// this records the subtree in the router's stop state *first* — from
+    /// that moment the router discards event-style input routed to the
+    /// subtree, so a seed enqueued by a stopping driver's in-flight spawn
+    /// tool can no longer bring a new driver into existence — then forwards
+    /// the stop to every live subtree driver.
     StopSubtree(ThreadId, oneshot::Sender<()>),
+    /// Internal completion phase of [`StopSubtree`](Self::StopSubtree),
+    /// re-enqueued by the router to itself once the forwarded stops have
+    /// wound down. Handled only when the input queue is empty (every input
+    /// enqueued during the wind-down has been routed into the closed gate),
+    /// it verifies the subtree is quiescent, lifts the stop state, and
+    /// fires the ack.
+    StopSubtreeDrain(ThreadId, oneshot::Sender<()>),
     /// A pure synchronization point: the ack fires once every input enqueued
     /// before it has been routed.
     Barrier(oneshot::Sender<()>),
@@ -89,11 +97,16 @@ impl StopHandle {
     }
 
     /// Stop the drivers of `thread_id` and every one of its descendant
-    /// threads (resolved through the conversation store's parent links),
-    /// including drivers spawned by inputs that were already queued when
-    /// the call was made — e.g. a spawn_thread seed enqueued by a driver
-    /// this call stops. Resolves once the subtree is quiescent: no live
-    /// driver remains and no earlier-enqueued input can spawn one.
+    /// threads (resolved through the conversation store's parent links).
+    /// The router records the stop *before* touching any driver, so for the
+    /// duration of the stop, event-style input routed to the subtree is
+    /// discarded — a child seed enqueued by a stopping driver's in-flight
+    /// spawn tool is dropped at admission instead of spawning a driver the
+    /// stop would miss. User text and subscribes are still admitted (they
+    /// may legitimately target a stopped thread); any driver they spawn
+    /// mid-stop is itself stopped before the ack fires. Resolves once the
+    /// subtree is quiescent: no live driver remains and no earlier-enqueued
+    /// input can spawn one.
     ///
     /// Like [`stop_thread`](Self::stop_thread), this is a runtime
     /// operation: embeddings that want the subtree to *stay* stopped must
@@ -392,6 +405,12 @@ async fn route_loop<C, S, H, O, F>(
     // the `drivers` branch so an ack always means the wind-down is done
     // (the driver's guard has run and the active set no longer holds it).
     let mut pending_stop_acks: HashMap<ThreadId, Vec<oneshot::Sender<()>>> = HashMap::new();
+    // Subtree roots with a stop in flight (a count: concurrent stops of the
+    // same root must not lift each other's gate early). While a root is
+    // here, event-style input routed anywhere in its subtree is discarded —
+    // the stop state is recorded before any driver is signaled, so a driver
+    // for a stopping subtree can never be spawned behind the stop's back.
+    let mut stopping_subtrees: HashMap<ThreadId, u32> = HashMap::new();
     // The router owns the driver futures directly (instead of spawning each
     // as its own task): a completed driver yields its thread ID and its
     // memory — the future itself and its worker entry — is released
@@ -438,73 +457,77 @@ async fn route_loop<C, S, H, O, F>(
                         }
                     }
                     Some(StopRequest::StopSubtree(root_id, ack)) => {
-                        // Stop every live driver in the subtree: the thread
-                        // itself plus any thread whose ancestor chain contains
-                        // it. The conversation store is the authority on
-                        // parentage; the router is the authority on liveness
-                        // (it is the single spawn point, and registration is
-                        // synchronous with routing).
-                        let mut wind_downs = Vec::new();
-                        for (tid, w) in &workers {
-                            if w.input_tx.is_closed() {
-                                continue;
+                        // Record the stop state *before* signaling any
+                        // driver: from this moment event-style input routed
+                        // to the subtree is discarded at admission, so a
+                        // driver being wound down below may still complete
+                        // an in-flight spawn tool and enqueue its child's
+                        // seed, but that seed can no longer spawn a driver.
+                        *stopping_subtrees.entry(root_id.clone()).or_insert(0) += 1;
+
+                        // Forward the stop to every live subtree driver. The
+                        // conversation store is the authority on parentage
+                        // (spawn_thread writes the parent link before the
+                        // child's seed is even enqueued); the router is the
+                        // authority on liveness (it is the single spawn
+                        // point, and registration is synchronous with
+                        // routing).
+                        let wind_downs = stop_live_subtree_workers(
+                            &inner.conversation_store,
+                            &workers,
+                            &mut pending_stop_acks,
+                            &root_id,
+                        )
+                        .await;
+
+                        // Hand the completion to the drain phase once every
+                        // wind-down is done. The drain request is handled
+                        // only when the input queue is empty, i.e. after
+                        // every input enqueued during the wind-down has been
+                        // routed into the closed gate.
+                        let stop_tx = stop_tx.clone();
+                        tokio::task::spawn_local(async move {
+                            for done in wind_downs {
+                                let _ = done.await;
                             }
-                            if *tid != root_id {
-                                let in_subtree = match
-                                    inner.conversation_store.get_ancestor_chain(tid).await
-                                {
-                                    Ok(chain) => chain.iter().any(|(ancestor, _)| *ancestor == root_id),
-                                    Err(e) => {
-                                        // Leave the thread running rather than
-                                        // stop one that may not belong to the
-                                        // subtree.
-                                        tracing::warn!(
-                                            thread_id = %tid,
-                                            "ancestor lookup failed during subtree stop; leaving the thread running: {e}",
-                                        );
-                                        false
-                                    }
-                                };
-                                if !in_subtree {
-                                    continue;
+                            let _ = stop_tx.send(StopRequest::StopSubtreeDrain(root_id, ack));
+                        });
+                    }
+                    Some(StopRequest::StopSubtreeDrain(root_id, ack)) => {
+                        // The forwarded stops have wound down and the input
+                        // queue has drained into the closed gate, so the
+                        // subtree is quiescent unless user text or a
+                        // subscribe (both deliberately admitted during the
+                        // stop) spawned a fresh driver mid-wind-down. Verify
+                        // rather than assume; in that case stop the newcomer
+                        // and drain again — the stop wins the race.
+                        let wind_downs = stop_live_subtree_workers(
+                            &inner.conversation_store,
+                            &workers,
+                            &mut pending_stop_acks,
+                            &root_id,
+                        )
+                        .await;
+                        if wind_downs.is_empty() {
+                            if let Some(count) = stopping_subtrees.get_mut(&root_id) {
+                                *count -= 1;
+                                if *count == 0 {
+                                    stopping_subtrees.remove(&root_id);
                                 }
                             }
-                            if w.stop_tx.send(()).is_ok() {
-                                let (done_tx, done_rx) = oneshot::channel();
-                                pending_stop_acks.entry(tid.clone()).or_default().push(done_tx);
-                                wind_downs.push(done_rx);
-                            }
-                        }
-                        if wind_downs.is_empty() {
-                            // Quiescent: no live subtree driver, and — because
-                            // this request is only handled when the input
-                            // queue is empty — no earlier-enqueued input left
-                            // that could spawn one.
                             let _ = ack.send(());
                         } else {
-                            // Await the wind-downs off-loop, then re-enqueue
-                            // the request. The re-check is needed because a
-                            // stop cannot reach a driver that does not exist
-                            // yet: a driver stopped by this pass may complete
-                            // an in-flight spawn tool during its wind-down
-                            // (tool execution is not a stop point) and enqueue
-                            // the child's seed input. Membership is never the
-                            // issue — spawn_thread writes the parent link to
-                            // the conversation store before the seed is even
-                            // enqueued — but the child's *driver* only comes
-                            // into existence when the seed is routed. The
-                            // re-enqueued request is handled only after all
-                            // such seeds are routed, so the next pass observes
-                            // (and stops) their drivers. Terminates because
-                            // stopped drivers enqueue nothing new after their
-                            // wind-down completes — only already-queued work
-                            // (or racing user input) can extend it.
+                            tracing::info!(
+                                %root_id,
+                                "subtree driver spawned during the wind-down (user text or subscribe); stopping it and draining again",
+                            );
                             let stop_tx = stop_tx.clone();
                             tokio::task::spawn_local(async move {
                                 for done in wind_downs {
                                     let _ = done.await;
                                 }
-                                let _ = stop_tx.send(StopRequest::StopSubtree(root_id, ack));
+                                let _ =
+                                    stop_tx.send(StopRequest::StopSubtreeDrain(root_id, ack));
                             });
                         }
                     }
@@ -546,12 +569,37 @@ async fn route_loop<C, S, H, O, F>(
         }
 
         // Admission: event-style input cannot create or resume a thread. User
-        // text bypasses both checks because it is how threads are created and
+        // text bypasses the checks because it is how threads are created and
         // stopped threads are resumed. Subscribe requests are also ungated so
-        // a client can attach before a thread's first activity.
+        // a client can attach before a thread's first activity (or to a
+        // stopped thread, for replay).
         if let RoutedMessage::Input(input, dedup_id) = &msg
             && !is_user_text_input(input)
         {
+            // The subtree-stop gate: while a subtree stop is in flight, its
+            // threads' event-style input is discarded (exactly like the
+            // queued work a stop discards). This is what makes the stop
+            // race-free: the gate closes before any driver is signaled, so a
+            // child seed enqueued by a stopping driver's in-flight spawn
+            // tool cannot spawn a driver behind the stop's back.
+            if !stopping_subtrees.is_empty() {
+                let mut gated = false;
+                for root_id in stopping_subtrees.keys() {
+                    if in_subtree(&inner.conversation_store, root_id, &thread_id).await {
+                        gated = true;
+                        break;
+                    }
+                }
+                if gated {
+                    tracing::info!(
+                        %thread_id,
+                        %dedup_id,
+                        "dropping event for a subtree being stopped",
+                    );
+                    continue;
+                }
+            }
+
             match inner.conversation_store.thread_exists(&thread_id).await {
                 Ok(true) => {}
                 Ok(false) => {
@@ -661,6 +709,65 @@ async fn route_loop<C, S, H, O, F>(
         }
     }
 }
+
+/// Whether `thread_id` is `root_id` itself or one of its descendants, per
+/// the conversation store's parent links (written at spawn time, before a
+/// child's seed input is even enqueued, so this view is never behind the
+/// input queue). Fails open (`false`) on store errors: a failed lookup must
+/// neither stop a thread nor drop its messages.
+async fn in_subtree<C: ConversationStore>(
+    conversation_store: &C,
+    root_id: &ThreadId<str>,
+    thread_id: &ThreadId<str>,
+) -> bool {
+    if thread_id.as_str() == root_id.as_str() {
+        return true;
+    }
+    match conversation_store.get_ancestor_chain(thread_id).await {
+        Ok(chain) => chain
+            .iter()
+            .any(|(ancestor, _)| ancestor.as_str() == root_id.as_str()),
+        Err(e) => {
+            tracing::warn!(
+                %thread_id,
+                "ancestor lookup failed during subtree stop; treating the thread as outside the subtree: {e}",
+            );
+            false
+        }
+    }
+}
+
+/// Signal every live worker in `root_id`'s subtree to stop, registering a
+/// completion receiver for each in `pending_stop_acks`. The receivers
+/// resolve when the corresponding driver future completes (fired from the
+/// router's `drivers` branch), so awaiting them all means every signaled
+/// wind-down is fully done.
+async fn stop_live_subtree_workers<C: ConversationStore, Sub>(
+    conversation_store: &C,
+    workers: &HashMap<ThreadId, WorkerChannels<Sub>>,
+    pending_stop_acks: &mut HashMap<ThreadId, Vec<oneshot::Sender<()>>>,
+    root_id: &ThreadId<str>,
+) -> Vec<oneshot::Receiver<()>> {
+    let mut wind_downs = Vec::new();
+    for (tid, w) in workers {
+        if w.input_tx.is_closed() {
+            continue;
+        }
+        if !in_subtree(conversation_store, root_id, tid).await {
+            continue;
+        }
+        if w.stop_tx.send(()).is_ok() {
+            let (done_tx, done_rx) = oneshot::channel();
+            pending_stop_acks
+                .entry(tid.clone())
+                .or_default()
+                .push(done_tx);
+            wind_downs.push(done_rx);
+        }
+    }
+    wind_downs
+}
+
 #[cfg(test)]
 mod tests {
     use super::ThreadLifecycleEvent;
