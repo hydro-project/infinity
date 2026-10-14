@@ -88,6 +88,11 @@ export function Spinner({ state }: Props) {
   // Pause the animations while off-screen. The slide-away chat panel hides
   // with `transform: translateX(110%)` while staying mounted; without this
   // its spinner would keep producing compositor frames invisibly.
+  //
+  // The observer is attached to the stable outer wrapper, not the keyed
+  // animation div: that one is remounted on every state change, and an
+  // observer left watching the detached old element would report
+  // `isIntersecting: false` and freeze the new animation.
   useEffect(() => {
     const el = ref.current;
     if (!el || typeof IntersectionObserver === "undefined") return;
@@ -167,9 +172,8 @@ export function Spinner({ state }: Props) {
   }
 
   return (
-    <div className={css.wrapper}>
+    <div ref={ref} className={css.wrapper}>
       <div
-        ref={ref}
         key={state}
         className={css.anim}
         style={{ width: TOTAL_W, height: BAR_H }}
