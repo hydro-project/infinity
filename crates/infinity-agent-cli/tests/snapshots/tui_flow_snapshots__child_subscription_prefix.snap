@@ -1,6 +1,6 @@
 ---
 source: crates/infinity-agent-cli/tests/tui_flow_snapshots.rs
-assertion_line: 197
+assertion_line: 222
 expression: h.screen_with_scrollback()
 ---
 ~ 
@@ -25,7 +25,7 @@ expression: h.screen_with_scrollback()
 │[child-ab] ⚡timer: tick from the child                                         │
 │                                                                                │
 │▄▄▄▄▄▄▄▄▄▄                                                                      │
-│child-abcdef12 child working                                                    │
+│child-ab child working                                                          │
 │────────────────────────────────────────────────────────────────────────────────│
 │                                                                                │
 │                                                                                │

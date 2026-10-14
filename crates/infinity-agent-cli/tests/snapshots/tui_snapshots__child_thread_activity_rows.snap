@@ -1,5 +1,6 @@
 ---
 source: crates/infinity-agent-cli/tests/tui_snapshots.rs
+assertion_line: 160
 expression: h.screen()
 ---
 ┌────────────────────────────────────────────────────────────────────────────────┐
@@ -12,8 +13,8 @@ expression: h.screen()
 │> do things in parallel                                                         │
 │                                                                                │
 │▄▄▄▄▄▄▄▄▄▄                                                                      │
-│thread-aaaa1111 child one is thinking about its task                            │
-│thread-bbbb2222  ◆ execute_command(ls)                                          │
+│aaaa1111 child one is thinking about its task                                   │
+│bbbb2222  ◆ execute_command(ls)                                                 │
 │────────────────────────────────────────────────────────────────────────────────│
 │                                                                                │
 │                                                                                │
