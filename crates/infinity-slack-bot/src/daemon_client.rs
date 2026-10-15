@@ -77,14 +77,16 @@ impl DaemonClient {
         Ok(())
     }
 
+    /// Send user input addressed to the given agent thread (the session root
+    /// or a subagent thread).
     pub async fn send_input(
         &self,
-        session_id: &infinity_protocol::ThreadRef,
+        thread_id: &infinity_protocol::ThreadRef,
         text: &str,
     ) -> Result<(), BoxError> {
         self.tx
             .send(ClientMessage::UserInput {
-                thread_id: session_id.clone(),
+                thread_id: thread_id.clone(),
                 text: text.to_owned(),
             })
             .await?;

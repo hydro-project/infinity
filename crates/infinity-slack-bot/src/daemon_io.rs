@@ -76,8 +76,13 @@ pub fn spawn() -> DaemonIo {
                 DaemonCommand::SendInput {
                     thread_ts,
                     session_id,
+                    target_thread,
                     text,
                 } => {
+                    // The agent thread the input is addressed to: a subagent
+                    // thread when the user replied inside a dedicated
+                    // subagent Slack thread, the session root otherwise.
+                    let input_thread = target_thread.as_ref().unwrap_or(&session_id);
                     if !connections.contains_key(&thread_ts) {
                         // Reconnect after restart: establish a new daemon connection
                         // and attach to the existing session.
@@ -103,7 +108,7 @@ pub fn spawn() -> DaemonIo {
                         }
                     }
                     if let Some(daemon) = connections.get(&thread_ts) {
-                        if let Err(e) = daemon.send_input(&session_id, &text).await {
+                        if let Err(e) = daemon.send_input(input_thread, &text).await {
                             tracing::warn!("SendInput failed for {thread_ts}: {e}, reconnecting");
                             connections.remove(&thread_ts);
                             // Reconnect and retry.
@@ -116,7 +121,7 @@ pub fn spawn() -> DaemonIo {
                                         );
                                         continue;
                                     }
-                                    let retry_result = daemon.send_input(&session_id, &text).await;
+                                    let retry_result = daemon.send_input(input_thread, &text).await;
                                     spawn_receiver(
                                         thread_ts.clone(),
                                         &mut connections,

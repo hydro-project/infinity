@@ -42,9 +42,27 @@ pub fn slack_dataflow<'a, P: 'a>(
 
     // --- Button clicks → stop any active stream so the response appears in a new message ---
     let button_stop_actions = button_clicks.clone().map(q!(|event: SlackEvent| {
-        SlackAction::StreamStop {
-            channel: event.channel,
-            thread_ts: event.thread_ts,
+        // A click inside a dedicated subagent Slack thread targets that
+        // subagent's stream; remap it so the I/O layer finds the stream
+        // under its (root thread, subagent) key.
+        let rt = crate::runtime::get();
+        let route = rt
+            .subagent_routes
+            .lock()
+            .expect("bug: lock poisoned")
+            .get(&event.thread_ts)
+            .cloned();
+        match route {
+            Some(route) => SlackAction::StreamStop {
+                channel: event.channel,
+                thread_ts: route.root_thread_ts,
+                subagent: Some(route.subagent_id),
+            },
+            None => SlackAction::StreamStop {
+                channel: event.channel,
+                thread_ts: event.thread_ts,
+                subagent: None,
+            },
         }
     }));
 
@@ -77,10 +95,19 @@ pub fn slack_dataflow<'a, P: 'a>(
     // --- Button clicks → AnswerChoice commands ---
     let button_commands = button_clicks.filter_map(q!(|event: SlackEvent| {
         let rt = crate::runtime::get();
+        // Clicks inside a dedicated subagent Slack thread belong to the
+        // owning session, which is keyed by the root conversation thread.
+        let thread_ts = {
+            let routes = rt.subagent_routes.lock().expect("bug: lock poisoned");
+            routes
+                .get(&event.thread_ts)
+                .map(|r| r.root_thread_ts.clone())
+                .unwrap_or(event.thread_ts)
+        };
         rt.channels
             .lock()
             .expect("bug: lock poisoned")
-            .insert(event.thread_ts.clone(), event.channel.clone());
+            .insert(thread_ts.clone(), event.channel.clone());
 
         // Parse action_id: "choice_{choice_id}_{selected_index}"
         let action_id = event.action_id.unwrap_or_default();
@@ -101,7 +128,7 @@ pub fn slack_dataflow<'a, P: 'a>(
             .remove(choice_id.as_str());
 
         Some(DaemonCommand::AnswerChoice {
-            thread_ts: event.thread_ts,
+            thread_ts,
             choice_id: choice_id.into(),
             selected,
         })
@@ -161,28 +188,51 @@ pub fn slack_dataflow<'a, P: 'a>(
     // --- Chat messages → CreateSession / SendInput commands ---
     let message_commands = chat_messages.clone().filter_map(q!(|event: SlackEvent| {
         let rt = crate::runtime::get();
+        // A reply inside a dedicated subagent Slack thread is addressed to
+        // that subagent's agent thread, on the session owned by the root
+        // conversation thread.
+        let route = rt
+            .subagent_routes
+            .lock()
+            .expect("bug: lock poisoned")
+            .get(&event.thread_ts)
+            .cloned();
+        let (thread_ts, target_thread) = match route {
+            Some(route) => {
+                // The id round-trips from a `ThreadRef` the daemon sent us,
+                // so a parse failure would be a bug; fall back to the root
+                // thread rather than dropping the user's message.
+                let target = route.subagent_id.parse().ok();
+                if target.is_none() {
+                    tracing::error!("bug: unparsable subagent thread id {:?}", route.subagent_id);
+                }
+                (route.root_thread_ts, target)
+            }
+            None => (event.thread_ts, None),
+        };
         rt.channels
             .lock()
             .expect("bug: lock poisoned")
-            .insert(event.thread_ts.clone(), event.channel.clone());
+            .insert(thread_ts.clone(), event.channel.clone());
 
         let existing = {
             let sessions = rt.sessions.lock().expect("bug: lock poisoned");
-            sessions.get(&event.thread_ts).cloned()
+            sessions.get(&thread_ts).cloned()
         };
         if let Some(session_id) = existing {
             Some(DaemonCommand::SendInput {
-                thread_ts: event.thread_ts,
+                thread_ts,
                 session_id,
+                target_thread,
                 text: event.text.trim().to_owned(),
             })
         } else {
             // Stash the text to send after Connected arrives.
             let mut pending = rt.pending_input.lock().expect("bug: lock poisoned");
-            pending.insert(event.thread_ts.clone(), event.text.trim().to_owned());
+            pending.insert(thread_ts.clone(), event.text.trim().to_owned());
             let model = rt.default_model.lock().expect("bug: lock poisoned").clone();
             Some(DaemonCommand::CreateSession {
-                thread_ts: event.thread_ts,
+                thread_ts,
                 cwd: rt.config.default_cwd.clone(),
                 model,
             })
@@ -197,11 +247,21 @@ pub fn slack_dataflow<'a, P: 'a>(
         */),
     );
 
-    // Set an "is thinking" status as soon as a chat message arrives.
+    // Set an "is thinking" status as soon as a chat message arrives. Replies
+    // inside a subagent thread set the status on the root conversation thread
+    // (that is where the session-level status indicator lives).
     let status_actions = chat_messages.map(q!(|event: SlackEvent| {
+        let rt = crate::runtime::get();
+        let thread_ts = {
+            let routes = rt.subagent_routes.lock().expect("bug: lock poisoned");
+            routes
+                .get(&event.thread_ts)
+                .map(|r| r.root_thread_ts.clone())
+                .unwrap_or(event.thread_ts)
+        };
         SlackAction::SetStatus {
             channel: event.channel,
-            thread_ts: event.thread_ts,
+            thread_ts,
             status: "is thinking".to_owned(),
         }
     }));
@@ -220,6 +280,16 @@ pub fn slack_dataflow<'a, P: 'a>(
             .cloned()
             .unwrap_or_default();
         let has_thread = !channel.is_empty() && !de.thread_ts.is_empty();
+        // Output from a subagent thread is routed into a dedicated Slack
+        // thread (created lazily by the I/O layer) so concurrent subagents
+        // don't interleave in the root conversation.
+        let subagent = {
+            let sessions = rt.sessions.lock().expect("bug: lock poisoned");
+            crate::flow::subagent_of(&de.message, sessions.get(&de.thread_ts))
+        };
+        // Key for per-stream state (tool tasks, tool-call flags), distinct
+        // per subagent so parallel streams don't share state.
+        let skey = crate::slack::stream_key(&de.thread_ts, subagent.as_deref());
 
         match &de.message {
             infinity_protocol::DaemonMessage::Connected {
@@ -278,8 +348,11 @@ pub fn slack_dataflow<'a, P: 'a>(
             }
             infinity_protocol::DaemonMessage::TextChunk { chunk, .. } => {
                 let mut actions = Vec::new();
-                // Reflect text generation in the thread status.
-                if has_thread {
+                // Reflect text generation in the root thread status. Only
+                // root output drives the status: subagent streams stop
+                // independently and must not re-arm the status after the
+                // root response has completed (it would never be cleared).
+                if has_thread && subagent.is_none() {
                     actions.push(SlackAction::SetStatus {
                         channel: channel.clone(),
                         thread_ts: de.thread_ts.clone(),
@@ -290,6 +363,7 @@ pub fn slack_dataflow<'a, P: 'a>(
                     channel: channel.clone(),
                     thread_ts: de.thread_ts,
                     text: chunk.clone(),
+                    subagent,
                 });
                 actions
             }
@@ -297,7 +371,7 @@ pub fn slack_dataflow<'a, P: 'a>(
                 rt.had_tool_call
                     .lock()
                     .expect("bug: lock poisoned")
-                    .insert(de.thread_ts.clone(), true);
+                    .insert(skey.clone(), true);
                 // Render the tool call as a streaming task update. The
                 // task is marked complete when the ToolResult arrives (or
                 // when the stream stops, as a safety net).
@@ -319,12 +393,13 @@ pub fn slack_dataflow<'a, P: 'a>(
                 rt.tool_tasks
                     .lock()
                     .expect("bug: lock poisoned")
-                    .entry(de.thread_ts.clone())
+                    .entry(skey)
                     .or_default()
                     .push_back((task_id.clone(), name.clone(), details.clone()));
                 let mut actions = Vec::new();
-                // Show which tool is running in the thread status.
-                if has_thread {
+                // Show which tool is running in the root thread status (root
+                // output only; see the TextChunk arm).
+                if has_thread && subagent.is_none() {
                     actions.push(SlackAction::SetStatus {
                         channel: channel.clone(),
                         thread_ts: de.thread_ts.clone(),
@@ -338,20 +413,22 @@ pub fn slack_dataflow<'a, P: 'a>(
                     title: name.clone(),
                     status: "in_progress".to_owned(),
                     details,
+                    subagent,
                 });
                 actions
             }
             infinity_protocol::DaemonMessage::ToolResult { .. } => {
-                // Complete the oldest in-flight tool task for this thread.
+                // Complete the oldest in-flight tool task for this stream.
                 let popped = rt
                     .tool_tasks
                     .lock()
                     .expect("bug: lock poisoned")
-                    .get_mut(&de.thread_ts)
+                    .get_mut(&skey)
                     .and_then(|q| q.pop_front());
                 let mut actions = Vec::new();
-                // Tool finished — back to thinking until the next tool/text.
-                if has_thread {
+                // Tool finished — back to thinking until the next tool/text
+                // (root output only; see the TextChunk arm).
+                if has_thread && subagent.is_none() {
                     actions.push(SlackAction::SetStatus {
                         channel: channel.clone(),
                         thread_ts: de.thread_ts.clone(),
@@ -366,6 +443,7 @@ pub fn slack_dataflow<'a, P: 'a>(
                         title,
                         status: "complete".to_owned(),
                         details,
+                        subagent,
                     });
                 }
                 actions
@@ -375,24 +453,60 @@ pub fn slack_dataflow<'a, P: 'a>(
                     .had_tool_call
                     .lock()
                     .expect("bug: lock poisoned")
-                    .remove(&de.thread_ts)
+                    .remove(&skey)
                     .unwrap_or(false);
                 if had_tool {
                     // More output coming after tool execution; keep the stream open.
                     Vec::new()
                 } else {
+                    // The response is over: discard any stale in-flight tool
+                    // entries (results that never arrived, e.g. interrupted
+                    // tools). ToolResult matches completions to calls by FIFO
+                    // order only, so a stale entry would mislabel the next
+                    // response's first completion. (The I/O layer completes
+                    // the on-screen cards themselves when it stops the
+                    // stream.)
+                    if let Some(stale) = rt
+                        .tool_tasks
+                        .lock()
+                        .expect("bug: lock poisoned")
+                        .remove(&skey)
+                    {
+                        if !stale.is_empty() {
+                            tracing::debug!(
+                                "discarding {} stale tool task(s) for {skey} at response end",
+                                stale.len()
+                            );
+                        }
+                    }
                     vec![SlackAction::StreamStop {
                         channel: channel.clone(),
                         thread_ts: de.thread_ts,
+                        subagent,
                     }]
                 }
             }
             infinity_protocol::DaemonMessage::Error { text, .. } => {
-                vec![SlackAction::PostMessage {
-                    channel: channel.clone(),
-                    text: format!("⚠️ {text}"),
-                    thread_ts: Some(de.thread_ts),
-                }]
+                // Finalize any in-flight stream first so the error message —
+                // and any output after it — appears below the streamed text
+                // rather than the stream continuing to edit the message above
+                // the error (discontinuity). For root errors this also clears
+                // the thread status, which would otherwise linger if no
+                // ResponseDone follows. (StreamStop is a no-op when no stream
+                // is active.)
+                vec![
+                    SlackAction::StreamStop {
+                        channel: channel.clone(),
+                        thread_ts: de.thread_ts.clone(),
+                        subagent: subagent.clone(),
+                    },
+                    SlackAction::PostMessage {
+                        channel: channel.clone(),
+                        text: format!("⚠️ {text}"),
+                        thread_ts: Some(de.thread_ts),
+                        subagent,
+                    },
+                ]
             }
             infinity_protocol::DaemonMessage::UserChoiceRequired {
                 id,
@@ -437,6 +551,7 @@ pub fn slack_dataflow<'a, P: 'a>(
                     SlackAction::StreamStop {
                         channel: channel.clone(),
                         thread_ts: de.thread_ts.clone(),
+                        subagent: subagent.clone(),
                     },
                     SlackAction::PostBlocks {
                         channel: channel.clone(),
@@ -444,6 +559,7 @@ pub fn slack_dataflow<'a, P: 'a>(
                         blocks,
                         thread_ts: Some(de.thread_ts),
                         choice_id: Some(id.clone()),
+                        subagent,
                     },
                 ]
             }
@@ -498,6 +614,42 @@ pub fn slack_dataflow<'a, P: 'a>(
         );
 
     (slack_actions, daemon_commands)
+}
+
+/// Identify the subagent that produced a daemon message, if any.
+///
+/// Returns the subagent's thread id (in `ThreadRef` string form) when the
+/// message carries a `thread_id` different from the session's root thread.
+/// Returns `None` for root-thread output — and also when the root thread is
+/// not yet known, in which case output is conservatively routed to the root
+/// conversation rather than forking a dedicated Slack thread.
+pub fn subagent_of(
+    msg: &infinity_protocol::DaemonMessage,
+    root: Option<&infinity_protocol::ThreadRef>,
+) -> Option<String> {
+    use infinity_protocol::DaemonMessage as DM;
+    let thread_id = match msg {
+        DM::StartOutput { thread_id }
+        | DM::TextChunk { thread_id, .. }
+        | DM::ToolCall { thread_id, .. }
+        | DM::ToolResult { thread_id, .. }
+        | DM::Info { thread_id, .. }
+        | DM::ResponseDone { thread_id, .. }
+        | DM::UserInputEcho { thread_id, .. }
+        | DM::SubscriptionEvent { thread_id, .. }
+        | DM::OAuthRequired { thread_id, .. }
+        | DM::UserChoiceRequired { thread_id, .. }
+        | DM::ThinkingStart { thread_id }
+        | DM::ThinkingEnd { thread_id }
+        | DM::ThinkingChunk { thread_id, .. }
+        | DM::CompactionApplied { thread_id }
+        | DM::Error { thread_id, .. } => thread_id.as_ref()?,
+        _ => return None,
+    };
+    match root {
+        Some(root) if root != thread_id => Some(thread_id.to_string()),
+        _ => None,
+    }
 }
 
 /// Build the Block Kit view for the `/model` picker modal. Returns `None` if
@@ -662,6 +814,32 @@ pub fn handle_model_command(arg: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subagent_of_distinguishes_root_and_subagent_output() {
+        let root = infinity_protocol::ThreadRef::from("root1");
+        let chunk = |thread_id: Option<&str>| infinity_protocol::DaemonMessage::TextChunk {
+            thread_id: thread_id.map(Into::into),
+            chunk: "x".to_owned(),
+        };
+
+        // A different thread id is a subagent.
+        assert_eq!(
+            subagent_of(&chunk(Some("sub1")), Some(&root)),
+            Some("sub1".to_owned())
+        );
+        // The root's own id is not.
+        assert_eq!(subagent_of(&chunk(Some("root1")), Some(&root)), None);
+        // No thread id means root output.
+        assert_eq!(subagent_of(&chunk(None), Some(&root)), None);
+        // Unknown root: routed to the root conversation, not forked.
+        assert_eq!(subagent_of(&chunk(Some("sub1")), None), None);
+        // Messages without a per-thread id are never subagent output.
+        let welcome = infinity_protocol::DaemonMessage::UserChoiceComplete {
+            choice_id: "c1".into(),
+        };
+        assert_eq!(subagent_of(&welcome, Some(&root)), None);
+    }
 
     #[test]
     fn model_picker_view_reflects_available_models() {

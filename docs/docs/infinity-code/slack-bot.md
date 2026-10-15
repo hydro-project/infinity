@@ -147,6 +147,16 @@ The bot is a single plain binary: the Hydro dataflow (from the `infinity-slack-d
 
 Each Slack thread is a separate Infinity session. The mapping persists across bot restarts in `~/.infinity/slack_sessions.json`.
 
+## Subagent Threads
+
+When the agent spawns subagents (child threads), each subagent gets its own dedicated Slack thread so parallel output doesn't interleave:
+
+- On a subagent's first output, the bot posts an anchor message in the channel ("🤖 Subagent `abc12345` — output streams in this thread.") and streams that subagent's text and tool-call cards into the thread under it.
+- A cross-link to the subagent's thread is posted in the originating conversation thread, so you can follow along from the root.
+- Replies you post inside a subagent's thread are delivered to that subagent (not the session root); approval buttons shown there answer the subagent's pending choice.
+
+The root conversation thread keeps only the root agent's output and the session-level status indicator. Subagent thread mappings are kept in memory: after a bot restart, new subagent activity gets fresh threads.
+
 ## Switching Models
 
 Use the `/model` slash command (responses are ephemeral — only you see them):

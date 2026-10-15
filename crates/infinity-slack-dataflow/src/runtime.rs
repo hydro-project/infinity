@@ -15,6 +15,16 @@ use crate::session_store::SessionStore;
 /// Per-thread FIFO of in-flight tool tasks `(task_id, title, details)`.
 type ToolTaskQueue = VecDeque<(String, String, String)>;
 
+/// Where a dedicated subagent Slack thread routes back to: the root Slack
+/// thread of the session and the subagent's agent thread id.
+#[derive(Clone, Debug)]
+pub struct SubagentRoute {
+    /// The Slack `thread_ts` of the root conversation thread.
+    pub root_thread_ts: String,
+    /// The subagent's agent thread id (a `ThreadRef` in string form).
+    pub subagent_id: String,
+}
+
 /// Shared runtime state for the dataflow.
 pub struct Runtime {
     pub config: &'static Config,
@@ -35,9 +45,13 @@ pub struct Runtime {
     pub default_model: Arc<Mutex<Option<ModelRef>>>,
     /// Available models fetched from the daemon's Welcome message.
     pub available_models: Arc<Mutex<Vec<ModelInfo>>>,
-    /// Per-thread FIFO of in-flight tool tasks `(task_id, title)` for
-    /// streaming task updates. Pushed on ToolCall, popped on ToolResult;
-    /// drained (marked complete) when the stream stops.
+    /// Per-stream FIFO of in-flight tool tasks `(task_id, title, details)`
+    /// for streaming task updates, keyed by `slack::stream_key`. Managed by
+    /// the dataflow only: pushed on ToolCall, popped on ToolResult (FIFO —
+    /// ToolResult carries no call id), discarded at response end so stale
+    /// entries can't mislabel the next response's completions. The I/O layer
+    /// separately tracks which cards are open per stream *message* and
+    /// completes them whenever a message is finalized.
     pub tool_tasks: Arc<Mutex<HashMap<String, ToolTaskQueue>>>,
     /// Monotonic id source for streaming task updates.
     pub tool_task_seq: Arc<AtomicU64>,
@@ -45,6 +59,12 @@ pub struct Runtime {
     pub thread_titles: Arc<Mutex<HashMap<String, String>>>,
     /// Users who have already received suggested prompts this run.
     pub app_home_seen: Arc<Mutex<HashSet<String>>>,
+    /// Reverse routing for dedicated subagent Slack threads: anchor message
+    /// ts (the subagent thread's `thread_ts`) → route back to the session.
+    /// Written by the Slack I/O layer when it creates an anchor; read by the
+    /// dataflow to route user replies/button clicks made inside a subagent
+    /// thread to the owning session (and subagent thread).
+    pub subagent_routes: Arc<Mutex<HashMap<String, SubagentRoute>>>,
 }
 
 static RUNTIME: std::sync::OnceLock<Runtime> = std::sync::OnceLock::new();
@@ -65,6 +85,7 @@ pub fn init(config: &'static Config, sessions: Arc<Mutex<SessionStore>>) {
         tool_task_seq: Arc::new(AtomicU64::new(0)),
         thread_titles: Arc::new(Mutex::new(HashMap::new())),
         app_home_seen: Arc::new(Mutex::new(HashSet::new())),
+        subagent_routes: Arc::new(Mutex::new(HashMap::new())),
     });
 }
 
@@ -92,6 +113,7 @@ pub fn ensure_test_init() {
             tool_task_seq: Arc::new(AtomicU64::new(0)),
             thread_titles: Arc::new(Mutex::new(HashMap::new())),
             app_home_seen: Arc::new(Mutex::new(HashSet::new())),
+            subagent_routes: Arc::new(Mutex::new(HashMap::new())),
         }
     });
 }
