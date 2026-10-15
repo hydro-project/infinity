@@ -3,13 +3,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use infinity_agent_core::ThreadId;
-use infinity_agent_core::message::InputMessage;
+use infinity_agent_core::message::{
+    InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind,
+};
 use infinity_agent_core::system::AgentSystemBuilder;
 use infinity_agent_core::system::local::{
     ChannelSender, SubscribeHandle, ThreadLifecycleEvent, ThreadLifecycleState,
 };
 use infinity_agent_core::traits::{ConversationStore, InputSender, StateStore};
 use infinity_protocol::{DaemonMessage, ModelRef, SessionInfo};
+use infinity_provider_protocol::message::UserContent;
 use tokio::sync::mpsc;
 
 use crate::config;
@@ -553,6 +556,56 @@ impl SessionManager {
             .send_to_input_queue(input, &dedup_id)
             .await
             .is_ok()
+    }
+
+    /// Interrupt the in-flight work on `thread_id` and its descendant
+    /// subtree, without queuing any input and without shutting the session
+    /// down (see [`infinity_protocol::ClientMessage::Interrupt`]).
+    ///
+    /// Delivers an input-less interrupt marker to the target thread and to
+    /// every descendant the daemon considers active (live driver, or parked
+    /// waiting on tool results / subscription events). Idle descendants are
+    /// skipped: they have nothing in flight to cancel, and waking their
+    /// drivers would only churn. The thread drivers consume the markers:
+    /// each cancels its in-flight completion, settles a trailing unanswered
+    /// tool call, dismisses pending choices, and broadcasts a
+    /// [`DaemonMessage::ResponseDone`] — after which the threads accept new
+    /// input normally.
+    pub async fn interrupt_thread(&self, thread_id: &ThreadId<str>) {
+        // `get_session_thread_ids` walks the children tree from whatever
+        // thread it is given, so targeting a subthread yields exactly that
+        // subtree. The first entry is the target thread itself.
+        let subtree = self.conversation_store.get_session_thread_ids(thread_id);
+        let active: std::collections::HashSet<ThreadId> = self
+            .active_threads
+            .lock()
+            .expect("bug: mutex poisoned")
+            .clone();
+        for (i, target) in subtree.into_iter().enumerate() {
+            // Always interrupt the explicit target (it may be parked waiting
+            // on a tool result without being tracked as active); descendants
+            // only when active.
+            if i > 0 && !active.contains(&target) {
+                continue;
+            }
+            tracing::info!(%target, "interrupting thread");
+            let delivered = self
+                .send_input((
+                    InputMessage {
+                        content: InputMessageContent::User(UserContent::text("")),
+                        group_id: target.clone(),
+                        metadata: None,
+                        synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::Interrupt)),
+                        display_as: None,
+                        subscription: false,
+                    },
+                    None,
+                ))
+                .await;
+            if !delivered {
+                tracing::error!(%target, "failed to deliver interrupt to thread");
+            }
+        }
     }
 
     /// The agent system's input sender, used by the RAP callback bridge to
