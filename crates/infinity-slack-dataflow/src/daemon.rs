@@ -35,6 +35,20 @@ pub enum DaemonCommand {
         choice_id: infinity_protocol::ChoiceId,
         selected: usize,
     },
+    /// Interrupt in-flight generation (the user clicked Slack's native stop
+    /// button). Sent on the connection for this thread; the daemon cancels
+    /// the targeted thread's work and its descendant subtree without queuing
+    /// any input (see [`infinity_protocol::ClientMessage::Interrupt`]).
+    Interrupt {
+        thread_ts: String,
+        session_id: infinity_protocol::ThreadRef,
+        /// The agent thread to interrupt. `None` targets the session root
+        /// (stopping all of the session's work); `Some` targets a subagent
+        /// thread (used when the user stopped a dedicated subagent Slack
+        /// thread).
+        #[serde(default)]
+        target_thread: Option<infinity_protocol::ThreadRef>,
+    },
 }
 
 /// A message received from a daemon connection, tagged with the thread it belongs to.

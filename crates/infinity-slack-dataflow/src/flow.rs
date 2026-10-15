@@ -169,8 +169,90 @@ pub fn slack_dataflow<'a, P: 'a>(
     }));
 
     // --- Partition regular messages into app-home opens vs chat messages ---
-    let (chat_messages, app_home_events) =
+    let (non_app_home, app_home_events) =
         regular_messages.partition(q!(|event: &SlackEvent| { !event.is_app_home_opened }));
+
+    // --- Partition out native stop-button clicks (`agent_session_stopped`) ---
+    let (chat_messages, session_stops) =
+        non_app_home.partition(q!(|event: &SlackEvent| { !event.is_session_stopped }));
+
+    // --- Stop events → halt the thread's stream + confirm to the user ---
+    // Slack has already finalized the streaming message(s) client-side; the
+    // I/O layer must not re-touch them, must drop buffered output, and must
+    // suppress any raced remainder of the current response. A stop inside a
+    // subagent's dedicated thread halts that subagent's stream only. The
+    // matching `Interrupt` daemon command (below) cancels the generation
+    // itself.
+    let session_stop_actions = session_stops
+        .clone()
+        .flat_map_ordered(q!(|event: SlackEvent| {
+            let rt = crate::runtime::get();
+            let route = rt
+                .subagent_routes
+                .lock()
+                .expect("bug: lock poisoned")
+                .get(&event.thread_ts)
+                .cloned();
+            let (thread_ts, subagent) = match route {
+                Some(route) => (route.root_thread_ts, Some(route.subagent_id)),
+                None => (event.thread_ts, None),
+            };
+            vec![
+                SlackAction::HaltStreams {
+                    channel: event.channel.clone(),
+                    thread_ts: thread_ts.clone(),
+                    subagent: subagent.clone(),
+                    stopped_message_ts: event.streaming_message_ts,
+                },
+                // Per Slack's agent-sessions guidance: confirm to the user
+                // that work stopped.
+                SlackAction::PostMessage {
+                    channel: event.channel,
+                    text: "⏹️ Stopped — the agent was interrupted. Send a new message to \
+                           continue."
+                        .to_owned(),
+                    thread_ts: Some(thread_ts),
+                    subagent,
+                },
+            ]
+        }));
+
+    // --- Stop events → Interrupt commands (cancel generation on the daemon) ---
+    let interrupt_commands = session_stops.filter_map(q!(|event: SlackEvent| {
+        let rt = crate::runtime::get();
+        let route = rt
+            .subagent_routes
+            .lock()
+            .expect("bug: lock poisoned")
+            .get(&event.thread_ts)
+            .cloned();
+        let (thread_ts, target_thread) = match route {
+            Some(route) => {
+                // The id round-trips from a `ThreadRef` the daemon sent us, so
+                // a parse failure would be a bug; fall back to interrupting
+                // the whole session rather than dropping the user's stop.
+                let target = route.subagent_id.parse().ok();
+                if target.is_none() {
+                    tracing::error!("bug: unparsable subagent thread id {:?}", route.subagent_id);
+                }
+                (route.root_thread_ts, target)
+            }
+            None => (event.thread_ts, None),
+        };
+        let session_id = {
+            let sessions = rt.sessions.lock().expect("bug: lock poisoned");
+            sessions.get(&thread_ts).cloned()
+        };
+        // No session mapped (e.g. a stop in a thread from before a bot
+        // restart): nothing to interrupt — the HaltStreams action above
+        // already settled the Slack side.
+        let session_id = session_id?;
+        Some(DaemonCommand::Interrupt {
+            thread_ts,
+            session_id,
+            target_thread,
+        })
+    }));
 
     // --- App-home opens → pin suggested prompts (once per user per run) ---
     let app_home_actions = app_home_events.filter_map(q!(|event: SlackEvent| {
@@ -188,6 +270,13 @@ pub fn slack_dataflow<'a, P: 'a>(
     // --- Chat messages → CreateSession / SendInput commands ---
     let message_commands = chat_messages.clone().filter_map(q!(|event: SlackEvent| {
         let rt = crate::runtime::get();
+        // A new message in a thread lifts any user-stop suppression for that
+        // thread (`event.thread_ts` is the target thread ts the latch is
+        // keyed by: the root conversation thread or a subagent anchor).
+        rt.halted_streams
+            .lock()
+            .expect("bug: lock poisoned")
+            .remove(&event.thread_ts);
         // A reply inside a dedicated subagent Slack thread is addressed to
         // that subagent's agent thread, on the session owned by the root
         // conversation thread.
@@ -239,13 +328,21 @@ pub fn slack_dataflow<'a, P: 'a>(
         }
     }));
 
-    let daemon_commands = button_commands.merge_ordered(
-        message_commands,
-        nondet!(/**
-            a button command has non-deterministic ordering w.r.t. message commands
-            because batching may interleave them arbitrarily
-        */),
-    );
+    let daemon_commands = button_commands
+        .merge_ordered(
+            message_commands,
+            nondet!(/**
+                a button command has non-deterministic ordering w.r.t. message commands
+                because batching may interleave them arbitrarily
+            */),
+        )
+        .merge_ordered(
+            interrupt_commands,
+            nondet!(/**
+                interrupt commands have non-deterministic ordering w.r.t. other daemon
+                commands because they originate from independent user interaction events
+            */),
+        );
 
     // Set an "is thinking" status as soon as a chat message arrives. Replies
     // inside a subagent thread set the status on the root conversation thread
@@ -609,6 +706,13 @@ pub fn slack_dataflow<'a, P: 'a>(
             app_home_actions,
             nondet!(/**
                 suggested-prompt actions have non-deterministic ordering w.r.t. other slack
+                actions because they originate from user interaction events
+            */),
+        )
+        .merge_ordered(
+            session_stop_actions,
+            nondet!(/**
+                stop-button actions have non-deterministic ordering w.r.t. other slack
                 actions because they originate from user interaction events
             */),
         );

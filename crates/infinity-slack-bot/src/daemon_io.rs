@@ -154,6 +154,44 @@ pub fn spawn() -> DaemonIo {
                         tracing::warn!("AnswerChoice: no connection for thread {thread_ts}");
                     }
                 }
+                DaemonCommand::Interrupt {
+                    thread_ts,
+                    session_id,
+                    target_thread,
+                } => {
+                    // The agent thread to interrupt: a subagent thread when
+                    // the user stopped a dedicated subagent Slack thread, the
+                    // session root (whole session) otherwise.
+                    let interrupt_thread = target_thread.as_ref().unwrap_or(&session_id);
+                    if !connections.contains_key(&thread_ts) {
+                        // Reconnect after restart so the stop still lands.
+                        match DaemonClient::connect().await {
+                            Ok(daemon) => {
+                                if let Err(e) = daemon.connect_session(&session_id, None).await {
+                                    tracing::error!(
+                                        "reconnect to session failed for {thread_ts}: {e}"
+                                    );
+                                    continue;
+                                }
+                                spawn_receiver(
+                                    thread_ts.clone(),
+                                    &mut connections,
+                                    daemon,
+                                    &to_df_tx,
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!("daemon connect failed for {thread_ts}: {e}");
+                                continue;
+                            }
+                        }
+                    }
+                    if let Some(daemon) = connections.get(&thread_ts) {
+                        if let Err(e) = daemon.interrupt(interrupt_thread).await {
+                            tracing::error!("Interrupt failed for {thread_ts}: {e}");
+                        }
+                    }
+                }
             }
         }
     });
