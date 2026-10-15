@@ -419,6 +419,43 @@ impl SlackClient {
         Ok(())
     }
 
+    /// Resolve a permalink URL for a message via `chat.getPermalink`.
+    pub async fn get_permalink(
+        &self,
+        channel: &str,
+        message_ts: &str,
+    ) -> Result<Option<String>, BoxError> {
+        #[derive(Debug, Deserialize)]
+        struct PermalinkResponse {
+            ok: bool,
+            #[serde(default)]
+            permalink: Option<String>,
+            #[serde(default)]
+            error: Option<String>,
+        }
+        // The workspace `reqwest` build has no `query` feature; both values
+        // are Slack-issued identifiers (`[A-Za-z0-9.]`), safe to interpolate.
+        let url = format!(
+            "https://slack.com/api/chat.getPermalink?channel={channel}&message_ts={message_ts}"
+        );
+        let resp: PermalinkResponse = self
+            .http
+            .get(url)
+            .bearer_auth(&self.token)
+            .send()
+            .await?
+            .json()
+            .await?;
+        if !resp.ok {
+            tracing::warn!(
+                "chat.getPermalink failed: {}",
+                resp.error.as_deref().unwrap_or("unknown")
+            );
+            return Ok(None);
+        }
+        Ok(resp.permalink)
+    }
+
     /// Stop/finalize a streaming message with trailing blocks (e.g. an
     /// AI-content disclaimer). Falls back to a plain stop if the blocks
     /// variant is rejected, so the stream is never left open.

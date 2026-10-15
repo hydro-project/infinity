@@ -187,13 +187,34 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
             /// `MAX_STREAM_AGE` are split at the next clean breaking point so
             /// long-running responses don't pile into one giant message.
             started_at: std::time::Instant,
+            /// Task cards appended to THIS stream message that are still
+            /// "in progress": `(task_id, title, details)`. Slack task cards
+            /// are addressed by `(channel, message ts, task id)`, so a card
+            /// can only be updated within the message it was created in —
+            /// whenever this message is stopped (explicit stop, split, or
+            /// error recovery) these cards must be completed first or their
+            /// spinners freeze forever.
+            open_tasks: Vec<(String, String, String)>,
+        }
+
+        impl StreamState {
+            /// Remove and return the open task with the given id, if this
+            /// stream message owns it.
+            fn take_open_task(&mut self, task_id: &str) -> Option<(String, String, String)> {
+                let idx = self
+                    .open_tasks
+                    .iter()
+                    .position(|(id, _, _)| id == task_id)?;
+                Some(self.open_tasks.remove(idx))
+            }
         }
 
         /// Maximum age of a stream message before it is split at the next
         /// clean breaking point.
         const MAX_STREAM_AGE: std::time::Duration = std::time::Duration::from_secs(3 * 60);
 
-        // Active streams: thread_ts → state
+        // Active streams, keyed by the Slack thread ts the stream lives in
+        // (the root conversation thread, or a subagent thread's anchor ts).
         let mut active_streams: std::collections::HashMap<String, StreamState> =
             std::collections::HashMap::new();
 
@@ -201,6 +222,192 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
         // (e.g. "is thinking" emitted on every text chunk).
         let mut last_status: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
+
+        /// Anchor message ts of each dedicated subagent Slack thread, keyed
+        /// by (root thread_ts, subagent id).
+        type AnchorMap = std::collections::HashMap<(String, String), String>;
+        let mut anchors: AnchorMap = AnchorMap::new();
+
+        /// Short human-readable form of an agent thread id (`ThreadRef`
+        /// string form, i.e. `"{id}"` or `"{remote}/{id}"`).
+        fn short_subagent_id(id: &str) -> &str {
+            let bare = id.rsplit('/').next().unwrap_or(id);
+            bare.char_indices()
+                .nth(8)
+                .map(|(i, _)| &bare[..i])
+                .unwrap_or(bare)
+        }
+
+        /// Mark every still-open task card of a stream message complete, so
+        /// the message is never left (or stopped) with frozen spinners. Used
+        /// right before a stream message is stopped on any path: explicit
+        /// finalize, length/age split, and append-error recovery. Best
+        /// effort: failures are logged (the message may already be
+        /// unappendable, e.g. after `msg_too_long`).
+        async fn complete_open_tasks(slack: &SlackClient, channel: &str, state: &mut StreamState) {
+            for (task_id, title, details) in state.open_tasks.drain(..) {
+                if let Err(e) = slack
+                    .append_stream_task(channel, &state.ts, &task_id, &title, "complete", &details)
+                    .await
+                {
+                    tracing::warn!("completing open task {task_id} failed: {e}");
+                }
+            }
+        }
+
+        /// Finalize the active stream in `thread_ts`: flush its buffered
+        /// text, mark any still-open tool-task cards complete (so the
+        /// message never finalizes with spinners), and stop the stream
+        /// message with the AI-disclaimer footer. No-op when the thread has
+        /// no buffered text and no active stream.
+        ///
+        /// Used by `StreamStop` and — crucially — before posting any
+        /// discrete message (choice buttons, errors, subagent cross-links)
+        /// into a thread: an interposed message must not leave the stream
+        /// above it active, otherwise subsequent appends keep editing the
+        /// older message and the thread reads out of order. The disclaimer
+        /// footer is applied on this path too, so every finalized stream
+        /// message ends uniformly.
+        async fn finalize_stream(
+            slack: &SlackClient,
+            channel: &str,
+            thread_ts: &str,
+            active_streams: &mut std::collections::HashMap<String, StreamState>,
+            pending_text: &mut std::collections::HashMap<String, PendingText>,
+        ) {
+            // Flush buffered text first so the closing message contains
+            // everything streamed so far.
+            if let Some(pending) = pending_text.remove(thread_ts) {
+                if !pending.text.is_empty() {
+                    append_text(
+                        slack,
+                        &pending.channel,
+                        thread_ts,
+                        &pending.text,
+                        active_streams,
+                    )
+                    .await;
+                }
+            }
+            if let Some(mut state) = active_streams.remove(thread_ts) {
+                complete_open_tasks(slack, channel, &mut state).await;
+
+                // Finalize with an AI-content disclaimer footer.
+                let disclaimer = serde_json::json!([
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": "AI-generated response — review carefully before acting on it."
+                            }
+                        ]
+                    }
+                ]);
+                if let Err(e) = slack
+                    .stop_stream_with_blocks(channel, &state.ts, &disclaimer)
+                    .await
+                {
+                    tracing::error!("stop_stream failed: {e}");
+                }
+            }
+        }
+
+        /// Resolve the Slack thread an action targets: the root conversation
+        /// thread itself, or — when `subagent` is set — the dedicated Slack
+        /// thread for that subagent, creating its anchor message (plus a
+        /// cross-link in the root thread) on first use. Returns `None` if the
+        /// anchor could not be created.
+        ///
+        /// Creating an anchor posts a cross-link into the *root* thread, so
+        /// this takes the stream maps in order to finalize the root thread's
+        /// active stream first (see [`finalize_stream`]).
+        async fn resolve_thread(
+            slack: &SlackClient,
+            channel: &str,
+            thread_ts: &str,
+            subagent: Option<&str>,
+            anchors: &mut AnchorMap,
+            active_streams: &mut std::collections::HashMap<String, StreamState>,
+            pending_text: &mut std::collections::HashMap<String, PendingText>,
+        ) -> Option<String> {
+            let Some(sub) = subagent else {
+                return Some(thread_ts.to_owned());
+            };
+            let key = (thread_ts.to_owned(), sub.to_owned());
+            if let Some(ts) = anchors.get(&key) {
+                return Some(ts.clone());
+            }
+
+            // First output from this subagent: create its dedicated thread.
+            // The anchor must be a top-level channel message — Slack thread
+            // replies cannot host threads of their own.
+            let short = short_subagent_id(sub);
+            let text = format!("🤖 Subagent `{short}` — output streams in this thread.");
+            let anchor_ts = match slack.post_message(channel, &text, None).await {
+                Ok(Some(ts)) => ts,
+                Ok(None) => {
+                    tracing::error!("subagent anchor post returned no ts");
+                    return None;
+                }
+                Err(e) => {
+                    tracing::error!("subagent anchor post failed: {e}");
+                    return None;
+                }
+            };
+            anchors.insert(key, anchor_ts.clone());
+
+            // Register the reverse route so replies and button clicks inside
+            // the subagent thread are routed back to the session (and this
+            // subagent's agent thread) by the dataflow.
+            {
+                let rt = infinity_slack_dataflow::runtime::get();
+                rt.subagent_routes
+                    .lock()
+                    .expect("bug: lock poisoned")
+                    .insert(
+                        anchor_ts.clone(),
+                        infinity_slack_dataflow::runtime::SubagentRoute {
+                            root_thread_ts: thread_ts.to_owned(),
+                            subagent_id: sub.to_owned(),
+                        },
+                    );
+            }
+
+            // Cross-link the new thread from the root conversation.
+            let permalink = match slack.get_permalink(channel, &anchor_ts).await {
+                Ok(url) => url,
+                Err(e) => {
+                    tracing::warn!("chat.getPermalink failed: {e}");
+                    None
+                }
+            };
+            let link_text = match permalink {
+                Some(url) => format!(
+                    "🧵 Spawned subagent `{short}` — <{url}|follow its progress in its own thread>."
+                ),
+                None => {
+                    format!(
+                        "🧵 Spawned subagent `{short}` — follow its progress in its own thread."
+                    )
+                }
+            };
+            // The cross-link lands below the root thread's stream message; if
+            // that stream stayed active, subsequent root output would keep
+            // editing the message *above* the cross-link (discontinuity).
+            // Finalize the root stream first so later root output starts a
+            // fresh message below the cross-link. (Root streams are keyed by
+            // the bare thread ts.)
+            finalize_stream(slack, channel, thread_ts, active_streams, pending_text).await;
+            if let Err(e) = slack
+                .post_message(channel, &link_text, Some(thread_ts))
+                .await
+            {
+                tracing::warn!("posting subagent cross-link failed: {e}");
+            }
+
+            Some(anchor_ts)
+        }
 
         /// Start a fresh stream, returning the new ts or None on failure.
         async fn start_fresh(
@@ -218,6 +425,7 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                             char_count: 0,
                             in_code_block: false,
                             started_at: std::time::Instant::now(),
+                            open_tasks: Vec::new(),
                         },
                     );
                     Some(ts)
@@ -275,9 +483,15 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
             };
 
             if should_split {
-                // Stop current stream and start a new one.
-                if let Some(old) = active_streams.remove(thread_ts) {
-                    let _ = slack.stop_stream(channel, &old.ts).await;
+                // Stop current stream and start a new one. Complete the open
+                // task cards first: cards live in the message they were
+                // created in, so stopping without completing them would
+                // freeze their spinners forever.
+                if let Some(mut old) = active_streams.remove(thread_ts) {
+                    complete_open_tasks(slack, channel, &mut old).await;
+                    if let Err(e) = slack.stop_stream(channel, &old.ts).await {
+                        tracing::warn!("stop_stream on split failed: {e}");
+                    }
                 }
                 if start_fresh(slack, channel, thread_ts, active_streams)
                     .await
@@ -304,9 +518,20 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                     state.in_code_block = update_code_block_state(text, state.in_code_block);
                 }
                 Ok(Some(ref err)) => {
-                    // Recoverable: start a new stream and retry.
+                    // Recoverable (e.g. msg_too_long, expired stream): start a
+                    // new stream and retry. Complete the open task cards and
+                    // stop the old message first (both best effort — e.g. after
+                    // `msg_too_long` small task appends usually still fit;
+                    // after `message_not_in_streaming_state` they fail and are
+                    // logged) so the abandoned message isn't left with frozen
+                    // spinners or in a dangling streaming state.
                     tracing::warn!("append_stream got {err}, starting new stream");
-                    active_streams.remove(thread_ts);
+                    if let Some(mut old) = active_streams.remove(thread_ts) {
+                        complete_open_tasks(slack, channel, &mut old).await;
+                        if let Err(e) = slack.stop_stream(channel, &old.ts).await {
+                            tracing::warn!("stop_stream on append-error recovery failed: {e}");
+                        }
+                    }
                     if start_fresh(slack, channel, thread_ts, active_streams)
                         .await
                         .is_none()
@@ -343,9 +568,9 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
             }
         }
 
-        /// Buffered stream text keyed by `thread_ts`, flushed on a fixed
-        /// interval to avoid Slack rate limits (`chat.appendStream` throttles
-        /// on rapid successive updates).
+        /// Buffered stream text keyed by the resolved target Slack thread ts,
+        /// flushed on a fixed interval to avoid Slack rate limits
+        /// (`chat.appendStream` throttles on rapid successive updates).
         struct PendingText {
             channel: String,
             text: String,
@@ -388,9 +613,42 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                     channel,
                     text,
                     thread_ts,
+                    subagent,
                 } => {
+                    // Route subagent-tagged messages into the subagent's
+                    // dedicated thread; fall back to the root thread if the
+                    // dedicated thread could not be created.
+                    let target_ts = match thread_ts {
+                        Some(root) => {
+                            let target = resolve_thread(
+                                &slack,
+                                &channel,
+                                &root,
+                                subagent.as_deref(),
+                                &mut anchors,
+                                &mut active_streams,
+                                &mut pending_text,
+                            )
+                            .await
+                            .unwrap_or_else(|| root.clone());
+                            // Finalize the target thread's stream so the
+                            // posted message doesn't end up below a
+                            // still-active stream message (which later
+                            // appends would keep editing — discontinuity).
+                            finalize_stream(
+                                &slack,
+                                &channel,
+                                &target,
+                                &mut active_streams,
+                                &mut pending_text,
+                            )
+                            .await;
+                            Some(target)
+                        }
+                        None => None,
+                    };
                     if let Err(e) = slack
-                        .post_message(&channel, &text, thread_ts.as_deref())
+                        .post_message(&channel, &text, target_ts.as_deref())
                         .await
                     {
                         tracing::error!("PostMessage failed: {e}");
@@ -402,9 +660,37 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                     blocks,
                     thread_ts,
                     choice_id,
+                    subagent,
                 } => {
+                    let target_ts = match thread_ts {
+                        Some(root) => {
+                            let target = resolve_thread(
+                                &slack,
+                                &channel,
+                                &root,
+                                subagent.as_deref(),
+                                &mut anchors,
+                                &mut active_streams,
+                                &mut pending_text,
+                            )
+                            .await
+                            .unwrap_or_else(|| root.clone());
+                            // See PostMessage: never post blocks below a
+                            // still-active stream message.
+                            finalize_stream(
+                                &slack,
+                                &channel,
+                                &target,
+                                &mut active_streams,
+                                &mut pending_text,
+                            )
+                            .await;
+                            Some(target)
+                        }
+                        None => None,
+                    };
                     match slack
-                        .post_blocks(&channel, &fallback_text, &blocks, thread_ts.as_deref())
+                        .post_blocks(&channel, &fallback_text, &blocks, target_ts.as_deref())
                         .await
                     {
                         Ok(Some(msg_ts)) => {
@@ -441,78 +727,67 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                     channel,
                     thread_ts,
                     text,
+                    subagent,
                 } => {
+                    // Resolve the target Slack thread first (creating the
+                    // subagent's dedicated thread if needed) so the buffer is
+                    // keyed by the actual thread the text will stream into.
+                    // Fall back to the root thread if creation failed, so
+                    // output is never dropped.
+                    let target_ts = resolve_thread(
+                        &slack,
+                        &channel,
+                        &thread_ts,
+                        subagent.as_deref(),
+                        &mut anchors,
+                        &mut active_streams,
+                        &mut pending_text,
+                    )
+                    .await
+                    .unwrap_or(thread_ts);
                     // Buffer the text; it is flushed on the next interval tick
                     // (or immediately on a tool update / stream stop). This
                     // coalesces rapid chunks into one append to avoid Slack
                     // throttling.
                     let entry = pending_text
-                        .entry(thread_ts)
+                        .entry(target_ts)
                         .or_insert_with(|| PendingText {
                             channel: channel.clone(),
                             text: String::new(),
                         });
                     entry.text.push_str(&text);
                 }
-                SlackAction::StreamStop { channel, thread_ts } => {
-                    // Flush any buffered text before finalizing the stream so
-                    // the closing message contains everything streamed so far.
-                    if let Some(pending) = pending_text.remove(&thread_ts) {
-                        if !pending.text.is_empty() {
-                            append_text(
-                                &slack,
-                                &pending.channel,
-                                &thread_ts,
-                                &pending.text,
-                                &mut active_streams,
-                            )
-                            .await;
-                        }
+                SlackAction::StreamStop {
+                    channel,
+                    thread_ts,
+                    subagent,
+                } => {
+                    // Look up the target thread without creating one: if the
+                    // subagent never produced output, there is no stream to
+                    // stop and no dedicated thread should be forked for it.
+                    let target_ts = match &subagent {
+                        Some(sub) => anchors.get(&(thread_ts.clone(), sub.clone())).cloned(),
+                        None => Some(thread_ts.clone()),
+                    };
+                    if let Some(target_ts) = target_ts {
+                        finalize_stream(
+                            &slack,
+                            &channel,
+                            &target_ts,
+                            &mut active_streams,
+                            &mut pending_text,
+                        )
+                        .await;
                     }
-                    if let Some(state) = active_streams.remove(&thread_ts) {
-                        // Complete any tool tasks that never got a result so
-                        // the message doesn't finalize with spinners.
-                        let pending: Vec<(String, String, String)> = {
-                            let rt = infinity_slack_dataflow::runtime::get();
-                            let mut tasks = rt.tool_tasks.lock().expect("bug: lock poisoned");
-                            tasks
-                                .get_mut(&thread_ts)
-                                .map(|q| q.drain(..).collect())
-                                .unwrap_or_default()
-                        };
-                        for (task_id, title, details) in pending {
-                            if let Err(e) = slack
-                                .append_stream_task(
-                                    &channel, &state.ts, &task_id, &title, "complete", &details,
-                                )
-                                .await
-                            {
-                                tracing::warn!("completing pending task {task_id} failed: {e}");
-                            }
+                    // Clear the thread status indicator. The status lives on
+                    // the root conversation thread and tracks the root
+                    // response, so subagent stream stops leave it alone.
+                    if subagent.is_none() {
+                        if let Err(e) = slack.set_thread_status(&channel, &thread_ts, "").await {
+                            tracing::warn!("clearing thread status failed: {e}");
                         }
-
-                        // Finalize with an AI-content disclaimer footer.
-                        let disclaimer = serde_json::json!([
-                            {
-                                "type": "context",
-                                "elements": [
-                                    {
-                                        "type": "mrkdwn",
-                                        "text": "AI-generated response — review carefully before acting on it."
-                                    }
-                                ]
-                            }
-                        ]);
-                        if let Err(e) = slack
-                            .stop_stream_with_blocks(&channel, &state.ts, &disclaimer)
-                            .await
-                        {
-                            tracing::error!("stop_stream failed: {e}");
-                        }
+                        last_status.remove(&thread_ts);
                     }
-                    // Clear the thread status indicator.
-                    let _ = slack.set_thread_status(&channel, &thread_ts, "").await;
-                    last_status.remove(&thread_ts);
                 }
                 SlackAction::SetStatus {
                     channel,
@@ -581,41 +856,100 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                     title,
                     status,
                     details,
+                    subagent,
                 } => {
+                    // Resolve the target Slack thread (creating the
+                    // subagent's dedicated thread if needed); fall back to
+                    // the root thread so the task card is never dropped.
+                    let target_ts = resolve_thread(
+                        &slack,
+                        &channel,
+                        &thread_ts,
+                        subagent.as_deref(),
+                        &mut anchors,
+                        &mut active_streams,
+                        &mut pending_text,
+                    )
+                    .await
+                    .unwrap_or(thread_ts);
                     // Flush buffered text first so the tool indicator appears
                     // after the text that preceded it (preserves ordering).
-                    if let Some(pending) = pending_text.remove(&thread_ts) {
+                    if let Some(pending) = pending_text.remove(&target_ts) {
                         if !pending.text.is_empty() {
                             append_text(
                                 &slack,
                                 &pending.channel,
-                                &thread_ts,
+                                &target_ts,
                                 &pending.text,
                                 &mut active_streams,
                             )
                             .await;
                         }
                     }
-                    // Ensure we have an active stream to attach the task to.
-                    if !active_streams.contains_key(&thread_ts)
-                        && start_fresh(&slack, &channel, &thread_ts, &mut active_streams)
+
+                    if status == "in_progress" {
+                        // New task card: ensure we have an active stream to
+                        // attach it to, and record it against that specific
+                        // message so every stop/split path can complete it.
+                        if !active_streams.contains_key(&target_ts)
+                            && start_fresh(&slack, &channel, &target_ts, &mut active_streams)
+                                .await
+                                .is_none()
+                        {
+                            continue;
+                        }
+                        let state = active_streams
+                            .get_mut(&target_ts)
+                            .expect("bug: just ensured stream exists");
+                        let stream_ts = state.ts.clone();
+                        state
+                            .open_tasks
+                            .push((task_id.clone(), title.clone(), details.clone()));
+                        if let Err(e) = slack
+                            .append_stream_task(
+                                &channel, &stream_ts, &task_id, &title, &status, &details,
+                            )
                             .await
-                            .is_none()
-                    {
-                        continue;
-                    }
-                    let stream_ts = active_streams
-                        .get(&thread_ts)
-                        .expect("bug: just ensured stream exists")
-                        .ts
-                        .clone();
-                    if let Err(e) = slack
-                        .append_stream_task(
-                            &channel, &stream_ts, &task_id, &title, &status, &details,
-                        )
-                        .await
-                    {
-                        tracing::error!("append_stream_task failed: {e}");
+                        {
+                            tracing::error!("append_stream_task failed: {e}");
+                        }
+                    } else {
+                        // Completion (or error) update: Slack task cards can
+                        // only be updated inside the message that created
+                        // them. If that message was already finalized (stream
+                        // stop, split, msg_too_long recovery, interposed
+                        // block), its card was completed at finalize time —
+                        // drop this update instead of resurrecting a stream
+                        // with an orphan card.
+                        let owning_ts = active_streams
+                            .get(&target_ts)
+                            .filter(|s| s.open_tasks.iter().any(|(id, _, _)| id == &task_id))
+                            .map(|s| s.ts.clone());
+                        match owning_ts {
+                            Some(stream_ts) => {
+                                match slack
+                                    .append_stream_task(
+                                        &channel, &stream_ts, &task_id, &title, &status, &details,
+                                    )
+                                    .await
+                                {
+                                    Ok(()) => {
+                                        if let Some(state) = active_streams.get_mut(&target_ts) {
+                                            state.take_open_task(&task_id);
+                                        }
+                                    }
+                                    // Keep the card registered on failure so
+                                    // finalize can still complete it.
+                                    Err(e) => tracing::error!("append_stream_task failed: {e}"),
+                                }
+                            }
+                            None => {
+                                tracing::debug!(
+                                    "dropping task update {task_id} ({status}): its stream \
+                                     message is gone (card already completed at finalize)"
+                                );
+                            }
+                        }
                     }
                 }
                 SlackAction::DismissChoiceButtons { choice_id } => {
