@@ -283,6 +283,32 @@ pub enum ClientMessage {
     Interrupt {
         thread_id: ThreadRef,
     },
+    /// Fork a session's root conversation into a NEW session, starting just
+    /// before one of its user turns. Non-destructive: the original session
+    /// is not modified, interrupted, or otherwise affected.
+    ///
+    /// `user_turn` is the 0-based index of a plain user-text turn in
+    /// `thread_id`'s own persisted history — the same turns, one for one,
+    /// as the [`DaemonMessage::UserInputEcho`] entries in that thread's
+    /// [`DaemonMessage::Replay`] (turns hidden behind a compaction summary
+    /// still count). The new session inherits everything before that turn
+    /// (the latest compaction summary at or before the cut, plus the rows
+    /// after it), the original's working directory, and its model; the turn
+    /// itself and everything after it are not copied. `user_turn: 0` forks
+    /// an empty conversation.
+    ///
+    /// Like [`ClientMessage::CreateSession`], the requesting connection is
+    /// attached to the new session and receives [`DaemonMessage::Connected`]
+    /// for it; send the (possibly edited) turn as `UserInput` afterwards.
+    /// Only root threads (sessions) can be forked; a `user_turn` past the end
+    /// of the history is reported via [`DaemonMessage::Error`].
+    ForkSession {
+        thread_id: ThreadRef,
+        user_turn: usize,
+        /// Same meaning as for `CreateSession`.
+        #[serde(default = "default_true")]
+        keeps_session_alive: bool,
+    },
     /// Disconnect from the session while letting the agent continue to run in the background.
     Disconnect,
     /// Immediately attempt to detach. If the agent is idle, the daemon shuts

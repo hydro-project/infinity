@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use infinity_agent_core::ThreadId;
 use infinity_agent_core::message::{
-    InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind,
+    InfinityMessage, InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind,
 };
 use infinity_agent_core::system::AgentSystemBuilder;
 use infinity_agent_core::system::local::{
@@ -476,6 +476,108 @@ impl SessionManager {
         // Nothing to start: the agent system is always running, and the
         // session's RAP servers boot lazily on its first step.
         Ok(session_id)
+    }
+
+    /// Fork `source`'s root conversation into a new session starting just
+    /// before its `user_turn`-th plain user-text turn (see
+    /// [`infinity_protocol::ClientMessage::ForkSession`] for the contract).
+    ///
+    /// Non-destructive: `source` is only read. The fork is seeded with
+    /// `source`'s rows before the cut — plus the latest compaction summary at
+    /// or before it — and inherits `source`'s cwd and model. Emits
+    /// `Connected` for the fork and returns its ID.
+    pub async fn fork_session(
+        &self,
+        source: &ThreadId<str>,
+        user_turn: usize,
+        emit: &mut impl AsyncFnMut(DaemonMessage),
+    ) -> Result<ThreadId, BoxError> {
+        if self.conversation_store.get_root_thread_id(source).as_str() != source.as_str() {
+            return Err("only sessions (root threads) can be forked".into());
+        }
+        let cwd = {
+            let store = self.session_store.lock().await;
+            if !store.sessions.contains_key(source) {
+                return Err(format!("unknown session {source}").into());
+            }
+            store.get_cwd(source).clone()
+        };
+
+        // Resolve the turn to a leading-row count. Plain user-text rows match
+        // `UserInputEcho` entries in `Replay` one for one; rows hidden behind
+        // a compaction summary still exist and still count.
+        let rows = self
+            .conversation_store
+            .load_history_up_to(source, None, None)
+            .await
+            .map_err(|e| format!("failed to load history: {e}"))?;
+        let user_turns: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| {
+                matches!(
+                    m,
+                    InfinityMessage::User {
+                        content: UserContent::Text(_)
+                    }
+                )
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let Some(&cut) = user_turns.get(user_turn) else {
+            return Err(format!(
+                "session has only {} user turns, cannot fork at turn {user_turn}",
+                user_turns.len()
+            )
+            .into());
+        };
+        let cut = cut as i64;
+
+        // The fork's context: the latest summary not covering discarded rows
+        // (if any) followed by the uncompacted rows up to the cut. Rows are
+        // copied verbatim so `user_turn` indices stay compaction-stable.
+        let summary = self
+            .conversation_store
+            .load_latest_compaction_summary_up_to(source, Some(cut))
+            .await
+            .map_err(|e| format!("failed to load compaction summary: {e}"))?;
+
+        let fork = self.id_source.generate();
+        self.conversation_store
+            .ensure_root_thread(&fork)
+            .await
+            .map_err(|e| format!("failed to create fork: {e}"))?;
+        let seeded: Vec<_> = rows
+            .into_iter()
+            .take(cut as usize)
+            .enumerate()
+            .map(|(i, m)| (m, format!("{fork}-fork-{i}")))
+            .collect();
+        self.conversation_store
+            .append_messages(&fork, seeded)
+            .await
+            .map_err(|e| format!("failed to seed fork: {e}"))?;
+        if let Some((summary, up_to)) = summary {
+            self.conversation_store
+                .save_compaction_summary(&fork, &summary, up_to)
+                .await
+                .map_err(|e| format!("failed to seed fork summary: {e}"))?;
+        }
+        self.conversation_store
+            .set_thread_model(&fork, self.conversation_store.get_thread_model(source));
+        self.conversation_store
+            .set_last_updated(&fork, &chrono::Utc::now().to_rfc3339());
+        {
+            // Registered last, so the session list never shows a half-seeded fork.
+            let mut store = self.session_store.lock().await;
+            store.create(&fork, cwd);
+            if let Err(e) = store.save() {
+                tracing::error!(%fork, "failed to persist forked session: {e}");
+            }
+        }
+        tracing::info!(%source, %fork, user_turn, "forked session");
+        emit(self.build_connected(&fork, &fork)).await;
+        Ok(fork)
     }
 
     /// Resume a persisted session, recovering its cwd from the session store.
