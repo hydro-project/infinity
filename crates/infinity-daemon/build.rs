@@ -66,14 +66,13 @@ fn main() {
 
 fn which_npm() -> String {
     // Prefer the npm found on PATH
-    for name in ["npm"] {
-        if std::process::Command::new(name)
-            .arg("--version")
-            .output()
-            .is_ok()
-        {
-            return name.to_owned();
-        }
+    let name = "npm";
+    if std::process::Command::new(name)
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
+        return name.to_owned();
     }
     panic!("bundled-web feature requires npm to be installed and on PATH");
 }

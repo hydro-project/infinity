@@ -78,6 +78,9 @@ unused_qualifications = "warn"
 alloc_instead_of_core = "warn"
 allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
+# `#[async_trait]` expands trait methods to return boxed futures and tags them
+# `#[must_use]`, tripping this lint on every such trait (clippy 1.99+).
+double_must_use = "allow"
 explicit_into_iter_loop = "warn"
 let_and_return = "allow"
 manual_is_variant_and = "warn"
