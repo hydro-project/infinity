@@ -97,6 +97,49 @@ impl DaemonObserver {
     fn broadcast(&self, dm: DaemonMessage) {
         broadcast_pruning(&self.subscribers, &dm, None);
     }
+
+    /// Render a [`ReplaySnapshot`] into the catch-up [`DaemonMessage::Replay`]
+    /// sent to new subscribers and broadcast after a rewind.
+    fn build_replay(&self, thread_id: &ThreadId<str>, snapshot: &ReplaySnapshot) -> DaemonMessage {
+        let mut history: Vec<DaemonMessage> = snapshot
+            .history
+            .iter()
+            .filter_map(|m| history_message_to_daemon(m, thread_id, &snapshot.history))
+            .collect();
+        // Include the in-progress thinking (streamed reasoning is only
+        // committed to history once it completes) so a client attaching
+        // mid-thinking recomputes a live "thinking" state from the end of
+        // the replay instead of appearing idle.
+        if let Some(thinking) = &snapshot.current_thinking {
+            history.push(DaemonMessage::ThinkingStart {
+                thread_id: Some(infinity_protocol::ThreadRef::local(thread_id.to_owned())),
+            });
+            history.push(DaemonMessage::ThinkingChunk {
+                thread_id: Some(infinity_protocol::ThreadRef::local(thread_id.to_owned())),
+                chunk: thinking.clone(),
+            });
+        }
+        let pending_choices = snapshot
+            .pending_choices
+            .iter()
+            .map(|choice| DaemonMessage::UserChoiceRequired {
+                thread_id: Some(infinity_protocol::ThreadRef::local(thread_id.to_owned())),
+                id: choice.id.clone(),
+                prompt: choice.prompt.clone(),
+                choices: choice.choices.clone(),
+                default: choice.default,
+            })
+            .collect::<Vec<_>>();
+        DaemonMessage::Replay {
+            history,
+            pending_choices,
+            views: self.conversation_store.get_views(thread_id),
+            // Only an actual in-flight completion counts: while waiting on a
+            // tool result the clients derive their "waiting for tool call"
+            // spinner from the trailing ToolCall in the history instead.
+            in_progress: snapshot.in_progress,
+        }
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -138,47 +181,18 @@ impl ThreadObserver for DaemonObserver {
         snapshot: ReplaySnapshot,
     ) {
         if request.wants_replay {
-            let mut history: Vec<DaemonMessage> = snapshot
-                .history
-                .iter()
-                .filter_map(|m| history_message_to_daemon(m, thread_id, &snapshot.history))
-                .collect();
-            // Include the in-progress thinking (streamed reasoning is only
-            // committed to history once it completes) so a client attaching
-            // mid-thinking recomputes a live "thinking" state from the end of
-            // the replay instead of appearing idle.
-            if let Some(thinking) = snapshot.current_thinking {
-                history.push(DaemonMessage::ThinkingStart {
-                    thread_id: Some(infinity_protocol::ThreadRef::local(thread_id.to_owned())),
-                });
-                history.push(DaemonMessage::ThinkingChunk {
-                    thread_id: Some(infinity_protocol::ThreadRef::local(thread_id.to_owned())),
-                    chunk: thinking,
-                });
-            }
-            let choices = snapshot
-                .pending_choices
-                .iter()
-                .map(|choice| DaemonMessage::UserChoiceRequired {
-                    thread_id: Some(infinity_protocol::ThreadRef::local(thread_id.to_owned())),
-                    id: choice.id.clone(),
-                    prompt: choice.prompt.clone(),
-                    choices: choice.choices.clone(),
-                    default: choice.default,
-                })
-                .collect::<Vec<_>>();
-            let views = self.conversation_store.get_views(thread_id);
-            if !history.is_empty() || !choices.is_empty() || !views.is_empty() {
-                let _ = request.tx.send(DaemonMessage::Replay {
-                    history,
-                    pending_choices: choices,
-                    views,
-                    // Only an actual in-flight completion counts: while
-                    // waiting on a tool result the clients derive their
-                    // "waiting for tool call" spinner from the trailing
-                    // ToolCall in the history instead.
-                    in_progress: snapshot.in_progress,
-                });
+            let replay = self.build_replay(thread_id, &snapshot);
+            let DaemonMessage::Replay {
+                history,
+                pending_choices,
+                views,
+                ..
+            } = &replay
+            else {
+                unreachable!("bug: build_replay returns Replay");
+            };
+            if !history.is_empty() || !pending_choices.is_empty() || !views.is_empty() {
+                let _ = request.tx.send(replay);
             }
         }
         let mut subs = self.subscribers.lock().expect("bug: mutex poisoned");
@@ -192,5 +206,16 @@ impl ThreadObserver for DaemonObserver {
             tx: request.tx,
             keeps_session_alive: request.keeps_session_alive,
         });
+    }
+
+    fn on_rewound(&self, thread_id: &ThreadId<str>, snapshot: ReplaySnapshot) {
+        // The stored context-usage total describes discarded turns; reset it
+        // like `CompactionApplied` does (the next response reports fresh
+        // usage).
+        self.conversation_store.set_total_tokens_used(thread_id, 0);
+        // Incremental events cannot express "earlier messages are gone":
+        // broadcast a fresh replay — even an empty one (rewind to turn 0) —
+        // so every attached client rebuilds its transcript.
+        self.broadcast(self.build_replay(thread_id, &snapshot));
     }
 }

@@ -66,6 +66,14 @@ pub fn is_interrupt_input(msg: &InputMessage) -> bool {
         .is_some_and(SyntheticKind::is_interrupt)
 }
 
+/// The truncation cut of a rewind marker (see
+/// [`TaggedSyntheticKind::Rewind`][crate::message::TaggedSyntheticKind]), if
+/// this input is one. Like interrupts, the driver consumes these without
+/// stepping the thread.
+pub fn rewind_input_cut(msg: &InputMessage) -> Option<i64> {
+    msg.synthetic.as_ref().and_then(SyntheticKind::rewind_cut)
+}
+
 /// Whether this input is a synthetic event that can be deferred while the
 /// thread waits on a pending tool call (subscription events, thread reports,
 /// parent messages).
@@ -478,6 +486,56 @@ where
         if emit_completion {
             observer.on_event(&thread_id, &AgentEvent::CompletionFinished { usage: None });
         }
+        Ok(())
+    }
+
+    /// Handle a rewind marker (see [`rewind_input_cut`]): discard everything
+    /// after the thread's first `up_to` own-store rows, durably, and reload
+    /// the in-memory history.
+    ///
+    /// Before truncating, the discarded region is settled exactly like an
+    /// interrupt — a trailing unanswered tool call gets RAP cancellation
+    /// notifications, and **all** pending user choices are dismissed (their
+    /// prompts live in the region being discarded). The settlement artifacts
+    /// themselves are then discarded with the truncation.
+    ///
+    /// `emit_completion` mirrors [`interrupt`](Self::interrupt): callers that
+    /// just cancelled an in-flight step pass `false`. The post-rewind state
+    /// is handed to [`ThreadObserver::on_rewound`] so the embedding can
+    /// resynchronize attached clients.
+    pub async fn rewind<O: ThreadObserver>(
+        &self,
+        up_to: i64,
+        observer: &O,
+        emit_completion: bool,
+    ) -> Result<(), BoxError> {
+        let thread_id = self.history.thread_id.clone();
+        // Resolve the configuration first: the RAP cancellation notifier
+        // below needs it.
+        let config = self.resolved_config().await?;
+        self.history.interrupt_pending_tool_call();
+        self.settle_interrupted_tool_calls(&config, observer, &thread_id)
+            .await?;
+        // Dismiss every remaining pending choice: a choice can only be
+        // pending at the history tail, which the rewind discards.
+        let choices: Vec<UserChoice> = std::mem::take(&mut *self.pending_choices.borrow_mut());
+        for choice in choices {
+            self.inner
+                .state_store
+                .remove_pending_user_choice(&thread_id, &choice.id)
+                .await?;
+            observer.on_event(
+                &thread_id,
+                &AgentEvent::UserChoiceDismissed {
+                    choice_id: choice.id,
+                },
+            );
+        }
+        self.history.rewind_to(up_to).await?;
+        if emit_completion {
+            observer.on_event(&thread_id, &AgentEvent::CompletionFinished { usage: None });
+        }
+        observer.on_rewound(&thread_id, self.replay_snapshot());
         Ok(())
     }
 

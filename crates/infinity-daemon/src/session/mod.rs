@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use infinity_agent_core::ThreadId;
 use infinity_agent_core::message::{
-    InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind,
+    InfinityMessage, InputMessage, InputMessageContent, SyntheticKind, TaggedSyntheticKind,
 };
 use infinity_agent_core::system::AgentSystemBuilder;
 use infinity_agent_core::system::local::{
@@ -613,6 +613,112 @@ impl SessionManager {
     /// owns thread-existence and stopped-thread admission.
     pub fn input_sender(&self) -> ChannelSender {
         self.sender.clone()
+    }
+
+    /// Rewind `thread_id` to just before its `user_turn`-th plain user-text
+    /// turn, discarding that turn and everything after it (see
+    /// [`infinity_protocol::ClientMessage::Rewind`] for the full contract).
+    ///
+    /// The manager resolves the turn to an absolute store row, interrupts and
+    /// closes child threads spawned by the discarded region (so they cannot
+    /// report back into the rewound thread), and delivers a rewind marker
+    /// through the input path — the thread's driver cancels any in-flight
+    /// completion, performs the truncation, and broadcasts a fresh
+    /// [`DaemonMessage::Replay`] to subscribers.
+    pub async fn rewind_thread(
+        &self,
+        thread_id: &ThreadId<str>,
+        user_turn: usize,
+    ) -> Result<(), BoxError> {
+        // Resolve the 0-based user turn to a leading-row count over the
+        // thread's own persisted rows. Plain user-text rows correspond one
+        // for one to the `UserInputEcho` entries clients see in `Replay`
+        // (`<interrupt>`-prefixed texts included; rows hidden behind a
+        // compaction summary still exist and still count).
+        let rows = self
+            .conversation_store
+            .load_history_up_to(thread_id, None, None)
+            .await
+            .map_err(|e| format!("failed to load history: {e}"))?;
+        let cut = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| {
+                matches!(
+                    m,
+                    InfinityMessage::User {
+                        content: UserContent::Text(_)
+                    }
+                )
+            })
+            .nth(user_turn)
+            .map(|(i, _)| i as i64)
+            .ok_or_else(|| {
+                let total = rows
+                    .iter()
+                    .filter(|m| {
+                        matches!(
+                            m,
+                            InfinityMessage::User {
+                                content: UserContent::Text(_)
+                            }
+                        )
+                    })
+                    .count();
+                format!("thread has only {total} user turns, cannot rewind to turn {user_turn}")
+            })?;
+
+        // Child threads spawned by the discarded region can no longer report
+        // back into a history that will not contain their spawn calls:
+        // interrupt their subtrees and close every thread in them. (Children
+        // spawned before the cut keep running — their spawn calls survive.)
+        for child in self.conversation_store.get_open_subthreads(thread_id) {
+            // Direct children only: deeper descendants are handled via their
+            // own subtree walk below.
+            if child.parent_thread_id.id.as_str() != thread_id.as_str() {
+                continue;
+            }
+            let spawned_at = self
+                .conversation_store
+                .get_thread_spawn_order(&child.thread_id.id)
+                .await
+                .map_err(|e| format!("failed to load child spawn order: {e}"))?;
+            if spawned_at.is_some_and(|order| order >= cut) {
+                tracing::info!(child = %child.thread_id.id, "closing child spawned by rewound turns");
+                self.interrupt_thread(&child.thread_id.id).await;
+                for t in self
+                    .conversation_store
+                    .get_session_thread_ids(&child.thread_id.id)
+                {
+                    if let Err(e) = self.conversation_store.close_thread(&t).await {
+                        tracing::error!(thread = %t, "failed to close rewound child: {e}");
+                    }
+                }
+            }
+        }
+
+        // Deliver the truncation through the input path: the driver cancels
+        // any in-flight completion before consuming the marker, so the cut
+        // cannot race a step that is appending.
+        let delivered = self
+            .send_input((
+                InputMessage {
+                    content: InputMessageContent::User(UserContent::text("")),
+                    group_id: thread_id.to_owned(),
+                    metadata: None,
+                    synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::Rewind {
+                        up_to: cut,
+                    })),
+                    display_as: None,
+                    subscription: false,
+                },
+                None,
+            ))
+            .await;
+        if !delivered {
+            return Err("failed to deliver rewind to thread".into());
+        }
+        Ok(())
     }
 
     /// Switch the model used for future requests on a specific thread. The

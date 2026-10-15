@@ -74,6 +74,16 @@ pub enum TaggedSyntheticKind {
     /// folded into history.
     #[serde(rename = "interrupt")]
     Interrupt,
+    /// Rewind marker: truncate the thread's own history to its first `up_to`
+    /// rows (a leading-row count, see
+    /// [`ConversationStore::load_history_up_to`][load]) and discard
+    /// everything after. Like [`Interrupt`](Self::Interrupt) it first cancels
+    /// any in-flight completion and is consumed entirely by the thread
+    /// driver — it is never folded into history.
+    ///
+    /// [load]: crate::traits::ConversationStore::load_history_up_to
+    #[serde(rename = "rewind")]
+    Rewind { up_to: i64 },
 }
 
 impl SyntheticKind {
@@ -93,6 +103,7 @@ impl SyntheticKind {
                 ToolCallId::from_ref("")
             }
             SyntheticKind::Tagged(TaggedSyntheticKind::Interrupt) => ToolCallId::from_ref(""),
+            SyntheticKind::Tagged(TaggedSyntheticKind::Rewind { .. }) => ToolCallId::from_ref(""),
             SyntheticKind::SubscriptionEvent(id) => id,
         }
     }
@@ -126,6 +137,15 @@ impl SyntheticKind {
     /// [`TaggedSyntheticKind::Interrupt`]).
     pub fn is_interrupt(&self) -> bool {
         matches!(self, SyntheticKind::Tagged(TaggedSyntheticKind::Interrupt))
+    }
+
+    /// The truncation cut of a rewind marker (see
+    /// [`TaggedSyntheticKind::Rewind`]), if this is one.
+    pub fn rewind_cut(&self) -> Option<i64> {
+        match self {
+            SyntheticKind::Tagged(TaggedSyntheticKind::Rewind { up_to }) => Some(*up_to),
+            _ => None,
+        }
     }
 
     /// Associative subscription events are injected inline into the subscribing

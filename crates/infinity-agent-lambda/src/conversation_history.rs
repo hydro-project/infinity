@@ -284,6 +284,46 @@ impl ConversationStore for DsqlConversationStore {
         Ok(())
     }
 
+    async fn truncate_history(
+        &self,
+        thread_id: &ThreadId<str>,
+        up_to: i64,
+    ) -> Result<(), DsqlError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DsqlError(format!("Failed to begin transaction: {}", e)))?;
+
+        // `message_order` is 1-based, so keeping the first `up_to` rows means
+        // deleting every row with order > up_to.
+        sqlx::query(
+            r#"DELETE FROM conversation_history
+            WHERE session_id = $1 AND message_order > $2"#,
+        )
+        .bind(thread_id.as_str())
+        .bind(up_to)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DsqlError(format!("Failed to truncate history: {}", e)))?;
+
+        // Summaries covering discarded rows are meaningless now.
+        sqlx::query(
+            r#"DELETE FROM compaction_summaries
+            WHERE thread_id = $1 AND up_to_order > $2"#,
+        )
+        .bind(thread_id.as_str())
+        .bind(up_to)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DsqlError(format!("Failed to truncate compaction summaries: {}", e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DsqlError(format!("Failed to commit transaction: {}", e)))?;
+        Ok(())
+    }
+
     async fn spawn_thread(
         &self,
         parent_thread_id: &ThreadId<str>,

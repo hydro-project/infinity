@@ -806,6 +806,20 @@ impl ConversationStore for PersistentConversationStore {
         Ok(())
     }
 
+    async fn truncate_history(
+        &self,
+        thread_id: &ThreadId<str>,
+        up_to: i64,
+    ) -> Result<(), MemoryError> {
+        self.ensure_thread_loaded(thread_id);
+        self.core.truncate_history(thread_id, up_to).await?;
+        // Persist the truncation (messages and compaction summaries share the
+        // thread's snapshot file) and let session listings refresh.
+        self.save_thread(thread_id);
+        self.notify_session(thread_id);
+        Ok(())
+    }
+
     async fn spawn_thread(
         &self,
         parent_thread_id: &ThreadId<str>,

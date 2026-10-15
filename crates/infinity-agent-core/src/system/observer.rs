@@ -68,6 +68,19 @@ pub trait ThreadObserver {
         _snapshot: ReplaySnapshot,
     ) {
     }
+
+    /// A thread's history was rewound (see
+    /// [`Thread::rewind`](super::Thread::rewind)): everything from a user
+    /// turn onward was discarded, durably. `snapshot` is the post-rewind
+    /// replay view.
+    ///
+    /// Embeddings that fan events out to attached clients should rebuild
+    /// those clients' transcripts from the snapshot (e.g. broadcast a fresh
+    /// replay) — incremental events cannot express "earlier messages are
+    /// gone". Called on the driver task like
+    /// [`on_subscribe`](Self::on_subscribe), so the snapshot is atomic with
+    /// respect to the live event stream. The default does nothing.
+    fn on_rewound(&self, _thread_id: &ThreadId<str>, _snapshot: ReplaySnapshot) {}
 }
 
 /// An observer that buffers all events in memory, tagged with the thread that

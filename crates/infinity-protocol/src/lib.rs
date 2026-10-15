@@ -283,6 +283,38 @@ pub enum ClientMessage {
     Interrupt {
         thread_id: ThreadRef,
     },
+    /// Rewind a thread's conversation to just before one of its user turns,
+    /// discarding that turn and everything after it.
+    ///
+    /// `user_turn` is the 0-based index of the plain user-text turn to
+    /// discard, counted over the thread's **own** persisted history (not any
+    /// ancestor history a subthread inherits). This matches, one for one,
+    /// the [`DaemonMessage::UserInputEcho`] entries a client sees in that
+    /// thread's [`DaemonMessage::Replay`] — including turns hidden behind a
+    /// compaction summary, which still exist as store rows and still count.
+    ///
+    /// Semantics:
+    /// - Any in-flight completion on the thread is first interrupted
+    ///   (exactly like [`ClientMessage::Interrupt`]); pending user choices
+    ///   are dismissed (broadcast as [`DaemonMessage::UserChoiceComplete`]).
+    /// - Child threads spawned by the discarded turns are interrupted and
+    ///   closed, so they can no longer report back into the rewound thread.
+    /// - The thread's history is truncated to just before the targeted user
+    ///   turn and the truncation is persisted; compaction summaries covering
+    ///   discarded rows are dropped with them.
+    /// - A fresh [`DaemonMessage::Replay`] is broadcast to the thread's
+    ///   subscribers so attached clients can resynchronize their transcript.
+    /// - The thread stays alive and accepts new input: sending the edited
+    ///   user turn immediately after this message (on the same connection)
+    ///   is guaranteed to be processed after the rewind.
+    ///
+    /// A `user_turn` past the end of the thread's history is an error
+    /// (reported via [`DaemonMessage::Error`]); `user_turn: 0` resets the
+    /// thread to an empty conversation.
+    Rewind {
+        thread_id: ThreadRef,
+        user_turn: usize,
+    },
     /// Disconnect from the session while letting the agent continue to run in the background.
     Disconnect,
     /// Immediately attempt to detach. If the agent is idle, the daemon shuts
