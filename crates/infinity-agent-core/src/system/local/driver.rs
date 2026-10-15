@@ -26,7 +26,7 @@ use crate::system::builder::SystemInner;
 use crate::system::defer::InMemoryDeferQueue;
 use crate::system::events::AgentEvent;
 use crate::system::observer::ThreadObserver;
-use crate::system::thread::{StepOutcome, Thread, is_user_text_input};
+use crate::system::thread::{StepOutcome, Thread, is_interrupt_input, is_user_text_input};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -175,8 +175,11 @@ pub(crate) async fn drive_thread<C, S, H, O>(
                         batch.push(item);
                     }
 
-                    if batch.iter().any(|(msg, _)| is_user_text_input(msg)) {
-                        // User text interrupts the in-flight completion.
+                    let has_user_text = batch.iter().any(|(msg, _)| is_user_text_input(msg));
+                    // Input-less interrupts cancel the in-flight completion
+                    // just like user text; the markers themselves are consumed
+                    // by the shared stripping below (never stepped).
+                    if has_user_text || batch.iter().any(|(msg, _)| is_interrupt_input(msg)) {
                         let res = in_flight
                             .take()
                             .expect("bug: in-flight step missing during interrupt")
@@ -191,20 +194,41 @@ pub(crate) async fn drive_thread<C, S, H, O>(
                             &mut pending_batch,
                         );
 
-                        let (mut user_inputs, non_user_inputs): (Vec<_>, Vec<_>) = batch
-                            .into_iter()
-                            .partition(|(msg, _)| is_user_text_input(msg));
+                        if has_user_text {
+                            // User text supersedes an interrupt marker in the
+                            // same batch: folding the text already settles a
+                            // trailing tool call, so the marker is redundant.
+                            batch.retain(|(msg, _)| !is_interrupt_input(msg));
+                            let (mut user_inputs, non_user_inputs): (Vec<_>, Vec<_>) = batch
+                                .into_iter()
+                                .partition(|(msg, _)| is_user_text_input(msg));
 
-                        if let InputMessageContent::User(UserContent::Text(text)) =
-                            &mut user_inputs[0].0.content
-                        {
-                            text.text = format!("<interrupt>{}", text.text);
+                            if let InputMessageContent::User(UserContent::Text(text)) =
+                                &mut user_inputs[0].0.content
+                            {
+                                text.text = format!("<interrupt>{}", text.text);
+                            } else {
+                                panic!("bug: user_inputs should only contain user text");
+                            }
+
+                            pending_batch.extend(non_user_inputs);
+                            user_inputs
                         } else {
-                            panic!("bug: user_inputs should only contain user text");
+                            // Consume the markers: settle the thread without
+                            // emitting another completion notification (the
+                            // cancelled step already emitted one).
+                            batch.retain(|(msg, _)| !is_interrupt_input(msg));
+                            if let Err(e) = thread.interrupt(&observer, false).await {
+                                observer.on_event(
+                                    &thread_id,
+                                    &AgentEvent::Info {
+                                        text: format!("Error: {e}"),
+                                    },
+                                );
+                            }
+                            pending_batch.extend(batch);
+                            continue;
                         }
-
-                        pending_batch.extend(non_user_inputs);
-                        user_inputs
                     } else {
                         pending_batch.extend(batch);
                         continue;
@@ -290,6 +314,26 @@ pub(crate) async fn drive_thread<C, S, H, O>(
             if is_compaction_complete(msg) {
                 compaction_triggered = false;
                 total_tokens = 0;
+            }
+        }
+
+        // Consume input-less interrupt markers: settle the thread (synthetic
+        // "interrupted" result for a trailing tool call, RAP cancellation
+        // notifications, pending-choice dismissal) without queueing anything
+        // for the model. Markers that cancelled an in-flight step were
+        // consumed in the select arm above; these reached a parked or
+        // respawned driver with nothing in flight, so the settlement itself
+        // emits the completion notification that settles client indicators.
+        let mut new_inputs = new_inputs;
+        if new_inputs.iter().any(|(msg, _)| is_interrupt_input(msg)) {
+            new_inputs.retain(|(msg, _)| !is_interrupt_input(msg));
+            if let Err(e) = thread.interrupt(&observer, true).await {
+                observer.on_event(
+                    &thread_id,
+                    &AgentEvent::Info {
+                        text: format!("Error: {e}"),
+                    },
+                );
             }
         }
 

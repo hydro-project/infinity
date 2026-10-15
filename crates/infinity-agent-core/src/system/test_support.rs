@@ -83,6 +83,23 @@ pub(crate) fn user_text_input(group_id: &str, text: &str) -> (InputMessage, Stri
     )
 }
 
+/// An input-less interrupt marker (see
+/// [`TaggedSyntheticKind::Interrupt`]): cancels the thread's in-flight
+/// completion without queuing anything for the model.
+pub(crate) fn interrupt_input(group_id: &str) -> (InputMessage, String) {
+    (
+        InputMessage {
+            content: InputMessageContent::User(UserContent::text("")),
+            group_id: group_id.into(),
+            metadata: None,
+            synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::Interrupt)),
+            display_as: None,
+            subscription: false,
+        },
+        uuid::Uuid::new_v4().to_string(),
+    )
+}
+
 pub(crate) fn tool_result_input(group_id: &str, id: &str, text: &str) -> (InputMessage, String) {
     (
         InputMessage {
