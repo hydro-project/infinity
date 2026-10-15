@@ -212,6 +212,9 @@ fn strip_client_message(msg: ClientMessage, remote_name: &RemoteName) -> ClientM
             thread_id: thread_id.strip(remote_name),
             text,
         },
+        ClientMessage::Interrupt { thread_id } => ClientMessage::Interrupt {
+            thread_id: thread_id.strip(remote_name),
+        },
         ClientMessage::SoftDetach { root_thread_id } => ClientMessage::SoftDetach {
             root_thread_id: root_thread_id.strip(remote_name),
         },
@@ -523,6 +526,14 @@ pub async fn handle_client_channels(
                                 text: "failed to send input".into(),
                             });
                         }
+                    }
+                    ClientMessage::Interrupt { thread_id } => {
+                        if thread_id.remote.is_some() {
+                            let _ = daemon_tx.send(DaemonMessage::Error { thread_id: Some(thread_id), text: "remote is not connected".into() });
+                            continue;
+                        }
+                        let mgr = session_manager.lock().await;
+                        mgr.interrupt_thread(&thread_id.id).await;
                     }
                     ClientMessage::Disconnect => {
                         let (new_tx, new_rx) = mpsc::unbounded_channel::<DaemonMessage>();

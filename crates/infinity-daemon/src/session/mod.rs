@@ -555,6 +555,34 @@ impl SessionManager {
             .is_ok()
     }
 
+    /// Interrupt the in-flight work on `thread_id` and its descendant
+    /// subtree (see [`infinity_protocol::ClientMessage::Interrupt`]).
+    ///
+    /// The target always gets an interrupt marker; descendants only when
+    /// active, since idle ones have nothing in flight to cancel.
+    pub async fn interrupt_thread(&self, thread_id: &ThreadId<str>) {
+        // The subtree walk starts at the target itself.
+        let subtree = self.conversation_store.get_session_thread_ids(thread_id);
+        let targets: Vec<ThreadId> = {
+            let active = self.active_threads.lock().expect("bug: mutex poisoned");
+            subtree
+                .into_iter()
+                .enumerate()
+                .filter(|(i, target)| *i == 0 || active.contains(target))
+                .map(|(_, target)| target)
+                .collect()
+        };
+        for target in targets {
+            tracing::info!(%target, "interrupting thread");
+            if !self
+                .send_input((InputMessage::interrupt(target.clone()), None))
+                .await
+            {
+                tracing::error!(%target, "failed to deliver interrupt to thread");
+            }
+        }
+    }
+
     /// The agent system's input sender, used by the RAP callback bridge to
     /// forward converted callbacks directly into the input queue. The router
     /// owns thread-existence and stopped-thread admission.

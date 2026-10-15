@@ -26,7 +26,7 @@ use crate::system::builder::SystemInner;
 use crate::system::defer::InMemoryDeferQueue;
 use crate::system::events::AgentEvent;
 use crate::system::observer::ThreadObserver;
-use crate::system::thread::{StepOutcome, Thread, is_user_text_input};
+use crate::system::thread::{StepOutcome, Thread, is_interrupt_input, is_user_text_input};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -141,6 +141,9 @@ pub(crate) async fn drive_thread<C, S, H, O>(
     let mut in_flight: Option<InFlightStep<'_>> = None;
 
     loop {
+        // Set when this batch cancelled the in-flight step, which already
+        // emitted the round's `CompletionFinished`.
+        let mut cancelled = false;
         let new_inputs: Vec<(InputMessage, String)> = if let Some(flight) = in_flight.as_mut() {
             tokio::select! {
                 biased;
@@ -175,38 +178,36 @@ pub(crate) async fn drive_thread<C, S, H, O>(
                         batch.push(item);
                     }
 
-                    if batch.iter().any(|(msg, _)| is_user_text_input(msg)) {
-                        // User text interrupts the in-flight completion.
-                        let res = in_flight
-                            .take()
-                            .expect("bug: in-flight step missing during interrupt")
-                            .cancel()
-                            .await;
-                        handle_step_result(
-                            res,
-                            &observer,
-                            &thread_id,
-                            &mut total_tokens,
-                            &mut compaction_triggered,
-                            &mut pending_batch,
-                        );
-
-                        let (mut user_inputs, non_user_inputs): (Vec<_>, Vec<_>) = batch
-                            .into_iter()
-                            .partition(|(msg, _)| is_user_text_input(msg));
-
-                        // The marker records the interruption and settles a
-                        // trailing tool call (see `render_history`).
-                        let marker_id = format!("{}-interrupt", user_inputs[0].1);
-                        let marker = (InputMessage::interrupt(thread_id.to_owned()), marker_id);
-                        user_inputs.insert(0, marker);
-
-                        pending_batch.extend(non_user_inputs);
-                        user_inputs
-                    } else {
+                    if last_decisive_input(&batch).is_none() {
                         pending_batch.extend(batch);
                         continue;
                     }
+                    let res = in_flight
+                        .take()
+                        .expect("bug: in-flight step missing during interrupt")
+                        .cancel()
+                        .await;
+                    handle_step_result(
+                        res,
+                        &observer,
+                        &thread_id,
+                        &mut total_tokens,
+                        &mut compaction_triggered,
+                        &mut pending_batch,
+                    );
+                    cancelled = true;
+
+                    let (mut decisive, others): (Vec<_>, Vec<_>) =
+                        batch.into_iter().partition(|(msg, _)| is_decisive_input(msg));
+                    pending_batch.extend(others);
+                    // Interrupting text gets an implicit marker recording
+                    // where the in-flight work was cut off.
+                    if is_user_text_input(&decisive[0].0) {
+                        let marker_id = format!("{}-interrupt", decisive[0].1);
+                        let marker = (InputMessage::interrupt(thread_id.to_owned()), marker_id);
+                        decisive.insert(0, marker);
+                    }
+                    decisive
                 },
                 req = subscribe_rx.recv(), if !subscribe_closed => {
                     match req {
@@ -291,6 +292,30 @@ pub(crate) async fn drive_thread<C, S, H, O>(
             }
         }
 
+        // A batch whose last decisive input is an interrupt is recorded
+        // without a completion; its other inputs are handled as usual.
+        let mut new_inputs = new_inputs;
+        if last_decisive_input(&new_inputs) == Some(DecisiveInput::Interrupt) {
+            let (decisive, others): (Vec<_>, Vec<_>) = new_inputs
+                .into_iter()
+                .partition(|(msg, _)| is_decisive_input(msg));
+            new_inputs = others;
+            if let Err(e) = thread.record_interrupt(decisive, &observer).await {
+                observer.on_event(
+                    &thread_id,
+                    &AgentEvent::Info {
+                        text: format!("Error: {e}"),
+                    },
+                );
+            }
+            if !cancelled {
+                observer.on_event(&thread_id, &AgentEvent::CompletionFinished { usage: None });
+            }
+            if new_inputs.is_empty() {
+                continue;
+            }
+        }
+
         let batch = match thread.filter_deferrable(new_inputs, &mut defer).await {
             Ok(batch) => batch,
             Err(e) => {
@@ -320,6 +345,34 @@ enum IdleDecision {
     Continue,
     Exit,
     AwaitInput,
+}
+
+/// User text or an interrupt marker: the inputs that interrupt an in-flight
+/// completion. Other inputs are handled as usual.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DecisiveInput {
+    UserText,
+    Interrupt,
+}
+
+fn is_decisive_input(msg: &InputMessage) -> bool {
+    is_user_text_input(msg) || is_interrupt_input(msg)
+}
+
+/// The kind of the last decisive input in `batch`, if any. Any decisive
+/// input interrupts the in-flight completion; the last one decides whether a
+/// new completion runs (user text) or not (an interrupt: `[text, interrupt]`
+/// records the text without answering it).
+fn last_decisive_input(batch: &[(InputMessage, String)]) -> Option<DecisiveInput> {
+    batch.iter().rev().find_map(|(msg, _)| {
+        if is_user_text_input(msg) {
+            Some(DecisiveInput::UserText)
+        } else if is_interrupt_input(msg) {
+            Some(DecisiveInput::Interrupt)
+        } else {
+            None
+        }
+    })
 }
 
 /// Perform the final idle check without yielding to the router task. Since the
@@ -444,8 +497,29 @@ impl Drop for DriverGuard {
 }
 #[cfg(test)]
 mod tests {
+    use super::{DecisiveInput, last_decisive_input};
     use crate::system::events::AgentEvent;
     use crate::system::test_support::*;
+
+    #[test]
+    fn last_decisive_input_follows_batch_order() {
+        let text = user_text_input("t1", "a");
+        let marker = interrupt_input("t1");
+        let result = tool_result_input("t1", "tc", "out");
+        assert_eq!(last_decisive_input(std::slice::from_ref(&result)), None);
+        assert_eq!(
+            last_decisive_input(&[text.clone(), marker.clone()]),
+            Some(DecisiveInput::Interrupt)
+        );
+        assert_eq!(
+            last_decisive_input(&[marker, text.clone()]),
+            Some(DecisiveInput::UserText)
+        );
+        assert_eq!(
+            last_decisive_input(&[text, result]),
+            Some(DecisiveInput::UserText)
+        );
+    }
 
     /// An active subscription does not keep a driver resident: once the
     /// subscription tool's result settles the call, the driver idles out, and a

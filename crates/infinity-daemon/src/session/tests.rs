@@ -686,6 +686,141 @@ async fn child_pending_choice_updates_root_session_status() {
         .await;
 }
 
+/// `interrupt_thread` cancels exactly the targeted subtree: interrupting a
+/// child settles the child's round while the root keeps streaming.
+#[tokio::test(flavor = "current_thread")]
+async fn interrupt_thread_targets_subtree_only() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (model1, mut ctrl1) = mock_model();
+            let (model2, mut ctrl2) = mock_model();
+            let entry = |id: &str| ModelEntry {
+                model_id: id.to_owned(),
+                display_name: id.to_owned(),
+                context_window: 100_000,
+                max_output_tokens: None,
+                supports_image_input: false,
+            };
+            let state_dir = tempfile::tempdir().expect("create daemon state dir");
+            let cwd = tempfile::tempdir().expect("create session cwd");
+            let manager = SessionManager::with_providers(
+                SessionManagerConfig {
+                    state_dir: state_dir.path().to_path_buf(),
+                    callback_url: "http://127.0.0.1:0".to_owned(),
+                    user_rap_config: None,
+                    id_source: Arc::new(SequentialIdSource::new()),
+                },
+                vec![
+                    (
+                        "provider1".to_owned(),
+                        Arc::new(SingleModelProvider::new(entry("model1"), model1))
+                            as Arc<dyn ModelProvider>,
+                    ),
+                    (
+                        "provider2".to_owned(),
+                        Arc::new(SingleModelProvider::new(entry("model2"), model2))
+                            as Arc<dyn ModelProvider>,
+                    ),
+                ],
+                vec![],
+            )
+            .await
+            .expect("build session manager");
+
+            let mut emit = |_message| async {};
+            let session_id = manager
+                .create_session(cwd.path(), model1_ref(), &mut emit)
+                .await
+                .expect("create session");
+            let (client_tx, mut client_rx) = mpsc::unbounded_channel();
+            manager
+                .attach_client(&session_id, client_tx, false, true)
+                .await;
+
+            // Spawn a child thread on the second provider so the two threads'
+            // completions are driven by independent controllers.
+            let child_id = manager
+                .conversation_store
+                .spawn_thread(
+                    &session_id,
+                    rap_protocol::ToolCallId::from_ref("spawn-call"),
+                    false,
+                    SpawnContext::InheritUpTo(0),
+                )
+                .await
+                .expect("spawn child thread");
+            manager
+                .conversation_store
+                .set_thread_model(&child_id, model2_ref());
+
+            let next_response_done =
+                async |rx: &mut mpsc::UnboundedReceiver<DaemonMessage>| -> ThreadId {
+                    loop {
+                        match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                            .await
+                            .expect("timed out waiting for ResponseDone")
+                            .expect("client channel closed")
+                        {
+                            DaemonMessage::ResponseDone { thread_id, .. } => {
+                                return thread_id.expect("ResponseDone carries a thread id").id;
+                            }
+                            _ => continue,
+                        }
+                    }
+                };
+            let wait_text = async |rx: &mut mpsc::UnboundedReceiver<DaemonMessage>, want: &str| {
+                loop {
+                    match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                        .await
+                        .expect("timed out waiting for TextChunk")
+                        .expect("client channel closed")
+                    {
+                        DaemonMessage::TextChunk { chunk, .. } if chunk == want => return,
+                        _ => continue,
+                    }
+                }
+            };
+
+            // Start a round on both threads and keep both streams open.
+            assert!(
+                manager
+                    .send_input((
+                        InputMessage::user_text(session_id.clone(), "root task"),
+                        None
+                    ))
+                    .await
+            );
+            let _ = ctrl1.next_request().await;
+            ctrl1.send_text("root streaming");
+            wait_text(&mut client_rx, "root streaming").await;
+
+            assert!(
+                manager
+                    .send_input((
+                        InputMessage::user_text(child_id.clone(), "child task"),
+                        None
+                    ))
+                    .await
+            );
+            let _ = ctrl2.next_request().await;
+            ctrl2.send_text("child streaming");
+            wait_text(&mut client_rx, "child streaming").await;
+
+            // Interrupt the child: only the child's round settles.
+            manager.interrupt_thread(&child_id).await;
+            assert_eq!(next_response_done(&mut client_rx).await, child_id);
+
+            // The root stream is untouched: it still accepts chunks.
+            ctrl1.send_text("root continues");
+            wait_text(&mut client_rx, "root continues").await;
+
+            manager.interrupt_thread(&session_id).await;
+            assert_eq!(next_response_done(&mut client_rx).await, session_id);
+        })
+        .await;
+}
+
 /// A callback-style event (a tool result with no live driver) for a session
 /// the user shut down is refused by the stopped-thread policy inside the
 /// router, while the same event for a live session wakes its thread. This

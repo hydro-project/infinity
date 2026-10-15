@@ -505,6 +505,21 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         self.pending_items.borrow_mut().extend(drained);
     }
 
+    /// Promote the leading unvalidated interrupt entries to the known-safe
+    /// queue, stopping at the first user input. Used when an interrupt is
+    /// recorded without a completion, which would otherwise never validate
+    /// them.
+    pub fn promote_harness_settlements(&self) {
+        let mut unvalidated = self.unvalidated_items.borrow_mut();
+        let harness_prefix = unvalidated
+            .iter()
+            .take_while(|item| matches!(item.message, InfinityMessage::Interrupt))
+            .count();
+        self.pending_items
+            .borrow_mut()
+            .extend(unvalidated.drain(..harness_prefix));
+    }
+
     /// Number of inputs still awaiting model validation.
     pub fn unvalidated_len(&self) -> usize {
         self.unvalidated_items.borrow().len()
@@ -2504,6 +2519,31 @@ mod tests {
             hm.take_interrupted_tool_calls(),
             vec![ToolCallId::from("tc-1")]
         );
+    }
+
+    /// `[text, interrupt]` recorded without a completion persists the
+    /// harness settlement of the pending call but not the untested user text.
+    #[tokio::test]
+    async fn promote_harness_settlements_stops_at_user_input() {
+        let store = InMemoryConversationStore::new();
+        let initial = vec![tool_call_msg("tc-1", "some_tool", serde_json::json!({}))];
+        let hm = make_history(&store, initial).await;
+        for (input, id) in [
+            (user_text_msg("thread-1", "actually, stop"), "msg-1"),
+            (InputMessage::interrupt("thread-1"), "msg-2"),
+        ] {
+            prepare_input(input, id.to_owned(), &hm, &store, &StubSender)
+                .await
+                .expect("prepare input");
+        }
+        hm.promote_harness_settlements();
+        hm.sync().await.expect("sync");
+        let stored = persisted(&store);
+        assert!(
+            stored.ends_with("(Interrupt, \"tc-1-interrupted\")]"),
+            "{stored}"
+        );
+        assert!(!stored.contains("actually, stop"), "{stored}");
     }
 
     #[tokio::test]
