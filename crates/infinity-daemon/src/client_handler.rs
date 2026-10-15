@@ -212,6 +212,15 @@ fn strip_client_message(msg: ClientMessage, remote_name: &RemoteName) -> ClientM
             thread_id: thread_id.strip(remote_name),
             text,
         },
+        ClientMessage::ForkSession {
+            thread_id,
+            user_turn,
+            keeps_session_alive,
+        } => ClientMessage::ForkSession {
+            thread_id: thread_id.strip(remote_name),
+            user_turn,
+            keeps_session_alive,
+        },
         ClientMessage::SoftDetach { root_thread_id } => ClientMessage::SoftDetach {
             root_thread_id: root_thread_id.strip(remote_name),
         },
@@ -522,6 +531,29 @@ pub async fn handle_client_channels(
                                 thread_id: Some(thread_id),
                                 text: "failed to send input".into(),
                             });
+                        }
+                    }
+                    ClientMessage::ForkSession { thread_id, user_turn, keeps_session_alive } => {
+                        if thread_id.remote.is_some() {
+                            let _ = daemon_tx.send(DaemonMessage::Error { thread_id: Some(thread_id), text: "remote is not connected".into() });
+                            continue;
+                        }
+                        let mgr = session_manager.lock().await;
+                        let mut emit = async |msg: DaemonMessage| {
+                            let _ = daemon_tx.send(msg);
+                        };
+                        match mgr.fork_session(&thread_id.id, user_turn, &mut emit).await {
+                            Ok(fork) => {
+                                mgr.attach_client(&fork, client_tx.clone(), false, keeps_session_alive).await;
+                                attached_thread_id = Some(fork.clone());
+                                attached_session_id = Some(fork);
+                            }
+                            Err(e) => {
+                                let _ = daemon_tx.send(DaemonMessage::Error {
+                                    thread_id: Some(thread_id),
+                                    text: format!("fork failed: {e}"),
+                                });
+                            }
                         }
                     }
                     ClientMessage::Disconnect => {
