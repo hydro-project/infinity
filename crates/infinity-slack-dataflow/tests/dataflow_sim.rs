@@ -107,6 +107,8 @@ fn chat(user: &str, text: &str, channel: &str, thread_ts: &str) -> SlackEvent {
         response_url: None,
         trigger_id: None,
         is_app_home_opened: false,
+        is_session_stopped: false,
+        streaming_message_ts: Vec::new(),
     }
 }
 
@@ -533,6 +535,132 @@ fn multiple_tool_calls_keep_stream_open() {
 /// root) is tagged with the subagent id — so the I/O layer routes it into a
 /// dedicated Slack thread — and its tool/stream state is tracked separately
 /// from the root stream.
+/// A native stop-button click (`agent_session_stopped`) halts the thread's
+/// stream and posts a confirmation. With no session mapped to the thread
+/// (e.g. a stop from before a bot restart) it produces NO daemon command —
+/// there is nothing to interrupt, and it must not create a session.
+#[test]
+fn session_stop_halts_stream_and_confirms() {
+    let mut flow = FlowBuilder::new();
+    let (slack_tx, _daemon_tx, actions_out, commands_out) = build_sim(&mut flow);
+
+    flow.sim().exhaustive(async || {
+        let thread_ts = fresh("stop");
+        let channel = fresh("C");
+
+        let mut stop = chat("U1", "", &channel, &thread_ts);
+        stop.is_session_stopped = true;
+        stop.streaming_message_ts = vec!["111.222".to_owned()];
+        slack_tx.send(stop);
+
+        let cmds: Vec<DaemonCommand> = commands_out.collect().await;
+        assert!(
+            cmds.is_empty(),
+            "stop must not produce daemon commands, got {cmds:?}"
+        );
+
+        let actions: Vec<SlackAction> = actions_out.collect().await;
+        match &actions[..] {
+            [SlackAction::HaltStreams {
+                channel: c1,
+                thread_ts: t1,
+                subagent,
+                stopped_message_ts,
+            }, SlackAction::PostMessage {
+                thread_ts: t2,
+                subagent: s2,
+                text,
+                ..
+            }] => {
+                assert_eq!(c1, &channel);
+                assert_eq!(t1, &thread_ts);
+                assert!(subagent.is_none(), "root-thread stop has no subagent");
+                assert_eq!(stopped_message_ts, &vec!["111.222".to_owned()]);
+                assert_eq!(t2.as_deref(), Some(thread_ts.as_str()));
+                assert!(s2.is_none());
+                assert!(text.contains("Stopped"), "confirmation text: {text}");
+            }
+            other => panic!("expected [HaltStreams, PostMessage], got {other:?}"),
+        }
+    });
+}
+
+/// A native stop-button click on a thread with a registered session emits an
+/// `Interrupt` daemon command targeting the session root, alongside the
+/// Slack-side halt + confirmation.
+#[test]
+fn session_stop_interrupts_daemon_generation() {
+    let mut flow = FlowBuilder::new();
+    let (slack_tx, daemon_tx, actions_out, commands_out) = build_sim(&mut flow);
+
+    flow.sim().unit_test_fuzz_iterations(256).fuzz(async || {
+        let thread_ts = fresh("stopint");
+        let channel = fresh("C");
+        let session_id = fresh("sess");
+
+        slack_tx.send(chat("U1", "work", &channel, &thread_ts));
+        assert!(matches!(
+            commands_out.next().await.unwrap(),
+            DaemonCommand::CreateSession { .. }
+        ));
+
+        // Register the session (the SetThreadTitle action is the
+        // synchronization point proving the registration was processed).
+        daemon_tx.send(devent(
+            &thread_ts,
+            infinity_protocol::DaemonMessage::Connected {
+                root_thread_id: session_id.clone().into(),
+                thread_id: session_id.clone().into(),
+                model_name: String::new(),
+                context_window: 0,
+                title: Some("Root".to_owned()),
+                total_tokens_used: 0,
+                provider_id: String::new(),
+            },
+        ));
+        loop {
+            match actions_out.next().await.unwrap() {
+                SlackAction::SetThreadTitle { .. } => break,
+                SlackAction::SetStatus { .. } => {}
+                other => panic!("expected SetThreadTitle, got {other:?}"),
+            }
+        }
+
+        let mut stop = chat("U1", "", &channel, &thread_ts);
+        stop.is_session_stopped = true;
+        stop.streaming_message_ts = vec!["111.222".to_owned()];
+        slack_tx.send(stop);
+
+        match commands_out.next().await.unwrap() {
+            DaemonCommand::Interrupt {
+                thread_ts: t,
+                session_id: s,
+                target_thread,
+            } => {
+                assert_eq!(t, thread_ts);
+                assert_eq!(s.to_string(), session_id);
+                assert!(
+                    target_thread.is_none(),
+                    "a root-thread stop interrupts the session root"
+                );
+            }
+            other => panic!("expected Interrupt, got {other:?}"),
+        }
+
+        // The Slack-side halt + confirmation still happen.
+        let actions: Vec<SlackAction> = actions_out.collect().await;
+        let core = non_status(&actions);
+        match &core[..] {
+            [SlackAction::HaltStreams { thread_ts: t1, .. }, SlackAction::PostMessage { text, .. }] =>
+            {
+                assert_eq!(t1, &thread_ts);
+                assert!(text.contains("interrupted"), "confirmation text: {text}");
+            }
+            other => panic!("expected [HaltStreams, PostMessage], got {other:?}"),
+        }
+    });
+}
+
 #[test]
 fn subagent_output_is_tagged_and_tracked_separately() {
     let mut flow = FlowBuilder::new();
