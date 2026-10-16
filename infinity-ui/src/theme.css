@@ -37,6 +37,9 @@
   --accent-orange: #f0a040;
   --accent-red: #e04040;
   --glass-bg: rgba(20, 20, 20, 0.7);
+  /* --glass-bg composited over --bg: for surfaces that must stay readable
+     over scrolling content (e.g. the top pills) without a backdrop blur. */
+  --glass-bg-opaque: #111111;
   --glass-border: rgba(255, 255, 255, 0.08);
   --glass-shadow: rgba(0, 0, 0, 0.4);
 
@@ -85,6 +88,7 @@
   --accent-orange: #d48a20;
   --accent-red: #d03030;
   --glass-bg: rgba(255, 255, 255, 0.6);
+  --glass-bg-opaque: #fbfbfc;
   --glass-border: rgba(0, 0, 0, 0.08);
   --glass-shadow: rgba(0, 0, 0, 0.1);
 

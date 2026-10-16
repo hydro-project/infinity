@@ -855,6 +855,16 @@ export function App() {
   const chatPanelOffset =
     hasViews && chatPinned && !chatAsTab ? chatPanelWidth + 16 : 24;
 
+  // Whether the floating chat panel has finished sliding in and now fully
+  // covers the top-right corner (where the portal spinner lives). Set on the
+  // slide-in transition's end, cleared as soon as the panel starts hiding, so
+  // the spinner keeps animating while visible during the slide and only
+  // pauses once actually obscured.
+  const [chatCovering, setChatCovering] = useState(false);
+  useEffect(() => {
+    if (!chatVisible) setChatCovering(false);
+  }, [chatVisible]);
+
   // Auto-select first view tab when views first appear
   useEffect(() => {
     if (hasViews && activeTab === null) {
@@ -1138,6 +1148,16 @@ export function App() {
       {hasViews && !chatAsTab && (
         <div
           className={`${chatCss.chatPanel} ${!chatVisible ? chatCss.chatPanelHidden : ""}`}
+          data-floating={chatVisible && !chatPinned ? "" : undefined}
+          onTransitionEnd={(e) => {
+            if (
+              e.target === e.currentTarget &&
+              e.propertyName === "transform" &&
+              chatVisible
+            ) {
+              setChatCovering(true);
+            }
+          }}
         >
           <div className={chatCss.chatPanelHeader}>
             <span className={chatCss.chatPanelTitle}>Chat</span>
@@ -1208,7 +1228,10 @@ export function App() {
             style={{ cursor: "pointer" }}
           >
             {spinner ? (
-              <Spinner state={spinner} />
+              // Paused (not hidden — hiding would flash on reveal) once the
+              // slid-in chat panel fully covers the top-right corner; keeps
+              // animating during the slide itself while still visible.
+              <Spinner state={spinner} paused={chatCovering} />
             ) : (
               <div className={css.chatIdleDot} />
             )}

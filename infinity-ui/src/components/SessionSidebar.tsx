@@ -310,6 +310,7 @@ export const SessionSidebar = memo(function SessionSidebar({
   return (
     <aside
       className={`${css.sidebar} ${!visible && !pinned ? css.hidden : ""}`}
+      data-floating={!pinned && visible ? "" : undefined}
       style={{ width }}
     >
       <div className={css.header}>

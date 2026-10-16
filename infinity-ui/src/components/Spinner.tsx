@@ -72,18 +72,27 @@ const TOOL_PERIOD_S = 3;
  * palette end toward orange as it rises. */
 const LOADING_PERIOD_S = 0.8;
 const LOADING_BAR_DELAY_S = (0.3 * LOADING_PERIOD_S) / (2 * Math.PI);
-const LOADING_DIM = "rgb(54,18,6)"; // WARM[0] rgb(180,60,20) at dim 0.3
+// Trough color: a clearly-red ember rather than the canvas version's
+// near-black (WARM[0] at dim 0.3 read as plain black at bar size).
+const LOADING_DIM = "rgb(100,33,11)";
 const LOADING_BRIGHT = "rgb(255,160,60)";
 const loadingWave = (i: number) =>
   Math.max(0.15, Math.sin(0.3 * i) * 0.5 + 0.5);
 
 interface Props {
   state: SpinnerState;
+  /**
+   * Externally pause the animation, e.g. while the spinner is covered by
+   * an overlay. Prefer pausing over unmounting/hiding: the spinner stays
+   * in place (no flash when it is revealed again) but produces no
+   * compositor frames.
+   */
+  paused?: boolean;
 }
 
-export function Spinner({ state }: Props) {
+export function Spinner({ state, paused = false }: Props) {
   const ref = useRef<HTMLDivElement>(null);
-  const [paused, setPaused] = useState(false);
+  const [offscreen, setOffscreen] = useState(false);
 
   // Pause the animations while off-screen. The slide-away chat panel hides
   // with `transform: translateX(110%)` while staying mounted; without this
@@ -97,7 +106,7 @@ export function Spinner({ state }: Props) {
     const el = ref.current;
     if (!el || typeof IntersectionObserver === "undefined") return;
     const observer = new IntersectionObserver(([entry]) => {
-      setPaused(!entry.isIntersecting);
+      setOffscreen(!entry.isIntersecting);
     });
     observer.observe(el);
     return () => observer.disconnect();
@@ -177,7 +186,7 @@ export function Spinner({ state }: Props) {
         key={state}
         className={css.anim}
         style={{ width: TOTAL_W, height: BAR_H }}
-        data-paused={paused || undefined}
+        data-paused={paused || offscreen || undefined}
       >
         {content}
       </div>

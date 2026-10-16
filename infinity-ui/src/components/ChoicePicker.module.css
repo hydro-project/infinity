@@ -5,8 +5,6 @@
 
 .inner {
   background: var(--glass-bg);
-  backdrop-filter: blur(24px) saturate(1.4);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
   border: 1px solid var(--glass-border);
   box-shadow:
     0 8px 32px var(--glass-shadow),

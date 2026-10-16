@@ -36,9 +36,7 @@
 }
 
 .infoPill {
-  background: var(--glass-bg);
-  backdrop-filter: blur(24px) saturate(1.4);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  background: var(--glass-bg-opaque);
   border: 1px solid var(--glass-border);
   box-shadow: 0 4px 16px var(--glass-shadow);
   border-radius: 20px;
@@ -121,9 +119,7 @@
 }
 
 .themePill {
-  background: var(--glass-bg);
-  backdrop-filter: blur(24px) saturate(1.4);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  background: var(--glass-bg-opaque);
   border: 1px solid var(--glass-border);
   box-shadow: 0 4px 16px var(--glass-shadow);
   color: var(--text-dim);
@@ -142,9 +138,7 @@
 }
 
 .hostPill {
-  background: var(--glass-bg);
-  backdrop-filter: blur(24px) saturate(1.4);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  background: var(--glass-bg-opaque);
   border: 1px solid var(--glass-border);
   box-shadow: 0 4px 16px var(--glass-shadow);
   border-radius: 20px;
@@ -172,9 +166,7 @@
 
 .viewTab {
   z-index: 100;
-  background: var(--glass-bg);
-  backdrop-filter: blur(24px) saturate(1.4);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  background: var(--glass-bg-opaque);
   border: 1px solid var(--glass-border);
   box-shadow: 0 4px 16px var(--glass-shadow);
   border-radius: 16px;

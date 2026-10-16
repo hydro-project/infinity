@@ -7,8 +7,6 @@
   align-items: center;
   gap: 8px;
   background: var(--glass-bg);
-  backdrop-filter: blur(24px) saturate(1.4);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
   box-sizing: border-box;
   border: 1px solid var(--glass-border);
   box-shadow:
