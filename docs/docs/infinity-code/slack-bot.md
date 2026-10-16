@@ -33,6 +33,10 @@ features:
       description: List available models or switch the default for new sessions
       usage_hint: "[provider_id/model_id]"
       should_escape: false
+    - command: /compact
+      description: Compact the session's context (summarize older conversation)
+      usage_hint: "[thread_ts]"
+      should_escape: false
   shortcuts:
     - name: Rewind to here
       type: message
@@ -207,6 +211,19 @@ Use the `/model` slash command (responses are ephemeral — only you see them):
 | `/model <display name or model id>` | Same, matching by name (case-insensitive) |
 
 The switch applies to sessions created afterwards; existing threads keep their model. The available model list is populated from the daemon after the first session is created.
+
+## Compacting Context
+
+Use the `/compact` slash command to summarize a session's older conversation and free up context space (the ack is ephemeral; a "🗜️ Context compacted" note is posted in the session thread when done):
+
+| Command | Effect |
+|---------|--------|
+| `/compact` | Compact this channel's session (if the channel hosts several session threads, lists them so you can pick) |
+| `/compact <thread_ts>` | Compact the session of a specific thread (copy the ts from the ambiguity listing, or from the thread's message link) |
+
+Slack does not deliver developer slash commands typed inside message threads, so `/compact` is always invoked at the channel level and targets a session by channel (or by the explicit `thread_ts` argument). The same note is posted when the daemon auto-compacts a session on its own.
+
+To enable the command, add `/compact` under **Slash Commands** in your [app settings](https://api.slack.com/apps) (or re-apply the manifest above — remembering that manifests replace rather than merge).
 
 ## Troubleshooting
 
