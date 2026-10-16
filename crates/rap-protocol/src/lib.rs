@@ -218,6 +218,14 @@ pub struct ToolsetManifest {
     pub tools: Vec<ToolDef>,
     #[serde(default, rename = "needsMigration")]
     pub needs_migration: bool,
+    /// Instructions the runtime appends to the system prompt of every thread
+    /// that can use this server's tools.
+    #[serde(
+        default,
+        rename = "systemPrompt",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub system_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
