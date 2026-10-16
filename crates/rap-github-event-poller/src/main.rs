@@ -27,6 +27,7 @@ fn build_manifest(endpoint: &str) -> ToolsetManifest {
         description: Some("Subscribe to GitHub repository events via polling (no webhooks required)".to_owned()),
         endpoint: endpoint.to_owned(),
         needs_migration: false,
+        system_prompt: None,
         tools: vec![ToolDef {
             name: "subscribe_github_events".to_owned(),
             description:
