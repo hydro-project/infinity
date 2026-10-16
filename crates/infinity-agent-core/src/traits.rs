@@ -154,6 +154,20 @@ pub trait ConversationStore: Send + Sync + Clone {
         messages: Vec<(InfinityMessage, String)>,
     ) -> Result<(), Self::Error>;
 
+    /// Discard a thread's own history from leading-row count `up_to` onward:
+    /// the thread keeps its first `up_to` messages (counted like the bounds
+    /// of [`load_history_up_to`](Self::load_history_up_to)) and everything
+    /// after is deleted. Compaction summaries whose `up_to_order` exceeds
+    /// `up_to` cover discarded rows and are dropped with them.
+    ///
+    /// Used by thread rewind. Callers are responsible for quiescing the
+    /// thread first (no in-flight completion appending concurrently).
+    async fn truncate_history(
+        &self,
+        thread_id: &ThreadId<str>,
+        up_to: i64,
+    ) -> Result<(), Self::Error>;
+
     async fn spawn_thread(
         &self,
         parent_thread_id: &ThreadId<str>,

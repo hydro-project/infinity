@@ -323,6 +323,136 @@ async fn interrupt_settles_pending_tool_call_so_late_result_is_dropped() {
         .await;
 }
 
+/// A rewind marker truncates the thread's durable history at the cut, and
+/// subsequent rounds no longer see the discarded turns. The thread accepts
+/// new input afterwards.
+#[tokio::test(flavor = "current_thread")]
+async fn rewind_discards_turns_and_later_rounds_do_not_see_them() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (mut running, mut rx, mut ctrl, conv) = start_system(vec![], None);
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "first question")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_text("first answer");
+            ctrl.finish();
+            collect_until_finished(&mut rx).await;
+
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "second question")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_text("second answer");
+            ctrl.finish();
+            collect_until_finished(&mut rx).await;
+            wait_idle(&mut running).await;
+
+            // Rows: [user "first question", assistant "first answer",
+            // user "second question", assistant "second answer"] — rewinding
+            // to before the second user turn keeps the first two.
+            let (rewind, dedup) = rewind_input("t1", 2);
+            running.send(rewind, &dedup).await;
+            loop {
+                if let Evt::E(AgentEvent::CompletionFinished { .. }) = next_evt(&mut rx).await {
+                    break;
+                }
+            }
+            wait_idle(&mut running).await;
+
+            // The truncation is durable and nothing was queued for the model.
+            let rows = conv
+                .thread_messages(ThreadId::from_ref("t1"))
+                .expect("thread has rows");
+            assert_eq!(rows.len(), 2, "rewind must keep exactly the kept prefix");
+            assert!(
+                ctrl.try_next_request().is_none(),
+                "a rewind must not trigger a completion round"
+            );
+
+            // A follow-up round sees the kept prefix but not the discarded turns.
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "edited question")
+                .await;
+            let req = ctrl.next_request().await;
+            let history_text = format!("{:?}", req.chat_history);
+            assert!(
+                history_text.contains("first answer"),
+                "kept prefix must stay visible, got: {history_text}"
+            );
+            assert!(
+                !history_text.contains("second question"),
+                "discarded turns must be gone, got: {history_text}"
+            );
+            ctrl.send_text("edited answer");
+            ctrl.finish();
+            collect_until_finished(&mut rx).await;
+        })
+        .await;
+}
+
+/// A rewind marker arriving while a completion is streaming cancels it first;
+/// the partial output flushed by the cancellation is discarded with the
+/// truncation, leaving exactly the kept prefix.
+#[tokio::test(flavor = "current_thread")]
+async fn rewind_cancels_in_flight_completion_and_discards_partial_output() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (mut running, mut rx, mut ctrl, conv) = start_system(vec![], None);
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "work on something")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_text("partial...");
+            // Wait until the chunk is observed so the completion is in flight.
+            loop {
+                if let Evt::E(AgentEvent::TextChunk { .. }) = next_evt(&mut rx).await {
+                    break;
+                }
+            }
+
+            // Rewind to an empty conversation: the in-flight round is
+            // cancelled (one CompletionFinished) and everything is discarded.
+            let (rewind, dedup) = rewind_input("t1", 0);
+            running.send(rewind, &dedup).await;
+            loop {
+                if let Evt::E(AgentEvent::CompletionFinished { .. }) = next_evt(&mut rx).await {
+                    break;
+                }
+            }
+            wait_idle(&mut running).await;
+
+            let rows = conv
+                .thread_messages(ThreadId::from_ref("t1"))
+                .unwrap_or_default();
+            assert!(
+                rows.is_empty(),
+                "rewind to 0 must leave no rows, got {rows:?}"
+            );
+            assert!(
+                ctrl.try_next_request().is_none(),
+                "a rewind must not trigger a completion round"
+            );
+
+            // The thread accepts new input with a clean slate.
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "fresh start")
+                .await;
+            let req = ctrl.next_request().await;
+            let history_text = format!("{:?}", req.chat_history);
+            assert!(
+                !history_text.contains("work on something"),
+                "discarded turn must be gone, got: {history_text}"
+            );
+            ctrl.send_text("hello again");
+            ctrl.finish();
+            collect_until_finished(&mut rx).await;
+        })
+        .await;
+}
+
 /// A non-user-text input (e.g. a stale tool result) arriving while a
 /// completion is streaming must not interrupt it.
 #[tokio::test(flavor = "current_thread")]

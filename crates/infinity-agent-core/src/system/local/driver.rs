@@ -26,7 +26,9 @@ use crate::system::builder::SystemInner;
 use crate::system::defer::InMemoryDeferQueue;
 use crate::system::events::AgentEvent;
 use crate::system::observer::ThreadObserver;
-use crate::system::thread::{StepOutcome, Thread, is_interrupt_input, is_user_text_input};
+use crate::system::thread::{
+    StepOutcome, Thread, is_interrupt_input, is_user_text_input, rewind_input_cut,
+};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -139,6 +141,10 @@ pub(crate) async fn drive_thread<C, S, H, O>(
     let mut subscribe_closed = false;
 
     let mut in_flight: Option<InFlightStep<'_>> = None;
+    // Set when a rewind marker cancelled an in-flight step: the cancelled
+    // step already emitted a completion notification, so the rewind handling
+    // in the main loop must not emit a second one.
+    let mut rewind_cancelled_step = false;
 
     loop {
         let new_inputs: Vec<(InputMessage, String)> = if let Some(flight) = in_flight.as_mut() {
@@ -176,10 +182,14 @@ pub(crate) async fn drive_thread<C, S, H, O>(
                     }
 
                     let has_user_text = batch.iter().any(|(msg, _)| is_user_text_input(msg));
-                    // Input-less interrupts cancel the in-flight completion
-                    // just like user text; the markers themselves are consumed
-                    // by the shared stripping below (never stepped).
-                    if has_user_text || batch.iter().any(|(msg, _)| is_interrupt_input(msg)) {
+                    let has_rewind = batch
+                        .iter()
+                        .any(|(msg, _)| rewind_input_cut(msg).is_some());
+                    // Input-less interrupts and rewind markers cancel the
+                    // in-flight completion just like user text; the markers
+                    // themselves are consumed by the shared stripping below
+                    // (never stepped).
+                    if has_user_text || has_rewind || batch.iter().any(|(msg, _)| is_interrupt_input(msg)) {
                         let res = in_flight
                             .take()
                             .expect("bug: in-flight step missing during interrupt")
@@ -193,6 +203,17 @@ pub(crate) async fn drive_thread<C, S, H, O>(
                             &mut compaction_triggered,
                             &mut pending_batch,
                         );
+
+                        if has_rewind {
+                            // Hand the whole batch (in order) to the main
+                            // loop, which performs the rewind before stepping
+                            // whatever follows it. Plain interrupt markers
+                            // are redundant: the rewind settles the thread.
+                            rewind_cancelled_step = true;
+                            batch.retain(|(msg, _)| !is_interrupt_input(msg));
+                            pending_batch.extend(batch);
+                            continue;
+                        }
 
                         if has_user_text {
                             // User text supersedes an interrupt marker in the
@@ -324,10 +345,48 @@ pub(crate) async fn drive_thread<C, S, H, O>(
         // consumed in the select arm above; these reached a parked or
         // respawned driver with nothing in flight, so the settlement itself
         // emits the completion notification that settles client indicators.
+        // When the batch also carries a rewind marker the settlement is
+        // skipped — the rewind below performs it (and more).
         let mut new_inputs = new_inputs;
+        let has_rewind = new_inputs
+            .iter()
+            .any(|(msg, _)| rewind_input_cut(msg).is_some());
         if new_inputs.iter().any(|(msg, _)| is_interrupt_input(msg)) {
             new_inputs.retain(|(msg, _)| !is_interrupt_input(msg));
-            if let Err(e) = thread.interrupt(&observer, true).await {
+            if !has_rewind && let Err(e) = thread.interrupt(&observer, true).await {
+                observer.on_event(
+                    &thread_id,
+                    &AgentEvent::Info {
+                        text: format!("Error: {e}"),
+                    },
+                );
+            }
+        }
+
+        // Consume rewind markers: truncate the thread's history (see
+        // `Thread::rewind`) before stepping anything else. Inputs queued
+        // *before* the (last) marker were addressed at the discarded state:
+        // event-style ones (tool results, synthetic events) are dropped as
+        // stale, while user text is never stale — it is kept and processed
+        // after the rewind, in order.
+        if has_rewind {
+            let last_marker = new_inputs
+                .iter()
+                .rposition(|(msg, _)| rewind_input_cut(msg).is_some())
+                .expect("bug: has_rewind implies a marker");
+            // Several racing rewinds collapse to the earliest cut: every
+            // requested cut discards at least that much.
+            let cut = new_inputs
+                .iter()
+                .filter_map(|(msg, _)| rewind_input_cut(msg))
+                .min()
+                .expect("bug: has_rewind implies a cut");
+            let tail = new_inputs.split_off(last_marker + 1);
+            new_inputs.retain(|(msg, _)| is_user_text_input(msg));
+            new_inputs.extend(tail);
+
+            let emit_completion = !std::mem::take(&mut rewind_cancelled_step);
+            if let Err(e) = thread.rewind(cut, &observer, emit_completion).await {
                 observer.on_event(
                     &thread_id,
                     &AgentEvent::Info {

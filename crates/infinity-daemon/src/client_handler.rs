@@ -215,6 +215,13 @@ fn strip_client_message(msg: ClientMessage, remote_name: &RemoteName) -> ClientM
         ClientMessage::Interrupt { thread_id } => ClientMessage::Interrupt {
             thread_id: thread_id.strip(remote_name),
         },
+        ClientMessage::Rewind {
+            thread_id,
+            user_turn,
+        } => ClientMessage::Rewind {
+            thread_id: thread_id.strip(remote_name),
+            user_turn,
+        },
         ClientMessage::SoftDetach { root_thread_id } => ClientMessage::SoftDetach {
             root_thread_id: root_thread_id.strip(remote_name),
         },
@@ -534,6 +541,19 @@ pub async fn handle_client_channels(
                         }
                         let mgr = session_manager.lock().await;
                         mgr.interrupt_thread(&thread_id.id).await;
+                    }
+                    ClientMessage::Rewind { thread_id, user_turn } => {
+                        if thread_id.remote.is_some() {
+                            let _ = daemon_tx.send(DaemonMessage::Error { thread_id: Some(thread_id), text: "remote is not connected".into() });
+                            continue;
+                        }
+                        let mgr = session_manager.lock().await;
+                        if let Err(e) = mgr.rewind_thread(&thread_id.id, user_turn).await {
+                            let _ = daemon_tx.send(DaemonMessage::Error {
+                                thread_id: Some(thread_id),
+                                text: format!("rewind failed: {e}"),
+                            });
+                        }
                     }
                     ClientMessage::Disconnect => {
                         let (new_tx, new_rx) = mpsc::unbounded_channel::<DaemonMessage>();

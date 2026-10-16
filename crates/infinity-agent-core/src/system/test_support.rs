@@ -100,6 +100,23 @@ pub(crate) fn interrupt_input(group_id: &str) -> (InputMessage, String) {
     )
 }
 
+/// A rewind marker (see [`TaggedSyntheticKind::Rewind`]): truncates the
+/// thread's history to its first `up_to` rows, cancelling any in-flight
+/// completion first.
+pub(crate) fn rewind_input(group_id: &str, up_to: i64) -> (InputMessage, String) {
+    (
+        InputMessage {
+            content: InputMessageContent::User(UserContent::text("")),
+            group_id: group_id.into(),
+            metadata: None,
+            synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::Rewind { up_to })),
+            display_as: None,
+            subscription: false,
+        },
+        uuid::Uuid::new_v4().to_string(),
+    )
+}
+
 pub(crate) fn tool_result_input(group_id: &str, id: &str, text: &str) -> (InputMessage, String) {
     (
         InputMessage {

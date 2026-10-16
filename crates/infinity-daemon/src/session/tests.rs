@@ -847,6 +847,190 @@ async fn interrupt_thread_targets_subtree_only() {
         .await;
 }
 
+/// `rewind_thread` truncates the thread's durable history at the requested
+/// user turn, interrupts and closes child threads spawned by the discarded
+/// region, and broadcasts a fresh `Replay` so attached clients resync. The
+/// thread accepts new input afterwards, with the discarded turns gone.
+#[tokio::test(flavor = "current_thread")]
+async fn rewind_thread_truncates_closes_children_and_rebroadcasts() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (model1, mut ctrl1) = mock_model();
+            let (model2, mut ctrl2) = mock_model();
+            let entry = |id: &str| ModelEntry {
+                model_id: id.to_owned(),
+                display_name: id.to_owned(),
+                context_window: 100_000,
+                max_output_tokens: None,
+                supports_image_input: false,
+            };
+            let state_dir = tempfile::tempdir().expect("create daemon state dir");
+            let cwd = tempfile::tempdir().expect("create session cwd");
+            let manager = SessionManager::with_providers(
+                SessionManagerConfig {
+                    state_dir: state_dir.path().to_path_buf(),
+                    callback_url: "http://127.0.0.1:0".to_owned(),
+                    user_rap_config: None,
+                    id_source: Arc::new(SequentialIdSource::new()),
+                },
+                vec![
+                    (
+                        "provider1".to_owned(),
+                        Arc::new(SingleModelProvider::new(entry("model1"), model1))
+                            as Arc<dyn ModelProvider>,
+                    ),
+                    (
+                        "provider2".to_owned(),
+                        Arc::new(SingleModelProvider::new(entry("model2"), model2))
+                            as Arc<dyn ModelProvider>,
+                    ),
+                ],
+                vec![],
+            )
+            .await
+            .expect("build session manager");
+
+            let mut emit = |_message| async {};
+            let session_id = manager
+                .create_session(cwd.path(), model1_ref(), &mut emit)
+                .await
+                .expect("create session");
+            let (client_tx, mut client_rx) = mpsc::unbounded_channel();
+            manager
+                .attach_client(&session_id, client_tx, false, true)
+                .await;
+
+            let user_text = |thread: &ThreadId<str>, text: &str| InputMessage {
+                content: InputMessageContent::User(UserContent::text(text)),
+                group_id: thread.to_owned(),
+                metadata: None,
+                synthetic: None,
+                display_as: None,
+                subscription: false,
+            };
+            let next_response_done =
+                async |rx: &mut mpsc::UnboundedReceiver<DaemonMessage>| -> ThreadId {
+                    loop {
+                        match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                            .await
+                            .expect("timed out waiting for ResponseDone")
+                            .expect("client channel closed")
+                        {
+                            DaemonMessage::ResponseDone { thread_id, .. } => {
+                                return thread_id.expect("ResponseDone carries a thread id").id;
+                            }
+                            _ => continue,
+                        }
+                    }
+                };
+
+            // Two completed root turns.
+            for (ask, answer) in [("first task", "first done"), ("second task", "second done")] {
+                assert!(
+                    manager
+                        .send_input((user_text(&session_id, ask), None))
+                        .await
+                );
+                let _ = ctrl1.next_request().await;
+                ctrl1.send_text(answer);
+                ctrl1.finish();
+                assert_eq!(next_response_done(&mut client_rx).await, session_id);
+            }
+
+            // A child spawned by the second turn, mid-round when the rewind
+            // lands (its spawn order, 2, is at the cut).
+            let child_id = manager
+                .conversation_store
+                .spawn_thread(
+                    &session_id,
+                    rap_protocol::ToolCallId::from_ref("spawn-call"),
+                    false,
+                    SpawnContext::InheritUpTo(2),
+                )
+                .await
+                .expect("spawn child thread");
+            manager
+                .conversation_store
+                .set_thread_model(&child_id, model2_ref());
+            assert!(
+                manager
+                    .send_input((user_text(&child_id, "child task"), None))
+                    .await
+            );
+            let _ = ctrl2.next_request().await;
+            ctrl2.send_text("child streaming");
+
+            // Rewind to before the second root turn (rows: [user, assistant,
+            // user, assistant] → cut 2).
+            manager
+                .rewind_thread(&session_id, 1)
+                .await
+                .expect("rewind succeeds");
+
+            // The child's in-flight round settles and the child is closed.
+            assert_eq!(next_response_done(&mut client_rx).await, child_id);
+            assert!(
+                manager
+                    .conversation_store
+                    .is_thread_closed(&child_id)
+                    .await
+                    .expect("closed lookup"),
+                "a child spawned by discarded turns must be closed"
+            );
+
+            // Subscribers get a fresh replay reflecting exactly the kept prefix.
+            let replay_history = loop {
+                match tokio::time::timeout(std::time::Duration::from_secs(5), client_rx.recv())
+                    .await
+                    .expect("timed out waiting for Replay")
+                    .expect("client channel closed")
+                {
+                    DaemonMessage::Replay { history, .. } => break history,
+                    _ => continue,
+                }
+            };
+            let replay_text = format!("{replay_history:?}");
+            assert!(
+                replay_text.contains("first done"),
+                "kept prefix must be replayed, got: {replay_text}"
+            );
+            assert!(
+                !replay_text.contains("second task"),
+                "discarded turns must not be replayed, got: {replay_text}"
+            );
+
+            // The durable truncation holds and new input works on the prefix.
+            let rows = manager
+                .conversation_store
+                .load_history_up_to(&session_id, None, None)
+                .await
+                .expect("load rows");
+            assert_eq!(rows.len(), 2, "rewind must keep exactly the kept prefix");
+            assert!(
+                manager
+                    .send_input((user_text(&session_id, "edited task"), None))
+                    .await
+            );
+            let req = ctrl1.next_request().await;
+            let history_text = format!("{:?}", req.chat_history);
+            assert!(
+                !history_text.contains("second task"),
+                "discarded turns must be gone from the model's view: {history_text}"
+            );
+            ctrl1.send_text("edited done");
+            ctrl1.finish();
+            assert_eq!(next_response_done(&mut client_rx).await, session_id);
+
+            // A turn index past the end is an error.
+            assert!(
+                manager.rewind_thread(&session_id, 7).await.is_err(),
+                "out-of-range user turn must be rejected"
+            );
+        })
+        .await;
+}
+
 /// A callback-style event (a tool result with no live driver) for a session
 /// the user shut down is refused by the stopped-thread policy inside the
 /// router, while the same event for a live session wakes its thread. This

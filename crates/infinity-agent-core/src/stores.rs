@@ -254,6 +254,29 @@ impl ConversationStore for InMemoryConversationStore {
         Ok(())
     }
 
+    async fn truncate_history(
+        &self,
+        thread_id: &ThreadId<str>,
+        up_to: i64,
+    ) -> Result<(), Self::Error> {
+        let keep = up_to.max(0) as usize;
+        {
+            let mut msgs = self.messages.lock().expect("bug: mutex poisoned");
+            if let Some(rows) = msgs.get_mut(thread_id) {
+                rows.truncate(keep);
+            }
+        }
+        // Summaries covering discarded rows are meaningless now.
+        let mut summaries = self
+            .compaction_summaries
+            .lock()
+            .expect("bug: mutex poisoned");
+        if let Some(entries) = summaries.get_mut(thread_id) {
+            entries.retain(|s| s.up_to_order <= up_to);
+        }
+        Ok(())
+    }
+
     async fn spawn_thread(
         &self,
         parent_thread_id: &ThreadId<str>,

@@ -674,6 +674,49 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         Ok(())
     }
 
+    /// Rewind this thread's history: truncate its own persisted rows to the
+    /// first `up_to` (a leading-row count, like the bounds of
+    /// [`ConversationStore::load_history_up_to`]) and reload the in-memory
+    /// view from the stores.
+    ///
+    /// Anything buffered in memory is discarded first — the truncation point
+    /// defines the new tail, so un-synced turn content, pending items, and
+    /// unvalidated inputs are all stale by definition. Dedup IDs of discarded
+    /// unvalidated inputs are forgotten so a redelivery is not silently
+    /// ignored (mirroring [`Self::drop_unvalidated_user_inputs`]).
+    ///
+    /// Callers must ensure no completion is in flight (the driver cancels it
+    /// before consuming a rewind marker).
+    pub async fn rewind_to(&self, up_to: i64) -> Result<(), BoxError> {
+        self.turn_buffer.borrow_mut().clear();
+        self.pending_items.borrow_mut().clear();
+        {
+            let discarded = std::mem::take(&mut *self.unvalidated_items.borrow_mut());
+            let mut processed = self.processed_message_ids.borrow_mut();
+            for item in discarded {
+                processed.remove(&item.message_id);
+            }
+        }
+        self.interrupted_tool_calls.borrow_mut().clear();
+
+        self.conversation_store
+            .truncate_history(&self.thread_id, up_to)
+            .await
+            .map_err(|e| Box::new(e) as BoxError)?;
+
+        // Reload the in-memory view (ancestor prefix, surviving compaction
+        // summary, own rows) exactly like a fresh `Thread::load` would.
+        let (history, compacted_up_to, ancestor_prefix_len) = self
+            .conversation_store
+            .load_history_with_ancestors(&self.thread_id)
+            .await
+            .map_err(|e| Box::new(e) as BoxError)?;
+        *self.history.borrow_mut() = history;
+        *self.compacted_up_to.borrow_mut() = compacted_up_to;
+        self.ancestor_prefix_len.set(ancestor_prefix_len);
+        Ok(())
+    }
+
     pub async fn update_metadata(&self, metadata: serde_json::Value) -> Result<(), BoxError> {
         *self.metadata.borrow_mut() = Some(metadata.clone());
         self.state_store
