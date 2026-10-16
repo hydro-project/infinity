@@ -49,6 +49,17 @@ pub enum DaemonCommand {
         #[serde(default)]
         target_thread: Option<infinity_protocol::ThreadRef>,
     },
+    /// Rewind the session's root thread to just before its `user_turn`-th
+    /// user turn, discarding that turn and everything after it (see
+    /// [`infinity_protocol::ClientMessage::Rewind`]). Emitted by the "Rewind
+    /// to here" message shortcut; the edited replacement text follows as a
+    /// separate `SendInput` on the same connection, which the daemon
+    /// processes after the rewind.
+    Rewind {
+        thread_ts: String,
+        session_id: infinity_protocol::ThreadRef,
+        user_turn: usize,
+    },
 }
 
 /// A message received from a daemon connection, tagged with the thread it belongs to.

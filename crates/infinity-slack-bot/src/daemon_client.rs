@@ -107,6 +107,22 @@ impl DaemonClient {
         Ok(())
     }
 
+    /// Rewind `thread_id` to just before its `user_turn`-th user turn (see
+    /// [`ClientMessage::Rewind`]).
+    pub async fn rewind(
+        &self,
+        thread_id: &infinity_protocol::ThreadRef,
+        user_turn: usize,
+    ) -> Result<(), BoxError> {
+        self.tx
+            .send(ClientMessage::Rewind {
+                thread_id: thread_id.clone(),
+                user_turn,
+            })
+            .await?;
+        Ok(())
+    }
+
     pub async fn connect_session(
         &self,
         session_id: &infinity_protocol::ThreadRef,

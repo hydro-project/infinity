@@ -213,6 +213,8 @@ mod tests {
                 is_app_home_opened: false,
                 is_session_stopped: false,
                 streaming_message_ts: Vec::new(),
+                shortcut: None,
+                rewind_user_turn: None,
             })
             .await
             .expect("send should succeed");

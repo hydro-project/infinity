@@ -8,6 +8,17 @@ pub const MODEL_PICKER_BLOCK_ID: &str = "model_block";
 /// Action ID of the model-select element in the model-picker modal.
 pub const MODEL_PICKER_ACTION_ID: &str = "model_select";
 
+/// Callback ID of the "Rewind to here" message shortcut (declared in the
+/// Slack app manifest under `features.shortcuts`).
+pub const REWIND_SHORTCUT_CALLBACK_ID: &str = "rewind_to_here";
+/// Callback ID for the rewind modal (set on the view when opening, echoed
+/// back by Slack in the `view_submission` payload).
+pub const REWIND_MODAL_CALLBACK_ID: &str = "rewind_submit";
+/// Block ID of the edited-message input block in the rewind modal.
+pub const REWIND_BLOCK_ID: &str = "rewind_block";
+/// Action ID of the edited-message input element in the rewind modal.
+pub const REWIND_ACTION_ID: &str = "rewind_text";
+
 /// A normalized event from Slack (message, button click, or slash command)
 /// that flows through the dataflow.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -54,6 +65,19 @@ pub struct SlackEvent {
     /// client-side (may be empty — the stop still applies to the thread).
     #[serde(default)]
     pub streaming_message_ts: Vec<String>,
+    /// The callback_id of a message shortcut (context-menu `message_action`
+    /// payload), e.g. [`REWIND_SHORTCUT_CALLBACK_ID`]. `message_ts` carries
+    /// the target message's ts, `thread_ts` the thread it lives in, and
+    /// `response_url` where validation errors can be reported ephemerally.
+    #[serde(default)]
+    pub shortcut: Option<String>,
+    /// For rewind-modal submissions ([`REWIND_MODAL_CALLBACK_ID`]): the
+    /// 0-based user turn to rewind to, resolved when the modal was opened
+    /// and round-tripped through the view's `private_metadata` (which also
+    /// restores `channel` and `thread_ts`). `text` carries the edited
+    /// message text to resubmit after the rewind.
+    #[serde(default)]
+    pub rewind_user_turn: Option<usize>,
 }
 
 /// Serde adapter storing a `serde_json::Value` as its JSON string form.
@@ -181,6 +205,19 @@ pub enum SlackAction {
     /// Respond to a slash command by POSTing to its `response_url`.
     /// The response is ephemeral (visible only to the invoking user).
     CommandResponse { response_url: String, text: String },
+    /// Open the "Rewind to here" modal for a message-shortcut invocation:
+    /// the I/O layer fetches the Slack thread, resolves the governing user
+    /// turn of `target_ts` (the clicked message if it is a human message,
+    /// otherwise the nearest human message before it), and opens a modal
+    /// pre-filled with that turn's text. Validation failures are reported
+    /// ephemerally via `response_url`.
+    OpenRewindModal {
+        channel: String,
+        thread_ts: String,
+        target_ts: String,
+        trigger_id: String,
+        response_url: String,
+    },
     /// Open a modal view using the Slack `views.open` API.
     OpenView {
         trigger_id: String,
@@ -234,6 +271,8 @@ mod tests {
             is_app_home_opened: false,
             is_session_stopped: false,
             streaming_message_ts: Vec::new(),
+            shortcut: None,
+            rewind_user_turn: None,
         }
     }
 
