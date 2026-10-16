@@ -43,6 +43,17 @@ pub struct SlackEvent {
     /// event with `tab == "messages"`). Used for onboarding, not messaging.
     #[serde(default)]
     pub is_app_home_opened: bool,
+    /// True if the user clicked Slack's native stop button on a streaming
+    /// response (`agent_session_stopped` event). `thread_ts` identifies the
+    /// Slack thread the stop happened in (the root conversation thread or a
+    /// subagent's dedicated thread), and `streaming_message_ts` lists the
+    /// in-progress streaming message ts values Slack already stopped.
+    #[serde(default)]
+    pub is_session_stopped: bool,
+    /// For stop events: the streaming message ts values Slack stopped
+    /// client-side (may be empty — the stop still applies to the thread).
+    #[serde(default)]
+    pub streaming_message_ts: Vec<String>,
 }
 
 /// Serde adapter storing a `serde_json::Value` as its JSON string form.
@@ -146,6 +157,21 @@ pub enum SlackAction {
         #[serde(default)]
         subagent: Option<String>,
     },
+    /// The user clicked Slack's native stop button (`agent_session_stopped`):
+    /// halt the stream for this thread *without* re-touching the stopped
+    /// message (Slack already finalized it client-side), discard buffered
+    /// output, and suppress further appends for the current response. The
+    /// suppression latch clears on the response's final `StreamStop` or on
+    /// the user's next message in the thread.
+    HaltStreams {
+        channel: String,
+        thread_ts: String,
+        /// Route to the dedicated thread of this subagent (see enum docs).
+        #[serde(default)]
+        subagent: Option<String>,
+        /// Streaming message ts values Slack reported as already stopped.
+        stopped_message_ts: Vec<String>,
+    },
     /// Set a status indicator on the thread (e.g. "Thinking...").
     SetStatus {
         channel: String,
@@ -206,6 +232,8 @@ mod tests {
             response_url: None,
             trigger_id: None,
             is_app_home_opened: false,
+            is_session_stopped: false,
+            streaming_message_ts: Vec::new(),
         }
     }
 

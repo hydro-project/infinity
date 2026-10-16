@@ -51,6 +51,7 @@ settings:
     bot_events:
       - app_home_opened
       - app_context_changed
+      - agent_session_stopped
       - message.channels
       - message.groups
       - message.im
@@ -157,6 +158,19 @@ When the agent spawns subagents (child threads), each subagent gets its own dedi
 
 The root conversation thread keeps only the root agent's output and the session-level status indicator. Subagent thread mappings are kept in memory: after a bot restart, new subagent activity gets fresh threads.
 
+## Stopping a Response
+
+Slack shows a native **Stop** button on streaming responses — but only if the app subscribes to the `agent_session_stopped` bot event (included in the manifest above). Without the subscription, users see a non-interactive loading indicator with "Stop isn't available for this agent".
+
+When you click Stop:
+
+- Slack finalizes the streaming message immediately; the bot discards the rest of the current response for that thread (buffered text and tool-call cards included) and posts a brief "⏹️ Stopped" confirmation.
+- The bot sends an `Interrupt` to the daemon, which cancels the in-flight generation for the stopped thread **and its subagents** — compute actually stops, pending tool calls are settled as "interrupted", and dangling approval buttons are dismissed.
+- Stopping inside a subagent's dedicated thread interrupts only that subagent (and its own children); the root response and other subagents continue.
+- Your next message in the thread resumes normal streaming.
+
+**Note:** daemon-side interruption requires a daemon new enough to understand `Interrupt` (older daemons silently ignore it — the Slack-side stop still discards the output, and your next message interrupts the old generation for real).
+
 ## Switching Models
 
 Use the `/model` slash command (responses are ephemeral — only you see them):
@@ -178,3 +192,4 @@ The switch applies to sessions created afterwards; existing threads keep their m
 | "apps.connections.open failed" | Verify `app_token` is correct and Socket Mode is enabled in app settings |
 | "auth.test failed" | Verify `bot_token` is correct and the app is installed to the workspace |
 | Bot responds but no streaming | The `assistant:write` scope is required for `chat.startStream` |
+| Stop button missing ("Stop isn't available for this agent") | Subscribe to the `agent_session_stopped` bot event in **Event Subscriptions** (or re-apply the manifest above — remember manifests replace, don't merge) |

@@ -93,6 +93,20 @@ impl DaemonClient {
         Ok(())
     }
 
+    /// Interrupt in-flight generation on the given agent thread (and its
+    /// descendant subtree) without queuing any input.
+    pub async fn interrupt(
+        &self,
+        thread_id: &infinity_protocol::ThreadRef,
+    ) -> Result<(), BoxError> {
+        self.tx
+            .send(ClientMessage::Interrupt {
+                thread_id: thread_id.clone(),
+            })
+            .await?;
+        Ok(())
+    }
+
     pub async fn connect_session(
         &self,
         session_id: &infinity_protocol::ThreadRef,
