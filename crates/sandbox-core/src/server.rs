@@ -2147,6 +2147,7 @@ fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
         description: Some("Sandboxed code editing and execution tools using jujutsu for filesystem versioning".to_owned()),
         endpoint: endpoint.to_owned(),
         needs_migration,
+        system_prompt: None,
         tools: vec![
             ToolDef {
                 name: "clone_repo".to_owned(),

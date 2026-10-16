@@ -218,6 +218,21 @@ pub struct ToolsetManifest {
     pub tools: Vec<ToolDef>,
     #[serde(default, rename = "needsMigration")]
     pub needs_migration: bool,
+    /// Optional system-prompt fragment the server asks the agent runtime to
+    /// embed into the system prompt of every thread that can use its tools
+    /// (e.g. the steering server embeds the user's global steering files).
+    ///
+    /// Semantics are defined by the embedding runtime; the Infinity daemon
+    /// captures the fragment when a session's toolset is first resolved,
+    /// prefixes it with a section header naming the server, and applies a
+    /// size budget. Servers that omit the field behave exactly as before,
+    /// and runtimes that predate the field ignore it.
+    #[serde(
+        default,
+        rename = "systemPrompt",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub system_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -388,5 +403,48 @@ pub async fn log_panic<F: Future<Output = ()>>(name: &'static str, f: F) {
             "unknown panic payload"
         };
         tracing::error!("task '{name}' panicked: {msg}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Manifests from servers that predate (or omit) `systemPrompt` must
+    /// deserialize with `system_prompt: None`, and `None` must not be
+    /// serialized — so old runtimes never see an unknown field.
+    #[test]
+    fn toolset_manifest_system_prompt_is_optional_and_round_trips() {
+        let legacy = serde_json::json!({
+            "name": "t",
+            "endpoint": "http://localhost/invoke",
+            "tools": [],
+        });
+        let manifest: ToolsetManifest =
+            serde_json::from_value(legacy).expect("legacy manifest must deserialize");
+        assert_eq!(manifest.system_prompt, None);
+        let out = serde_json::to_value(&manifest).expect("serialize");
+        assert!(
+            out.get("systemPrompt").is_none(),
+            "None must be omitted on the wire: {out}"
+        );
+
+        let with_prompt = serde_json::json!({
+            "name": "t",
+            "endpoint": "http://localhost/invoke",
+            "tools": [],
+            "systemPrompt": "Always be excellent.",
+        });
+        let manifest: ToolsetManifest =
+            serde_json::from_value(with_prompt).expect("manifest with prompt must deserialize");
+        assert_eq!(
+            manifest.system_prompt.as_deref(),
+            Some("Always be excellent.")
+        );
+        let out = serde_json::to_value(&manifest).expect("serialize");
+        assert_eq!(
+            out.get("systemPrompt").and_then(|v| v.as_str()),
+            Some("Always be excellent.")
+        );
     }
 }

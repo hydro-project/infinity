@@ -500,13 +500,21 @@ impl SessionRapManager {
             }
         }
 
-        // Boot each server once to discover its tools.
+        // Boot each server once to discover its tools and collect any
+        // system-prompt fragments the manifests contribute.
         let http_client = SimpleHttpClient::new();
         let mut tools: Vec<Rc<dyn Tool<ChannelSender>>> = Vec::new();
         let mut tool_count = 0usize;
+        let mut prompt_fragments: Vec<String> = Vec::new();
         for server in &servers {
             match server.ensure_up().await {
                 Ok(manifest) => {
+                    if let Some(fragment) = render_system_prompt_fragment(
+                        &manifest.name,
+                        manifest.system_prompt.as_deref(),
+                    ) {
+                        prompt_fragments.push(fragment);
+                    }
                     for def in manifest.tools {
                         tool_count += 1;
                         tools.push(Rc::new(ManagedRapTool {
@@ -532,13 +540,21 @@ impl SessionRapManager {
             conversation_store: self.conversation_store.clone(),
         }));
 
-        let extra_system_prompt = format!(
+        let mut extra_system_prompt = format!(
             "The user's current working directory is: {cwd:?}\n\n\
              Use the `set_title` tool to give the current thread a short, descriptive title. \
              Set it once at the start when the user's intent becomes clear, and update it only \
              when the overall scope of work changes significantly. Do not call it repeatedly \
              for minor follow-ups within the same task."
         );
+        // Server-contributed fragments are captured once per session toolset
+        // (an evicted session re-reads them) and apply to every thread of the
+        // session, in config order. A server that is down at toolset build
+        // time contributes neither tools nor a fragment (warned above).
+        for fragment in prompt_fragments {
+            extra_system_prompt.push_str("\n\n");
+            extra_system_prompt.push_str(&fragment);
+        }
 
         let toolset = Rc::new(SessionToolset {
             tools,
@@ -616,6 +632,41 @@ impl ThreadConfigSource<ChannelSender, SimpleHttpClient> for SessionRapManager {
     }
 }
 
+/// Maximum size (in bytes, on a char boundary) of one server's system-prompt
+/// fragment. Fragments beyond the budget are truncated with a marker rather
+/// than rejected, so a misbehaving server can inflate the prompt by at most
+/// this much.
+const SYSTEM_PROMPT_FRAGMENT_BUDGET: usize = 16 * 1024;
+
+/// Render a server's manifest-contributed system-prompt fragment as a
+/// delimited section, applying [`SYSTEM_PROMPT_FRAGMENT_BUDGET`]. Returns
+/// `None` for absent or blank fragments.
+fn render_system_prompt_fragment(server_name: &str, fragment: Option<&str>) -> Option<String> {
+    let fragment = fragment?.trim();
+    if fragment.is_empty() {
+        return None;
+    }
+    let mut body = fragment;
+    let mut truncated = false;
+    if body.len() > SYSTEM_PROMPT_FRAGMENT_BUDGET {
+        let mut cut = SYSTEM_PROMPT_FRAGMENT_BUDGET;
+        while !body.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        body = &body[..cut];
+        truncated = true;
+        tracing::warn!(
+            "system-prompt fragment from RAP server '{server_name}' exceeds \
+             {SYSTEM_PROMPT_FRAGMENT_BUDGET} bytes; truncating"
+        );
+    }
+    let mut section = format!("## Instructions from the `{server_name}` tool server\n\n{body}");
+    if truncated {
+        section.push_str("\n\n[... truncated: the server's instructions exceeded the size budget]");
+    }
+    Some(section)
+}
+
 /// Read the merged RAP config for `cwd` and build the (un-booted) server
 /// handles. Also returns a human-readable line describing which config
 /// source(s) were used, for display to the session's subscribers.
@@ -658,4 +709,90 @@ fn collect_server_specs(
         servers.push(ManagedRapServer::new(session_id.to_owned(), id, spec));
     }
     Ok((source_info, servers))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_fragment_skips_absent_and_blank() {
+        assert_eq!(render_system_prompt_fragment("s", None), None);
+        assert_eq!(render_system_prompt_fragment("s", Some("")), None);
+        assert_eq!(render_system_prompt_fragment("s", Some("  \n ")), None);
+    }
+
+    #[test]
+    fn render_fragment_delimits_with_server_name() {
+        let section = render_system_prompt_fragment("steering-tools", Some("Be excellent."))
+            .expect("non-empty fragment renders");
+        assert!(section.starts_with("## Instructions from the `steering-tools` tool server\n\n"));
+        assert!(section.ends_with("Be excellent."));
+    }
+
+    #[test]
+    fn render_fragment_truncates_at_budget_on_char_boundary() {
+        // Multi-byte char straddling the budget must not split.
+        let body = "é".repeat(SYSTEM_PROMPT_FRAGMENT_BUDGET); // 2 bytes each
+        let section = render_system_prompt_fragment("s", Some(&body)).expect("fragment renders");
+        assert!(section.contains("[... truncated"));
+        // Well-formed UTF-8 by construction of &str; sanity-check the size.
+        assert!(section.len() < SYSTEM_PROMPT_FRAGMENT_BUDGET + 256);
+    }
+
+    /// End-to-end over HTTP: an external server's manifest `systemPrompt`
+    /// comes back from `ensure_up` (the field the session toolset embeds).
+    #[tokio::test(flavor = "current_thread")]
+    async fn external_server_manifest_carries_system_prompt() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+        // Minimal one-shot HTTP server (the daemon has no server-side axum):
+        // answer any request with the manifest JSON.
+        tokio::spawn(async move {
+            let body = serde_json::json!({
+                "name": "fragment-server",
+                "endpoint": "http://ignored/invoke",
+                "tools": [],
+                "systemPrompt": "Embedded instructions.",
+            })
+            .to_string();
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+
+        let server = ManagedRapServer::new(
+            ThreadId::from("session-test"),
+            None,
+            ServerSpec::External {
+                url: format!("http://{addr}"),
+            },
+        );
+        let manifest = server.ensure_up().await.expect("fetch manifest");
+        assert_eq!(
+            manifest.system_prompt.as_deref(),
+            Some("Embedded instructions.")
+        );
+        let section =
+            render_system_prompt_fragment(&manifest.name, manifest.system_prompt.as_deref())
+                .expect("fragment renders");
+        assert!(section.contains("`fragment-server`"));
+        assert!(section.contains("Embedded instructions."));
+    }
 }
