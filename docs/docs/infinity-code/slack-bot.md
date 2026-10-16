@@ -143,6 +143,16 @@ cargo install --path crates/infinity-slack-bot
 infinity-slack-bot
 ```
 
+When deploying from a working tree with multiple branches in flight, prefer the
+deploy script, which builds from an **explicit** revision in a dedicated
+workspace (so you can't accidentally deploy whatever happens to be checked
+out), performs a clean SIGTERM handover (resume state is persisted and caught
+up after restart), and records the deployed commit in `~/.infinity/slack.deployed`:
+
+```bash
+scripts/run-slack-bot.sh <branch-or-commit>   # e.g. scripts/run-slack-bot.sh main
+```
+
 The bot is a single plain binary: the Hydro dataflow (from the `infinity-slack-dataflow` crate) is compiled into it at build time via Hydro's embedded mode and driven by the bot's own event loop. It connects to Slack via Socket Mode (WebSocket) — no public URL or ngrok required.
 
 ## Usage
