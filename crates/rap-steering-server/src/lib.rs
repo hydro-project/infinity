@@ -70,16 +70,56 @@ async fn collect_candidates(base: &Path) -> Vec<PathBuf> {
     candidates
 }
 
+/// Steering files discovered by [`list_steering_files`], split into
+/// project-specific files and user-level (non-project) files.
+#[derive(Debug, Default)]
+pub struct SteeringFiles {
+    /// Files found under the project root, as sorted relative paths.
+    pub project: Vec<String>,
+    /// Files found under the user's home directory, as sorted `~/`-prefixed paths.
+    pub user: Vec<String>,
+}
+
+impl SteeringFiles {
+    pub fn is_empty(&self) -> bool {
+        self.project.is_empty() && self.user.is_empty()
+    }
+
+    /// Render the discovered files as tool-result text, suggesting that the
+    /// agent read the non-project (user-level) steering files.
+    pub fn render(&self) -> String {
+        if self.is_empty() {
+            return "No steering files found.".to_owned();
+        }
+
+        let mut sections = Vec::new();
+        if !self.project.is_empty() {
+            sections.push(format!(
+                "Project steering files:\n{}",
+                self.project.join("\n")
+            ));
+        }
+        if !self.user.is_empty() {
+            sections.push(format!(
+                "User-level steering files (not project-specific — you should read these \
+                 for the user's global preferences and conventions):\n{}",
+                self.user.join("\n")
+            ));
+        }
+        sections.join("\n\n")
+    }
+}
+
 /// Discover all steering files under `root` and the user's home directory,
 /// canonicalize to dedup symlinks, and return sorted relative paths.
 /// Home directory files are prefixed with `~/`.
-pub async fn list_steering_files(root: &Path) -> Result<Vec<String>, String> {
+pub async fn list_steering_files(root: &Path) -> Result<SteeringFiles, String> {
     let canon_root = fs::canonicalize(root)
         .await
         .map_err(|e| format!("cannot canonicalize root: {e}"))?;
 
     let mut seen_canonical = HashSet::new();
-    let mut results = Vec::new();
+    let mut results = SteeringFiles::default();
 
     // Scan project root
     for rel in collect_candidates(root).await {
@@ -95,7 +135,7 @@ pub async fn list_steering_files(root: &Path) -> Result<Vec<String>, String> {
             continue;
         }
         if seen_canonical.insert(canonical) {
-            results.push(rel.to_string_lossy().into_owned());
+            results.project.push(rel.to_string_lossy().into_owned());
         }
     }
 
@@ -116,12 +156,13 @@ pub async fn list_steering_files(root: &Path) -> Result<Vec<String>, String> {
                 continue;
             }
             if seen_canonical.insert(canonical) {
-                results.push(format!("~/{}", rel.to_string_lossy()));
+                results.user.push(format!("~/{}", rel.to_string_lossy()));
             }
         }
     }
 
-    results.sort();
+    results.project.sort();
+    results.user.sort();
     Ok(results)
 }
 
@@ -165,4 +206,39 @@ pub async fn load_steering_file(root: &Path, rel_path: &str) -> Result<String, S
     fs::read_to_string(&canonical)
         .await
         .map_err(|e| format!("failed to read file: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_empty() {
+        assert_eq!(
+            SteeringFiles::default().render(),
+            "No steering files found."
+        );
+    }
+
+    #[test]
+    fn render_project_only() {
+        let files = SteeringFiles {
+            project: vec!["AGENTS.md".to_owned()],
+            user: vec![],
+        };
+        assert_eq!(files.render(), "Project steering files:\nAGENTS.md");
+    }
+
+    #[test]
+    fn render_suggests_reading_user_files() {
+        let files = SteeringFiles {
+            project: vec!["AGENTS.md".to_owned()],
+            user: vec!["~/INFINITY.md".to_owned()],
+        };
+        let rendered = files.render();
+        assert!(rendered.contains("Project steering files:\nAGENTS.md"));
+        assert!(rendered.contains("not project-specific"));
+        assert!(rendered.contains("you should read these"));
+        assert!(rendered.contains("~/INFINITY.md"));
+    }
 }
