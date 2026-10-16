@@ -243,6 +243,41 @@ pub fn spawn() -> DaemonIo {
                         tracing::error!("daemon connect failed for {thread_ts}: {e}");
                     }
                 },
+                DaemonCommand::TriggerCompaction {
+                    thread_ts,
+                    session_id,
+                } => {
+                    if !connections.contains_key(&thread_ts) {
+                        // Reconnect after restart so the compaction still
+                        // lands (and its CompactionApplied broadcast reaches
+                        // this thread's receiver for the Slack note).
+                        match DaemonClient::connect().await {
+                            Ok(daemon) => {
+                                if let Err(e) = daemon.connect_session(&session_id, None).await {
+                                    tracing::error!(
+                                        "reconnect to session failed for {thread_ts}: {e}"
+                                    );
+                                    continue;
+                                }
+                                spawn_receiver(
+                                    ConnKey::root(thread_ts.clone()),
+                                    &mut connections,
+                                    daemon,
+                                    &to_df_tx,
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!("daemon connect failed for {thread_ts}: {e}");
+                                continue;
+                            }
+                        }
+                    }
+                    if let Some(daemon) = connections.get(&thread_ts) {
+                        if let Err(e) = daemon.trigger_compaction(&session_id).await {
+                            tracing::error!("TriggerCompaction failed for {thread_ts}: {e}");
+                        }
+                    }
+                }
             }
         }
     });

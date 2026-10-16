@@ -1111,6 +1111,140 @@ fn rewind_shortcut_without_session_reports_error() {
     });
 }
 
+/// The "Compact session" shortcut on a session thread emits a
+/// `TriggerCompaction` for that session plus an ephemeral ack, and the
+/// daemon's `CompactionApplied` broadcast is surfaced as a note in the
+/// thread.
+#[test]
+fn compact_shortcut_targets_session_and_posts_note() {
+    let mut flow = FlowBuilder::new();
+    let (slack_tx, daemon_tx, actions_out, commands_out) = build_sim(&mut flow);
+
+    flow.sim().unit_test_fuzz_iterations(256).fuzz(async || {
+        let thread_ts = fresh("cmp");
+        let channel = fresh("Ccmp");
+        let session_id = fresh("sess");
+
+        // Establish the session + channel mapping through the dataflow.
+        slack_tx.send(chat("U1", "hi", &channel, &thread_ts));
+        assert!(matches!(
+            commands_out.next().await.unwrap(),
+            DaemonCommand::CreateSession { .. }
+        ));
+        daemon_tx.send(devent(
+            &thread_ts,
+            infinity_protocol::DaemonMessage::Connected {
+                root_thread_id: session_id.clone().into(),
+                thread_id: session_id.clone().into(),
+                model_name: String::new(),
+                context_window: 0,
+                title: Some("Compact me".to_owned()),
+                total_tokens_used: 0,
+                provider_id: String::new(),
+            },
+        ));
+        loop {
+            match actions_out.next().await.unwrap() {
+                SlackAction::SetThreadTitle { .. } => break,
+                SlackAction::SetStatus { .. } => {}
+                other => panic!("expected SetThreadTitle, got {other:?}"),
+            }
+        }
+
+        // The shortcut is invoked on a message inside the session thread
+        // (message shortcuts work in threads, unlike slash commands).
+        let mut shortcut = chat("U1", "", &channel, &thread_ts);
+        shortcut.shortcut = Some("compact_session".to_owned());
+        shortcut.message_ts = Some("1111.2222".to_owned());
+        shortcut.response_url = Some("https://hooks.slack.com/commands/T1/9/z".to_owned());
+        slack_tx.send(shortcut);
+
+        match commands_out.next().await.unwrap() {
+            DaemonCommand::TriggerCompaction {
+                thread_ts: t,
+                session_id: s,
+            } => {
+                assert_eq!(t, thread_ts);
+                assert_eq!(s.to_string(), session_id);
+            }
+            other => panic!("expected TriggerCompaction, got {other:?}"),
+        }
+
+        daemon_tx.send(devent(
+            &thread_ts,
+            infinity_protocol::DaemonMessage::CompactionApplied {
+                thread_id: Some(session_id.clone().into()),
+            },
+        ));
+
+        let actions: Vec<SlackAction> = actions_out.collect().await;
+        let ack = actions
+            .iter()
+            .find_map(|a| match a {
+                SlackAction::CommandResponse { response_url, text } => {
+                    assert_eq!(response_url, "https://hooks.slack.com/commands/T1/9/z");
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .expect("ephemeral ack must be sent");
+        assert!(
+            ack.contains("Compacting") && ack.contains("Compact me"),
+            "ack should name the session title, got: {ack}"
+        );
+        let note = actions
+            .iter()
+            .find_map(|a| match a {
+                SlackAction::PostMessage {
+                    channel: c,
+                    text,
+                    thread_ts: t,
+                    subagent,
+                } => {
+                    assert_eq!(c, &channel);
+                    assert_eq!(t.as_deref(), Some(thread_ts.as_str()));
+                    assert!(subagent.is_none(), "root compaction routes to root thread");
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .expect("compaction note must be posted in the thread");
+        assert!(note.contains("compacted"), "got: {note}");
+    });
+}
+
+/// The "Compact session" shortcut on a thread with no known session responds
+/// ephemerally and emits no daemon command.
+#[test]
+fn compact_shortcut_without_session_reports_error() {
+    let mut flow = FlowBuilder::new();
+    let (slack_tx, _daemon_tx, actions_out, commands_out) = build_sim(&mut flow);
+
+    flow.sim().exhaustive(async || {
+        let thread_ts = fresh("cmpnone");
+        let channel = fresh("Ccmpnone");
+        let mut shortcut = chat("U1", "", &channel, &thread_ts);
+        shortcut.shortcut = Some("compact_session".to_owned());
+        shortcut.message_ts = Some("1111.2222".to_owned());
+        shortcut.response_url = Some("https://hooks.slack.com/commands/T1/8/y".to_owned());
+        slack_tx.send(shortcut);
+
+        let cmds: Vec<DaemonCommand> = commands_out.collect().await;
+        assert!(cmds.is_empty(), "no session → no commands, got {cmds:?}");
+
+        let actions: Vec<SlackAction> = actions_out.collect().await;
+        match &actions[..] {
+            [SlackAction::CommandResponse { text, .. }] => {
+                assert!(
+                    text.contains("no Infinity session"),
+                    "error should explain, got: {text}"
+                );
+            }
+            other => panic!("expected [CommandResponse], got {other:?}"),
+        }
+    });
+}
+
 /// "Fork from here" is non-destructive. The shortcut opens the edit modal;
 /// its submission asks the I/O layer to open a NEW Slack thread
 /// (`ForkThread`) and touches neither the original thread nor its session.

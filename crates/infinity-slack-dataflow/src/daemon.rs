@@ -67,6 +67,15 @@ pub enum DaemonCommand {
         session_id: infinity_protocol::ThreadRef,
         user_turn: usize,
     },
+    /// Trigger context compaction for the session (see
+    /// [`infinity_protocol::ClientMessage::TriggerCompaction`]). Emitted by
+    /// the "Compact session" message shortcut; the daemon broadcasts
+    /// `CompactionApplied` when done, which the dataflow surfaces as a note
+    /// in the session's Slack thread.
+    TriggerCompaction {
+        thread_ts: String,
+        session_id: infinity_protocol::ThreadRef,
+    },
 }
 
 /// A message received from a daemon connection, tagged with the thread it belongs to.

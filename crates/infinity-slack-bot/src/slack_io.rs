@@ -2335,6 +2335,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_message_action_compact_shortcut() {
+        let payload = serde_json::json!({
+            "type": "message_action",
+            "callback_id": "compact_session",
+            "trigger_id": "77.88.compact",
+            "response_url": "https://hooks.slack.com/app/T1/2/c",
+            "user": {"id": "U123"},
+            "channel": {"id": "D456"},
+            "message": {"ts": "2222.3333", "thread_ts": "2000.0000", "text": "anything"}
+        });
+        let event = parse_interactive(payload).expect("should parse");
+        assert_eq!(event.shortcut.as_deref(), Some("compact_session"));
+        assert_eq!(event.thread_ts, "2000.0000");
+        assert_eq!(
+            event.response_url.as_deref(),
+            Some("https://hooks.slack.com/app/T1/2/c")
+        );
+        assert!(!event.is_button_click);
+    }
+
+    #[test]
     fn parse_view_submission_rewind_modal() {
         let payload = serde_json::json!({
             "type": "view_submission",

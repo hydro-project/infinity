@@ -191,12 +191,39 @@ pub fn slack_dataflow<'a, P: 'a>(
         event.rewind_user_turn.is_none()
     }));
 
-    // --- "Fork from here" shortcut → validate, then open the fork modal ---
-    // The I/O layer resolves the governing user turn (it needs the Slack
-    // thread's replies) and opens the modal; the dataflow only validates
-    // what it can check synchronously.
-    let shortcut_actions = shortcuts.filter_map(q!(|event: SlackEvent| {
+    // --- Message shortcuts (context ⋮ menu) → validate + act ---
+    // "Fork from here": the I/O layer resolves the governing user turn (it
+    // needs the Slack thread's replies) and opens the modal; the dataflow
+    // only validates what it can check synchronously.
+    // "Compact session": resolved fully here (session-scoped, no modal); the
+    // matching TriggerCompaction command is emitted by the parallel
+    // `compact_commands` branch below, which resolves the same target
+    // deterministically — this branch only acks/errs ephemerally.
+    let shortcut_actions = shortcuts.clone().filter_map(q!(|event: SlackEvent| {
         let response_url = event.response_url?;
+        if event.shortcut.as_deref() == Some(crate::slack::COMPACT_SHORTCUT_CALLBACK_ID) {
+            let text = match crate::flow::resolve_compact_session(&event.thread_ts) {
+                Ok((root_ts, _session)) => {
+                    let title = {
+                        let titles = crate::runtime::get()
+                            .thread_titles
+                            .lock()
+                            .expect("bug: lock poisoned");
+                        titles.get(&root_ts).cloned()
+                    };
+                    match title {
+                        Some(t) => format!(
+                            "🗜️ Compacting *{t}*… a note will be posted in the thread when done."
+                        ),
+                        None => "🗜️ Compacting this session… a note will be posted in the \
+                                 thread when done."
+                            .to_owned(),
+                    }
+                }
+                Err(text) => text,
+            };
+            return Some(SlackAction::CommandResponse { response_url, text });
+        }
         if event.shortcut.as_deref() != Some(crate::slack::REWIND_SHORTCUT_CALLBACK_ID) {
             let shortcut = event.shortcut.unwrap_or_default();
             return Some(SlackAction::CommandResponse {
@@ -250,6 +277,21 @@ pub fn slack_dataflow<'a, P: 'a>(
             target_ts,
             trigger_id,
             response_url,
+        })
+    }));
+
+    // --- "Compact session" shortcut → TriggerCompaction commands (parallel
+    // to the ephemeral ack above; both branches resolve the same target
+    // deterministically) ---
+    let compact_commands = shortcuts.filter_map(q!(|event: SlackEvent| {
+        if event.shortcut.as_deref() != Some(crate::slack::COMPACT_SHORTCUT_CALLBACK_ID) {
+            return None;
+        }
+        let (thread_ts, session_id) =
+            crate::flow::resolve_compact_session(&event.thread_ts).ok()?;
+        Some(DaemonCommand::TriggerCompaction {
+            thread_ts,
+            session_id,
         })
     }));
 
@@ -494,6 +536,13 @@ pub fn slack_dataflow<'a, P: 'a>(
             nondet!(/**
                 fork commands have non-deterministic ordering w.r.t. other daemon
                 commands because they originate from independent user interaction events
+            */),
+        )
+        .merge_ordered(
+            compact_commands,
+            nondet!(/**
+                compaction commands have non-deterministic ordering w.r.t. other daemon
+                commands because they originate from independent shortcut events
             */),
         );
 
@@ -838,6 +887,25 @@ pub fn slack_dataflow<'a, P: 'a>(
                     choice_id: choice_id.clone(),
                 }]
             }
+            infinity_protocol::DaemonMessage::CompactionApplied { .. } => {
+                // Context was compacted — via the "Compact session" shortcut
+                // or daemon-initiated auto-compaction; both are worth
+                // surfacing. Routed into the subagent's dedicated thread when
+                // a subagent compacted.
+                // (Replay catch-up after a restart never re-posts this: the
+                // resume delta forwards only text/tool events.)
+                if !has_thread {
+                    return Vec::new();
+                }
+                vec![SlackAction::PostMessage {
+                    channel: channel.clone(),
+                    text: "🗜️ Context compacted — older conversation was summarized to free up \
+                           context space."
+                        .to_owned(),
+                    thread_ts: Some(de.thread_ts),
+                    subagent,
+                }]
+            }
             _ => Vec::new(),
         }
     }));
@@ -1089,6 +1157,41 @@ pub fn build_model_picker_view(response_url: &str) -> Option<serde_json::Value> 
     }))
 }
 
+/// Resolve which session a "Compact session" shortcut invocation targets.
+///
+/// The shortcut is invoked on a message, so `thread_ts` identifies the exact
+/// Slack thread: the root conversation thread of a session, or a subagent's
+/// dedicated thread (mapped back to its session via `subagent_routes` —
+/// compaction is session-scoped, so both land on the same session root).
+///
+/// Returns `Ok((root_thread_ts, session_root))` or `Err(user-facing message)`.
+pub fn resolve_compact_session(
+    thread_ts: &str,
+) -> Result<(String, infinity_protocol::ThreadRef), String> {
+    let rt = crate::runtime::get();
+    // A subagent's dedicated thread belongs to the session keyed by its root
+    // conversation thread.
+    let root_ts = {
+        let routes = rt.subagent_routes.lock().expect("bug: lock poisoned");
+        routes
+            .get(thread_ts)
+            .map(|r| r.root_thread_ts.clone())
+            .unwrap_or_else(|| thread_ts.to_owned())
+    };
+    let session = {
+        let sessions = rt.sessions.lock().expect("bug: lock poisoned");
+        sessions.get(&root_ts).cloned()
+    };
+    match session {
+        Some(session) => Ok((root_ts, session)),
+        None => Err(
+            "🗜️ This thread has no Infinity session to compact. Send the bot a message here \
+             first."
+                .to_owned(),
+        ),
+    }
+}
+
 /// Handle the `/model` slash command. With no argument, lists available
 /// models and the current default; with an argument, switches the default
 /// model for new sessions. Returns the response text.
@@ -1255,6 +1358,41 @@ mod tests {
             .lock()
             .expect("lock")
             .remove(&(thread_ts.to_owned(), None));
+    }
+
+    #[test]
+    fn resolve_compact_session_maps_threads_to_their_session() {
+        crate::runtime::ensure_test_init();
+        let rt = crate::runtime::get();
+        // Unique ids: runtime state is shared across tests in this binary.
+        let (root, anchor) = ("901.1", "901.2");
+        rt.sessions
+            .lock()
+            .expect("lock")
+            .insert_ephemeral(root.into(), "sess_cshort".into());
+        rt.subagent_routes.lock().expect("lock").insert(
+            anchor.into(),
+            crate::runtime::SubagentRoute {
+                root_thread_ts: root.into(),
+                subagent_id: "sub_cshort".into(),
+            },
+        );
+
+        // Root conversation thread resolves to its own session.
+        let (ts, session) = resolve_compact_session(root).expect("root thread");
+        assert_eq!(ts, root);
+        assert_eq!(session.to_string(), "sess_cshort");
+        // A subagent's dedicated thread resolves to the owning session root
+        // (compaction is session-scoped).
+        let (ts, session) = resolve_compact_session(anchor).expect("subagent thread");
+        assert_eq!(ts, root);
+        assert_eq!(session.to_string(), "sess_cshort");
+        // A thread with no session gets a friendly error.
+        let err = resolve_compact_session("901.9").expect_err("no session");
+        assert!(err.contains("no Infinity session"), "got: {err}");
+
+        // Clean up shared runtime state.
+        rt.subagent_routes.lock().expect("lock").remove(anchor);
     }
 
     #[test]
