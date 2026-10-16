@@ -253,6 +253,28 @@ async fn bracketed_paste_multiline() {
     assert_eq!(sent, "pasted one\npasted two\npasted three");
 }
 
+/// Regression: text copied from PowerPoint uses `\r` between paragraphs and
+/// `\x0b` for soft line breaks. These must become real line breaks in the
+/// input box, and the cursor must sit right after the last glyph rather than
+/// drifting to the right by one cell per invisible control char.
+#[tokio::test(start_paused = true)]
+async fn bracketed_paste_powerpoint_line_breaks() {
+    let mut h = TuiHarness::spawn(80, 14).await;
+
+    h.event_tx
+        .send(Event::Paste(
+            "Slide title\rFirst point\x0bSecond point".to_owned(),
+        ))
+        .expect("bug: UI task dropped event channel");
+    h.settle().await;
+    insta::assert_snapshot!("paste_powerpoint_in_input", h.screen());
+
+    h.key(KeyCode::Enter);
+    h.settle().await;
+    let sent = h.input_rx.try_recv().expect("paste should submit on Enter");
+    assert_eq!(sent, "Slide title\nFirst point\nSecond point");
+}
+
 /// Ctrl+C with an active non-idle session: soft detach is requested, the
 /// daemon answers NotIdle, and the quit picker overlay appears; Esc returns
 /// to normal mode.
