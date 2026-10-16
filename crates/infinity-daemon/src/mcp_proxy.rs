@@ -42,6 +42,7 @@ async fn handle(req: Request<Incoming>, client: McpClient, port: u16) -> Respons
             endpoint: format!("http://127.0.0.1:{port}"),
             tools: descriptor.tools.into_iter().map(Into::into).collect(),
             needs_migration: false,
+            system_prompt: None,
         };
         let manifest =
             serde_json::to_string(&manifest).expect("bug: failed to serialize RAP manifest");
