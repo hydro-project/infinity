@@ -109,6 +109,9 @@ fn chat(user: &str, text: &str, channel: &str, thread_ts: &str) -> SlackEvent {
         is_app_home_opened: false,
         is_session_stopped: false,
         streaming_message_ts: Vec::new(),
+        shortcut: None,
+        rewind_user_turn: None,
+        fork_source_thread_ts: None,
     }
 }
 
@@ -930,6 +933,190 @@ fn choice_buttons_stop_stream_before_posting() {
                 "expected [append, stop, blocks(choice), append, stop] — the \
                  stream must be finalized before the buttons — got {other:?}"
             ),
+        }
+    });
+}
+
+/// A "Rewind to here" shortcut on a thread with no registered session is
+/// answered ephemerally (via the shortcut's response_url) and produces no
+/// daemon command and no modal.
+#[test]
+fn rewind_shortcut_without_session_reports_error() {
+    let mut flow = FlowBuilder::new();
+    let (slack_tx, _daemon_tx, actions_out, commands_out) = build_sim(&mut flow);
+
+    flow.sim().exhaustive(async || {
+        let thread_ts = fresh("rwnone");
+        let channel = fresh("C");
+
+        let mut shortcut = chat("U1", "", &channel, &thread_ts);
+        shortcut.shortcut = Some("rewind_to_here".to_owned());
+        shortcut.message_ts = Some("1111.2222".to_owned());
+        shortcut.trigger_id = Some("trig".to_owned());
+        shortcut.response_url = Some("https://hooks.slack.com/app/T1/1/x".to_owned());
+        slack_tx.send(shortcut);
+
+        let cmds: Vec<DaemonCommand> = commands_out.collect().await;
+        assert!(cmds.is_empty(), "no session → no commands, got {cmds:?}");
+
+        let actions: Vec<SlackAction> = actions_out.collect().await;
+        match &actions[..] {
+            [SlackAction::CommandResponse { response_url, text }] => {
+                assert_eq!(response_url, "https://hooks.slack.com/app/T1/1/x");
+                assert!(
+                    text.contains("no Infinity session"),
+                    "error text should explain, got: {text}"
+                );
+            }
+            other => panic!("expected [CommandResponse], got {other:?}"),
+        }
+    });
+}
+
+/// "Fork from here" is non-destructive. The shortcut opens the edit modal;
+/// its submission asks the I/O layer to open a NEW Slack thread
+/// (`ForkThread`) and touches neither the original thread nor its session.
+/// The fork-ready event for the new thread emits `ForkSession` for the
+/// source session, the fork's `Connected` maps the new thread to the forked
+/// session, and the original thread keeps talking to the original session.
+#[test]
+fn fork_submission_opens_new_thread_and_keeps_original() {
+    let mut flow = FlowBuilder::new();
+    let (slack_tx, daemon_tx, actions_out, commands_out) = build_sim(&mut flow);
+
+    flow.sim().unit_test_fuzz_iterations(256).fuzz(async || {
+        let thread_ts = fresh("fkdo");
+        let fork_ts = fresh("fknew");
+        let channel = fresh("C");
+        let session_id = fresh("sess");
+        let fork_session = fresh("fsess");
+
+        let connected = |sid: &str, title: &str| infinity_protocol::DaemonMessage::Connected {
+            root_thread_id: sid.to_owned().into(),
+            thread_id: sid.to_owned().into(),
+            model_name: String::new(),
+            context_window: 0,
+            title: Some(title.to_owned()),
+            total_tokens_used: 0,
+            provider_id: String::new(),
+        };
+        // The SetThreadTitle action is the synchronization point proving a
+        // `Connected` registration was processed.
+        let wait_title = async || loop {
+            match actions_out.next().await.unwrap() {
+                SlackAction::SetThreadTitle { thread_ts, .. } => return thread_ts,
+                SlackAction::SetStatus { .. } => {}
+                other => panic!("expected SetThreadTitle, got {other:?}"),
+            }
+        };
+
+        slack_tx.send(chat("U1", "original ask", &channel, &thread_ts));
+        assert!(matches!(
+            commands_out.next().await.unwrap(),
+            DaemonCommand::CreateSession { .. }
+        ));
+        daemon_tx.send(devent(&thread_ts, connected(&session_id, "Root")));
+        assert_eq!(wait_title().await, thread_ts);
+
+        // The shortcut itself only opens the modal (turn resolution happens
+        // in the I/O layer, which needs the Slack thread).
+        let mut shortcut = chat("U1", "", &channel, &thread_ts);
+        shortcut.shortcut = Some("rewind_to_here".to_owned());
+        shortcut.message_ts = Some("1111.2222".to_owned());
+        shortcut.trigger_id = Some("trig".to_owned());
+        shortcut.response_url = Some("https://hooks.slack.com/app/T1/1/x".to_owned());
+        slack_tx.send(shortcut);
+        loop {
+            match actions_out.next().await.unwrap() {
+                SlackAction::OpenRewindModal {
+                    thread_ts: t,
+                    target_ts,
+                    ..
+                } => {
+                    assert_eq!(t, thread_ts);
+                    assert_eq!(target_ts, "1111.2222");
+                    break;
+                }
+                SlackAction::SetStatus { .. } => {}
+                other => panic!("expected OpenRewindModal, got {other:?}"),
+            }
+        }
+
+        // Submission: fork from user turn 0 with edited text. Only a
+        // ForkThread action — nothing is stopped or posted in the original.
+        let mut submit = chat("U1", "edited ask", &channel, &thread_ts);
+        submit.rewind_user_turn = Some(0);
+        submit.message_ts = Some("1111.2222".to_owned());
+        slack_tx.send(submit);
+        loop {
+            match actions_out.next().await.unwrap() {
+                SlackAction::ForkThread {
+                    channel: c,
+                    source_thread_ts,
+                    source_message_ts,
+                    user_turn,
+                    text,
+                } => {
+                    assert_eq!(c, channel);
+                    assert_eq!(source_thread_ts, thread_ts);
+                    assert_eq!(source_message_ts, "1111.2222");
+                    assert_eq!(user_turn, 0);
+                    assert_eq!(text, "edited ask");
+                    break;
+                }
+                SlackAction::SetStatus { .. } => {}
+                other => panic!("expected ForkThread, got {other:?}"),
+            }
+        }
+
+        // The I/O layer reports the fork's new thread: ForkSession is issued
+        // for the SOURCE session, keyed on the new thread.
+        let mut ready = chat("", "edited ask", &channel, &fork_ts);
+        ready.rewind_user_turn = Some(0);
+        ready.fork_source_thread_ts = Some(thread_ts.clone());
+        slack_tx.send(ready);
+        match commands_out.next().await.unwrap() {
+            DaemonCommand::ForkSession {
+                thread_ts: t,
+                session_id: s,
+                user_turn,
+            } => {
+                assert_eq!(t, fork_ts);
+                assert_eq!(s.to_string(), session_id);
+                assert_eq!(user_turn, 0);
+            }
+            other => panic!("expected ForkSession, got {other:?}"),
+        }
+
+        // The fork's Connected registers the new thread → forked session.
+        daemon_tx.send(devent(&fork_ts, connected(&fork_session, "Fork")));
+        assert_eq!(wait_title().await, fork_ts);
+
+        // A reply in the new thread goes to the fork…
+        slack_tx.send(chat("U1", "in the fork", &channel, &fork_ts));
+        match commands_out.next().await.unwrap() {
+            DaemonCommand::SendInput {
+                thread_ts: t,
+                session_id: s,
+                ..
+            } => {
+                assert_eq!(t, fork_ts);
+                assert_eq!(s.to_string(), fork_session);
+            }
+            other => panic!("expected SendInput to the fork, got {other:?}"),
+        }
+        // …and the original thread still talks to the original session.
+        slack_tx.send(chat("U1", "still original", &channel, &thread_ts));
+        match commands_out.next().await.unwrap() {
+            DaemonCommand::SendInput {
+                thread_ts: t,
+                session_id: s,
+                ..
+            } => {
+                assert_eq!(t, thread_ts);
+                assert_eq!(s.to_string(), session_id);
+            }
+            other => panic!("expected SendInput to the original, got {other:?}"),
         }
     });
 }

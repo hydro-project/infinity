@@ -192,6 +192,25 @@ pub fn spawn() -> DaemonIo {
                         }
                     }
                 }
+                DaemonCommand::ForkSession {
+                    thread_ts,
+                    session_id,
+                    user_turn,
+                } => match DaemonClient::connect().await {
+                    // Like CreateSession: a fresh connection keyed on the
+                    // fork's own Slack thread; its `Connected` sends the
+                    // stashed pending input (the edited turn).
+                    Ok(daemon) => {
+                        if let Err(e) = daemon.fork_session(&session_id, user_turn).await {
+                            tracing::error!("ForkSession failed for {thread_ts}: {e}");
+                            continue;
+                        }
+                        spawn_receiver(thread_ts.clone(), &mut connections, daemon, &to_df_tx);
+                    }
+                    Err(e) => {
+                        tracing::error!("daemon connect failed for {thread_ts}: {e}");
+                    }
+                },
             }
         }
     });

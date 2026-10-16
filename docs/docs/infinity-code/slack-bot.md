@@ -33,6 +33,11 @@ features:
       description: List available models or switch the default for new sessions
       usage_hint: "[provider_id/model_id]"
       should_escape: false
+  shortcuts:
+    - name: Fork from here
+      type: message
+      callback_id: rewind_to_here
+      description: Fork the conversation from this message into a new thread, edit it, and resend
 
 oauth_config:
   scopes:
@@ -171,6 +176,17 @@ When you click Stop:
 
 **Note:** daemon-side interruption requires a daemon new enough to understand `Interrupt` (older daemons silently ignore it — the Slack-side stop still discards the output, and your next message interrupts the old generation for real).
 
+## Forking a Conversation
+
+Slack has no native rewind, so the bot provides a non-destructive one as a message shortcut: open the **⋮ menu on any message** in a session thread and pick **"Fork from here"** (the `rewind_to_here` message shortcut from the manifest above — the callback id predates the rename).
+
+- Invoked on one of **your** messages, a dialog opens pre-filled with that message's text. Edit it and hit **Fork & send**: the daemon starts a **new session** containing the conversation from just before that message, and the bot opens a **new Slack thread** for it ("⏪ Forked from …", linking back), continuing with your edited message.
+- Invoked on a **bot** message, the fork point is the user turn that produced it.
+- The original conversation is **unchanged**: it keeps its session, any in-flight work keeps running, and you can keep using its thread. A "⏪ Forked into a new thread" cross-link is posted there.
+- Not supported inside a subagent's dedicated thread (use the main conversation), and it needs a daemon new enough to understand `ForkSession`.
+
+The fork point is found by counting the thread's human messages, which the bot forwarded as turns. If messages were sent while the bot was down, the count can be off; the daemon rejects out-of-range turns with an error.
+
 ## Switching Models
 
 Use the `/model` slash command (responses are ephemeral — only you see them):
@@ -193,3 +209,4 @@ The switch applies to sessions created afterwards; existing threads keep their m
 | "auth.test failed" | Verify `bot_token` is correct and the app is installed to the workspace |
 | Bot responds but no streaming | The `assistant:write` scope is required for `chat.startStream` |
 | Stop button missing ("Stop isn't available for this agent") | Subscribe to the `agent_session_stopped` bot event in **Event Subscriptions** (or re-apply the manifest above — remember manifests replace, don't merge) |
+| "Fork from here" missing from the ⋮ message menu | Add the `rewind_to_here` message shortcut under **Interactivity & Shortcuts** (or re-apply the manifest above — remember manifests replace, don't merge) |

@@ -49,6 +49,17 @@ pub enum DaemonCommand {
         #[serde(default)]
         target_thread: Option<infinity_protocol::ThreadRef>,
     },
+    /// Fork the session's root thread into a NEW session just before its
+    /// `user_turn`-th user turn (see
+    /// [`infinity_protocol::ClientMessage::ForkSession`]). `thread_ts` is the
+    /// fork's own (new) Slack thread: the daemon replies `Connected` for the
+    /// fork on that thread's connection, after which the stashed pending
+    /// input (the edited turn) is sent. `session_id` is the source session.
+    ForkSession {
+        thread_ts: String,
+        session_id: infinity_protocol::ThreadRef,
+        user_turn: usize,
+    },
 }
 
 /// A message received from a daemon connection, tagged with the thread it belongs to.
