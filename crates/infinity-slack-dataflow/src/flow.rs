@@ -57,11 +57,13 @@ pub fn slack_dataflow<'a, P: 'a>(
                 channel: event.channel,
                 thread_ts: route.root_thread_ts,
                 subagent: Some(route.subagent_id),
+                end_of_response: false,
             },
             None => SlackAction::StreamStop {
                 channel: event.channel,
                 thread_ts: event.thread_ts,
                 subagent: None,
+                end_of_response: false,
             },
         }
     }));
@@ -322,6 +324,7 @@ pub fn slack_dataflow<'a, P: 'a>(
                 channel: event.channel.clone(),
                 thread_ts: event.thread_ts.clone(),
                 subagent: None,
+                end_of_response: false,
             },
             SlackAction::PostMessage {
                 channel: event.channel.clone(),
@@ -684,13 +687,11 @@ pub fn slack_dataflow<'a, P: 'a>(
                 actions
             }
             infinity_protocol::DaemonMessage::ToolResult { .. } => {
-                // Complete the oldest in-flight tool task for this stream.
-                let popped = rt
-                    .tool_tasks
-                    .lock()
-                    .expect("bug: lock poisoned")
-                    .get_mut(&skey)
-                    .and_then(|q| q.pop_front());
+                // Pair the result with its call: an orphan sentinel (call
+                // delivered before a restart) or the oldest in-flight tool
+                // task (see `pair_tool_result`).
+                let popped =
+                    crate::flow::pair_tool_result(rt, &skey, &de.thread_ts, subagent.as_deref());
                 let mut actions = Vec::new();
                 // Tool finished — back to thinking until the next tool/text
                 // (root output only; see the TextChunk arm).
@@ -745,10 +746,28 @@ pub fn slack_dataflow<'a, P: 'a>(
                             );
                         }
                     }
+                    // Same for unconsumed orphan-result sentinels (results
+                    // that never arrived, e.g. interrupted tools): left in
+                    // place they would swallow the next response's first
+                    // completions.
+                    if let Some(stale) = rt
+                        .resume_orphan_results
+                        .lock()
+                        .expect("bug: lock poisoned")
+                        .remove(&skey)
+                    {
+                        if stale > 0 {
+                            tracing::debug!(
+                                "discarding {stale} stale orphan-result sentinel(s) for {skey} \
+                                 at response end"
+                            );
+                        }
+                    }
                     vec![SlackAction::StreamStop {
                         channel: channel.clone(),
                         thread_ts: de.thread_ts,
                         subagent,
+                        end_of_response: true,
                     }]
                 }
             }
@@ -765,6 +784,7 @@ pub fn slack_dataflow<'a, P: 'a>(
                         channel: channel.clone(),
                         thread_ts: de.thread_ts.clone(),
                         subagent: subagent.clone(),
+                        end_of_response: false,
                     },
                     SlackAction::PostMessage {
                         channel: channel.clone(),
@@ -818,6 +838,7 @@ pub fn slack_dataflow<'a, P: 'a>(
                         channel: channel.clone(),
                         thread_ts: de.thread_ts.clone(),
                         subagent: subagent.clone(),
+                        end_of_response: false,
                     },
                     SlackAction::PostBlocks {
                         channel: channel.clone(),
@@ -927,6 +948,55 @@ pub fn quote_snippet(text: &str) -> String {
 /// Returns `None` for root-thread output — and also when the root thread is
 /// not yet known, in which case output is conservatively routed to the root
 /// conversation rather than forking a dedicated Slack thread.
+/// Pair an arriving `ToolResult` with its tool call for the given stream.
+///
+/// `ToolResult` carries no call id, so pairing is positional. Two sources, in
+/// priority order:
+///
+/// 1. **Orphan sentinels** (`Runtime::resume_orphan_results`): results for
+///    calls that were delivered *before a restart*. Their cards live in
+///    finalized messages of the previous process (completed at drain time),
+///    so the result produces no card update — returns `None` — but it must
+///    not consume a post-restart call's queue entry. The delivery cursor
+///    still advances so a second restart during the same response counts
+///    delivered results correctly.
+/// 2. The oldest in-flight tool task of the stream's FIFO queue — returned
+///    as `(task_id, title, details)` for the "complete" card update.
+pub fn pair_tool_result(
+    rt: &crate::runtime::Runtime,
+    skey: &str,
+    thread_ts: &str,
+    subagent: Option<&str>,
+) -> Option<(String, String, String)> {
+    let consumed_orphan = {
+        let mut orphans = rt.resume_orphan_results.lock().expect("bug: lock poisoned");
+        match orphans.get_mut(skey) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                if *n == 0 {
+                    orphans.remove(skey);
+                }
+                true
+            }
+            _ => false,
+        }
+    };
+    if consumed_orphan {
+        rt.stream_progress
+            .lock()
+            .expect("bug: lock poisoned")
+            .entry((thread_ts.to_owned(), subagent.map(str::to_owned)))
+            .or_default()
+            .tool_results += 1;
+        return None;
+    }
+    rt.tool_tasks
+        .lock()
+        .expect("bug: lock poisoned")
+        .get_mut(skey)
+        .and_then(|q| q.pop_front())
+}
+
 pub fn subagent_of(
     msg: &infinity_protocol::DaemonMessage,
     root: Option<&infinity_protocol::ThreadRef>,
@@ -1143,6 +1213,61 @@ mod tests {
             choice_id: "c1".into(),
         };
         assert_eq!(subagent_of(&welcome, Some(&root)), None);
+    }
+
+    #[test]
+    fn pair_tool_result_consumes_sentinels_before_the_queue() {
+        crate::runtime::ensure_test_init();
+        let rt = crate::runtime::get();
+        // Unique ids: the runtime is shared process-wide across tests.
+        let thread_ts = "881.1";
+        let skey = crate::slack::stream_key(thread_ts, None);
+
+        // Two orphan sentinels (calls delivered before a restart) and one
+        // real in-flight task from a post-restart call.
+        rt.resume_orphan_results
+            .lock()
+            .expect("lock")
+            .insert(skey.clone(), 2);
+        rt.tool_tasks.lock().expect("lock").insert(
+            skey.clone(),
+            [("task_new".to_owned(), "bash".to_owned(), "{}".to_owned())]
+                .into_iter()
+                .collect(),
+        );
+
+        // First two results pair with sentinels: no card update, cursor
+        // advances, the real task stays queued.
+        assert_eq!(pair_tool_result(rt, &skey, thread_ts, None), None);
+        assert_eq!(pair_tool_result(rt, &skey, thread_ts, None), None);
+        assert_eq!(
+            rt.stream_progress
+                .lock()
+                .expect("lock")
+                .get(&(thread_ts.to_owned(), None))
+                .map(|c| c.tool_results),
+            Some(2)
+        );
+        assert!(!rt
+            .resume_orphan_results
+            .lock()
+            .expect("lock")
+            .contains_key(&skey));
+
+        // Third result pairs with the new call's entry (card completes)...
+        assert_eq!(
+            pair_tool_result(rt, &skey, thread_ts, None),
+            Some(("task_new".to_owned(), "bash".to_owned(), "{}".to_owned()))
+        );
+        // ... and a surplus result with nothing queued emits nothing.
+        assert_eq!(pair_tool_result(rt, &skey, thread_ts, None), None);
+
+        // Clean up shared runtime state.
+        rt.tool_tasks.lock().expect("lock").remove(&skey);
+        rt.stream_progress
+            .lock()
+            .expect("lock")
+            .remove(&(thread_ts.to_owned(), None));
     }
 
     #[test]

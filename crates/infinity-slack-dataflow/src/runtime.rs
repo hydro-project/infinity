@@ -17,13 +17,40 @@ type ToolTaskQueue = VecDeque<(String, String, String)>;
 
 /// Where a dedicated subagent Slack thread routes back to: the root Slack
 /// thread of the session and the subagent's agent thread id.
-#[derive(Clone, Debug)]
+///
+/// Serialized into the resume state file so routes survive bot restarts
+/// (replies inside a subagent thread keep routing to that subagent).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SubagentRoute {
     /// The Slack `thread_ts` of the root conversation thread.
     pub root_thread_ts: String,
     /// The subagent's agent thread id (a `ThreadRef` in string form).
     pub subagent_id: String,
 }
+
+/// Cumulative delivery progress of one logical output stream (a root
+/// conversation stream or one subagent's stream), counted over the thread's
+/// whole history. Used to trim the daemon's `Replay` after a restart: the
+/// prefix covered by the cursor was already delivered to Slack.
+///
+/// Counted by the Slack I/O layer at delivery time (text when it is accepted
+/// into the outgoing buffer, tool calls/results when their task-card update
+/// is processed), so a cleanly drained shutdown leaves the cursor exactly at
+/// what Slack received.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StreamCursor {
+    /// Total bytes of streamed text delivered (replay text is the
+    /// concatenation of the delivered chunks, so byte offsets align).
+    pub text_bytes: usize,
+    /// Number of tool calls delivered (as task cards).
+    pub tool_calls: usize,
+    /// Number of tool results delivered (as task-card completions).
+    pub tool_results: usize,
+}
+
+/// A stream's identity: `(root thread_ts, subagent id)` — `None` for the
+/// root conversation's stream.
+pub type StreamId = (String, Option<String>);
 
 /// Shared runtime state for the dataflow.
 pub struct Runtime {
@@ -73,6 +100,35 @@ pub struct Runtime {
     /// error); cleared by the I/O layer on the response's final `StreamStop`
     /// and by the dataflow when the user sends a new message in the thread.
     pub halted_streams: Arc<Mutex<HashSet<String>>>,
+    /// Delivery cursors of the streams with an open response, keyed by
+    /// `(root thread_ts, subagent id)` (`None` = the root conversation's
+    /// stream). Maintained by the Slack I/O layer (created on first delivery,
+    /// advanced per delivery, removed on the response-final `StreamStop`) and
+    /// snapshotted into the resume state file so a restarted bot can trim the
+    /// daemon's `Replay` to the undelivered remainder. A key's presence means
+    /// "this stream's response is open" — exactly the set of streams a
+    /// restart must resume.
+    pub stream_progress: Arc<Mutex<HashMap<StreamId, StreamCursor>>>,
+    /// Streams the bot must catch up after a restart: `(root thread_ts,
+    /// subagent id)` → the delivery cursor persisted at shutdown. Populated
+    /// at startup from the resume state file; consumed (removed) by the
+    /// daemon I/O layer when the reconnect's `Replay` for that stream
+    /// arrives. Replays for streams not in this map are dropped (their
+    /// output was already delivered).
+    pub resuming: Arc<Mutex<HashMap<StreamId, StreamCursor>>>,
+    /// Per-stream count of orphan tool results pending after a resume, keyed
+    /// by `stream_key`. An orphan result belongs to a tool call that was
+    /// delivered (its card posted, then completed-at-finalize) *before* a
+    /// restart: the call is skipped by the resume cursor, but its result
+    /// still arrives (replayed past the cursor or live once the tool
+    /// finishes). `ToolResult` pairs completions to calls by FIFO order only,
+    /// so without this ledger an orphan result would consume the queue entry
+    /// of a *new* post-restart call and leave that call's card "in progress"
+    /// forever. The dataflow consumes one sentinel per arriving result
+    /// (emitting no task-card update) before touching the real queue. Seeded
+    /// by the daemon I/O layer when it forwards a trimmed replay; discarded
+    /// at response end alongside stale tool tasks.
+    pub resume_orphan_results: Arc<Mutex<HashMap<String, usize>>>,
 }
 
 static RUNTIME: std::sync::OnceLock<Runtime> = std::sync::OnceLock::new();
@@ -95,6 +151,9 @@ pub fn init(config: &'static Config, sessions: Arc<Mutex<SessionStore>>) {
         app_home_seen: Arc::new(Mutex::new(HashSet::new())),
         subagent_routes: Arc::new(Mutex::new(HashMap::new())),
         halted_streams: Arc::new(Mutex::new(HashSet::new())),
+        stream_progress: Arc::new(Mutex::new(HashMap::new())),
+        resuming: Arc::new(Mutex::new(HashMap::new())),
+        resume_orphan_results: Arc::new(Mutex::new(HashMap::new())),
     });
 }
 
@@ -124,6 +183,9 @@ pub fn ensure_test_init() {
             app_home_seen: Arc::new(Mutex::new(HashSet::new())),
             subagent_routes: Arc::new(Mutex::new(HashMap::new())),
             halted_streams: Arc::new(Mutex::new(HashSet::new())),
+            stream_progress: Arc::new(Mutex::new(HashMap::new())),
+            resuming: Arc::new(Mutex::new(HashMap::new())),
+            resume_orphan_results: Arc::new(Mutex::new(HashMap::new())),
         }
     });
 }

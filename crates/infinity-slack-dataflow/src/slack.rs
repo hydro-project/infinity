@@ -180,6 +180,13 @@ pub enum SlackAction {
         /// Route into the dedicated thread of this subagent (see enum docs).
         #[serde(default)]
         subagent: Option<String>,
+        /// True when this stop ends the response itself (the dataflow saw the
+        /// response-final `ResponseDone`), as opposed to an interposed
+        /// finalize (choice buttons, errors, button clicks, rewind). The I/O
+        /// layer clears the stream's delivery cursor on a response-final
+        /// stop: the stream no longer needs resuming across a restart.
+        #[serde(default)]
+        end_of_response: bool,
     },
     /// The user clicked Slack's native stop button (`agent_session_stopped`):
     /// halt the stream for this thread *without* re-touching the stopped

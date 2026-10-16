@@ -12,6 +12,7 @@ hydro_lang::setup!();
 pub mod config;
 pub mod daemon;
 pub mod flow;
+pub mod resume;
 pub mod runtime;
 pub mod session_store;
 pub mod slack;

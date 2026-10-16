@@ -17,6 +17,13 @@ pub enum DaemonCommand {
     ConnectSession {
         thread_ts: String,
         session_id: infinity_protocol::ThreadRef,
+        /// The agent thread to attach to. `None` attaches to the session
+        /// root; `Some` attaches to a subagent thread. Used by startup
+        /// resume: a subagent whose stream was active at shutdown gets its
+        /// own connection, because the daemon's replay (and the live events
+        /// of an already-running subagent driver) are delivered per thread.
+        #[serde(default)]
+        target_thread: Option<infinity_protocol::ThreadRef>,
     },
     /// Send user input on the connection for this thread.
     SendInput {
