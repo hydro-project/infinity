@@ -141,7 +141,7 @@ pub fn slack_dataflow<'a, P: 'a>(
         non_buttons.partition(q!(|event: &SlackEvent| { event.slash_command.is_none() }));
 
     // --- Slash commands → respond via the command's response_url ---
-    let command_response_actions = slash_commands.filter_map(q!(|event: SlackEvent| {
+    let command_response_actions = slash_commands.clone().filter_map(q!(|event: SlackEvent| {
         let response_url = event.response_url?;
         let command = event.slash_command.unwrap_or_default();
 
@@ -163,11 +163,50 @@ pub fn slack_dataflow<'a, P: 'a>(
                     text: crate::flow::handle_model_command(arg),
                 })
             }
+            "/compact" => {
+                // The matching TriggerCompaction command is emitted by the
+                // parallel `compact_commands` branch below; this branch only
+                // tells the invoking user what happened (ephemeral).
+                let text = match crate::flow::resolve_compact_target(&event.channel, &event.text) {
+                    Ok((thread_ts, _session)) => {
+                        let title = {
+                            let titles =
+                                crate::runtime::get().thread_titles.lock().expect("bug: lock poisoned");
+                            titles.get(&thread_ts).cloned()
+                        };
+                        match title {
+                            Some(t) => format!(
+                                "🗜️ Compacting *{t}*… a note will be posted in the thread when done."
+                            ),
+                            None => format!(
+                                "🗜️ Compacting the session for thread `{thread_ts}`… a note will \
+                                 be posted in the thread when done."
+                            ),
+                        }
+                    }
+                    Err(text) => text,
+                };
+                Some(SlackAction::CommandResponse { response_url, text })
+            }
             other => Some(SlackAction::CommandResponse {
                 response_url,
                 text: format!("Unknown command `{other}`."),
             }),
         }
+    }));
+
+    // --- `/compact` → TriggerCompaction commands (parallel to the ephemeral
+    // ack above; both branches resolve the same target deterministically) ---
+    let compact_commands = slash_commands.filter_map(q!(|event: SlackEvent| {
+        if event.slash_command.as_deref() != Some("/compact") {
+            return None;
+        }
+        let (thread_ts, session_id) =
+            crate::flow::resolve_compact_target(&event.channel, &event.text).ok()?;
+        Some(DaemonCommand::TriggerCompaction {
+            thread_ts,
+            session_id,
+        })
     }));
 
     // --- Partition regular messages into app-home opens vs chat messages ---
@@ -514,6 +553,13 @@ pub fn slack_dataflow<'a, P: 'a>(
                 commands because they originate from independent user interaction events;
                 the Rewind → SendInput pair itself is ordered within its branch
             */),
+        )
+        .merge_ordered(
+            compact_commands,
+            nondet!(/**
+                compaction commands have non-deterministic ordering w.r.t. other daemon
+                commands because they originate from independent slash-command events
+            */),
         );
 
     // Set an "is thinking" status as soon as a chat message arrives. Replies
@@ -857,6 +903,24 @@ pub fn slack_dataflow<'a, P: 'a>(
                     choice_id: choice_id.clone(),
                 }]
             }
+            infinity_protocol::DaemonMessage::CompactionApplied { .. } => {
+                // Context was compacted — via `/compact` or daemon-initiated
+                // auto-compaction; both are worth surfacing. Routed into the
+                // subagent's dedicated thread when a subagent compacted.
+                // (Replay catch-up after a restart never re-posts this: the
+                // resume delta forwards only text/tool events.)
+                if !has_thread {
+                    return Vec::new();
+                }
+                vec![SlackAction::PostMessage {
+                    channel: channel.clone(),
+                    text: "🗜️ Context compacted — older conversation was summarized to free up \
+                           context space."
+                        .to_owned(),
+                    thread_ts: Some(de.thread_ts),
+                    subagent,
+                }]
+            }
             _ => Vec::new(),
         }
     }));
@@ -1102,6 +1166,81 @@ pub fn build_model_picker_view(response_url: &str) -> Option<serde_json::Value> 
     }))
 }
 
+/// Resolve which session a `/compact` invocation targets.
+///
+/// Slack never delivers developer slash commands from inside message threads
+/// (they are rejected client-side), so the payload identifies only the
+/// `channel` the command was typed in. Resolution rules:
+///
+/// - With an explicit `arg` (a Slack thread ts, from "Copy link" or the
+///   ambiguity listing below): that thread's session, if known.
+/// - Without an argument: the channel's single known session; if the channel
+///   hosts several session threads, an error listing them (newest first) so
+///   the user can re-run `/compact <thread_ts>`.
+///
+/// Returns `Ok((thread_ts, session_root))` or `Err(user-facing message)`.
+pub fn resolve_compact_target(
+    channel: &str,
+    arg: &str,
+) -> Result<(String, infinity_protocol::ThreadRef), String> {
+    let rt = crate::runtime::get();
+    let arg = arg.trim().trim_matches(|c| c == '<' || c == '>');
+
+    if !arg.is_empty() {
+        let session = {
+            let sessions = rt.sessions.lock().expect("bug: lock poisoned");
+            sessions.get(arg).cloned()
+        };
+        return match session {
+            Some(session) => Ok((arg.to_owned(), session)),
+            None => Err(format!(
+                "❌ No Infinity session found for thread `{arg}`. Run `/compact` with no \
+                 argument to see this channel's sessions."
+            )),
+        };
+    }
+
+    // Candidates: root threads mapped to this channel that have a session.
+    let mut candidates: Vec<(String, infinity_protocol::ThreadRef)> = {
+        let channels = rt.channels.lock().expect("bug: lock poisoned");
+        let sessions = rt.sessions.lock().expect("bug: lock poisoned");
+        channels
+            .iter()
+            .filter(|(_, ch)| ch.as_str() == channel)
+            .filter_map(|(ts, _)| sessions.get(ts).map(|s| (ts.clone(), s.clone())))
+            .collect()
+    };
+    // Slack ts values sort chronologically; newest first.
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+
+    match candidates.len() {
+        0 => Err(
+            "🗜️ No active Infinity session is known in this channel. Send a message to the bot \
+             first, then run `/compact`."
+                .to_owned(),
+        ),
+        1 => {
+            let (thread_ts, session) = candidates.remove(0);
+            Ok((thread_ts, session))
+        }
+        _ => {
+            let titles = rt.thread_titles.lock().expect("bug: lock poisoned");
+            let mut lines = vec![
+                "🗜️ Several session threads are active in this channel — pick one with \
+                 `/compact <thread_ts>`:"
+                    .to_owned(),
+            ];
+            for (ts, _) in candidates.iter().take(8) {
+                match titles.get(ts) {
+                    Some(title) => lines.push(format!("• `{ts}` — {title}")),
+                    None => lines.push(format!("• `{ts}`")),
+                }
+            }
+            Err(lines.join("\n"))
+        }
+    }
+}
+
 /// Handle the `/model` slash command. With no argument, lists available
 /// models and the current default; with an argument, switches the default
 /// model for new sessions. Returns the response text.
@@ -1268,6 +1407,52 @@ mod tests {
             .lock()
             .expect("lock")
             .remove(&(thread_ts.to_owned(), None));
+    }
+
+    #[test]
+    fn resolve_compact_target_resolves_by_channel_and_argument() {
+        crate::runtime::ensure_test_init();
+        let rt = crate::runtime::get();
+        // Unique ids: runtime state is shared across tests in this binary.
+        let (ch, t1, t2, lonely_ch, t3) = ("C_cmp1", "900.1", "900.2", "C_cmp2", "900.3");
+        {
+            let mut sessions = rt.sessions.lock().expect("lock");
+            sessions.insert_ephemeral(t1.into(), "sess_cmp1".into());
+            sessions.insert_ephemeral(t2.into(), "sess_cmp2".into());
+            sessions.insert_ephemeral(t3.into(), "sess_cmp3".into());
+        }
+        {
+            let mut channels = rt.channels.lock().expect("lock");
+            channels.insert(t1.into(), ch.into());
+            channels.insert(t2.into(), ch.into());
+            channels.insert(t3.into(), lonely_ch.into());
+        }
+        rt.thread_titles
+            .lock()
+            .expect("lock")
+            .insert(t2.into(), "Fix the build".into());
+
+        // Explicit argument wins (including Slack-pasted <...> wrapping).
+        let (ts, session) = resolve_compact_target(ch, " <900.1> ").expect("explicit arg");
+        assert_eq!(ts, t1);
+        assert_eq!(session.to_string(), "sess_cmp1");
+        // Unknown argument → error.
+        let err = resolve_compact_target(ch, "999.9").expect_err("unknown arg");
+        assert!(err.contains("No Infinity session"), "got: {err}");
+        // Single-session channel resolves implicitly.
+        let (ts, session) = resolve_compact_target(lonely_ch, "").expect("single session");
+        assert_eq!(ts, t3);
+        assert_eq!(session.to_string(), "sess_cmp3");
+        // Ambiguous channel lists candidates newest-first with titles.
+        let err = resolve_compact_target(ch, "").expect_err("ambiguous");
+        assert!(err.contains("`900.2` — Fix the build"), "got: {err}");
+        assert!(err.contains("`900.1`"), "got: {err}");
+        let pos2 = err.find("900.2").expect("lists 900.2");
+        let pos1 = err.find("900.1").expect("lists 900.1");
+        assert!(pos2 < pos1, "newest thread must be listed first: {err}");
+        // Unknown channel → no session.
+        let err = resolve_compact_target("C_cmp_none", "").expect_err("no sessions");
+        assert!(err.contains("No active Infinity session"), "got: {err}");
     }
 
     #[test]
