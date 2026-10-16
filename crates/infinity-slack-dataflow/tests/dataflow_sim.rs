@@ -109,6 +109,8 @@ fn chat(user: &str, text: &str, channel: &str, thread_ts: &str) -> SlackEvent {
         is_app_home_opened: false,
         is_session_stopped: false,
         streaming_message_ts: Vec::new(),
+        shortcut: None,
+        rewind_user_turn: None,
     }
 }
 
@@ -930,6 +932,172 @@ fn choice_buttons_stop_stream_before_posting() {
                 "expected [append, stop, blocks(choice), append, stop] — the \
                  stream must be finalized before the buttons — got {other:?}"
             ),
+        }
+    });
+}
+
+/// A "Rewind to here" shortcut on a thread with no registered session is
+/// answered ephemerally (via the shortcut's response_url) and produces no
+/// daemon command and no modal.
+#[test]
+fn rewind_shortcut_without_session_reports_error() {
+    let mut flow = FlowBuilder::new();
+    let (slack_tx, _daemon_tx, actions_out, commands_out) = build_sim(&mut flow);
+
+    flow.sim().exhaustive(async || {
+        let thread_ts = fresh("rwnone");
+        let channel = fresh("C");
+
+        let mut shortcut = chat("U1", "", &channel, &thread_ts);
+        shortcut.shortcut = Some("rewind_to_here".to_owned());
+        shortcut.message_ts = Some("1111.2222".to_owned());
+        shortcut.trigger_id = Some("trig".to_owned());
+        shortcut.response_url = Some("https://hooks.slack.com/app/T1/1/x".to_owned());
+        slack_tx.send(shortcut);
+
+        let cmds: Vec<DaemonCommand> = commands_out.collect().await;
+        assert!(cmds.is_empty(), "no session → no commands, got {cmds:?}");
+
+        let actions: Vec<SlackAction> = actions_out.collect().await;
+        match &actions[..] {
+            [SlackAction::CommandResponse { response_url, text }] => {
+                assert_eq!(response_url, "https://hooks.slack.com/app/T1/1/x");
+                assert!(
+                    text.contains("no Infinity session"),
+                    "error text should explain, got: {text}"
+                );
+            }
+            other => panic!("expected [CommandResponse], got {other:?}"),
+        }
+    });
+}
+
+/// With a registered session, the "Rewind to here" shortcut opens the edit
+/// modal, and the modal's submission emits the ordered `Rewind` → `SendInput`
+/// command pair plus the Slack-side stream stop, "⏪ Rewound" marker, and
+/// thinking status.
+#[test]
+fn rewind_submission_rewinds_then_resends() {
+    let mut flow = FlowBuilder::new();
+    let (slack_tx, daemon_tx, actions_out, commands_out) = build_sim(&mut flow);
+
+    flow.sim().unit_test_fuzz_iterations(256).fuzz(async || {
+        let thread_ts = fresh("rwdo");
+        let channel = fresh("C");
+        let session_id = fresh("sess");
+
+        slack_tx.send(chat("U1", "original ask", &channel, &thread_ts));
+        assert!(matches!(
+            commands_out.next().await.unwrap(),
+            DaemonCommand::CreateSession { .. }
+        ));
+
+        // Register the session (the SetThreadTitle action is the
+        // synchronization point proving the registration was processed).
+        daemon_tx.send(devent(
+            &thread_ts,
+            infinity_protocol::DaemonMessage::Connected {
+                root_thread_id: session_id.clone().into(),
+                thread_id: session_id.clone().into(),
+                model_name: String::new(),
+                context_window: 0,
+                title: Some("Root".to_owned()),
+                total_tokens_used: 0,
+                provider_id: String::new(),
+            },
+        ));
+        loop {
+            match actions_out.next().await.unwrap() {
+                SlackAction::SetThreadTitle { .. } => break,
+                SlackAction::SetStatus { .. } => {}
+                other => panic!("expected SetThreadTitle, got {other:?}"),
+            }
+        }
+
+        // The shortcut itself only opens the modal (turn resolution happens
+        // in the I/O layer, which needs the Slack thread).
+        let mut shortcut = chat("U1", "", &channel, &thread_ts);
+        shortcut.shortcut = Some("rewind_to_here".to_owned());
+        shortcut.message_ts = Some("1111.2222".to_owned());
+        shortcut.trigger_id = Some("trig".to_owned());
+        shortcut.response_url = Some("https://hooks.slack.com/app/T1/1/x".to_owned());
+        slack_tx.send(shortcut);
+        loop {
+            match actions_out.next().await.unwrap() {
+                SlackAction::OpenRewindModal {
+                    channel: c,
+                    thread_ts: t,
+                    target_ts,
+                    trigger_id,
+                    ..
+                } => {
+                    assert_eq!(c, channel);
+                    assert_eq!(t, thread_ts);
+                    assert_eq!(target_ts, "1111.2222");
+                    assert_eq!(trigger_id, "trig");
+                    break;
+                }
+                SlackAction::SetStatus { .. } => {}
+                other => panic!("expected OpenRewindModal, got {other:?}"),
+            }
+        }
+
+        // The modal submission: rewind to user turn 0, resubmitting edited text.
+        let mut submit = chat("U1", "edited ask", &channel, &thread_ts);
+        submit.rewind_user_turn = Some(0);
+        slack_tx.send(submit);
+
+        // Commands: Rewind first, then the edited input — in order, so the
+        // daemon applies the truncation before processing the new turn.
+        match commands_out.next().await.unwrap() {
+            DaemonCommand::Rewind {
+                thread_ts: t,
+                session_id: s,
+                user_turn,
+            } => {
+                assert_eq!(t, thread_ts);
+                assert_eq!(s.to_string(), session_id);
+                assert_eq!(user_turn, 0);
+            }
+            other => panic!("expected Rewind, got {other:?}"),
+        }
+        match commands_out.next().await.unwrap() {
+            DaemonCommand::SendInput {
+                thread_ts: t,
+                text,
+                target_thread,
+                ..
+            } => {
+                assert_eq!(t, thread_ts);
+                assert_eq!(text, "edited ask");
+                assert!(target_thread.is_none(), "rewind resubmits to the root");
+            }
+            other => panic!("expected SendInput after Rewind, got {other:?}"),
+        }
+
+        // Slack side: finalize any stream, post the marker quoting the edited
+        // turn (status updates interleave non-deterministically).
+        let actions: Vec<SlackAction> = actions_out.collect().await;
+        let core = non_status(&actions);
+        match &core[..] {
+            [SlackAction::StreamStop {
+                thread_ts: t1,
+                subagent,
+                ..
+            }, SlackAction::PostMessage {
+                thread_ts: t2,
+                text,
+                ..
+            }] => {
+                assert_eq!(t1, &thread_ts);
+                assert!(subagent.is_none());
+                assert_eq!(t2.as_deref(), Some(thread_ts.as_str()));
+                assert!(
+                    text.contains("Rewound") && text.contains("> edited ask"),
+                    "marker should quote the edited turn, got: {text}"
+                );
+            }
+            other => panic!("expected [StreamStop, PostMessage], got {other:?}"),
         }
     });
 }

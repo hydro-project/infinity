@@ -192,6 +192,42 @@ pub fn spawn() -> DaemonIo {
                         }
                     }
                 }
+                DaemonCommand::Rewind {
+                    thread_ts,
+                    session_id,
+                    user_turn,
+                } => {
+                    if !connections.contains_key(&thread_ts) {
+                        // Reconnect after restart so the rewind still lands
+                        // (and the SendInput that follows it rides the same
+                        // ordered connection).
+                        match DaemonClient::connect().await {
+                            Ok(daemon) => {
+                                if let Err(e) = daemon.connect_session(&session_id, None).await {
+                                    tracing::error!(
+                                        "reconnect to session failed for {thread_ts}: {e}"
+                                    );
+                                    continue;
+                                }
+                                spawn_receiver(
+                                    thread_ts.clone(),
+                                    &mut connections,
+                                    daemon,
+                                    &to_df_tx,
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!("daemon connect failed for {thread_ts}: {e}");
+                                continue;
+                            }
+                        }
+                    }
+                    if let Some(daemon) = connections.get(&thread_ts) {
+                        if let Err(e) = daemon.rewind(&session_id, user_turn).await {
+                            tracing::error!("Rewind failed for {thread_ts}: {e}");
+                        }
+                    }
+                }
             }
         }
     });

@@ -173,8 +173,169 @@ pub fn slack_dataflow<'a, P: 'a>(
         regular_messages.partition(q!(|event: &SlackEvent| { !event.is_app_home_opened }));
 
     // --- Partition out native stop-button clicks (`agent_session_stopped`) ---
-    let (chat_messages, session_stops) =
+    let (non_stops, session_stops) =
         non_app_home.partition(q!(|event: &SlackEvent| { !event.is_session_stopped }));
+
+    // --- Partition out message-shortcut invocations (context ⋮ menu) ---
+    let (non_shortcuts, shortcuts) =
+        non_stops.partition(q!(|event: &SlackEvent| { event.shortcut.is_none() }));
+
+    // --- Partition out rewind-modal submissions ---
+    let (chat_messages, rewind_submits) = non_shortcuts.partition(q!(|event: &SlackEvent| {
+        event.rewind_user_turn.is_none()
+    }));
+
+    // --- "Rewind to here" shortcut → validate, then open the rewind modal ---
+    // The I/O layer resolves the governing user turn (it needs the Slack
+    // thread's replies) and opens the modal; the dataflow only validates
+    // what it can check synchronously.
+    let shortcut_actions = shortcuts.filter_map(q!(|event: SlackEvent| {
+        let response_url = event.response_url?;
+        if event.shortcut.as_deref() != Some(crate::slack::REWIND_SHORTCUT_CALLBACK_ID) {
+            let shortcut = event.shortcut.unwrap_or_default();
+            return Some(SlackAction::CommandResponse {
+                response_url,
+                text: format!("Unknown shortcut `{shortcut}`."),
+            });
+        }
+        let Some(trigger_id) = event.trigger_id else {
+            return Some(SlackAction::CommandResponse {
+                response_url,
+                text: "⚠️ Could not open the rewind dialog (no trigger id).".to_owned(),
+            });
+        };
+        let Some(target_ts) = event.message_ts else {
+            return Some(SlackAction::CommandResponse {
+                response_url,
+                text: "⚠️ Could not identify the message to rewind to.".to_owned(),
+            });
+        };
+        let rt = crate::runtime::get();
+        // v1: a subagent's dedicated thread has no independent turn history
+        // to rewind — point the user at the main conversation.
+        if rt
+            .subagent_routes
+            .lock()
+            .expect("bug: lock poisoned")
+            .contains_key(&event.thread_ts)
+        {
+            return Some(SlackAction::CommandResponse {
+                response_url,
+                text: "⏪ Rewind isn't available inside a subagent's thread — use it on a \
+                       message in the main conversation."
+                    .to_owned(),
+            });
+        }
+        let has_session = rt
+            .sessions
+            .lock()
+            .expect("bug: lock poisoned")
+            .get(&event.thread_ts)
+            .is_some();
+        if !has_session {
+            return Some(SlackAction::CommandResponse {
+                response_url,
+                text: "⏪ This thread has no Infinity session to rewind.".to_owned(),
+            });
+        }
+        Some(SlackAction::OpenRewindModal {
+            channel: event.channel,
+            thread_ts: event.thread_ts,
+            target_ts,
+            trigger_id,
+            response_url,
+        })
+    }));
+
+    // --- Rewind-modal submissions → Rewind + SendInput commands ---
+    // The daemon applies the rewind, then processes the edited turn: both
+    // commands ride the same connection in order.
+    let rewind_commands = rewind_submits
+        .clone()
+        .flat_map_ordered(q!(|event: SlackEvent| {
+            let Some(user_turn) = event.rewind_user_turn else {
+                return Vec::new();
+            };
+            let rt = crate::runtime::get();
+            let session_id = {
+                let sessions = rt.sessions.lock().expect("bug: lock poisoned");
+                sessions.get(&event.thread_ts).cloned()
+            };
+            let Some(session_id) = session_id else {
+                // Session vanished between modal open and submit (e.g. a bot
+                // restart): nothing to rewind. The actions branch reports it.
+                return Vec::new();
+            };
+            // A rewind supersedes any user-stop suppression on the thread.
+            rt.halted_streams
+                .lock()
+                .expect("bug: lock poisoned")
+                .remove(&event.thread_ts);
+            rt.channels
+                .lock()
+                .expect("bug: lock poisoned")
+                .insert(event.thread_ts.clone(), event.channel.clone());
+            vec![
+                DaemonCommand::Rewind {
+                    thread_ts: event.thread_ts.clone(),
+                    session_id: session_id.clone(),
+                    user_turn,
+                },
+                DaemonCommand::SendInput {
+                    thread_ts: event.thread_ts,
+                    session_id,
+                    target_thread: None,
+                    text: event.text.trim().to_owned(),
+                },
+            ]
+        }));
+
+    // --- Rewind-modal submissions → thread marker + status ---
+    // The discarded Slack messages above the marker stay visible (they are
+    // not ours to delete); the marker explains the fork and quotes the
+    // edited turn, which otherwise exists only inside the modal.
+    let rewind_actions = rewind_submits.flat_map_ordered(q!(|event: SlackEvent| {
+        if event.rewind_user_turn.is_none() {
+            return Vec::new();
+        }
+        let rt = crate::runtime::get();
+        let has_session = rt
+            .sessions
+            .lock()
+            .expect("bug: lock poisoned")
+            .get(&event.thread_ts)
+            .is_some();
+        if !has_session {
+            return vec![SlackAction::PostMessage {
+                channel: event.channel,
+                text: "⚠️ Could not rewind: this thread no longer has an Infinity session."
+                    .to_owned(),
+                thread_ts: Some(event.thread_ts),
+                subagent: None,
+            }];
+        }
+        let quoted = crate::flow::quote_snippet(event.text.trim());
+        vec![
+            // Finalize any active stream first so pre-rewind output cannot
+            // continue below the marker.
+            SlackAction::StreamStop {
+                channel: event.channel.clone(),
+                thread_ts: event.thread_ts.clone(),
+                subagent: None,
+            },
+            SlackAction::PostMessage {
+                channel: event.channel.clone(),
+                text: format!("⏪ Rewound — resuming from the edited message:\n{quoted}"),
+                thread_ts: Some(event.thread_ts.clone()),
+                subagent: None,
+            },
+            SlackAction::SetStatus {
+                channel: event.channel,
+                thread_ts: event.thread_ts,
+                status: "is thinking".to_owned(),
+            },
+        ]
+    }));
 
     // --- Stop events → halt the thread's stream + confirm to the user ---
     // Slack has already finalized the streaming message(s) client-side; the
@@ -341,6 +502,14 @@ pub fn slack_dataflow<'a, P: 'a>(
             nondet!(/**
                 interrupt commands have non-deterministic ordering w.r.t. other daemon
                 commands because they originate from independent user interaction events
+            */),
+        )
+        .merge_ordered(
+            rewind_commands,
+            nondet!(/**
+                rewind commands have non-deterministic ordering w.r.t. other daemon
+                commands because they originate from independent user interaction events;
+                the Rewind → SendInput pair itself is ordered within its branch
             */),
         );
 
@@ -715,9 +884,40 @@ pub fn slack_dataflow<'a, P: 'a>(
                 stop-button actions have non-deterministic ordering w.r.t. other slack
                 actions because they originate from user interaction events
             */),
+        )
+        .merge_ordered(
+            shortcut_actions,
+            nondet!(/**
+                shortcut actions have non-deterministic ordering w.r.t. other slack
+                actions because they originate from user interaction events
+            */),
+        )
+        .merge_ordered(
+            rewind_actions,
+            nondet!(/**
+                rewind-marker actions have non-deterministic ordering w.r.t. other slack
+                actions because they originate from user interaction events; order within
+                the branch (stream stop → marker → status) is preserved
+            */),
         );
 
     (slack_actions, daemon_commands)
+}
+
+/// Quote `text` as a Slack blockquote, truncated to a readable snippet.
+pub fn quote_snippet(text: &str) -> String {
+    const MAX: usize = 500;
+    let truncated: String = if text.chars().count() > MAX {
+        let head: String = text.chars().take(MAX).collect();
+        format!("{head}…")
+    } else {
+        text.to_owned()
+    };
+    truncated
+        .lines()
+        .map(|l| format!("> {l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Identify the subagent that produced a daemon message, if any.

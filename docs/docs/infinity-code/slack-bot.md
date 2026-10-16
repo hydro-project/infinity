@@ -33,6 +33,11 @@ features:
       description: List available models or switch the default for new sessions
       usage_hint: "[provider_id/model_id]"
       should_escape: false
+  shortcuts:
+    - name: Rewind to here
+      type: message
+      callback_id: rewind_to_here
+      description: Rewind the conversation to this message, edit it, and resend
 
 oauth_config:
   scopes:
@@ -171,6 +176,18 @@ When you click Stop:
 
 **Note:** daemon-side interruption requires a daemon new enough to understand `Interrupt` (older daemons silently ignore it — the Slack-side stop still discards the output, and your next message interrupts the old generation for real).
 
+## Rewinding a Conversation
+
+Slack has no native rewind, so the bot provides one as a message shortcut: open the **⋮ menu on any message** in a session thread and pick **"Rewind to here"** (requires the `rewind_to_here` message shortcut from the manifest above).
+
+- Invoked on one of **your** messages, a dialog opens pre-filled with that message's text. Edit it and hit **Rewind & send**: the daemon discards that turn and everything after it — including subagents spawned by the discarded turns, which are interrupted and closed — and resumes from the edited message.
+- Invoked on a **bot** message, the rewind targets the user turn that produced it.
+- The discarded Slack messages stay visible (your messages aren't the bot's to delete); a "⏪ Rewound — resuming from the edited message" marker quotes the edited turn and separates the old timeline from the new one.
+- Rewinding during generation is safe: the in-flight response is interrupted first.
+- Not supported inside a subagent's dedicated thread (use the main conversation) — and like stop, it needs a daemon new enough to understand `Rewind`.
+
+The rewind maps your message onto the daemon's history by counting the thread's human messages, which the bot forwarded as turns. If messages were sent while the bot was down, the mapping can be off; the daemon rejects out-of-range turns with an error message in the thread.
+
 ## Switching Models
 
 Use the `/model` slash command (responses are ephemeral — only you see them):
@@ -193,3 +210,4 @@ The switch applies to sessions created afterwards; existing threads keep their m
 | "auth.test failed" | Verify `bot_token` is correct and the app is installed to the workspace |
 | Bot responds but no streaming | The `assistant:write` scope is required for `chat.startStream` |
 | Stop button missing ("Stop isn't available for this agent") | Subscribe to the `agent_session_stopped` bot event in **Event Subscriptions** (or re-apply the manifest above — remember manifests replace, don't merge) |
+| "Rewind to here" missing from the ⋮ message menu | Add the `rewind_to_here` message shortcut under **Interactivity & Shortcuts** (or re-apply the manifest above — remember manifests replace, don't merge) |
