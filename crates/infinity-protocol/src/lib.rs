@@ -259,6 +259,30 @@ pub enum ClientMessage {
         thread_id: ThreadRef,
         text: String,
     },
+    /// Interrupt the in-flight work on a thread — and its descendant
+    /// subtree — without queuing any input and without shutting the session
+    /// down.
+    ///
+    /// Semantics:
+    /// - Any in-flight completion on the targeted threads is cancelled
+    ///   (partial output streamed so far is flushed to history).
+    /// - A trailing unanswered tool call on each targeted thread is settled
+    ///   with a synthetic "interrupted by user" result, so a late tool
+    ///   result cannot resume generation; RAP servers receive best-effort
+    ///   cancellation notifications and pending user choices are dismissed
+    ///   (broadcast as [`DaemonMessage::UserChoiceComplete`]).
+    /// - Each targeted thread broadcasts a [`DaemonMessage::ResponseDone`]
+    ///   so attached clients settle their in-progress indicators.
+    /// - The threads stay alive and accept future input, exactly like after
+    ///   a normally completed response. Active subscriptions (e.g. timers)
+    ///   are not cancelled and may wake the thread later — matching the
+    ///   behavior of interrupting with user text.
+    ///
+    /// Targeting `thread_id` at a session root interrupts the whole
+    /// session's work; targeting a subthread interrupts just that subtree.
+    Interrupt {
+        thread_id: ThreadRef,
+    },
     /// Disconnect from the session while letting the agent continue to run in the background.
     Disconnect,
     /// Immediately attempt to detach. If the agent is idle, the daemon shuts

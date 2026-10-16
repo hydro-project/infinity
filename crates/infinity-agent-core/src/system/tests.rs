@@ -221,6 +221,108 @@ async fn user_text_interrupts_active_completion() {
         .await;
 }
 
+/// An input-less interrupt marker cancels the in-flight completion without
+/// queuing anything for the model, and the thread accepts new input
+/// afterwards.
+#[tokio::test(flavor = "current_thread")]
+async fn interrupt_input_cancels_completion_without_queuing_input() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (mut running, mut rx, mut ctrl, _conv) = start_system(vec![], None);
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "work on something")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_text("partial...");
+            // Wait until the chunk is observed so the completion is in flight.
+            loop {
+                if let Evt::E(AgentEvent::TextChunk { .. }) = next_evt(&mut rx).await {
+                    break;
+                }
+            }
+
+            // The interrupt cancels the stream: the round finishes without
+            // the model ever sending a Final marker.
+            let (interrupt, dedup) = interrupt_input("t1");
+            running.send(interrupt, &dedup).await;
+            loop {
+                if let Evt::E(AgentEvent::CompletionFinished { .. }) = next_evt(&mut rx).await {
+                    break;
+                }
+            }
+            wait_idle(&mut running).await;
+
+            // Nothing was queued for the model: no new completion round ran.
+            assert!(
+                ctrl.try_next_request().is_none(),
+                "an interrupt must not trigger a completion round"
+            );
+
+            // The thread stays alive and accepts new input normally.
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "follow up")
+                .await;
+            let _req2 = ctrl.next_request().await;
+            ctrl.send_text("sure");
+            ctrl.finish();
+            collect_until_finished(&mut rx).await;
+        })
+        .await;
+}
+
+/// An interrupt arriving while the thread waits for an async tool result
+/// settles the pending call with a synthetic "interrupted" result, so the
+/// late real result is dropped instead of restarting generation.
+#[tokio::test(flavor = "current_thread")]
+async fn interrupt_settles_pending_tool_call_so_late_result_is_dropped() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (mut running, mut rx, mut ctrl, _conv) =
+                start_system(vec![Box::new(AsyncTool)], None);
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "run the tool")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_tool_call("tc-1", "async_tool", serde_json::json!({}));
+            ctrl.finish();
+            collect_until_finished(&mut rx).await;
+
+            // The thread is now parked waiting for the tool result; the
+            // interrupt settles the pending call instead.
+            let (interrupt, dedup) = interrupt_input("t1");
+            running.send(interrupt, &dedup).await;
+            loop {
+                if let Evt::E(AgentEvent::CompletionFinished { .. }) = next_evt(&mut rx).await {
+                    break;
+                }
+            }
+            wait_idle(&mut running).await;
+
+            // The late real result matches an already-settled call: it must
+            // not wake the model.
+            running
+                .send(tool_result_input("t1", "tc-1", "late output").0, "res-late")
+                .await;
+            wait_idle(&mut running).await;
+            assert!(
+                ctrl.try_next_request().is_none(),
+                "a settled tool call's late result must not restart generation"
+            );
+
+            // The thread still accepts new input.
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "next task")
+                .await;
+            let _req2 = ctrl.next_request().await;
+            ctrl.send_text("on it");
+            ctrl.finish();
+            collect_until_finished(&mut rx).await;
+        })
+        .await;
+}
+
 /// A non-user-text input (e.g. a stale tool result) arriving while a
 /// completion is streaming must not interrupt it.
 #[tokio::test(flavor = "current_thread")]

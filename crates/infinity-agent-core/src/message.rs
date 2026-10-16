@@ -68,6 +68,12 @@ pub enum TaggedSyntheticKind {
     Compaction,
     #[serde(rename = "compaction_complete")]
     CompactionComplete,
+    /// Input-less interrupt: cancels the thread's in-flight completion and
+    /// settles a trailing unanswered tool call, without queuing anything for
+    /// the model. Consumed entirely by the thread driver — it is never
+    /// folded into history.
+    #[serde(rename = "interrupt")]
+    Interrupt,
 }
 
 impl SyntheticKind {
@@ -86,6 +92,7 @@ impl SyntheticKind {
             SyntheticKind::Tagged(TaggedSyntheticKind::CompactionComplete) => {
                 ToolCallId::from_ref("")
             }
+            SyntheticKind::Tagged(TaggedSyntheticKind::Interrupt) => ToolCallId::from_ref(""),
             SyntheticKind::SubscriptionEvent(id) => id,
         }
     }
@@ -113,6 +120,12 @@ impl SyntheticKind {
             self,
             SyntheticKind::Tagged(TaggedSyntheticKind::CompactionComplete)
         )
+    }
+
+    /// Whether this is an input-less interrupt (see
+    /// [`TaggedSyntheticKind::Interrupt`]).
+    pub fn is_interrupt(&self) -> bool {
+        matches!(self, SyntheticKind::Tagged(TaggedSyntheticKind::Interrupt))
     }
 
     /// Associative subscription events are injected inline into the subscribing
