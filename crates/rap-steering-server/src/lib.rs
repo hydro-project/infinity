@@ -70,6 +70,31 @@ async fn collect_candidates(base: &Path) -> Vec<PathBuf> {
     candidates
 }
 
+/// Steering files that exist under `base` (canonicalized as `canon_base`), as
+/// paths relative to `base` in [`collect_candidates`] order. Files resolving
+/// outside `base` or already in `seen` are skipped.
+async fn existing_steering_files(
+    base: &Path,
+    canon_base: &Path,
+    seen: &mut HashSet<PathBuf>,
+) -> Vec<String> {
+    let mut files = Vec::new();
+    for rel in collect_candidates(base).await {
+        let abs = base.join(&rel);
+        if !abs.exists() {
+            continue;
+        }
+        let Ok(canonical) = fs::canonicalize(&abs).await else {
+            continue;
+        };
+        // Verify it's under base (safety check)
+        if canonical.starts_with(canon_base) && seen.insert(canonical) {
+            files.push(rel.to_string_lossy().into_owned());
+        }
+    }
+    files
+}
+
 /// Discover all steering files under `root` and the user's home directory,
 /// canonicalize to dedup symlinks, and return sorted relative paths.
 /// Home directory files are prefixed with `~/`.
@@ -79,46 +104,14 @@ pub async fn list_steering_files(root: &Path) -> Result<Vec<String>, String> {
         .map_err(|e| format!("cannot canonicalize root: {e}"))?;
 
     let mut seen_canonical = HashSet::new();
-    let mut results = Vec::new();
+    let mut results = existing_steering_files(root, &canon_root, &mut seen_canonical).await;
 
-    // Scan project root
-    for rel in collect_candidates(root).await {
-        let abs = root.join(&rel);
-        if !abs.exists() {
-            continue;
-        }
-        let Ok(canonical) = fs::canonicalize(&abs).await else {
-            continue;
-        };
-        // Verify it's under root (safety check)
-        if !canonical.starts_with(&canon_root) {
-            continue;
-        }
-        if seen_canonical.insert(canonical) {
-            results.push(rel.to_string_lossy().into_owned());
-        }
-    }
-
-    // Scan home directory
     if let Some(home) = home_dir()
         && let Ok(canon_home) = fs::canonicalize(&home).await
         && canon_home != canon_root
     {
-        for rel in collect_candidates(&home).await {
-            let abs = home.join(&rel);
-            if !abs.exists() {
-                continue;
-            }
-            let Ok(canonical) = fs::canonicalize(&abs).await else {
-                continue;
-            };
-            if !canonical.starts_with(&canon_home) {
-                continue;
-            }
-            if seen_canonical.insert(canonical) {
-                results.push(format!("~/{}", rel.to_string_lossy()));
-            }
-        }
+        let home_files = existing_steering_files(&home, &canon_home, &mut seen_canonical).await;
+        results.extend(home_files.into_iter().map(|rel| format!("~/{rel}")));
     }
 
     results.sort();
@@ -127,6 +120,64 @@ pub async fn list_steering_files(root: &Path) -> Result<Vec<String>, String> {
 
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
+}
+
+/// Size budget (bytes) for the files embedded by [`global_steering_prompt`].
+const EMBED_BUDGET: usize = 16 * 1024;
+
+/// System-prompt fragment embedding the user's global (home-directory)
+/// steering files, or `None` if there are none. Structured config (`.json`,
+/// may hold secrets) and skills (loaded on demand) are not embedded; files
+/// that do not fit [`EMBED_BUDGET`] are listed for `load_steering` instead.
+pub async fn global_steering_prompt() -> Option<String> {
+    global_steering_prompt_in(&home_dir()?).await
+}
+
+async fn global_steering_prompt_in(home: &Path) -> Option<String> {
+    let canon_home = fs::canonicalize(home)
+        .await
+        .inspect_err(|e| tracing::warn!("cannot canonicalize home {home:?}: {e}"))
+        .ok()?;
+
+    let mut embedded = String::new();
+    let mut deferred = Vec::new();
+    for rel in existing_steering_files(home, &canon_home, &mut HashSet::new()).await {
+        if rel.ends_with(".json") || rel.starts_with(".claude/skills") {
+            continue;
+        }
+        let Ok(content) = fs::read_to_string(home.join(&rel))
+            .await
+            .inspect_err(|e| tracing::warn!("failed to read ~/{rel}: {e}"))
+        else {
+            continue;
+        };
+        let content = content.trim();
+        if content.is_empty() {
+            continue;
+        }
+        if embedded.len() + content.len() > EMBED_BUDGET {
+            deferred.push(format!("~/{rel}"));
+        } else {
+            embedded.push_str(&format!("\n### ~/{rel}\n\n{content}\n"));
+        }
+    }
+
+    if embedded.is_empty() && deferred.is_empty() {
+        return None;
+    }
+    let mut prompt = format!(
+        "The user's global steering files (apply to ALL projects) are embedded below. \
+         Follow them without being asked. Project-specific steering files are NOT \
+         embedded; discover them with `list_steering`.\n{embedded}"
+    );
+    if !deferred.is_empty() {
+        prompt.push_str(&format!(
+            "\nThese global steering files did not fit and are not embedded; read them \
+             with `load_steering`: {}\n",
+            deferred.join(", ")
+        ));
+    }
+    Some(prompt)
 }
 
 /// Check that `rel` is under a known steering location.
@@ -165,4 +216,61 @@ pub async fn load_steering_file(root: &Path, rel_path: &str) -> Result<String, S
     fs::read_to_string(&canonical)
         .await
         .map_err(|e| format!("failed to read file: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write(home: &Path, rel: &str, content: &str) {
+        let path = home.join(rel);
+        std::fs::create_dir_all(path.parent().expect("bug: rel has a parent"))
+            .expect("create parent dir");
+        std::fs::write(path, content).expect("write steering file");
+    }
+
+    #[tokio::test]
+    async fn global_prompt_is_none_without_steering_files() {
+        let home = tempfile::tempdir().expect("create fake home");
+        assert_eq!(global_steering_prompt_in(home.path()).await, None);
+    }
+
+    #[tokio::test]
+    async fn global_prompt_embeds_prose_but_not_config_or_skills() {
+        let home = tempfile::tempdir().expect("create fake home");
+        write(home.path(), "INFINITY.md", "Global rule: be kind.");
+        write(
+            home.path(),
+            ".kiro/steering/security.md",
+            "Never commit secrets.",
+        );
+        write(
+            home.path(),
+            ".claude/settings.json",
+            r#"{"token": "SECRET"}"#,
+        );
+        write(home.path(), ".claude/skills/demo/SKILL.md", "Skill body.");
+
+        let prompt = global_steering_prompt_in(home.path())
+            .await
+            .expect("globals exist");
+        assert!(prompt.contains("### ~/INFINITY.md\n\nGlobal rule: be kind."));
+        assert!(prompt.contains("### ~/.kiro/steering/security.md\n\nNever commit secrets."));
+        assert!(!prompt.contains("SECRET"));
+        assert!(!prompt.contains("Skill body."));
+    }
+
+    #[tokio::test]
+    async fn global_prompt_lists_files_over_budget() {
+        let home = tempfile::tempdir().expect("create fake home");
+        write(home.path(), "INFINITY.md", "Global rule: be kind.");
+        write(home.path(), "CLAUDE.md", &"x".repeat(EMBED_BUDGET));
+
+        let prompt = global_steering_prompt_in(home.path())
+            .await
+            .expect("globals exist");
+        assert!(prompt.contains("Global rule: be kind."));
+        assert!(!prompt.contains("xxx"));
+        assert!(prompt.contains("`load_steering`: ~/CLAUDE.md"));
+    }
 }
