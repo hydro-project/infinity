@@ -175,7 +175,17 @@ pub struct SlackIo {
 
 /// Validates the Slack credentials, then spawns the Slack I/O tasks and
 /// returns the dataflow-facing endpoints.
-pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> {
+///
+/// `shutdown` coordinates a clean restart: when it flips to `true`, the
+/// inbound task closes the Socket Mode WebSocket with a proper close
+/// handshake (no new events; unread envelopes stay unACKed so Slack
+/// redelivers them after the restart) and the outbound task drains — flushes
+/// buffered text, finalizes every active stream, clears thread statuses —
+/// then exits so the caller can persist the resume state.
+pub async fn spawn(
+    config: &'static Config,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+) -> Result<SlackIo, crate::BoxError> {
     // Validate both credentials on the startup path: a bad token must fail
     // startup with an actionable error. (Previously the bot token was checked
     // inside a detached task, whose panic tokio isolates -- leaving the bot
@@ -192,10 +202,14 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
     let (from_df_tx, mut from_df_rx) = mpsc::unbounded_channel::<SlackAction>();
 
     // Outbound: execute SlackActions against the Slack API.
+    let mut outbound_shutdown = shutdown.clone();
     let outbound = tokio::spawn(async move {
         /// Per-thread stream state.
         struct StreamState {
             ts: String,
+            /// The channel the stream lives in (needed to finalize the
+            /// stream at shutdown without an action in hand).
+            channel: String,
             char_count: usize,
             in_code_block: bool,
             /// When this stream message was started. Streams older than
@@ -239,9 +253,55 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
             std::collections::HashMap::new();
 
         /// Anchor message ts of each dedicated subagent Slack thread, keyed
-        /// by (root thread_ts, subagent id).
+        /// by (root thread_ts, subagent id). Seeded from the persisted
+        /// subagent routes so resumed subagent output continues in its
+        /// existing thread instead of forking a duplicate.
         type AnchorMap = std::collections::HashMap<(String, String), String>;
-        let mut anchors: AnchorMap = AnchorMap::new();
+        let mut anchors: AnchorMap = {
+            let rt = infinity_slack_dataflow::runtime::get();
+            let routes = rt.subagent_routes.lock().expect("bug: lock poisoned");
+            routes
+                .iter()
+                .map(|(anchor_ts, route)| {
+                    (
+                        (route.root_thread_ts.clone(), route.subagent_id.clone()),
+                        anchor_ts.clone(),
+                    )
+                })
+                .collect()
+        };
+
+        /// Advance the delivery cursor of a stream (see
+        /// `runtime::Runtime::stream_progress`): `text_bytes` bytes of
+        /// streamed text plus the given counts of tool-call/-result cards
+        /// were delivered. Creating the entry marks the stream's response as
+        /// open (it will be resumed across a restart).
+        fn note_delivered(
+            thread_ts: &str,
+            subagent: Option<&str>,
+            text_bytes: usize,
+            tool_calls: usize,
+            tool_results: usize,
+        ) {
+            let rt = infinity_slack_dataflow::runtime::get();
+            let mut progress = rt.stream_progress.lock().expect("bug: lock poisoned");
+            let cursor = progress
+                .entry((thread_ts.to_owned(), subagent.map(str::to_owned)))
+                .or_default();
+            cursor.text_bytes += text_bytes;
+            cursor.tool_calls += tool_calls;
+            cursor.tool_results += tool_results;
+        }
+
+        /// The stream's response ended: drop its delivery cursor (nothing to
+        /// resume across a restart anymore).
+        fn clear_delivery_cursor(thread_ts: &str, subagent: Option<&str>) {
+            let rt = infinity_slack_dataflow::runtime::get();
+            rt.stream_progress
+                .lock()
+                .expect("bug: lock poisoned")
+                .remove(&(thread_ts.to_owned(), subagent.map(str::to_owned)));
+        }
 
         /// Short human-readable form of an agent thread id (`ThreadRef`
         /// string form, i.e. `"{id}"` or `"{remote}/{id}"`).
@@ -467,6 +527,7 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                         thread_ts.to_owned(),
                         StreamState {
                             ts: ts.clone(),
+                            channel: channel.to_owned(),
                             char_count: 0,
                             in_code_block: false,
                             started_at: std::time::Instant::now(),
@@ -644,6 +705,14 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                     Some(a) => a,
                     None => break,
                 },
+                result = outbound_shutdown.changed() => {
+                    if result.is_err() {
+                        tracing::warn!("shutdown channel closed; draining Slack streams");
+                    } else {
+                        tracing::info!("shutting down: draining Slack streams");
+                    }
+                    break;
+                }
                 _ = flush_tick.tick() => {
                     // Flush all buffered text (one append per thread).
                     let ready: Vec<(String, PendingText)> = pending_text.drain().collect();
@@ -789,6 +858,7 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                     // keyed by the actual thread the text will stream into.
                     // Fall back to the root thread if creation failed, so
                     // output is never dropped.
+                    let root_ts = thread_ts.clone();
                     let target_ts = resolve_thread(
                         &slack,
                         &channel,
@@ -806,6 +876,10 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                         tracing::debug!("dropping stream append for user-stopped {target_ts}");
                         continue;
                     }
+                    // Count the text as delivered once buffered: the buffer
+                    // is flushed before shutdown completes, so the resume
+                    // cursor stays in step with what Slack received.
+                    note_delivered(&root_ts, subagent.as_deref(), text.len(), 0, 0);
                     // Buffer the text; it is flushed on the next interval tick
                     // (or immediately on a tool update / stream stop). This
                     // coalesces rapid chunks into one append to avoid Slack
@@ -822,7 +896,13 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                     channel,
                     thread_ts,
                     subagent,
+                    end_of_response,
                 } => {
+                    // A response-final stop ends the stream's life: nothing
+                    // left to resume across a restart.
+                    if end_of_response {
+                        clear_delivery_cursor(&thread_ts, subagent.as_deref());
+                    }
                     // Look up the target thread without creating one: if the
                     // subagent never produced output, there is no stream to
                     // stop and no dedicated thread should be forked for it.
@@ -1020,6 +1100,7 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                     // Resolve the target Slack thread (creating the
                     // subagent's dedicated thread if needed); fall back to
                     // the root thread so the task card is never dropped.
+                    let root_ts = thread_ts.clone();
                     let target_ts = resolve_thread(
                         &slack,
                         &channel,
@@ -1036,6 +1117,14 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                     if is_halted(&target_ts) {
                         tracing::debug!("dropping task update for user-stopped {target_ts}");
                         continue;
+                    }
+                    // Advance the delivery cursor (calls and completions are
+                    // consumed here even when the owning message is gone —
+                    // the card was completed at finalize in that case).
+                    if status == "in_progress" {
+                        note_delivered(&root_ts, subagent.as_deref(), 0, 1, 0);
+                    } else {
+                        note_delivered(&root_ts, subagent.as_deref(), 0, 0, 1);
                     }
                     // Flush buffered text first so the tool indicator appears
                     // after the text that preceded it (preserves ordering).
@@ -1150,14 +1239,77 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                 }
             }
         }
+
+        // ── Drain (clean shutdown, or the dataflow is gone) ──
+        //
+        // Leave no Slack message in streaming state: flush what was buffered
+        // (it is already counted in the delivery cursors), finalize every
+        // active stream, and clear thread statuses. Everything still queued
+        // in the action channel is deliberately dropped — it was never
+        // counted as delivered, so the restarted bot replays it instead.
+        let targets: std::collections::HashSet<String> = pending_text
+            .keys()
+            .chain(active_streams.keys())
+            .cloned()
+            .collect();
+        for target_ts in targets {
+            if is_halted(&target_ts) {
+                // Slack already finalized this stream via the user's stop;
+                // its suppressed remainder stays suppressed.
+                pending_text.remove(&target_ts);
+                active_streams.remove(&target_ts);
+                continue;
+            }
+            let channel = pending_text
+                .get(&target_ts)
+                .map(|p| p.channel.clone())
+                .or_else(|| active_streams.get(&target_ts).map(|s| s.channel.clone()));
+            let Some(channel) = channel else {
+                // Unreachable: every entry carries its channel.
+                tracing::warn!("bug: no channel for stream {target_ts} at drain");
+                continue;
+            };
+            finalize_stream(
+                &slack,
+                &channel,
+                &target_ts,
+                &mut active_streams,
+                &mut pending_text,
+            )
+            .await;
+        }
+        // Clear lingering "is thinking"/"is running X" indicators; resumed
+        // responses re-arm them on their next output.
+        let statuses: Vec<String> = last_status.keys().cloned().collect();
+        for thread_ts in statuses {
+            let channel = {
+                let rt = infinity_slack_dataflow::runtime::get();
+                rt.channels
+                    .lock()
+                    .expect("bug: lock poisoned")
+                    .get(&thread_ts)
+                    .cloned()
+            };
+            let Some(channel) = channel else {
+                continue;
+            };
+            if let Err(e) = slack.set_thread_status(&channel, &thread_ts, "").await {
+                tracing::warn!("clearing thread status at drain failed: {e}");
+            }
+        }
+        tracing::info!("Slack outbound drained");
     });
 
     // Inbound: Slack WebSocket → dataflow. The URL fetched during startup
     // validation is consumed by the first connection attempt (Socket Mode
     // URLs are short-lived tickets, so refetch on every reconnect after).
     let mut pending_ws_url = Some(initial_ws_url);
+    let mut inbound_shutdown = shutdown;
     let inbound = tokio::spawn(async move {
         loop {
+            if *inbound_shutdown.borrow() {
+                return;
+            }
             tracing::info!("connecting to Slack Socket Mode...");
             let url = match pending_ws_url.take() {
                 Some(url) => url,
@@ -1183,7 +1335,41 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
 
             let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
-            while let Some(msg) = ws_rx.next().await {
+            loop {
+                let msg = tokio::select! {
+                    msg = ws_rx.next() => match msg {
+                        Some(m) => m,
+                        None => break,
+                    },
+                    _ = inbound_shutdown.changed() => {
+                        // Clean shutdown: close the WebSocket with a proper
+                        // close handshake so Slack sees the app go offline
+                        // immediately. Envelopes already read were ACKed (and
+                        // forwarded); unread ones stay unACKed, so Slack
+                        // redelivers them after the restart — a user message
+                        // racing the shutdown is delayed, never lost.
+                        tracing::info!("shutting down: closing Socket Mode connection");
+                        if let Err(e) = ws_tx.send(Message::Close(None)).await {
+                            tracing::warn!("Socket Mode close failed: {e}");
+                        }
+                        // Give the close handshake a moment to complete.
+                        let handshake = async {
+                            while let Some(reply) = ws_rx.next().await {
+                                if matches!(reply, Ok(Message::Close(_)) | Err(_)) {
+                                    break;
+                                }
+                            }
+                        };
+                        if tokio::time::timeout(std::time::Duration::from_secs(2), handshake)
+                            .await
+                            .is_err()
+                        {
+                            tracing::warn!("Socket Mode close handshake timed out");
+                        }
+                        tracing::info!("Socket Mode connection closed");
+                        return;
+                    }
+                };
                 let text = match msg {
                     Ok(Message::Text(t)) => t,
                     Ok(Message::Close(_)) => {

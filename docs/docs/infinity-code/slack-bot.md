@@ -161,7 +161,15 @@ When the agent spawns subagents (child threads), each subagent gets its own dedi
 - A cross-link to the subagent's thread is posted in the originating conversation thread, so you can follow along from the root.
 - Replies you post inside a subagent's thread are delivered to that subagent (not the session root); approval buttons shown there answer the subagent's pending choice.
 
-The root conversation thread keeps only the root agent's output and the session-level status indicator. Subagent thread mappings are kept in memory: after a bot restart, new subagent activity gets fresh threads.
+The root conversation thread keeps only the root agent's output and the session-level status indicator.
+
+## Restarts and Continuity
+
+The bot survives restarts without losing conversation continuity:
+
+- **On shutdown** (SIGTERM or ctrl-c) the bot drains cleanly: it closes the Socket Mode connection with a proper close handshake (unACKed envelopes are redelivered by Slack after the restart, so a message racing the shutdown is delayed, never lost), flushes buffered text, finalizes every streaming message so nothing is left spinning, and persists the set of actively-streaming threads — with per-stream delivery cursors, subagent thread routes, and stop latches — to `~/.infinity/slack_resume.json`.
+- **On startup** the bot reconnects to each persisted stream (subagent streams included — their output resumes in their existing dedicated threads) and replays the output generated since the cursor into a fresh streaming message, then continues live. Replies inside subagent threads keep routing to their subagent across restarts.
+- **On a crash** (no clean shutdown) the bot falls back to the last periodic snapshot (written every 30 seconds while state changes), which may re-post or drop up to a few seconds of output around the crash.
 
 ## Stopping a Response
 

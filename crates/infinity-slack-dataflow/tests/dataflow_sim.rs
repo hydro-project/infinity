@@ -770,6 +770,139 @@ fn subagent_output_is_tagged_and_tracked_separately() {
     });
 }
 
+/// A `ToolResult` with nothing queued for its stream (e.g. a result arriving
+/// after a restart for a call whose card lives in a finalized pre-restart
+/// message, before any new call was made) must emit no card update AND must
+/// not disturb the pairing of a subsequent new call with its own result.
+#[test]
+fn surplus_tool_result_is_dropped_without_breaking_later_pairing() {
+    let mut flow = FlowBuilder::new();
+    let (slack_tx, daemon_tx, actions_out, commands_out) = build_sim(&mut flow);
+
+    flow.sim().unit_test_fuzz_iterations(256).fuzz(async || {
+        let thread_ts = fresh("orphan");
+        let channel = fresh("C");
+
+        slack_tx.send(chat("U1", "go", &channel, &thread_ts));
+        assert!(matches!(
+            commands_out.next().await.unwrap(),
+            DaemonCommand::CreateSession { .. }
+        ));
+
+        daemon_tx.send_many([
+            // Orphan: no in-flight task entry exists for this stream.
+            devent(
+                &thread_ts,
+                infinity_protocol::DaemonMessage::ToolResult {
+                    segments: Vec::new(),
+                    thread_id: None,
+                },
+            ),
+            devent(&thread_ts, tool_call("bash")),
+            devent(
+                &thread_ts,
+                infinity_protocol::DaemonMessage::ToolResult {
+                    segments: Vec::new(),
+                    thread_id: None,
+                },
+            ),
+            devent(&thread_ts, response_done()),
+            devent(&thread_ts, text_chunk("done")),
+            devent(&thread_ts, response_done()),
+        ]);
+
+        let actions: Vec<SlackAction> = actions_out.collect().await;
+        let core = non_status(&actions);
+        match &core[..] {
+            [SlackAction::StreamTaskUpdate {
+                status: s1,
+                task_id: t1,
+                title: n1,
+                ..
+            }, SlackAction::StreamTaskUpdate {
+                status: s2,
+                task_id: t2,
+                title: n2,
+                ..
+            }, SlackAction::StreamAppend { text, .. }, SlackAction::StreamStop { .. }] => {
+                // Exactly one card: the orphan result produced no update, and
+                // the new call's card completes with ITS OWN id — not the
+                // orphan's.
+                assert_eq!(s1, "in_progress");
+                assert_eq!(s2, "complete");
+                assert_eq!(t1, t2, "completion must target the new call's card");
+                assert_eq!(n1, "bash");
+                assert_eq!(n2, "bash");
+                assert_eq!(text, "done");
+            }
+            other => panic!(
+                "expected [task in_progress, task complete, append, stop] — the orphan \
+                 result must be invisible — got {other:?}"
+            ),
+        }
+    });
+}
+
+/// The dataflow contract that restart resume (`resume::replay_delta`) counts
+/// on: after a round containing a resolved tool call, the first ResponseDone
+/// is swallowed by the round-continues flag and a second one closes the
+/// stream with an end-of-response stop.
+#[test]
+fn replayed_tool_round_needs_two_dones_to_close() {
+    let mut flow = FlowBuilder::new();
+    let (slack_tx, daemon_tx, actions_out, commands_out) = build_sim(&mut flow);
+
+    flow.sim().unit_test_fuzz_iterations(256).fuzz(async || {
+        let thread_ts = fresh("resume");
+        let channel = fresh("C");
+
+        slack_tx.send(chat("U1", "go", &channel, &thread_ts));
+        assert!(matches!(
+            commands_out.next().await.unwrap(),
+            DaemonCommand::CreateSession { .. }
+        ));
+
+        // The shape daemon_io forwards for a resumed stream whose delta
+        // contained a resolved tool call and whose thread is idle:
+        // delta events, then two synthetic ResponseDones.
+        daemon_tx.send_many([
+            devent(&thread_ts, tool_call("bash")),
+            devent(
+                &thread_ts,
+                infinity_protocol::DaemonMessage::ToolResult {
+                    segments: Vec::new(),
+                    thread_id: None,
+                },
+            ),
+            devent(&thread_ts, text_chunk("caught up")),
+            devent(&thread_ts, response_done()),
+            devent(&thread_ts, response_done()),
+        ]);
+
+        let actions: Vec<SlackAction> = actions_out.collect().await;
+        let core = non_status(&actions);
+        match &core[..] {
+            [
+                SlackAction::StreamTaskUpdate { status: s1, .. },
+                SlackAction::StreamTaskUpdate { status: s2, .. },
+                SlackAction::StreamAppend { text, .. },
+                SlackAction::StreamStop {
+                    end_of_response, ..
+                },
+            ] => {
+                assert_eq!(s1, "in_progress");
+                assert_eq!(s2, "complete");
+                assert_eq!(text, "caught up");
+                assert!(end_of_response);
+            }
+            other => panic!(
+                "expected [task, task, append, stop] — exactly one stop from \
+                 the second done — got {other:?}"
+            ),
+        }
+    });
+}
+
 #[test]
 fn daemon_text_chunk_produces_stream_append() {
     let mut flow = FlowBuilder::new();
@@ -803,6 +936,7 @@ fn daemon_text_chunk_produces_stream_append() {
                 channel: c2,
                 thread_ts: t2,
                 subagent: stop_subagent,
+                end_of_response,
             }] => {
                 assert_eq!(c1, &channel);
                 assert_eq!(t1, &thread_ts);
@@ -814,6 +948,10 @@ fn daemon_text_chunk_produces_stream_append() {
                 assert_eq!(c2, &channel);
                 assert_eq!(t2, &thread_ts);
                 assert!(stop_subagent.is_none());
+                assert!(
+                    end_of_response,
+                    "the ResponseDone-driven stop must be marked end-of-response"
+                );
             }
             other => panic!("expected [append, stop], got {other:?}"),
         }
