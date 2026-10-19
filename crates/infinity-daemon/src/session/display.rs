@@ -30,6 +30,10 @@ pub(crate) fn agent_event_to_daemon(thread_id: &ThreadId<str>, evt: &AgentEvent)
             thread_id: tid,
             text: text.clone(),
         },
+        AgentEvent::Error { text } => DaemonMessage::Error {
+            thread_id: tid,
+            text: text.clone(),
+        },
         AgentEvent::CompletionFinished { usage } => {
             let token_usage = usage.map(|u| TokenUsage {
                 input_tokens: Some(u.input_tokens),
