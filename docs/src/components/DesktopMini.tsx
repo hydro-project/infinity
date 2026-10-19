@@ -763,9 +763,13 @@ export default function DesktopMini({
         <DiffView files={state.diffFiles} theme={theme} />
       </div>
 
-      {/* Chat panel: uses position:fixed, contained by transform */}
+      {/* Chat panel: uses position:fixed, contained by transform. The panel is
+          never pinned in the demo, so it floats over the diff view whenever
+          visible — mark it as such so the glass backdrop blur applies (it is
+          only enabled on floating surfaces; see ChatPanel.module.css). */}
       <div
         className={`${chatCss.chatPanel} ${!state.chatVisible ? chatCss.chatPanelHidden : ""}`}
+        data-floating={state.chatVisible ? "" : undefined}
       >
         <div className={chatCss.chatPanelHeader}>
           <span className={chatCss.chatPanelTitle}>Chat</span>
