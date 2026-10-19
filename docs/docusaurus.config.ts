@@ -36,7 +36,13 @@ const config: Config = {
           sidebarPath: "./sidebars.ts",
           sidebarCollapsed: false,
         },
-        blog: false,
+        blog: {
+          showReadingTime: true,
+          blogSidebarCount: "ALL",
+          authorsMapPath: "authors.yml",
+          onInlineAuthors: "throw",
+          onUntruncatedBlogPosts: "warn",
+        },
         theme: {
           customCss: "./src/css/custom.css",
         },
@@ -108,6 +114,7 @@ const config: Config = {
           position: "left",
           label: "Infinity Code",
         },
+        { to: "/blog", label: "Blog", position: "left" },
         {
           href: "https://github.com/hydro-project/infinity",
           position: "right",
