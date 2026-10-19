@@ -187,97 +187,156 @@ pub fn slack_dataflow<'a, P: 'a>(
     let (non_fork_ready, fork_ready) = non_shortcuts.partition(q!(|event: &SlackEvent| {
         event.fork_source_thread_ts.is_none()
     }));
-    let (chat_messages, rewind_submits) = non_fork_ready.partition(q!(|event: &SlackEvent| {
+    let (non_rewind, rewind_submits) = non_fork_ready.partition(q!(|event: &SlackEvent| {
         event.rewind_user_turn.is_none()
+    }));
+
+    // --- Partition out per-thread model-picker submissions ---
+    let (chat_messages, thread_model_submits) = non_rewind.partition(q!(|event: &SlackEvent| {
+        event.thread_model_selection.is_none()
     }));
 
     // --- Message shortcuts (context ⋮ menu) → validate + act ---
     // "Fork from here": the I/O layer resolves the governing user turn (it
     // needs the Slack thread's replies) and opens the modal; the dataflow
     // only validates what it can check synchronously.
+    // "Switch model": per-thread model switching (slash commands cannot be
+    // invoked inside Slack threads, so this is the in-thread entry point).
     // "Compact session": resolved fully here (session-scoped, no modal); the
     // matching TriggerCompaction command is emitted by the parallel
     // `compact_commands` branch below, which resolves the same target
-    // deterministically — this branch only acks/errs ephemerally.
+    // deterministically.
     let shortcut_actions = shortcuts.clone().filter_map(q!(|event: SlackEvent| {
         let response_url = event.response_url?;
-        if event.shortcut.as_deref() == Some(crate::slack::COMPACT_SHORTCUT_CALLBACK_ID) {
-            let text = match crate::flow::resolve_compact_session(&event.thread_ts) {
-                Ok((root_ts, _session)) => {
-                    let title = {
-                        let titles = crate::runtime::get()
-                            .thread_titles
-                            .lock()
-                            .expect("bug: lock poisoned");
-                        titles.get(&root_ts).cloned()
-                    };
-                    match title {
-                        Some(t) => format!(
-                            "🗜️ Compacting *{t}*… a note will be posted in the thread when done."
-                        ),
-                        None => "🗜️ Compacting this session… a note will be posted in the \
-                                 thread when done."
+        match event.shortcut.as_deref() {
+            Some(id) if id == crate::slack::REWIND_SHORTCUT_CALLBACK_ID => {
+                let Some(trigger_id) = event.trigger_id else {
+                    return Some(SlackAction::CommandResponse {
+                        response_url,
+                        text: "⚠️ Could not open the fork dialog (no trigger id).".to_owned(),
+                    });
+                };
+                let Some(target_ts) = event.message_ts else {
+                    return Some(SlackAction::CommandResponse {
+                        response_url,
+                        text: "⚠️ Could not identify the message to fork from.".to_owned(),
+                    });
+                };
+                let rt = crate::runtime::get();
+                // v1: a subagent's dedicated thread has no independent turn
+                // history to fork from — point the user at the main conversation.
+                if rt
+                    .subagent_routes
+                    .lock()
+                    .expect("bug: lock poisoned")
+                    .contains_key(&event.thread_ts)
+                {
+                    return Some(SlackAction::CommandResponse {
+                        response_url,
+                        text: "⏪ Forking isn't available inside a subagent's thread — use it on \
+                               a message in the main conversation."
                             .to_owned(),
-                    }
+                    });
                 }
-                Err(text) => text,
-            };
-            return Some(SlackAction::CommandResponse { response_url, text });
+                let has_session = rt
+                    .sessions
+                    .lock()
+                    .expect("bug: lock poisoned")
+                    .get(&event.thread_ts)
+                    .is_some();
+                if !has_session {
+                    return Some(SlackAction::CommandResponse {
+                        response_url,
+                        text: "⏪ This thread has no Infinity session to fork.".to_owned(),
+                    });
+                }
+                Some(SlackAction::OpenRewindModal {
+                    channel: event.channel,
+                    thread_ts: event.thread_ts,
+                    target_ts,
+                    trigger_id,
+                    response_url,
+                })
+            }
+            Some(id) if id == crate::slack::SWITCH_MODEL_SHORTCUT_CALLBACK_ID => {
+                let Some(trigger_id) = event.trigger_id else {
+                    return Some(SlackAction::CommandResponse {
+                        response_url,
+                        text: "⚠️ Could not open the model picker (no trigger id).".to_owned(),
+                    });
+                };
+                // A subagent's dedicated thread switches that subagent's
+                // agent thread; the session itself is keyed by the root
+                // conversation thread.
+                let rt = crate::runtime::get();
+                let session_thread_ts = {
+                    let routes = rt.subagent_routes.lock().expect("bug: lock poisoned");
+                    routes
+                        .get(&event.thread_ts)
+                        .map(|r| r.root_thread_ts.clone())
+                        .unwrap_or_else(|| event.thread_ts.clone())
+                };
+                let has_session = rt
+                    .sessions
+                    .lock()
+                    .expect("bug: lock poisoned")
+                    .get(&session_thread_ts)
+                    .is_some();
+                if !has_session {
+                    return Some(SlackAction::CommandResponse {
+                        response_url,
+                        text: "🧠 This thread has no Infinity session to switch the model for."
+                            .to_owned(),
+                    });
+                }
+                match crate::flow::build_thread_model_picker_view(&event.channel, &event.thread_ts)
+                {
+                    Some(view) => Some(SlackAction::OpenView { trigger_id, view }),
+                    None => Some(SlackAction::CommandResponse {
+                        response_url,
+                        text: "🧠 No models are known yet — the list is populated from the \
+                               daemon after the first session activity. Try again in a moment."
+                            .to_owned(),
+                    }),
+                }
+            }
+            Some(id) if id == crate::slack::COMPACT_SHORTCUT_CALLBACK_ID => {
+                // Resolved fully here (session-scoped, no modal); the
+                // matching TriggerCompaction command is emitted by the
+                // parallel `compact_commands` branch, which resolves the
+                // same target deterministically — this arm only acks/errs
+                // ephemerally.
+                let text = match crate::flow::resolve_compact_session(&event.thread_ts) {
+                    Ok((root_ts, _session)) => {
+                        let title = {
+                            let titles = crate::runtime::get()
+                                .thread_titles
+                                .lock()
+                                .expect("bug: lock poisoned");
+                            titles.get(&root_ts).cloned()
+                        };
+                        match title {
+                            Some(t) => format!(
+                                "🗜️ Compacting *{t}*… a note will be posted in the thread \
+                                 when done."
+                            ),
+                            None => "🗜️ Compacting this session… a note will be posted in \
+                                     the thread when done."
+                                .to_owned(),
+                        }
+                    }
+                    Err(text) => text,
+                };
+                Some(SlackAction::CommandResponse { response_url, text })
+            }
+            other => {
+                let shortcut = other.unwrap_or_default();
+                Some(SlackAction::CommandResponse {
+                    response_url,
+                    text: format!("Unknown shortcut `{shortcut}`."),
+                })
+            }
         }
-        if event.shortcut.as_deref() != Some(crate::slack::REWIND_SHORTCUT_CALLBACK_ID) {
-            let shortcut = event.shortcut.unwrap_or_default();
-            return Some(SlackAction::CommandResponse {
-                response_url,
-                text: format!("Unknown shortcut `{shortcut}`."),
-            });
-        }
-        let Some(trigger_id) = event.trigger_id else {
-            return Some(SlackAction::CommandResponse {
-                response_url,
-                text: "⚠️ Could not open the fork dialog (no trigger id).".to_owned(),
-            });
-        };
-        let Some(target_ts) = event.message_ts else {
-            return Some(SlackAction::CommandResponse {
-                response_url,
-                text: "⚠️ Could not identify the message to fork from.".to_owned(),
-            });
-        };
-        let rt = crate::runtime::get();
-        // v1: a subagent's dedicated thread has no independent turn history
-        // to fork from — point the user at the main conversation.
-        if rt
-            .subagent_routes
-            .lock()
-            .expect("bug: lock poisoned")
-            .contains_key(&event.thread_ts)
-        {
-            return Some(SlackAction::CommandResponse {
-                response_url,
-                text: "⏪ Forking isn't available inside a subagent's thread — use it on a \
-                       message in the main conversation."
-                    .to_owned(),
-            });
-        }
-        let has_session = rt
-            .sessions
-            .lock()
-            .expect("bug: lock poisoned")
-            .get(&event.thread_ts)
-            .is_some();
-        if !has_session {
-            return Some(SlackAction::CommandResponse {
-                response_url,
-                text: "⏪ This thread has no Infinity session to fork.".to_owned(),
-            });
-        }
-        Some(SlackAction::OpenRewindModal {
-            channel: event.channel,
-            thread_ts: event.thread_ts,
-            target_ts,
-            trigger_id,
-            response_url,
-        })
     }));
 
     // --- "Compact session" shortcut → TriggerCompaction commands (parallel
@@ -361,6 +420,85 @@ pub fn slack_dataflow<'a, P: 'a>(
             source_message_ts: event.message_ts.unwrap_or_default(),
             user_turn,
             text: event.text.trim().to_owned(),
+        })
+    }));
+
+    // --- Per-thread model-picker submissions → SwitchModel commands ---
+    // Resolution mirrors the shortcut's: invoked in the root conversation
+    // thread → switch the session's root agent thread; invoked inside a
+    // subagent's dedicated thread → switch that subagent's agent thread.
+    let thread_model_commands = thread_model_submits
+        .clone()
+        .filter_map(q!(|event: SlackEvent| {
+            let selection = event.thread_model_selection?;
+            let model = crate::flow::parse_model_selection(&selection)?;
+            let rt = crate::runtime::get();
+            let (session_thread_ts, target_thread) = {
+                let routes = rt.subagent_routes.lock().expect("bug: lock poisoned");
+                match routes.get(&event.thread_ts) {
+                    Some(route) => {
+                        // The id round-trips from a ThreadRef the daemon sent
+                        // us; a parse failure would be a bug — fall back to
+                        // the root thread rather than dropping the switch.
+                        let target = route.subagent_id.parse().ok();
+                        if target.is_none() {
+                            tracing::error!(
+                                "bug: unparsable subagent thread id {:?}",
+                                route.subagent_id
+                            );
+                        }
+                        (route.root_thread_ts.clone(), target)
+                    }
+                    None => (event.thread_ts.clone(), None),
+                }
+            };
+            let session_id = {
+                let sessions = rt.sessions.lock().expect("bug: lock poisoned");
+                sessions.get(&session_thread_ts).cloned()
+            }?;
+            Some(DaemonCommand::SwitchModel {
+                thread_ts: session_thread_ts,
+                session_id,
+                target_thread,
+                model,
+            })
+        }));
+
+    // --- Per-thread model-picker submissions → error reporting ---
+    // On success the confirmation comes from the daemon's `ModelSwitched`
+    // broadcast (handled below); this branch only surfaces failures the
+    // commands branch silently skipped.
+    let thread_model_actions = thread_model_submits.filter_map(q!(|event: SlackEvent| {
+        let selection = event.thread_model_selection?;
+        let rt = crate::runtime::get();
+        let session_thread_ts = {
+            let routes = rt.subagent_routes.lock().expect("bug: lock poisoned");
+            routes
+                .get(&event.thread_ts)
+                .map(|r| r.root_thread_ts.clone())
+                .unwrap_or_else(|| event.thread_ts.clone())
+        };
+        let has_session = rt
+            .sessions
+            .lock()
+            .expect("bug: lock poisoned")
+            .get(&session_thread_ts)
+            .is_some();
+        let text = if !has_session {
+            // Session vanished between modal open and submit (e.g. a bot
+            // restart with a lost mapping).
+            "⚠️ Could not switch the model: this thread no longer has an Infinity session."
+                .to_owned()
+        } else if crate::flow::parse_model_selection(&selection).is_none() {
+            format!("⚠️ Could not switch the model: unrecognized selection `{selection}`.")
+        } else {
+            return None;
+        };
+        Some(SlackAction::PostMessage {
+            channel: event.channel,
+            text,
+            thread_ts: Some(event.thread_ts),
+            subagent: None,
         })
     }));
 
@@ -543,6 +681,14 @@ pub fn slack_dataflow<'a, P: 'a>(
             nondet!(/**
                 compaction commands have non-deterministic ordering w.r.t. other daemon
                 commands because they originate from independent shortcut events
+            */),
+        )
+        .merge_ordered(
+            thread_model_commands,
+            nondet!(/**
+                per-thread model-switch commands have non-deterministic ordering w.r.t.
+                other daemon commands because they originate from independent modal
+                submissions
             */),
         );
 
@@ -938,6 +1084,34 @@ pub fn slack_dataflow<'a, P: 'a>(
                     subagent,
                 }]
             }
+            infinity_protocol::DaemonMessage::ModelSwitched {
+                thread_id,
+                model_name,
+                ..
+            } => {
+                // Confirmation for the per-thread switch — also fires when
+                // another client switches a thread's model, which is worth
+                // surfacing too. Routed into the subagent's dedicated thread
+                // when a subagent's model changed. (Like CompactionApplied, a
+                // coexisting subagent resume connection could deliver the
+                // broadcast twice; the duplicate note is harmless and rare.)
+                if !has_thread {
+                    return Vec::new();
+                }
+                let subagent = {
+                    let sessions = rt.sessions.lock().expect("bug: lock poisoned");
+                    match sessions.get(&de.thread_ts) {
+                        Some(root) if root != thread_id => Some(thread_id.to_string()),
+                        _ => None,
+                    }
+                };
+                vec![SlackAction::PostMessage {
+                    channel: channel.clone(),
+                    text: format!("🧠 Model switched to *{model_name}* for this thread."),
+                    thread_ts: Some(de.thread_ts),
+                    subagent,
+                }]
+            }
             _ => Vec::new(),
         }
     }));
@@ -1006,6 +1180,14 @@ pub fn slack_dataflow<'a, P: 'a>(
             nondet!(/**
                 fork status actions have non-deterministic ordering w.r.t. other slack
                 actions because they originate from user interaction events
+            */),
+        )
+        .merge_ordered(
+            thread_model_actions,
+            nondet!(/**
+                per-thread model-switch error reports have non-deterministic ordering
+                w.r.t. other slack actions because they originate from independent modal
+                submissions
             */),
         );
 
@@ -1163,13 +1345,10 @@ pub fn subagent_of(
     }
 }
 
-/// Build the Block Kit view for the `/model` picker modal. Returns `None` if
-/// no models are available yet (so the caller can fall back to a text
-/// response). The current default is preselected as the initial option.
-///
-/// `response_url` is stashed in the view's `private_metadata` so the modal
-/// submission handler can post an ephemeral confirmation back to the user.
-pub fn build_model_picker_view(response_url: &str) -> Option<serde_json::Value> {
+/// Build the model-select options from the runtime's model list. Returns
+/// `None` when no models are known yet. The second element preselects the
+/// current *default* model, when present among the options.
+fn model_picker_options() -> Option<(Vec<serde_json::Value>, Option<serde_json::Value>)> {
     let rt = crate::runtime::get();
     let models = rt.available_models.lock().expect("bug: lock poisoned");
     if models.is_empty() {
@@ -1208,9 +1387,17 @@ pub fn build_model_picker_view(response_url: &str) -> Option<serde_json::Value> 
     if options.is_empty() {
         return None;
     }
+    Some((options, initial_option))
+}
 
-    // Use a `static_select` dropdown (supports up to 100 options) rather than
-    // `radio_buttons`, which Slack caps at 10 options.
+/// Build the model-select element shared by both picker modals.
+///
+/// A `static_select` dropdown (supports up to 100 options) rather than
+/// `radio_buttons`, which Slack caps at 10 options.
+fn model_select_element(
+    options: Vec<serde_json::Value>,
+    initial_option: Option<serde_json::Value>,
+) -> serde_json::Value {
     let mut element = serde_json::json!({
         "type": "static_select",
         "action_id": MODEL_PICKER_ACTION_ID,
@@ -1220,7 +1407,18 @@ pub fn build_model_picker_view(response_url: &str) -> Option<serde_json::Value> 
     if let Some(initial) = initial_option {
         element["initial_option"] = initial;
     }
+    element
+}
 
+/// Build the Block Kit view for the `/model` picker modal (switches the
+/// *default* model for new sessions). Returns `None` if no models are
+/// available yet (so the caller can fall back to a text response). The
+/// current default is preselected as the initial option.
+///
+/// `response_url` is stashed in the view's `private_metadata` so the modal
+/// submission handler can post an ephemeral confirmation back to the user.
+pub fn build_model_picker_view(response_url: &str) -> Option<serde_json::Value> {
+    let (options, initial_option) = model_picker_options()?;
     Some(serde_json::json!({
         "type": "modal",
         "callback_id": MODEL_PICKER_CALLBACK_ID,
@@ -1233,10 +1431,59 @@ pub fn build_model_picker_view(response_url: &str) -> Option<serde_json::Value> 
                 "type": "input",
                 "block_id": MODEL_PICKER_BLOCK_ID,
                 "label": { "type": "plain_text", "text": "Default model for new sessions" },
-                "element": element,
+                "element": model_select_element(options, initial_option),
             }
         ],
     }))
+}
+
+/// Build the Block Kit view for the per-thread model picker (opened by the
+/// "Switch model" message shortcut; switches ONE agent thread's model via
+/// `SwitchModel`, leaving the default for new sessions untouched). Returns
+/// `None` if no models are available yet.
+///
+/// `channel` and `thread_ts` (the Slack thread the shortcut was invoked in —
+/// the root conversation thread or a subagent's dedicated thread) round-trip
+/// through the view's `private_metadata`; the submission handler re-resolves
+/// the subagent routing at submit time. No option is preselected: the bot
+/// does not track each thread's current model (the daemon owns that), and
+/// preselecting the session *default* would be misleading after a prior
+/// switch.
+pub fn build_thread_model_picker_view(channel: &str, thread_ts: &str) -> Option<serde_json::Value> {
+    let (options, _default_initial) = model_picker_options()?;
+    let metadata = serde_json::json!({
+        "channel": channel,
+        "thread_ts": thread_ts,
+    });
+    Some(serde_json::json!({
+        "type": "modal",
+        "callback_id": crate::slack::THREAD_MODEL_MODAL_CALLBACK_ID,
+        "private_metadata": metadata.to_string(),
+        "title": { "type": "plain_text", "text": "Switch model" },
+        "submit": { "type": "plain_text", "text": "Switch" },
+        "close": { "type": "plain_text", "text": "Cancel" },
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": MODEL_PICKER_BLOCK_ID,
+                "label": { "type": "plain_text", "text": "Model for this thread" },
+                "element": model_select_element(options, None),
+            }
+        ],
+    }))
+}
+
+/// Parse a model-picker selection value (`provider_id/model_id`, as built by
+/// [`model_picker_options`]) into a [`infinity_protocol::ModelRef`].
+pub fn parse_model_selection(selection: &str) -> Option<infinity_protocol::ModelRef> {
+    let (provider_id, model_id) = selection.split_once('/')?;
+    if provider_id.is_empty() || model_id.is_empty() {
+        return None;
+    }
+    Some(infinity_protocol::ModelRef {
+        provider_id: provider_id.to_owned(),
+        model_id: model_id.to_owned(),
+    })
 }
 
 /// Resolve which session a "Compact session" shortcut invocation targets.
@@ -1595,5 +1842,77 @@ mod tests {
         // Reset shared runtime state so other tests are unaffected.
         rt.available_models.lock().expect("lock").clear();
         *rt.default_model.lock().expect("lock") = None;
+    }
+
+    #[test]
+    fn thread_model_picker_view_round_trips_the_thread() {
+        crate::runtime::ensure_test_init();
+        let rt = crate::runtime::get();
+
+        // With no models available, the picker can't be built (the shortcut
+        // handler falls back to an ephemeral explanation).
+        rt.available_models.lock().expect("lock").clear();
+        assert!(build_thread_model_picker_view("D1", "1.0").is_none());
+
+        {
+            let mut models = rt.available_models.lock().expect("lock");
+            *models = vec![infinity_protocol::ModelInfo {
+                display_name: "Claude Opus 5.5".to_owned(),
+                provider_id: "bedrock".to_owned(),
+                model_id: "global.anthropic.claude-opus-5-5".to_owned(),
+                context_window: 200_000,
+            }];
+        }
+        // A default model is set, but the thread picker must NOT preselect
+        // it: the bot doesn't know the thread's current model.
+        {
+            let mut current = rt.default_model.lock().expect("lock");
+            *current = Some(infinity_protocol::ModelRef {
+                provider_id: "bedrock".to_owned(),
+                model_id: "global.anthropic.claude-opus-5-5".to_owned(),
+            });
+        }
+
+        let view = build_thread_model_picker_view("D77", "123.456")
+            .expect("view should build with models present");
+        assert_eq!(view["type"], "modal");
+        assert_eq!(
+            view["callback_id"],
+            crate::slack::THREAD_MODEL_MODAL_CALLBACK_ID
+        );
+        let meta: serde_json::Value =
+            serde_json::from_str(view["private_metadata"].as_str().expect("metadata string"))
+                .expect("metadata is JSON");
+        assert_eq!(meta["channel"], "D77");
+        assert_eq!(meta["thread_ts"], "123.456");
+        let element = &view["blocks"][0]["element"];
+        assert_eq!(element["type"], "static_select");
+        assert_eq!(
+            element["options"][0]["value"],
+            "bedrock/global.anthropic.claude-opus-5-5"
+        );
+        assert!(
+            element.get("initial_option").is_none(),
+            "thread picker must not preselect the session default"
+        );
+
+        // Reset shared runtime state so other tests are unaffected.
+        rt.available_models.lock().expect("lock").clear();
+        *rt.default_model.lock().expect("lock") = None;
+    }
+
+    #[test]
+    fn parse_model_selection_splits_provider_and_model() {
+        let model =
+            parse_model_selection("bedrock/global.anthropic.claude-opus-5-5").expect("parses");
+        assert_eq!(model.provider_id, "bedrock");
+        assert_eq!(model.model_id, "global.anthropic.claude-opus-5-5");
+        // Model ids may contain further separators; only the first '/' splits.
+        let model = parse_model_selection("remote/provider/model").expect("parses");
+        assert_eq!(model.provider_id, "remote");
+        assert_eq!(model.model_id, "provider/model");
+        assert!(parse_model_selection("no-slash").is_none());
+        assert!(parse_model_selection("/missing-provider").is_none());
+        assert!(parse_model_selection("missing-model/").is_none());
     }
 }

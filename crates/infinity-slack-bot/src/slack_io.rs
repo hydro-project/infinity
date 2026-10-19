@@ -10,6 +10,7 @@ use infinity_slack_dataflow::config::Config;
 use infinity_slack_dataflow::slack::{
     SlackAction, SlackEvent, MODEL_PICKER_ACTION_ID, MODEL_PICKER_BLOCK_ID,
     MODEL_PICKER_CALLBACK_ID, REWIND_ACTION_ID, REWIND_BLOCK_ID, REWIND_MODAL_CALLBACK_ID,
+    THREAD_MODEL_MODAL_CALLBACK_ID,
 };
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -1682,6 +1683,7 @@ fn fork_ready_event(
         shortcut: None,
         rewind_user_turn: Some(user_turn),
         fork_source_thread_ts: Some(source_thread_ts.to_owned()),
+        thread_model_selection: None,
     }
 }
 
@@ -1722,6 +1724,7 @@ fn parse_slash_command(payload: serde_json::Value) -> Option<SlackEvent> {
         shortcut: None,
         rewind_user_turn: None,
         fork_source_thread_ts: None,
+        thread_model_selection: None,
     })
 }
 
@@ -1770,6 +1773,7 @@ fn parse_interactive(payload: serde_json::Value) -> Option<SlackEvent> {
         shortcut: None,
         rewind_user_turn: None,
         fork_source_thread_ts: None,
+        thread_model_selection: None,
     })
 }
 
@@ -1806,6 +1810,7 @@ fn parse_message_action(p: InteractivePayload) -> Option<SlackEvent> {
         shortcut: Some(callback_id),
         rewind_user_turn: None,
         fork_source_thread_ts: None,
+        thread_model_selection: None,
     })
 }
 
@@ -1819,6 +1824,7 @@ fn parse_view_submission(p: InteractivePayload) -> Option<SlackEvent> {
     match view.callback_id.as_str() {
         MODEL_PICKER_CALLBACK_ID => parse_model_picker_submission(view, p.user?),
         REWIND_MODAL_CALLBACK_ID => parse_rewind_submission(view, p.user?),
+        THREAD_MODEL_MODAL_CALLBACK_ID => parse_thread_model_submission(view, p.user?),
         other => {
             tracing::debug!("ignoring view_submission with callback_id: {other}");
             None
@@ -1862,6 +1868,7 @@ fn parse_model_picker_submission(
         shortcut: None,
         rewind_user_turn: None,
         fork_source_thread_ts: None,
+        thread_model_selection: None,
     })
 }
 
@@ -1916,6 +1923,62 @@ fn parse_rewind_submission(view: InteractiveView, user: InteractiveUser) -> Opti
         shortcut: None,
         rewind_user_turn: Some(meta.user_turn),
         fork_source_thread_ts: None,
+        thread_model_selection: None,
+    })
+}
+
+/// The context the per-thread model picker round-trips through its
+/// `private_metadata`: the Slack thread (root conversation thread or a
+/// subagent's dedicated thread) whose session thread the switch targets.
+#[derive(Debug, serde::Serialize, Deserialize)]
+struct ThreadModelMetadata {
+    channel: String,
+    thread_ts: String,
+}
+
+fn parse_thread_model_submission(
+    view: InteractiveView,
+    user: InteractiveUser,
+) -> Option<SlackEvent> {
+    let meta: ThreadModelMetadata = match serde_json::from_str(&view.private_metadata) {
+        Ok(meta) => meta,
+        Err(e) => {
+            tracing::error!("bug: unparsable thread-model modal metadata: {e}");
+            return None;
+        }
+    };
+    let selected = view
+        .state?
+        .values
+        .get(MODEL_PICKER_BLOCK_ID)?
+        .get(MODEL_PICKER_ACTION_ID)?
+        .get("selected_option")?
+        .get("value")?
+        .as_str()?
+        .to_owned();
+
+    Some(SlackEvent {
+        user: user.id,
+        text: String::new(),
+        channel: meta.channel,
+        thread_ts: meta.thread_ts,
+        is_button_click: false,
+        button_value: None,
+        action_id: None,
+        message_ts: None,
+        button_text: None,
+        is_bot: false,
+        is_unauthorized: false, // set later by caller
+        slash_command: None,
+        response_url: None,
+        trigger_id: None,
+        is_app_home_opened: false,
+        is_session_stopped: false,
+        streaming_message_ts: Vec::new(),
+        shortcut: None,
+        rewind_user_turn: None,
+        fork_source_thread_ts: None,
+        thread_model_selection: Some(selected),
     })
 }
 
@@ -1950,6 +2013,7 @@ fn parse_events_api(payload: serde_json::Value) -> Option<SlackEvent> {
             shortcut: None,
             rewind_user_turn: None,
             fork_source_thread_ts: None,
+            thread_model_selection: None,
         });
     }
 
@@ -1979,6 +2043,7 @@ fn parse_events_api(payload: serde_json::Value) -> Option<SlackEvent> {
             shortcut: None,
             rewind_user_turn: None,
             fork_source_thread_ts: None,
+            thread_model_selection: None,
         });
     }
 
@@ -2017,6 +2082,7 @@ fn parse_events_api(payload: serde_json::Value) -> Option<SlackEvent> {
         shortcut: None,
         rewind_user_turn: None,
         fork_source_thread_ts: None,
+        thread_model_selection: None,
     })
 }
 
@@ -2423,6 +2489,59 @@ mod tests {
             !event.is_bot && !event.is_unauthorized,
             "must pass the dataflow filter"
         );
+    }
+
+    #[test]
+    fn parse_message_action_switch_model_shortcut() {
+        let payload = serde_json::json!({
+            "type": "message_action",
+            "callback_id": "switch_model",
+            "trigger_id": "12345.98765.abcd",
+            "response_url": "https://hooks.slack.com/app/T1/1/x",
+            "user": {"id": "U123"},
+            "channel": {"id": "D456"},
+            "message": {"ts": "1111.2222", "thread_ts": "1000.0000", "text": "whatever"}
+        });
+        let event = parse_interactive(payload).expect("should parse");
+        assert_eq!(event.shortcut.as_deref(), Some("switch_model"));
+        assert_eq!(event.thread_ts, "1000.0000");
+        assert_eq!(event.trigger_id.as_deref(), Some("12345.98765.abcd"));
+        assert!(event.thread_model_selection.is_none());
+    }
+
+    #[test]
+    fn parse_view_submission_thread_model_modal() {
+        let payload = serde_json::json!({
+            "type": "view_submission",
+            "user": {"id": "U123"},
+            "view": {
+                "callback_id": THREAD_MODEL_MODAL_CALLBACK_ID,
+                "private_metadata": "{\"channel\":\"D456\",\"thread_ts\":\"1000.0000\"}",
+                "state": {
+                    "values": {
+                        MODEL_PICKER_BLOCK_ID: {
+                            MODEL_PICKER_ACTION_ID: {
+                                "type": "static_select",
+                                "selected_option": {
+                                    "text": {"type": "plain_text", "text": "Opus"},
+                                    "value": "bedrock/global.anthropic.claude-opus-5-5"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let event = parse_interactive(payload).expect("should parse");
+        assert_eq!(
+            event.thread_model_selection.as_deref(),
+            Some("bedrock/global.anthropic.claude-opus-5-5")
+        );
+        assert_eq!(event.channel, "D456");
+        assert_eq!(event.thread_ts, "1000.0000");
+        assert!(event.shortcut.is_none());
+        assert!(event.slash_command.is_none());
+        assert!(event.rewind_user_turn.is_none());
     }
 
     #[test]

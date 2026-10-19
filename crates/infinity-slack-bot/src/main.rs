@@ -371,6 +371,7 @@ mod tests {
                 shortcut: None,
                 rewind_user_turn: None,
                 fork_source_thread_ts: None,
+                thread_model_selection: None,
             })
             .await
             .expect("send should succeed");

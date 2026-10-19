@@ -125,8 +125,23 @@ impl DaemonClient {
         Ok(())
     }
 
-    /// Trigger context compaction for the session rooted at `session_id`
-    /// (see [`ClientMessage::TriggerCompaction`]).
+    /// Switch `thread_id`'s model (see [`ClientMessage::SwitchModel`] —
+    /// per-thread, does not propagate to child threads).
+    pub async fn switch_model(
+        &self,
+        thread_id: &infinity_protocol::ThreadRef,
+        model: &infinity_protocol::ModelRef,
+    ) -> Result<(), BoxError> {
+        self.tx
+            .send(ClientMessage::SwitchModel {
+                thread_id: thread_id.clone(),
+                model: model.clone(),
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Trigger context compaction for the session rooted at `session_id`    /// (see [`ClientMessage::TriggerCompaction`]).
     pub async fn trigger_compaction(
         &self,
         session_id: &infinity_protocol::ThreadRef,
