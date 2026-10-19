@@ -23,16 +23,7 @@ expression: hm.history.into_inner()
     }
   },
   {
-    "kind": "tool_result",
-    "result": {
-      "id": "tc-sub",
-      "content": [
-        {
-          "type": "text",
-          "text": "Tool call interrupted by user"
-        }
-      ]
-    }
+    "kind": "interrupt"
   },
   {
     "kind": "subscription_event",

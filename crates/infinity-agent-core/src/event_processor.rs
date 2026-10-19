@@ -279,10 +279,10 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                     }
                 }
             } else {
-                self.interrupt_pending_tool_call();
+                self.interrupt_pending_tool_call(&message);
             }
         } else {
-            self.interrupt_pending_tool_call();
+            self.interrupt_pending_tool_call(&message);
         }
 
         self.append_unvalidated(message, message_id.clone());
@@ -318,10 +318,12 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         ToolResultMatch::NoPendingCall
     }
 
-    /// If the last history entry is an unanswered tool call, inject a
-    /// synthetic "interrupted" result. (A tool call at the tail is unanswered
-    /// by construction: its result would have been appended after it.)
-    fn interrupt_pending_tool_call(&self) {
+    /// If the last history entry is an unanswered tool call, settle it with
+    /// an [`InfinityMessage::Interrupt`] (unless `incoming` is one already);
+    /// the provider-facing "interrupted" result is derived at render time.
+    /// (A tool call at the tail is unanswered by construction: its result
+    /// would have been appended after it.)
+    fn interrupt_pending_tool_call(&self, incoming: &InfinityMessage) {
         let last_call = self.history.borrow().last().and_then(|m| {
             if let InfinityMessage::ToolCall { call, .. } = m {
                 Some(call.clone())
@@ -334,19 +336,10 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             self.interrupted_tool_calls
                 .borrow_mut()
                 .push(ToolCallId::from(tool_call.id.clone()));
-            let synthetic_result = InfinityMessage::ToolResult {
-                result: ToolResult {
-                    id: tool_call.id.clone(),
-                    call_id: tool_call.call_id.clone(),
-                    content: vec![ToolResultContent::Text(
-                        infinity_provider_protocol::message::Text {
-                            text: TOOL_CALL_INTERRUPTED_TEXT.to_owned(),
-                        },
-                    )],
-                },
-                display_segments: None,
-            };
-            self.append_unvalidated(synthetic_result, format!("{}-interrupted", tool_call.id));
+            if !matches!(incoming, InfinityMessage::Interrupt) {
+                let id = format!("{}-interrupted", tool_call.id);
+                self.append_unvalidated(InfinityMessage::Interrupt, id);
+            }
         }
     }
 
@@ -656,7 +649,9 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             .filter(|i| {
                 matches!(
                     i.message,
-                    InfinityMessage::User { .. } | InfinityMessage::SubscriptionEvent { .. }
+                    InfinityMessage::User { .. }
+                        | InfinityMessage::SubscriptionEvent { .. }
+                        | InfinityMessage::Interrupt
                 )
             })
             .map(|i| i.message_id.clone())
@@ -685,10 +680,8 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     /// `false`, image tool-result content is replaced with a text placeholder
     /// so the history can be sent to models without image support.
     pub fn get_history(&self, supports_image_input: bool) -> Vec<Message> {
-        self.history
-            .borrow()
-            .iter()
-            .flat_map(|m| m.clone().into_messages())
+        crate::message::render_history(self.history.borrow().iter())
+            .into_iter()
             .map(|mut msg| {
                 if !supports_image_input {
                     strip_image_tool_results(&mut msg);
@@ -1038,6 +1031,17 @@ where
         });
     }
 
+    // Interrupt marker: like any non-result entry, folding it settles a
+    // trailing unanswered tool call.
+    if input_msg
+        .synthetic
+        .as_ref()
+        .is_some_and(SyntheticKind::is_interrupt)
+    {
+        current_history.handle_content(InfinityMessage::Interrupt, message_id)?;
+        return Ok(PrepareResult::Handled);
+    }
+
     let is_subscription = input_msg.subscription;
 
     let user_content = match input_msg.content {
@@ -1364,9 +1368,8 @@ where
             ),
         })
     } else if let InputMessageContent::User(UserContent::Text(ref text)) = input_msg.content {
-        let display_text = text.text.strip_prefix("<interrupt>").unwrap_or(&text.text);
         Some(AgentEvent::UserInput {
-            text: display_text.to_owned(),
+            text: text.text.clone(),
         })
     } else {
         None
@@ -1390,8 +1393,8 @@ pub const IMAGE_OMITTED_PLACEHOLDER: &str =
 pub const TOOL_RESULT_TOO_LARGE_PLACEHOLDER: &str =
     "[tool result omitted: it was too large for the model's remaining context window]";
 
-/// Text used to settle a tool call as interrupted. Injected when a user
-/// message arrives while the call is unanswered, and also substituted for a
+/// Text used to settle a tool call as interrupted. Rendered for a call
+/// settled by an [`InfinityMessage::Interrupt`], and also substituted for a
 /// pending tool result during overflow recovery when user input had to be
 /// dropped: the next thing the model sees is a fresh user message, and
 /// "interrupted by user" describes that situation accurately, whereas a
@@ -2452,8 +2455,55 @@ mod tests {
         .expect("prepare input");
 
         assert_eq!(result, PrepareResult::Ready);
-        // Should have: original user, tool call, synthetic interrupted result, new user msg
-        insta::assert_json_snapshot!(hm.history.into_inner());
+        // Should have: original user, tool call, interrupt, new user msg
+        // (no synthetic result is stored)...
+        insta::assert_json_snapshot!(hm.history.borrow().clone());
+        // ...but the model still sees the call answered as interrupted.
+        let rendered = hm.get_history(true);
+        assert_eq!(
+            rendered[2..],
+            [
+                Message::User {
+                    content: vec![UserContent::ToolResult(ToolResult {
+                        id: "tc-1".to_owned(),
+                        call_id: None,
+                        content: vec![ToolResultContent::Text(
+                            infinity_provider_protocol::message::Text {
+                                text: TOOL_CALL_INTERRUPTED_TEXT.to_owned(),
+                            }
+                        )],
+                    })],
+                },
+                Message::User {
+                    content: vec![UserContent::text("actually, never mind")],
+                },
+            ]
+        );
+    }
+
+    /// An interrupt marker settles a pending call by itself (no second
+    /// entry), and a late real result for the call is ignored.
+    #[tokio::test]
+    async fn interrupt_marker_settles_pending_tool_call() {
+        let store = InMemoryConversationStore::new();
+        let initial = vec![tool_call_msg("tc-1", "some_tool", serde_json::json!({}))];
+        let hm = make_history(&store, initial).await;
+        for (input, id) in [
+            (InputMessage::interrupt("thread-1"), "msg-1"),
+            (tool_result_input("thread-1", "tc-1", "late", None), "msg-2"),
+        ] {
+            prepare_input(input, id.to_owned(), &hm, &store, &StubSender)
+                .await
+                .expect("prepare input");
+        }
+        assert!(matches!(
+            hm.history.borrow().as_slice(),
+            [InfinityMessage::ToolCall { .. }, InfinityMessage::Interrupt]
+        ));
+        assert_eq!(
+            hm.take_interrupted_tool_calls(),
+            vec![ToolCallId::from("tc-1")]
+        );
     }
 
     #[tokio::test]

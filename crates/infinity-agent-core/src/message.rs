@@ -1,5 +1,5 @@
 use infinity_provider_protocol::message::{
-    AssistantContent, Message, ToolCall, ToolResult, UserContent,
+    AssistantContent, Message, Text, ToolCall, ToolResult, ToolResultContent, UserContent,
 };
 use rap_protocol::{ChoiceId, ProviderCallId, ThreadId, ToolCallId};
 use serde::{Deserialize, Serialize};
@@ -68,6 +68,10 @@ pub enum TaggedSyntheticKind {
     Compaction,
     #[serde(rename = "compaction_complete")]
     CompactionComplete,
+    /// Interrupt marker: folded into history as [`InfinityMessage::Interrupt`]
+    /// at the point the thread's in-flight work was interrupted.
+    #[serde(rename = "interrupt")]
+    Interrupt,
 }
 
 impl SyntheticKind {
@@ -86,6 +90,7 @@ impl SyntheticKind {
             SyntheticKind::Tagged(TaggedSyntheticKind::CompactionComplete) => {
                 ToolCallId::from_ref("")
             }
+            SyntheticKind::Tagged(TaggedSyntheticKind::Interrupt) => ToolCallId::from_ref(""),
             SyntheticKind::SubscriptionEvent(id) => id,
         }
     }
@@ -113,6 +118,11 @@ impl SyntheticKind {
             self,
             SyntheticKind::Tagged(TaggedSyntheticKind::CompactionComplete)
         )
+    }
+
+    /// Whether this is an interrupt marker.
+    pub fn is_interrupt(&self) -> bool {
+        matches!(self, SyntheticKind::Tagged(TaggedSyntheticKind::Interrupt))
     }
 
     /// Associative subscription events are injected inline into the subscribing
@@ -165,6 +175,18 @@ impl InputMessage {
             group_id: thread_id.into(),
             metadata: None,
             synthetic: None,
+            display_as: None,
+            subscription: false,
+        }
+    }
+
+    /// An interrupt marker addressed to `thread_id`; the content is unused.
+    pub fn interrupt(thread_id: impl Into<ThreadId>) -> Self {
+        Self {
+            content: InputMessageContent::User(UserContent::text(String::new())),
+            group_id: thread_id.into(),
+            metadata: None,
+            synthetic: Some(SyntheticKind::Tagged(TaggedSyntheticKind::Interrupt)),
             display_as: None,
             subscription: false,
         }
@@ -223,6 +245,68 @@ pub enum InfinityMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         invocation: Option<Box<ToolCall>>,
     },
+    /// The thread's in-flight work was interrupted here. The model-facing
+    /// [`INTERRUPT_TOKEN`] is derived at render time by [`render_history`].
+    #[serde(rename = "interrupt")]
+    Interrupt,
+}
+
+/// The token the model sees for an [`InfinityMessage::Interrupt`]. Older
+/// versions stored it as a literal prefix of the interrupting user text.
+pub const INTERRUPT_TOKEN: &str = "<interrupt>";
+
+/// Render history into the [`Message`]s sent to the model.
+///
+/// An [`InfinityMessage::Interrupt`] right after a tool call settles it and
+/// renders as its "interrupted" result. Otherwise it is prefixed onto the
+/// user text that follows it (the shape older versions stored), or rendered
+/// standalone if none does. Consecutive interrupts collapse into one token.
+pub fn render_history<'a>(history: impl IntoIterator<Item = &'a InfinityMessage>) -> Vec<Message> {
+    let mut messages = Vec::new();
+    let mut interrupted = false;
+    let mut prev: Option<&InfinityMessage> = None;
+    for msg in history {
+        match (prev.replace(msg), msg) {
+            (Some(InfinityMessage::ToolCall { call, .. }), InfinityMessage::Interrupt) => {
+                messages.push(Message::User {
+                    content: vec![UserContent::ToolResult(interrupted_result(call))],
+                });
+            }
+            (_, InfinityMessage::Interrupt) => interrupted = true,
+            (
+                _,
+                InfinityMessage::User {
+                    content: UserContent::Text(text),
+                },
+            ) if interrupted => {
+                interrupted = false;
+                messages.push(Message::User {
+                    content: vec![UserContent::text(format!("{INTERRUPT_TOKEN}{}", text.text))],
+                });
+            }
+            (_, other) => {
+                if std::mem::take(&mut interrupted) {
+                    messages.extend(InfinityMessage::Interrupt.into_messages());
+                }
+                messages.extend(other.clone().into_messages());
+            }
+        }
+    }
+    if interrupted {
+        messages.extend(InfinityMessage::Interrupt.into_messages());
+    }
+    messages
+}
+
+/// The result the model sees for a tool call settled by an interrupt.
+fn interrupted_result(call: &ToolCall) -> ToolResult {
+    ToolResult {
+        id: call.id.clone(),
+        call_id: call.call_id.clone(),
+        content: vec![ToolResultContent::Text(Text {
+            text: crate::event_processor::TOOL_CALL_INTERRUPTED_TEXT.to_owned(),
+        })],
+    }
 }
 
 impl InfinityMessage {
@@ -257,6 +341,9 @@ impl InfinityMessage {
                 });
                 msgs
             }
+            Self::Interrupt => vec![Message::User {
+                content: vec![UserContent::text(INTERRUPT_TOKEN)],
+            }],
         }
     }
 
@@ -295,5 +382,79 @@ impl InfinityMessage {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user(text: &str) -> InfinityMessage {
+        InfinityMessage::User {
+            content: UserContent::text(text),
+        }
+    }
+
+    fn rendered(history: impl IntoIterator<Item = InfinityMessage>) -> Vec<Message> {
+        history
+            .into_iter()
+            .flat_map(InfinityMessage::into_messages)
+            .collect()
+    }
+
+    #[test]
+    fn interrupt_without_following_text_renders_standalone() {
+        let assistant = InfinityMessage::Assistant {
+            content: AssistantContent::text("hi"),
+        };
+        assert_eq!(
+            render_history(&[user("go"), InfinityMessage::Interrupt]),
+            rendered([user("go"), user("<interrupt>")])
+        );
+        assert_eq!(
+            render_history(&[InfinityMessage::Interrupt, assistant.clone()]),
+            rendered([user("<interrupt>"), assistant])
+        );
+    }
+
+    #[test]
+    fn interrupt_after_tool_call_renders_as_interrupted_result() {
+        let tool_call = ToolCall {
+            id: "tc-1".to_owned(),
+            call_id: None,
+            function: infinity_provider_protocol::message::ToolFunction {
+                name: "some_tool".to_owned(),
+                arguments: serde_json::json!({}),
+            },
+        };
+        // Older versions stored this synthetic result; it renders unchanged.
+        let legacy = InfinityMessage::ToolResult {
+            result: interrupted_result(&tool_call),
+            display_segments: None,
+        };
+        let call = InfinityMessage::ToolCall {
+            call: tool_call,
+            display_as: None,
+        };
+        assert_eq!(
+            render_history(&[call.clone(), InfinityMessage::Interrupt, user("hi")]),
+            rendered([call.clone(), legacy.clone(), user("hi")])
+        );
+        assert_eq!(
+            render_history(&[call.clone(), legacy.clone(), user("hi")]),
+            rendered([call, legacy, user("hi")])
+        );
+    }
+
+    #[test]
+    fn consecutive_interrupts_collapse_into_one_token() {
+        assert_eq!(
+            render_history(&[
+                InfinityMessage::Interrupt,
+                InfinityMessage::Interrupt,
+                user("again")
+            ]),
+            rendered([user("<interrupt>again")])
+        );
     }
 }

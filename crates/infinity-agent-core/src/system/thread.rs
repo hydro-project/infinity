@@ -208,8 +208,8 @@ where
     /// The thread is waiting for the result of a dispatched tool call whose
     /// tool represents in-flight work (i.e. it is not a passive tool like the
     /// sleep family). While this is `Some`, deferrable synthetic events must
-    /// not be processed — doing so would inject an "interrupted" result for
-    /// a call that is actually still running.
+    /// not be processed — doing so would settle a call that is actually
+    /// still running as interrupted.
     ///
     /// If the thread's configuration has not been resolved yet (no step has
     /// run), the call is conservatively treated as active.
