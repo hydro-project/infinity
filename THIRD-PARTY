@@ -13656,169 +13656,6 @@ Apache License
 
 ---
 
-@headless-tree/core@1.6.1
-  License: MIT
-
-![Headless Tree](https://github.com/lukasbach/headless-tree/raw/main/packages/docs/static/img/banner-github.png)
-
-[![Documentation](https://img.shields.io/badge/docs-1e1f22?style=flat)](https://headless-tree.lukasbach.com/)
-[![Chat on Discord](https://img.shields.io/badge/discord-4c57d9?style=flat&logo=discord&logoColor=ffffff)](https://discord.gg/KuZ6EezzVw)
-[![Follow on Bluesky](https://img.shields.io/badge/bluesky-0285FF?style=flat&logo=bluesky&logoColor=ffffff)](https://bsky.app/profile/lukasbach.bsky.social)
-[![Follow on X](https://img.shields.io/badge/x-000000?style=flat&logo=x&logoColor=ffffff)](https://x.com/lukasmbach)
-[![Support on Github Sponsors](https://img.shields.io/badge/sponsor-EA4AAA?style=flat&logo=githubsponsors&logoColor=ffffff)](https://github.com/sponsors/lukasbach)
-[![Follow on Github](https://img.shields.io/badge/follow-181717?style=flat&logo=github&logoColor=ffffff)](https://github.com/lukasbach)
-[![NPM Core package](https://img.shields.io/badge/core-CB3837?style=flat&logo=npm&logoColor=ffffff)](https://www.npmjs.com/package/@headless-tree/core)
-[![NPM React package](https://img.shields.io/badge/react-CB3837?style=flat&logo=npm&logoColor=ffffff)](https://www.npmjs.com/package/@headless-tree/react)
-
-Super-easy integration of complex tree components into React. Supports ordered
-and unordered drag-and-drop, extensive keybindings, search, renaming and more.
-Fully customizable and accessible. Headless Tree is the official successor for
-[react-complex-tree](https://github.com/lukasbach/react-complex-tree).
-
-It aims to bring the many features of complex tree views, like multi-select,
-drag-and-drop, keyboard navigation, tree search, renaming and more, while
-being unopinionated about the styling and rendering of the tree itself.
-Accessibility is ensured by default, and the integration is extremely
-simple and flexible.
-
-The interface gives you a flat list of tree nodes
-that you can easily render yourself, which keeps the complexity of the
-code low and allows you to customize the tree to your needs. This flat
-structure also allows you to virtualize the tree with any virtualization
-library you want. The library automatically provides the necessary
-aria tags to emulate a nested tree structure, so that accessibility
-requirements are met despite the flat structure.
-
-Dive into [the Get Started page](https://headless-tree.lukasbach.com/getstarted)
-to find out how to use Headless Tree, or have a look at
-[the samples on the Headless Tree Homepage](https://headless-tree.lukasbach.com/#demogrid)
-to get an idea of what you can do with it.
-
-> [!TIP]  
-> Headless Tree is now available as Beta! The library is mostly stable and
-> production ready, and will be generally released within two months, once
-> I have collected feedback and fixed any bugs that might arise. I've written
-> [a blog post](https://medium.com/@lukasbach/headless-tree-and-the-future-of-react-complex-tree-fc920700e82a)
-> about the details of the change, and the future of the library.
->
-> Join
-> [the Discord](https://discord.gg/KuZ6EezzVw) to get involved, and
-> [follow on Bluesky](https://bsky.app/profile/lukasbach.bsky.social) to
-> stay up to date.
-
-## Features
-
-- [Simple Interface](https://headless-tree.lukasbach.com/?demo=0#demogrid): Easy integration in React with full customizability of DOM
-- [Drag and Drop](https://headless-tree.lukasbach.com/?demo=1#demogrid): Powerful ordered drag-and-drop, that can interact with external drag events
-- [Scalable](https://headless-tree.lukasbach.com/?demo=2#demogrid): Headless Tree remains performant even with large trees
-- [Virtualization Support](https://headless-tree.lukasbach.com/?demo=3#demogrid): Compatible with common virtualization library to support 100k+ items
-- [Hotkeys!](https://headless-tree.lukasbach.com/?demo=4#demogrid): Lots of hotkeys, fully customizable
-- [Search Support](https://headless-tree.lukasbach.com/?demo=5#demogrid): Typeahead anywhere in the tree to quickly search the entire tree
-- [Rename items](https://headless-tree.lukasbach.com/?demo=6#demogrid): Optionally allow users to rename items inside the tree
-- [Manage State](https://headless-tree.lukasbach.com/?demo=7#demogrid): Let Headless Tree manage tree state internally, or manage any part of it yourself
-- [Customize Behavior](https://headless-tree.lukasbach.com/?demo=8#demogrid): Easily overwrite internal behavior like requiring double clicks on items to expand
-- [Customize Logic](https://headless-tree.lukasbach.com/?demo=9#demogrid): Overwrite or expand any internal behavior of Headless Tree
-- [Async Data Support](https://headless-tree.lukasbach.com/?demo=10#demogrid): Use synchronous or asynchronous data sources for your tree. Headless Tree comes with optional caching for async data
-- Free of dependencies
-- Or check out [this comprehensive playground](https://headless-tree.lukasbach.com/?demo=11#demogrid) that has most of the capabilities enabled.
-
-## Bundle Size
-
-Headless Tree exports individual features in a tree-shaking-friendly
-way, allowing you to only include what you need to keep your bundle size
-small. Listed bundle sizes are based on min+gzipped bundles, and are
-based on the Bundlephobia report as of Headless Tree v0.0.15.
-
-| Feature                | Bundle Size |
-|------------------------|-------------|
-| Tree Core              | 3.1kB       |
-| Sync Data Loader       | 0.8kB       |
-| Async Data Loader      | 1.4kB       |
-| Selections             | 1.1kB       |
-| Drag and Drop          | 2.8kB       |
-| Keyboard Drag and Drop | 2.7kB       |
-| Hotkeys                | 0.8kB       |
-| Tree Search            | 1.3kB       |
-| Renaming               | 0.9kB       |
-| Expand All             | 0.7kB       |
-| React Bindings         | 0.4kB       |
-
-Total bundle size is 9.5kB plus 0.4kB for the React bindings. Note that
-the sum of features is bigger than the total bundle size, because several
-features share code. Tree-shaking will ensure that the minimum amount of
-code is included in your bundle.
-
-## Get Started
-
-> [!TIP]  
-> You can find a comprehensive [get-started guide](https://headless-tree.lukasbach.com/getstarted)
-> on the documentation homepage. The following gives a brief overview.
-
-Install Headless Tree via npm:
-
-```bash
-npm install @headless-tree/core @headless-tree/react
-```
-
-In your react component, call the `useTree` hook from `@headless-tree/react` with the configuration of
-your tree:
-
-```tsx
-import {
-  hotkeysCoreFeature,
-  selectionFeature,
-  syncDataLoaderFeature,
-} from "@headless-tree/core";
-import { useTree } from "@headless-tree/react";
-
-const tree = useTree<string>({
-  initialState: { expandedItems: ["folder-1"] },
-  rootItemId: "folder",
-  getItemName: (item) => item.getItemData(),
-  isItemFolder: (item) => !item.getItemData().endsWith("item"),
-  dataLoader: {
-    getItem: (itemId) => itemId,
-    getChildren: (itemId) => [
-      `${itemId}-folder`,
-      `${itemId}-1-item`,
-      `${itemId}-2-item`,
-    ],
-  },
-  indent: 20,
-  features: [syncDataLoaderFeature, selectionFeature, hotkeysCoreFeature],
-});
-```
-
-Then, render your tree based on the tree instance returned from the hook:
-
-```tsx
-<div {...tree.getContainerProps()} className="tree">
-  {tree.getItems().map((item) => (
-    <button
-      {...item.getProps()}
-      key={item.getId()}
-      style={{ paddingLeft: `${item.getItemMeta().level * 20}px` }}
-    >
-      <div
-        className={cn("treeitem", {
-          focused: item.isFocused(),
-          expanded: item.isExpanded(),
-          selected: item.isSelected(),
-          folder: item.isFolder(),
-        })}
-      >
-        {item.getItemName()}
-      </div>
-    </button>
-  ))}
-</div>
-```
-
-Read on in the [get started guide](https://headless-tree.lukasbach.com/getstarted) to learn more about
-how to use Headless Tree, and how to customize it to your needs.
-
----
-
 @iconify/types@2.0.0
   License: MIT
 
@@ -13900,7 +13737,7 @@ SOFTWARE.
 
 ---
 
-@pierre/diffs@1.2.12
+@pierre/diffs@1.5.2
   License: Apache*
 
 Apache License
@@ -14122,594 +13959,592 @@ SOFTWARE.
 
 ---
 
-@pierre/theming@0.0.2
-  License: Custom: https://shiki.style/
-
-# @pierre/theming
-
-The theming toolkit for Pierre's open-source UI packages. It provides catalog
-primitives, the loader/cache for resolving theme JSON, a normalizer plus color
-transforms that resolve and derive accessible UI colors from a resolved shiki
-theme, and a framework-agnostic controller for the selected color mode and
-theme. `@pierre/diffs`, `@pierre/trees`, and the apps built on top of them all
-draw their colors from this one package, so a single theme resolves to the same
-surfaces everywhere.
-
-It understands the [Shiki](https://shiki.style/) / VS Code theme format, so
-themes shipped by Shiki, custom VS Code themes, and Pierre's first-party themes
-all resolve to the same shape.
-
-## Theme model
-
-Theme-kit uses a few names for related but different things:
-
-- **theme name**: the stable string apps pass around, such as `pierre-dark` or
-  `github-light`. It is the id used by catalogs, resolvers, controllers,
-  storage, and theme pickers. Treat it like a database key: small, serializable,
-  and safe to persist.
-- **theme descriptor**: the catalog entry for one name. It contains the name,
-  optional metadata (`displayName`, `collection`, `colorScheme`), and a lazy
-  `load()` function. Descriptors let an app list available themes without
-  loading theme JSON yet.
-- **resolved theme object**: the actual theme returned by a descriptor loader or
-  resolver. This is the Shiki / VS Code-like object that has `colors`, `fg`,
-  `bg`, `type`, and `name` after normalization.
-
-Recommendation for apps: keep the theme name in state and storage, use
-descriptors for menus and metadata, and use the resolved theme object only when
-you need to color UI or hand a theme to Shiki.
-
-### Shiki theme shape
-
-A Shiki / VS Code theme has two important color areas:
-
-- `tokenColors` / `settings` describe syntax highlighting rules: comments,
-  strings, keywords, functions, and other code tokens.
-- `colors` is a map of workbench-style UI keys, such as `editor.background`,
-  `editor.foreground`, `sideBar.background`, `list.hoverBackground`,
-  `focusBorder`, and `gitDecoration.addedResourceForeground`.
-
-`normalizeThemeColors` and the color transforms read the workbench-like `colors`
-keys plus the normalized top-level `fg`, `bg`, and `type`. They do not inspect
-syntax-token rules. Use the raw resolved Shiki theme when rendering highlighted
-code; use `normalizeThemeColors` (and the transforms) when coloring app UI
-around that code.
-
-## Entry points
-
-theming ships one implementation through four public entry points.
-
-| Import                   | Peer dep                                    | Purpose                                                            |
-| ------------------------ | ------------------------------------------- | ------------------------------------------------------------------ |
-| `@pierre/theming`        | —                                           | Catalog/resolver/controller primitives and types                   |
-| `@pierre/theming/color`  | —                                           | `normalizeThemeColors` plus the `colorUtils` color transforms      |
-| `@pierre/theming/react`  | `react`                                     | hooks over a controller                                            |
-| `@pierre/theming/themes` | `@pierre/theme`, `@shikijs/themes`, `shiki` | Bundled Pierre/Shiki collections and Shiki / VS Code normalization |
-
-## Install
-
-```bash
-pnpm add @pierre/theming
-```
-
-Add the optional peers only for the entries you use, e.g., `react` for `/react`,
-and `@pierre/theme`, `@shikijs/themes`, and `shiki` for `/themes`.
-
-## Collections and catalogs
-
-The core entry exports two closely-related composition primitives:
-
-- A `ThemeCollection` is an ordered set of theme descriptors and lazy loaders.
-  The `/themes` entry exports `themes`, the bundled Pierre-then-Shiki
-  collection, plus `pierreThemes` and `shikiThemes` source collections when an
-  app wants one source or wants to compose its own order.
-- A `ThemeCatalog` is the app-level collection, plus `defaultLightThemeName` and
-  `defaultDarkThemeName`.
-
-Listing a name never loads, imports, or evaluates that theme. Each descriptor
-only carries a loader function, so it is safe to render a full theme picker on a
-page that never resolves a theme.
-
-```ts
-import { createThemeCatalog } from '@pierre/theming';
-import { themes } from '@pierre/theming/themes';
-
-const catalog = createThemeCatalog({
-  themes,
-  defaultLightThemeName: 'pierre-light',
-  defaultDarkThemeName: 'pierre-dark',
-});
-
-catalog.getThemeNames(); // ['pierre-light', 'pierre-light-soft', …]
-catalog.getThemeNames({ colorScheme: 'light' }); // ['pierre-light', …]
-catalog.getThemeNames({ colorScheme: 'dark' }); // ['pierre-dark', …]
-catalog.getThemes({ collection: 'pierre' }); // Pierre descriptors only
-catalog.defaultLightThemeName; // 'pierre-light'
-catalog.defaultDarkThemeName; // 'pierre-dark'
-
-const opinionatedCatalog = createThemeCatalog({
-  themes: themes.pick(['github-light', 'solarized-dark']),
-  defaultLightThemeName: 'github-light',
-  defaultDarkThemeName: 'solarized-dark',
-});
-```
-
-Apps that want a local default different from theming's canonical Pierre pair
-should set it on their catalog, then let the controller read those defaults:
-
-```ts
-const diffshubCatalog = createThemeCatalog({
-  themes,
-  defaultLightThemeName: 'pierre-light-soft',
-  defaultDarkThemeName: 'pierre-dark-soft',
-});
-
-const controller = createThemeController({
-  catalog: diffshubCatalog,
-  defaultMode: 'system',
-});
-```
-
-Collections can be passed anywhere descriptors can be passed, so larger
-collections are just wrappers around smaller collections:
-
-```ts
-import { createThemeCollection } from '@pierre/theming';
-import { pierreThemes, shikiThemes, createTheme } from '@pierre/theming/themes';
-
-const appThemes = createThemeCollection({
-  themes: [
-    pierreThemes.pick(['pierre-light', 'pierre-dark']),
-    shikiThemes.pick(['github-light', 'solarized-dark']),
-    createTheme({
-      name: 'acme-dark',
-      collection: 'acme',
-      colorScheme: 'dark',
-      load: () => import('./acme-dark.json'),
-    }),
-  ],
-});
-```
-
-Collections are immutable snapshots: their descriptor lists do not change after
-construction, and helpers such as `pick()` and `orderBy()` return new
-collections. Order is part of that contract:
-
-- `themes` is bundled in a stable default order: all Pierre themes first, then
-  Shiki themes.
-- `getThemeNames(options)` and `getThemes(options)` preserve the current
-  collection order after filtering by `colorScheme` and/or `collection`.
-- `pick([...])` returns the requested themes in the caller-provided order.
-- `orderBy(compare)` returns a reordered collection without loading any theme.
-
-```ts
-// Reverse alphabetical selector order.
-const reverseAlphabetical = themes.orderBy((a, b) =>
-  b.name.localeCompare(a.name)
-);
-
-// Pierre first, then all non-Pierre themes alphabetically by display label/name.
-const collectionRank = (collection: string | undefined) =>
-  collection === 'pierre' ? 0 : 1;
-const pierreFirst = themes.orderBy((a, b) => {
-  const rank = collectionRank(a.collection) - collectionRank(b.collection);
-  if (rank !== 0) return rank;
-  const aLabel = a.displayName ?? a.name;
-  const bLabel = b.displayName ?? b.name;
-  return aLabel.localeCompare(bLabel);
-});
-```
-
-Pass plain descriptors for custom loaders that already return a usable
-`ThemeLike`. Use `createTheme()` from `/themes` when the loader returns a raw VS
-Code/Shiki theme that should be normalized before consumers use it:
-
-```ts
-import { createTheme } from '@pierre/theming/themes';
-
-const acmeDark = createTheme({
-  name: 'acme-dark',
-  colorScheme: 'dark',
-  collection: 'acme',
-  displayName: 'Acme Dark',
-  load: () => import('./acme-dark.json'),
-});
-```
-
-Descriptor names should match the resolved theme object's machine name. The
-optional `collection` field identifies the source collection for filtering and
-ordering; the convention is lowercase names such as `pierre`, `shiki`, or an
-app/package slug.
-
-Normalization intentionally lives behind the public `/themes` helper, not in
-`createThemeCollection()`. Collections are dependency-light registries for
-names, metadata, and loaders; they can hold already-resolved `ThemeLike`
-objects, app-specific generated themes, or raw VS Code/Shiki themes. Raw VS
-Code/Shiki themes should use `createTheme()`. The bundled Pierre and Shiki
-collections use that same helper. If an app pre-normalizes themes at build time,
-it can use plain descriptors and does not need `createTheme()`.
-
-## Resolving themes
-
-A `ThemeResolver` is a registry of named loaders plus a cache. You register a
-loader for a name; the resolver runs it at most once, dedupes concurrent calls,
-and serves the resolved theme synchronously thereafter. The resolver itself
-knows nothing about Shiki or theme JSON — it just caches whatever a loader
-returns.
-
-```ts
-import { createThemeResolver } from '@pierre/theming';
-
-// An isolated instance with its own registry and cache.
-const resolver = createThemeResolver();
-```
-
-A loader is a zero-argument async factory that returns a theme object or a
-`{ default }` ES-module namespace (the shape a dynamic `import()` of a JSON or
-`.mjs` theme produces — the resolver unwraps `default`):
-
-```ts
-resolver.registerTheme('my-theme', () => import('./my-theme.json'));
-
-// Async cold path — runs the loader, caches the result, dedupes concurrent calls.
-const theme = await resolver.resolveTheme('my-theme');
-
-// Sync warm path — returns the cached theme or undefined if not resolved yet.
-const cached = resolver.getResolvedTheme('my-theme');
-
-// "Get hot, resolve cold" — the cached theme synchronously, or a Promise.
-const value = resolver.getResolvedOrResolveTheme('my-theme');
-```
-
-Other methods worth knowing:
-
-- `registerThemeIfAbsent(name, loader)` — register only when the name is free;
-  returns whether it was added. `registerTheme` throws `DuplicateThemeError`.
-- `resolveThemes(names)` / `getResolvedThemes(names)` — batch variants
-  (`getResolvedThemes` throws `UnresolvedThemeError` for the first cold name).
-- `seedResolvedTheme(name, theme)` / `seedResolvedThemes(entries)` — drop a
-  fully-resolved theme straight into the cache without a loader, for
-  environments (e.g. a worker handed pre-resolved themes by the main thread)
-  that can't run one.
-- `hasRegisteredTheme` / `hasResolvedTheme` / `hasResolvedThemes` — registry and
-  cache introspection.
-- `clearResolvedThemes()` — clear the cache and in-flight loads while keeping
-  the registered loaders.
-
-`resolveTheme` rejects with `UnregisteredThemeError` when no loader exists for
-the name.
-
-### Registering theme loaders
-
-Collections register themselves into a resolver with the per-name lazy imports.
-Many themes can be registered without generating a large initial bundle to load.
-
-```ts
-import { createTheme, themes } from '@pierre/theming/themes';
-
-// Register exactly the themes an opinionated app exposes.
-themes.pick(['github-light', 'solarized-dark']).registerInto(resolver);
-
-// Or register the full bundled Pierre-then-Shiki collection.
-themes.registerInto(resolver);
-
-// Custom VS Code/Shiki themes use the same descriptor model.
-const acmeDark = createTheme({
-  name: 'my-vscode-theme',
-  colorScheme: 'dark',
-  load: () => import('./theme.json'),
-});
-
-resolver.registerTheme(acmeDark.name, acmeDark.load);
-```
-
-Use `collection.registerInto(resolver)` when you want idempotent registration:
-it calls `registerThemeIfAbsent`, so existing resolver entries win. Use
-`resolver.registerTheme(descriptor.name, descriptor.load)` when duplicate names
-should be an error.
-
-Registering a whole app catalog against a resolver is also a single call. Most
-apps can let `createThemeController({ catalog })` do this automatically; use
-manual registration when lower-level code owns the resolver directly.
-
-```ts
-import { createThemeCatalog, createThemeResolver } from '@pierre/theming';
-import { themes } from '@pierre/theming/themes';
-
-const catalog = createThemeCatalog({
-  themes,
-  defaultLightThemeName: 'pierre-light',
-  defaultDarkThemeName: 'pierre-dark',
-});
-
-const resolver = createThemeResolver();
-catalog.registerInto(resolver);
-```
-
-## Reading theme colors
-
-Once you have a resolved theme object, the `@pierre/theming/color` entry gives
-you two things for working with its colors: `normalizeThemeColors` to read the
-colors a theme actually defines, and a `colorUtils` bag of color transforms to
-derive new colors from them. They live in their own entry so apps that only need
-the catalog/controller don't pay for the color math.
-
-Both exist because a raw Shiki theme is not a UI component API. Each theme may
-use different workbench keys, omit optional keys, or ship a value that works in
-the editor but not in a tree, popover, or app shell. Rather than make every
-consumer rediscover the same fallback chains and repairs, theming centralizes
-them in `normalizeThemeColors` and ships the contrast/color math as standalone
-transforms.
-
-`normalizeThemeColors` and the transforms accept a `ThemeLike` — a structural
-subset of a Shiki / VS Code theme, so resolved themes from this package,
-`@pierre/diffs`, or Shiki all fit:
-
-```ts
-interface ThemeLike {
-  bg?: string;
-  colors?: Record<string, string>;
-  fg?: string;
-  name?: string;
-  type?: 'dark' | 'light';
-}
-```
-
-### `normalizeThemeColors`
-
-`normalizeThemeColors(theme: ThemeLike): ThemeLike` is the front door for
-reading the colors a theme defines. It takes a Shiki-normalized theme (fg, bg,
-and type already present) and returns a **same-shape** theme — the same
-top-level fields and the same `colors` map vocabulary (the VS Code / Shiki
-workbench keys, nothing renamed) — with the `colors` map resolved.
-
-What it **fills** (mechanical fallback, no opinion):
-
-- surfaces: `editor.background` / `editor.foreground`, `sideBar.background` /
-  `sideBar.foreground`, `input.background`, `sideBarSectionHeader.foreground`,
-  and `list.activeSelectionForeground`.
-- git status: `gitDecoration.{added,modified,deleted}ResourceForeground` via the
-  `gitDecoration → terminal.ansi* → editorGutter.*` chain.
-- the focus ring: `list.focusOutline`, set to the first non-transparent of
-  `list.focusOutline` then `focusBorder`.
-
-What it **repairs** (universal correctness): it drops `list.hoverBackground`
-when it equals the sidebar surface or would erase the row text.
-
-What it deliberately **leaves alone** (consumer opinion): the selection lookup
-(`list.activeSelectionBackground` / `list.focusBackground` /
-`editor.selectionBackground`) passes through raw, so each consumer applies its
-own choice.
-
-The result is pure, frozen, WeakMap-memoized per input theme, and idempotent. It
-runs lazily at read time by default.
-
-```ts
-import { normalizeThemeColors } from '@pierre/theming/color';
-
-const { colors } = normalizeThemeColors(theme);
-// colors['sideBar.background'], colors['gitDecoration.addedResourceForeground'],
-// colors['list.focusOutline'], …
-```
-
-### Color transforms
-
-`colorUtils` bundles the pure color transforms — functions with no theme
-knowledge that take colors and answer questions about them or mix new ones.
-Bundling them in one object keeps the entry's export surface small. Use them to
-derive **new** colors from a theme's colors. Its methods:
-
-- `relativeLuminance`, `contrastRatio` — WCAG luminance and contrast math.
-- `isDarkSurface`, `surfacesMatch`, `isFullyTransparent` — surface predicates.
-- `compositeOverBg` — flatten a translucent color over a background.
-- `hoverWouldEraseText` — whether a hover color would erase row text.
-- `pickReadableForeground` — the most legible foreground for a surface.
-- `deriveMutedFg` — a muted foreground derived from fg and surface.
-
-```ts
-import { colorUtils, normalizeThemeColors } from '@pierre/theming/color';
-
-const { colors } = normalizeThemeColors(theme);
-const surface = colors['sideBar.background'];
-const fg = colorUtils.pickReadableForeground(surface, [
-  colors['sideBar.foreground'],
-]);
-const mutedFg = colorUtils.deriveMutedFg(fg, surface);
-```
-
-### `normalizeTheme` (Shiki) vs `normalizeThemeColors` (theming)
-
-These are two different normalizers; do not wire them up backwards.
-
-- Shiki's `normalizeTheme` (from `shiki/core`, applied at load by `createTheme`)
-  normalizes the **whole** theme, including syntax token colors and the base
-  `fg` / `bg` / `type`.
-- theming's `normalizeThemeColors` only resolves the workbench `colors` map and
-  **assumes** a theme that has already been Shiki-normalized.
-
-So `normalizeTheme` runs first, at load; `normalizeThemeColors` runs after, on
-the already-normalized theme.
-
-### Assembled token sets are consumer-owned
-
-theming ships no assembled token object. The opinionated, presentation-ready
-token sets live with their consumers:
-
-- `@pierre/trees`' `themeToTreeStyles()` builds its tree CSS variables on
-  `normalizeThemeColors`.
-- Apps build their own app-chrome tokens from `normalizeThemeColors` plus the
-  transforms — for example diffshub's `deriveChromeTokens`.
-
-Each consumer maps the resolved/derived colors onto its own variable names, so
-the mapping lives in one place per consumer and the color resolution lives here,
-shared.
-
-### Read-time vs pre-warm at load
-
-Normalization runs lazily at read time and is memoized, so the default needs no
-wiring: the first read of a theme normalizes it, and every later read returns
-the same frozen object.
-
-Because `normalizeThemeColors` is pure and idempotent, an app that wants a
-pre-densified canonical object at load can call `normalizeThemeColors` inside
-its loader and `seedResolvedTheme` the result. That captures the load-time
-benefit for anyone who wants it without mandating a chokepoint that would break
-the resolver's contract or miss runtime-registered themes. The default is
-lazy/read-time; pre-warming is a one-line opt-in.
-
-## The theme controller
-
-The controller is the stateful layer: it owns the selected light and dark theme
-names, the color mode (`'light' | 'dark' | 'system'`), the theme resolved for
-the active mode, and persistence. It has no React dependency, so a vanilla app
-can drive it directly; the `/react` hooks are thin wrappers over it.
-
-It is **SSR-safe**: every browser access (`localStorage`, `matchMedia`) is
-guarded, so it constructs and runs on the server (persistence and the
-prefers-color-scheme listener no-op) and hydrates on the client.
-
-```ts
-import { createThemeCatalog } from '@pierre/theming';
-import { createThemeController } from '@pierre/theming';
-import { themes } from '@pierre/theming/themes';
-
-const catalog = createThemeCatalog({
-  themes,
-  defaultLightThemeName: 'pierre-light',
-  defaultDarkThemeName: 'pierre-dark',
-});
-
-const controller = createThemeController({
-  catalog,
-  defaultMode: 'system',
-  storageKey: 'theme', // built-in localStorage persistence (one JSON entry)
-});
-
-controller.getState();
-// {
-//   mode: 'system',
-//   lightThemeName: 'pierre-light',
-//   darkThemeName: 'pierre-dark',
-//   resolvedTheme: ThemeLike | undefined,  // the active theme, once resolved
-//   resolvedColorScheme: 'light' | 'dark', // 'system' collapsed to a concrete scheme
-// }
-
-controller.resolver; // the resolver this controller created and registered into
-
-controller.setColorMode('dark');
-controller.setThemeNameForScheme('light', 'catppuccin-latte');
-
-const unsubscribe = controller.subscribe(() => render(controller.getState()));
-controller.destroy(); // detach the prefers-color-scheme listener
-```
-
-`resolvedColorScheme` is the concrete `'light' | 'dark'` after resolving
-`'system'` against the OS preference — drive your `data-theme` / `class`
-application off it directly rather than re-deriving it. While in `'system'` mode
-the controller listens for OS theme flips and re-resolves automatically. Only
-the active theme is resolved by default; pass `preloadInactive: true` to resolve
-the inactive one too so a mode flip is instant.
-
-### Resolver ownership
-
-`createThemeController({ catalog })` creates an isolated resolver, registers the
-catalog into it, and exposes it as `controller.resolver`. That is the
-recommended path for most apps: the controller/provider becomes the single owner
-of theme selection and resolution.
-
-Pass `resolver` explicitly when several controllers, vanilla widgets, workers,
-or tests intentionally need to share one registry/cache:
-
-```ts
-import { createThemeResolver } from '@pierre/theming';
-
-const resolver = createThemeResolver();
-const controller = createThemeController({ catalog, resolver });
-
-controller.resolver === resolver; // true
-```
-
-Use multiple resolvers only for deliberate isolation: embedded widgets,
-tenant-specific registries, SSR request isolation, tests, or side-by-side
-previews where the same theme name should resolve to different objects.
-Otherwise, share one resolver to avoid a split-cache bug where one part of an
-app registers a loader that another part cannot see.
-
-### Persistence
-
-By default, pass a `storageKey` to get built-in `localStorage` persistence under
-one JSON entry. Omit it to disable persistence. For a custom layout — for
-example mapping the selection onto pre-existing keys, or a non-`localStorage`
-store — pass a `persistence` adapter, which takes precedence over `storageKey`:
-
-```ts
-import type { ThemePersistence } from '@pierre/theming';
-
-const persistence: ThemePersistence = {
-  load() {
-    /* return a { mode, lightThemeName, darkThemeName } selection, or null */
-  },
-  save(selection) {
-    /* persist it; guard your own browser access to stay SSR-safe */
-  },
-};
-
-createThemeController({ catalog, persistence });
-```
-
-Only the selection (`mode` + the two theme names) is ever persisted — the
-resolved theme object is always re-derived from the resolver on load.
-
-## React bindings
-
-The `/react` entry is a `useSyncExternalStore` selector over a controller
-instance — no state of its own, no tearing, SSR-friendly. Create the controller
-once (a module singleton is fine) and pass it in. `useThemeController` returns
-the full controller state, including `resolvedTheme`.
-
-```tsx
-import { useThemeController } from '@pierre/theming/react';
-
-function ThemeToolbar() {
-  const { mode, resolvedColorScheme } = useThemeController(controller);
-
-  return (
-    <button
-      onClick={() =>
-        controller.setColorMode(mode === 'dark' ? 'light' : 'dark')
-      }
-    >
-      {resolvedColorScheme}
-    </button>
-  );
-}
-```
-
-## Putting it together
-
-A typical app wires the pieces in this order:
-
-1. **Create one catalog** from the theme collections the app exposes. Use
-   `themes.pick([...])` when the app only offers a small opinionated set.
-2. **Create one controller** as a module singleton with that catalog and your
-   persistence. Use `controller.resolver` anywhere lower-level code needs the
-   same registry/cache.
-3. **Subscribe** (via the `/react` hooks or `controller.subscribe`) and apply
-   `resolvedColorScheme` to the document (`data-theme`, `class`,
-   `style.colorScheme`).
-4. **Theme your chrome** by building your own chrome tokens from
-   `normalizeThemeColors(resolvedTheme)` plus the color transforms (as diffshub
-   does) and mapping them onto your CSS variables, and **theme nested file
-   trees** by handing the resolved theme to `@pierre/trees`'
-   `themeToTreeStyles()` (which sits on `normalizeThemeColors`).
-
-Theme-kit currently stops at these engine-level primitives. Higher-level
-component-wrapper prop contracts, such as a single `theme` prop shared across
-diff, tree, and chrome components, are still app-local while that API settles.
+@pierre/theme@2.0.0
+  License: Apache*
+
+Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+1.  Definitions.
+
+    "License" shall mean the terms and conditions for use, reproduction, and
+    distribution as defined by Sections 1 through 9 of this document.
+
+    "Licensor" shall mean the copyright owner or entity authorized by the
+    copyright owner that is granting the License.
+
+    "Legal Entity" shall mean the union of the acting entity and all other
+    entities that control, are controlled by, or are under common control with
+    that entity. For the purposes of this definition, "control" means (i) the
+    power, direct or indirect, to cause the direction or management of such
+    entity, whether by contract or otherwise, or (ii) ownership of fifty percent
+    (50%) or more of the outstanding shares, or (iii) beneficial ownership of
+    such entity.
+
+    "You" (or "Your") shall mean an individual or Legal Entity exercising
+    permissions granted by this License.
+
+    "Source" form shall mean the preferred form for making modifications,
+    including but not limited to software source code, documentation source, and
+    configuration files.
+
+    "Object" form shall mean any form resulting from mechanical transformation
+    or translation of a Source form, including but not limited to compiled
+    object code, generated documentation, and conversions to other media types.
+
+    "Work" shall mean the work of authorship, whether in Source or Object form,
+    made available under the License, as indicated by a copyright notice that is
+    included in or attached to the work (an example is provided in the Appendix
+    below).
+
+    "Derivative Works" shall mean any work, whether in Source or Object form,
+    that is based on (or derived from) the Work and for which the editorial
+    revisions, annotations, elaborations, or other modifications represent, as a
+    whole, an original work of authorship. For the purposes of this License,
+    Derivative Works shall not include works that remain separable from, or
+    merely link (or bind by name) to the interfaces of, the Work and Derivative
+    Works thereof.
+
+    "Contribution" shall mean any work of authorship, including the original
+    version of the Work and any modifications or additions to that Work or
+    Derivative Works thereof, that is intentionally submitted to Licensor for
+    inclusion in the Work by the copyright owner or by an individual or Legal
+    Entity authorized to submit on behalf of the copyright owner. For the
+    purposes of this definition, "submitted" means any form of electronic,
+    verbal, or written communication sent to the Licensor or its
+    representatives, including but not limited to communication on electronic
+    mailing lists, source code control systems, and issue tracking systems that
+    are managed by, or on behalf of, the Licensor for the purpose of discussing
+    and improving the Work, but excluding communication that is conspicuously
+    marked or otherwise designated in writing by the copyright owner as "Not a
+    Contribution."
+
+    "Contributor" shall mean Licensor and any individual or Legal Entity on
+    behalf of whom a Contribution has been received by Licensor and subsequently
+    incorporated within the Work.
+
+2.  Grant of Copyright License. Subject to the terms and conditions of this
+    License, each Contributor hereby grants to You a perpetual, worldwide,
+    non-exclusive, no-charge, royalty-free, irrevocable copyright license to
+    reproduce, prepare Derivative Works of, publicly display, publicly perform,
+    sublicense, and distribute the Work and such Derivative Works in Source or
+    Object form.
+
+3.  Grant of Patent License. Subject to the terms and conditions of this
+    License, each Contributor hereby grants to You a perpetual, worldwide,
+    non-exclusive, no-charge, royalty-free, irrevocable (except as stated in
+    this section) patent license to make, have made, use, offer to sell, sell,
+    import, and otherwise transfer the Work, where such license applies only to
+    those patent claims licensable by such Contributor that are necessarily
+    infringed by their Contribution(s) alone or by combination of their
+    Contribution(s) with the Work to which such Contribution(s) was submitted.
+    If You institute patent litigation against any entity (including a
+    cross-claim or counterclaim in a lawsuit) alleging that the Work or a
+    Contribution incorporated within the Work constitutes direct or contributory
+    patent infringement, then any patent licenses granted to You under this
+    License for that Work shall terminate as of the date such litigation is
+    filed.
+
+4.  Redistribution. You may reproduce and distribute copies of the Work or
+    Derivative Works thereof in any medium, with or without modifications, and
+    in Source or Object form, provided that You meet the following conditions:
+
+    (a) You must give any other recipients of the Work or Derivative Works a
+    copy of this License; and
+
+    (b) You must cause any modified files to carry prominent notices stating
+    that You changed the files; and
+
+    (c) You must retain, in the Source form of any Derivative Works that You
+    distribute, all copyright, patent, trademark, and attribution notices from
+    the Source form of the Work, excluding those notices that do not pertain to
+    any part of the Derivative Works; and
+
+    (d) If the Work includes a "NOTICE" text file as part of its distribution,
+    then any Derivative Works that You distribute must include a readable copy
+    of the attribution notices contained within such NOTICE file, excluding
+    those notices that do not pertain to any part of the Derivative Works, in at
+    least one of the following places: within a NOTICE text file distributed as
+    part of the Derivative Works; within the Source form or documentation, if
+    provided along with the Derivative Works; or, within a display generated by
+    the Derivative Works, if and wherever such third-party notices normally
+    appear. The contents of the NOTICE file are for informational purposes only
+    and do not modify the License. You may add Your own attribution notices
+    within Derivative Works that You distribute, alongside or as an addendum to
+    the NOTICE text from the Work, provided that such additional attribution
+    notices cannot be construed as modifying the License.
+
+    You may add Your own copyright statement to Your modifications and may
+    provide additional or different license terms and conditions for use,
+    reproduction, or distribution of Your modifications, or for any such
+    Derivative Works as a whole, provided Your use, reproduction, and
+    distribution of the Work otherwise complies with the conditions stated in
+    this License.
+
+5.  Submission of Contributions. Unless You explicitly state otherwise, any
+    Contribution intentionally submitted for inclusion in the Work by You to the
+    Licensor shall be under the terms and conditions of this License, without
+    any additional terms or conditions. Notwithstanding the above, nothing
+    herein shall supersede or modify the terms of any separate license agreement
+    you may have executed with Licensor regarding such Contributions.
+
+6.  Trademarks. This License does not grant permission to use the trade names,
+    trademarks, service marks, or product names of the Licensor, except as
+    required for reasonable and customary use in describing the origin of the
+    Work and reproducing the content of the NOTICE file.
+
+7.  Disclaimer of Warranty. Unless required by applicable law or agreed to in
+    writing, Licensor provides the Work (and each Contributor provides its
+    Contributions) on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+    KIND, either express or implied, including, without limitation, any
+    warranties or conditions of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or
+    FITNESS FOR A PARTICULAR PURPOSE. You are solely responsible for determining
+    the appropriateness of using or redistributing the Work and assume any risks
+    associated with Your exercise of permissions under this License.
+
+8.  Limitation of Liability. In no event and under no legal theory, whether in
+    tort (including negligence), contract, or otherwise, unless required by
+    applicable law (such as deliberate and grossly negligent acts) or agreed to
+    in writing, shall any Contributor be liable to You for damages, including
+    any direct, indirect, special, incidental, or consequential damages of any
+    character arising as a result of this License or out of the use or inability
+    to use the Work (including but not limited to damages for loss of goodwill,
+    work stoppage, computer failure or malfunction, or any and all other
+    commercial damages or losses), even if such Contributor has been advised of
+    the possibility of such damages.
+
+9.  Accepting Warranty or Additional Liability. While redistributing the Work or
+    Derivative Works thereof, You may choose to offer, and charge a fee for,
+    acceptance of support, warranty, indemnity, or other liability obligations
+    and/or rights consistent with this License. However, in accepting such
+    obligations, You may act only on Your own behalf and on Your sole
+    responsibility, not on behalf of any other Contributor, and only if You
+    agree to indemnify, defend, and hold each Contributor harmless for any
+    liability incurred by, or claims asserted against, such Contributor by
+    reason of your accepting any such warranty or additional liability.
+
+END OF TERMS AND CONDITIONS
+
+APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+Copyright 2025 Pierre Computer Company
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
 
 ---
 
-@pierre/trees@0.0.1-beta.4
+@pierre/theming@1.0.0
+  License: Apache*
+
+Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+1.  Definitions.
+
+    "License" shall mean the terms and conditions for use, reproduction, and
+    distribution as defined by Sections 1 through 9 of this document.
+
+    "Licensor" shall mean the copyright owner or entity authorized by the
+    copyright owner that is granting the License.
+
+    "Legal Entity" shall mean the union of the acting entity and all other
+    entities that control, are controlled by, or are under common control with
+    that entity. For the purposes of this definition, "control" means (i) the
+    power, direct or indirect, to cause the direction or management of such
+    entity, whether by contract or otherwise, or (ii) ownership of fifty percent
+    (50%) or more of the outstanding shares, or (iii) beneficial ownership of
+    such entity.
+
+    "You" (or "Your") shall mean an individual or Legal Entity exercising
+    permissions granted by this License.
+
+    "Source" form shall mean the preferred form for making modifications,
+    including but not limited to software source code, documentation source, and
+    configuration files.
+
+    "Object" form shall mean any form resulting from mechanical transformation
+    or translation of a Source form, including but not limited to compiled
+    object code, generated documentation, and conversions to other media types.
+
+    "Work" shall mean the work of authorship, whether in Source or Object form,
+    made available under the License, as indicated by a copyright notice that is
+    included in or attached to the work (an example is provided in the Appendix
+    below).
+
+    "Derivative Works" shall mean any work, whether in Source or Object form,
+    that is based on (or derived from) the Work and for which the editorial
+    revisions, annotations, elaborations, or other modifications represent, as a
+    whole, an original work of authorship. For the purposes of this License,
+    Derivative Works shall not include works that remain separable from, or
+    merely link (or bind by name) to the interfaces of, the Work and Derivative
+    Works thereof.
+
+    "Contribution" shall mean any work of authorship, including the original
+    version of the Work and any modifications or additions to that Work or
+    Derivative Works thereof, that is intentionally submitted to Licensor for
+    inclusion in the Work by the copyright owner or by an individual or Legal
+    Entity authorized to submit on behalf of the copyright owner. For the
+    purposes of this definition, "submitted" means any form of electronic,
+    verbal, or written communication sent to the Licensor or its
+    representatives, including but not limited to communication on electronic
+    mailing lists, source code control systems, and issue tracking systems that
+    are managed by, or on behalf of, the Licensor for the purpose of discussing
+    and improving the Work, but excluding communication that is conspicuously
+    marked or otherwise designated in writing by the copyright owner as "Not a
+    Contribution."
+
+    "Contributor" shall mean Licensor and any individual or Legal Entity on
+    behalf of whom a Contribution has been received by Licensor and subsequently
+    incorporated within the Work.
+
+2.  Grant of Copyright License. Subject to the terms and conditions of this
+    License, each Contributor hereby grants to You a perpetual, worldwide,
+    non-exclusive, no-charge, royalty-free, irrevocable copyright license to
+    reproduce, prepare Derivative Works of, publicly display, publicly perform,
+    sublicense, and distribute the Work and such Derivative Works in Source or
+    Object form.
+
+3.  Grant of Patent License. Subject to the terms and conditions of this
+    License, each Contributor hereby grants to You a perpetual, worldwide,
+    non-exclusive, no-charge, royalty-free, irrevocable (except as stated in
+    this section) patent license to make, have made, use, offer to sell, sell,
+    import, and otherwise transfer the Work, where such license applies only to
+    those patent claims licensable by such Contributor that are necessarily
+    infringed by their Contribution(s) alone or by combination of their
+    Contribution(s) with the Work to which such Contribution(s) was submitted.
+    If You institute patent litigation against any entity (including a
+    cross-claim or counterclaim in a lawsuit) alleging that the Work or a
+    Contribution incorporated within the Work constitutes direct or contributory
+    patent infringement, then any patent licenses granted to You under this
+    License for that Work shall terminate as of the date such litigation is
+    filed.
+
+4.  Redistribution. You may reproduce and distribute copies of the Work or
+    Derivative Works thereof in any medium, with or without modifications, and
+    in Source or Object form, provided that You meet the following conditions:
+
+    (a) You must give any other recipients of the Work or Derivative Works a
+    copy of this License; and
+
+    (b) You must cause any modified files to carry prominent notices stating
+    that You changed the files; and
+
+    (c) You must retain, in the Source form of any Derivative Works that You
+    distribute, all copyright, patent, trademark, and attribution notices from
+    the Source form of the Work, excluding those notices that do not pertain to
+    any part of the Derivative Works; and
+
+    (d) If the Work includes a "NOTICE" text file as part of its distribution,
+    then any Derivative Works that You distribute must include a readable copy
+    of the attribution notices contained within such NOTICE file, excluding
+    those notices that do not pertain to any part of the Derivative Works, in at
+    least one of the following places: within a NOTICE text file distributed as
+    part of the Derivative Works; within the Source form or documentation, if
+    provided along with the Derivative Works; or, within a display generated by
+    the Derivative Works, if and wherever such third-party notices normally
+    appear. The contents of the NOTICE file are for informational purposes only
+    and do not modify the License. You may add Your own attribution notices
+    within Derivative Works that You distribute, alongside or as an addendum to
+    the NOTICE text from the Work, provided that such additional attribution
+    notices cannot be construed as modifying the License.
+
+    You may add Your own copyright statement to Your modifications and may
+    provide additional or different license terms and conditions for use,
+    reproduction, or distribution of Your modifications, or for any such
+    Derivative Works as a whole, provided Your use, reproduction, and
+    distribution of the Work otherwise complies with the conditions stated in
+    this License.
+
+5.  Submission of Contributions. Unless You explicitly state otherwise, any
+    Contribution intentionally submitted for inclusion in the Work by You to the
+    Licensor shall be under the terms and conditions of this License, without
+    any additional terms or conditions. Notwithstanding the above, nothing
+    herein shall supersede or modify the terms of any separate license agreement
+    you may have executed with Licensor regarding such Contributions.
+
+6.  Trademarks. This License does not grant permission to use the trade names,
+    trademarks, service marks, or product names of the Licensor, except as
+    required for reasonable and customary use in describing the origin of the
+    Work and reproducing the content of the NOTICE file.
+
+7.  Disclaimer of Warranty. Unless required by applicable law or agreed to in
+    writing, Licensor provides the Work (and each Contributor provides its
+    Contributions) on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+    KIND, either express or implied, including, without limitation, any
+    warranties or conditions of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or
+    FITNESS FOR A PARTICULAR PURPOSE. You are solely responsible for determining
+    the appropriateness of using or redistributing the Work and assume any risks
+    associated with Your exercise of permissions under this License.
+
+8.  Limitation of Liability. In no event and under no legal theory, whether in
+    tort (including negligence), contract, or otherwise, unless required by
+    applicable law (such as deliberate and grossly negligent acts) or agreed to
+    in writing, shall any Contributor be liable to You for damages, including
+    any direct, indirect, special, incidental, or consequential damages of any
+    character arising as a result of this License or out of the use or inability
+    to use the Work (including but not limited to damages for loss of goodwill,
+    work stoppage, computer failure or malfunction, or any and all other
+    commercial damages or losses), even if such Contributor has been advised of
+    the possibility of such damages.
+
+9.  Accepting Warranty or Additional Liability. While redistributing the Work or
+    Derivative Works thereof, You may choose to offer, and charge a fee for,
+    acceptance of support, warranty, indemnity, or other liability obligations
+    and/or rights consistent with this License. However, in accepting such
+    obligations, You may act only on Your own behalf and on Your sole
+    responsibility, not on behalf of any other Contributor, and only if You
+    agree to indemnify, defend, and hold each Contributor harmless for any
+    liability incurred by, or claims asserted against, such Contributor by
+    reason of your accepting any such warranty or additional liability.
+
+END OF TERMS AND CONDITIONS
+
+APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+Copyright 2025 Pierre Computer Company
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
+---
+
+@pierre/theming@1.0.1
+  License: Apache*
+
+Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+1.  Definitions.
+
+    "License" shall mean the terms and conditions for use, reproduction, and
+    distribution as defined by Sections 1 through 9 of this document.
+
+    "Licensor" shall mean the copyright owner or entity authorized by the
+    copyright owner that is granting the License.
+
+    "Legal Entity" shall mean the union of the acting entity and all other
+    entities that control, are controlled by, or are under common control with
+    that entity. For the purposes of this definition, "control" means (i) the
+    power, direct or indirect, to cause the direction or management of such
+    entity, whether by contract or otherwise, or (ii) ownership of fifty percent
+    (50%) or more of the outstanding shares, or (iii) beneficial ownership of
+    such entity.
+
+    "You" (or "Your") shall mean an individual or Legal Entity exercising
+    permissions granted by this License.
+
+    "Source" form shall mean the preferred form for making modifications,
+    including but not limited to software source code, documentation source, and
+    configuration files.
+
+    "Object" form shall mean any form resulting from mechanical transformation
+    or translation of a Source form, including but not limited to compiled
+    object code, generated documentation, and conversions to other media types.
+
+    "Work" shall mean the work of authorship, whether in Source or Object form,
+    made available under the License, as indicated by a copyright notice that is
+    included in or attached to the work (an example is provided in the Appendix
+    below).
+
+    "Derivative Works" shall mean any work, whether in Source or Object form,
+    that is based on (or derived from) the Work and for which the editorial
+    revisions, annotations, elaborations, or other modifications represent, as a
+    whole, an original work of authorship. For the purposes of this License,
+    Derivative Works shall not include works that remain separable from, or
+    merely link (or bind by name) to the interfaces of, the Work and Derivative
+    Works thereof.
+
+    "Contribution" shall mean any work of authorship, including the original
+    version of the Work and any modifications or additions to that Work or
+    Derivative Works thereof, that is intentionally submitted to Licensor for
+    inclusion in the Work by the copyright owner or by an individual or Legal
+    Entity authorized to submit on behalf of the copyright owner. For the
+    purposes of this definition, "submitted" means any form of electronic,
+    verbal, or written communication sent to the Licensor or its
+    representatives, including but not limited to communication on electronic
+    mailing lists, source code control systems, and issue tracking systems that
+    are managed by, or on behalf of, the Licensor for the purpose of discussing
+    and improving the Work, but excluding communication that is conspicuously
+    marked or otherwise designated in writing by the copyright owner as "Not a
+    Contribution."
+
+    "Contributor" shall mean Licensor and any individual or Legal Entity on
+    behalf of whom a Contribution has been received by Licensor and subsequently
+    incorporated within the Work.
+
+2.  Grant of Copyright License. Subject to the terms and conditions of this
+    License, each Contributor hereby grants to You a perpetual, worldwide,
+    non-exclusive, no-charge, royalty-free, irrevocable copyright license to
+    reproduce, prepare Derivative Works of, publicly display, publicly perform,
+    sublicense, and distribute the Work and such Derivative Works in Source or
+    Object form.
+
+3.  Grant of Patent License. Subject to the terms and conditions of this
+    License, each Contributor hereby grants to You a perpetual, worldwide,
+    non-exclusive, no-charge, royalty-free, irrevocable (except as stated in
+    this section) patent license to make, have made, use, offer to sell, sell,
+    import, and otherwise transfer the Work, where such license applies only to
+    those patent claims licensable by such Contributor that are necessarily
+    infringed by their Contribution(s) alone or by combination of their
+    Contribution(s) with the Work to which such Contribution(s) was submitted.
+    If You institute patent litigation against any entity (including a
+    cross-claim or counterclaim in a lawsuit) alleging that the Work or a
+    Contribution incorporated within the Work constitutes direct or contributory
+    patent infringement, then any patent licenses granted to You under this
+    License for that Work shall terminate as of the date such litigation is
+    filed.
+
+4.  Redistribution. You may reproduce and distribute copies of the Work or
+    Derivative Works thereof in any medium, with or without modifications, and
+    in Source or Object form, provided that You meet the following conditions:
+
+    (a) You must give any other recipients of the Work or Derivative Works a
+    copy of this License; and
+
+    (b) You must cause any modified files to carry prominent notices stating
+    that You changed the files; and
+
+    (c) You must retain, in the Source form of any Derivative Works that You
+    distribute, all copyright, patent, trademark, and attribution notices from
+    the Source form of the Work, excluding those notices that do not pertain to
+    any part of the Derivative Works; and
+
+    (d) If the Work includes a "NOTICE" text file as part of its distribution,
+    then any Derivative Works that You distribute must include a readable copy
+    of the attribution notices contained within such NOTICE file, excluding
+    those notices that do not pertain to any part of the Derivative Works, in at
+    least one of the following places: within a NOTICE text file distributed as
+    part of the Derivative Works; within the Source form or documentation, if
+    provided along with the Derivative Works; or, within a display generated by
+    the Derivative Works, if and wherever such third-party notices normally
+    appear. The contents of the NOTICE file are for informational purposes only
+    and do not modify the License. You may add Your own attribution notices
+    within Derivative Works that You distribute, alongside or as an addendum to
+    the NOTICE text from the Work, provided that such additional attribution
+    notices cannot be construed as modifying the License.
+
+    You may add Your own copyright statement to Your modifications and may
+    provide additional or different license terms and conditions for use,
+    reproduction, or distribution of Your modifications, or for any such
+    Derivative Works as a whole, provided Your use, reproduction, and
+    distribution of the Work otherwise complies with the conditions stated in
+    this License.
+
+5.  Submission of Contributions. Unless You explicitly state otherwise, any
+    Contribution intentionally submitted for inclusion in the Work by You to the
+    Licensor shall be under the terms and conditions of this License, without
+    any additional terms or conditions. Notwithstanding the above, nothing
+    herein shall supersede or modify the terms of any separate license agreement
+    you may have executed with Licensor regarding such Contributions.
+
+6.  Trademarks. This License does not grant permission to use the trade names,
+    trademarks, service marks, or product names of the Licensor, except as
+    required for reasonable and customary use in describing the origin of the
+    Work and reproducing the content of the NOTICE file.
+
+7.  Disclaimer of Warranty. Unless required by applicable law or agreed to in
+    writing, Licensor provides the Work (and each Contributor provides its
+    Contributions) on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+    KIND, either express or implied, including, without limitation, any
+    warranties or conditions of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or
+    FITNESS FOR A PARTICULAR PURPOSE. You are solely responsible for determining
+    the appropriateness of using or redistributing the Work and assume any risks
+    associated with Your exercise of permissions under this License.
+
+8.  Limitation of Liability. In no event and under no legal theory, whether in
+    tort (including negligence), contract, or otherwise, unless required by
+    applicable law (such as deliberate and grossly negligent acts) or agreed to
+    in writing, shall any Contributor be liable to You for damages, including
+    any direct, indirect, special, incidental, or consequential damages of any
+    character arising as a result of this License or out of the use or inability
+    to use the Work (including but not limited to damages for loss of goodwill,
+    work stoppage, computer failure or malfunction, or any and all other
+    commercial damages or losses), even if such Contributor has been advised of
+    the possibility of such damages.
+
+9.  Accepting Warranty or Additional Liability. While redistributing the Work or
+    Derivative Works thereof, You may choose to offer, and charge a fee for,
+    acceptance of support, warranty, indemnity, or other liability obligations
+    and/or rights consistent with this License. However, in accepting such
+    obligations, You may act only on Your own behalf and on Your sole
+    responsibility, not on behalf of any other Contributor, and only if You
+    agree to indemnify, defend, and hold each Contributor harmless for any
+    liability incurred by, or claims asserted against, such Contributor by
+    reason of your accepting any such warranty or additional liability.
+
+END OF TERMS AND CONDITIONS
+
+APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+Copyright 2025 Pierre Computer Company
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
+---
+
+@pierre/trees@1.0.0-beta.6
   License: Apache*
 
 Apache License
@@ -14932,7 +14767,7 @@ SOFTWARE.
 
 ---
 
-@shikijs/engine-javascript@4.3.1
+@shikijs/core@4.5.0
   License: MIT
 
 MIT License
@@ -14960,7 +14795,7 @@ SOFTWARE.
 
 ---
 
-@shikijs/engine-oniguruma@4.3.1
+@shikijs/engine-javascript@4.5.0
   License: MIT
 
 MIT License
@@ -14988,7 +14823,35 @@ SOFTWARE.
 
 ---
 
-@shikijs/langs@4.3.1
+@shikijs/engine-oniguruma@4.5.0
+  License: MIT
+
+MIT License
+
+Copyright (c) 2021 Pine Wu
+Copyright (c) 2023 Anthony Fu <https://github.com/antfu>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+@shikijs/langs@4.5.0
   License: MIT
 
 MIT License
@@ -15044,7 +14907,35 @@ SOFTWARE.
 
 ---
 
-@shikijs/themes@4.3.1
+@shikijs/primitive@4.5.0
+  License: MIT
+
+MIT License
+
+Copyright (c) 2021 Pine Wu
+Copyright (c) 2023 Anthony Fu <https://github.com/antfu>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+@shikijs/themes@4.5.0
   License: MIT
 
 MIT License
@@ -15101,6 +14992,34 @@ SOFTWARE.
 ---
 
 @shikijs/types@4.3.1
+  License: MIT
+
+MIT License
+
+Copyright (c) 2021 Pine Wu
+Copyright (c) 2023 Anthony Fu <https://github.com/antfu>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+@shikijs/types@4.5.0
   License: MIT
 
 MIT License
@@ -21232,7 +21151,7 @@ SOFTWARE.
 
 ---
 
-shiki@4.3.1
+shiki@4.5.0
   License: MIT
 
 MIT License
