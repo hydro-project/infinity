@@ -97,6 +97,22 @@ impl SessionStore {
         Ok(())
     }
 
+    /// At cold start no drivers exist, so entries persisted as running
+    /// (`!idle && !shut_down`, e.g. after a crash) are stale: mark them idle.
+    /// Returns whether any entry changed. Does not `notify`, since no client
+    /// is connected yet.
+    pub fn reconcile_cold_start(&mut self) -> bool {
+        let mut changed = false;
+        for (id, entry) in &mut self.sessions {
+            if !entry.idle && !entry.shut_down {
+                tracing::info!("session {id} was persisted as running; marking it idle");
+                entry.idle = true;
+                changed = true;
+            }
+        }
+        changed
+    }
+
     pub fn notify(&self, session_id: &ThreadId<str>) {
         if let Some(ref tx) = self.change_tx {
             let _ = tx.send(session_id.to_owned());
