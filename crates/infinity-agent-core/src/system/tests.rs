@@ -2197,3 +2197,90 @@ async fn parent_message_reaches_child_after_child_compaction() {
         })
         .await;
 }
+
+/// Drain events until the round's terminal `CompletionFinished`, returning
+/// every failure event (`CompletionRetrying`, `CompletionFailed`, `Error`)
+/// seen.
+async fn failures_until_finished(rx: &mut mpsc::UnboundedReceiver<Evt>) -> Vec<AgentEvent> {
+    let mut failures = Vec::new();
+    loop {
+        match next_evt(rx).await {
+            Evt::E(
+                e @ (AgentEvent::CompletionRetrying { .. }
+                | AgentEvent::CompletionFailed { .. }
+                | AgentEvent::Error { .. }),
+            ) => failures.push(e),
+            Evt::E(AgentEvent::CompletionFinished { .. }) => return failures,
+            _ => {}
+        }
+    }
+}
+
+/// A completion that cannot start (e.g. expired credentials) reports one
+/// `CompletionFailed` with the provider's message, counting the user message
+/// it discarded. That message is not persisted.
+#[tokio::test(flavor = "current_thread")]
+async fn completion_start_failure_reports_discarded_user_message() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (mut running, mut rx, ctrl, conv) = start_system(vec![], None);
+            ctrl.fail_next_stream(infinity_provider_protocol::CompletionError::provider(
+                infinity_provider_protocol::ErrorClass::Fatal,
+                "credentials expired; sign in again",
+            ));
+            running
+                .send_user_text(ThreadId::from_ref("t-fail"), "important question")
+                .await;
+
+            let failures = failures_until_finished(&mut rx).await;
+            assert!(
+                matches!(
+                    failures.as_slice(),
+                    [AgentEvent::CompletionFailed {
+                        error,
+                        retries: 0,
+                        discarded_user_messages: 1,
+                    }] if error.contains("sign in again")
+                ),
+                "{failures:?}"
+            );
+            wait_idle(&mut running).await;
+            assert!(!persisted(&conv, "t-fail").contains("important question"));
+        })
+        .await;
+}
+
+/// The first failure of a retried completion is reported right away, before
+/// the retry, rather than after a silent retry loop.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn first_transient_failure_is_surfaced_before_retry() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (running, mut rx, ctrl, _conv) = start_system(vec![], None);
+            ctrl.fail_next_stream(infinity_provider_protocol::CompletionError::provider(
+                infinity_provider_protocol::ErrorClass::Transient,
+                "backend hiccup",
+            ));
+            running
+                .send_user_text(ThreadId::from_ref("t-retry"), "hello")
+                .await;
+
+            // A missing event fails via next_evt's timeout.
+            loop {
+                match next_evt(&mut rx).await {
+                    Evt::E(AgentEvent::CompletionRetrying { error, attempt, .. }) => {
+                        assert!(error.contains("backend hiccup"), "{error}");
+                        assert_eq!(attempt, 1);
+                        break;
+                    }
+                    Evt::E(AgentEvent::CompletionFinished { .. }) => {
+                        panic!("round must not finish before the retry");
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await;
+}

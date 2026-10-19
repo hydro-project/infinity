@@ -51,17 +51,42 @@ const FINE_GRAINED_TOOL_STREAMING_BETA: &str = "fine-grained-tool-streaming-2025
 /// Anthropic beta flag enabling the 1M-token context window.
 const CONTEXT_1M_BETA: &str = "context-1m-2025-08-07";
 
-/// Extract a useful message from an AWS SDK error: the service error message
-/// when present (the SDK's plain `Display` omits it), otherwise the full
-/// error chain.
+/// Whether an SDK error is a failure to load credentials (every AWS
+/// `CredentialsError` mentions "credential"); retrying cannot fix it.
+fn is_credentials_error<E, R>(err: &SdkError<E, R>) -> bool
+where
+    E: ProvideErrorMetadata + std::error::Error + 'static,
+    R: std::fmt::Debug,
+{
+    err.message().is_none()
+        && DisplayErrorContext(err)
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("credential")
+}
+
+/// A concise, user-facing message for an AWS SDK error: the service error
+/// message when present (the SDK's plain `Display` omits it), otherwise the
+/// error kind and its root cause rather than the full error chain.
 pub(crate) fn sdk_error_message<E, R>(err: &SdkError<E, R>) -> String
 where
     E: ProvideErrorMetadata + std::error::Error + 'static,
     R: std::fmt::Debug,
 {
-    match err.message() {
-        Some(message) => message.to_owned(),
-        None => DisplayErrorContext(err).to_string(),
+    if let Some(message) = err.message() {
+        return message.to_owned();
+    }
+    // Credential failures arrive this way too; their root cause carries the
+    // credential source's own explanation (e.g. a `credential_process`'s
+    // output), which is what the user needs to fix them.
+    let mut root: &dyn std::error::Error = err;
+    while let Some(source) = root.source() {
+        root = source;
+    }
+    if std::ptr::addr_eq(root, err) {
+        err.to_string()
+    } else {
+        format!("{err}: {root}")
     }
 }
 
@@ -115,8 +140,8 @@ pub(crate) fn classify_bedrock_error(code: Option<&str>, message: &str) -> Error
 
 /// Classify a full [`SdkError`]: service errors go through
 /// [`classify_bedrock_error`]; transport-level failures (dispatch, timeout,
-/// unparsable response) are transient; request construction failures are
-/// ours and fatal.
+/// unparsable response) are transient, except credential failures; request
+/// construction failures are ours and fatal.
 pub(crate) fn classify_sdk_error<E, R>(err: &SdkError<E, R>) -> ErrorClass
 where
     E: ProvideErrorMetadata + std::error::Error + 'static,
@@ -124,6 +149,7 @@ where
 {
     match err {
         SdkError::ConstructionFailure(_) => ErrorClass::Fatal,
+        _ if is_credentials_error(err) => ErrorClass::Fatal,
         SdkError::TimeoutError(_) | SdkError::DispatchFailure(_) | SdkError::ResponseError(_) => {
             ErrorClass::Transient
         }
@@ -625,5 +651,34 @@ mod tests {
         );
         // The timeout must be the initiation timeout, not some other layer.
         assert!(started.elapsed() >= REQUEST_INITIATION_TIMEOUT);
+    }
+
+    /// Credential failures fail fast and keep the credential source's own
+    /// explanation; other transport failures stay transient. Both report
+    /// just the root cause, not the whole error chain.
+    #[test]
+    fn transport_errors_are_concise() {
+        use aws_sdk_bedrockruntime::operation::converse_stream::ConverseStreamError;
+        use aws_smithy_runtime_api::client::result::ConnectorError;
+        type Err = SdkError<ConverseStreamError, ()>;
+
+        let creds = Err::dispatch_failure(ConnectorError::other(
+            "an error occurred while loading credentials: Error retrieving credentials: \
+             external process exited with code exit status: 1. \
+             Your session has expired; sign in again."
+                .into(),
+            None,
+        ));
+        assert_eq!(classify_sdk_error(&creds), ErrorClass::Fatal);
+        let message = sdk_error_message(&creds);
+        assert!(
+            message.ends_with("Your session has expired; sign in again."),
+            "{message}"
+        );
+
+        let net = Err::dispatch_failure(ConnectorError::io("connection reset by peer".into()));
+        assert_eq!(classify_sdk_error(&net), ErrorClass::Transient);
+        let message = sdk_error_message(&net);
+        assert!(message.ends_with("connection reset by peer"), "{message}");
     }
 }
