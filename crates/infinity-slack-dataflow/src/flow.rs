@@ -546,23 +546,55 @@ pub fn slack_dataflow<'a, P: 'a>(
             */),
         );
 
-    // Set an "is thinking" status as soon as a chat message arrives. Replies
-    // inside a subagent thread set the status on the root conversation thread
-    // (that is where the session-level status indicator lives).
-    let status_actions = chat_messages.map(q!(|event: SlackEvent| {
+    // Finalize the interrupted stream (if any) and set an "is thinking"
+    // status as soon as a chat message arrives. The daemon cancels an
+    // in-flight turn when user input lands, but it broadcasts no ToolResult
+    // events for the interrupted calls, and the cancelled turn's ResponseDone
+    // is swallowed by the had-tool-call keep-open rule — so without an
+    // explicit stop the old stream message would stay active (its task cards
+    // spinning forever) and the next turn would continue streaming *above*
+    // the user's message. Emitting the stop here (same branch, before the
+    // status, so in-branch ordering holds) finalizes the old message; the new
+    // turn's output can only be produced after the daemon receives SendInput,
+    // so it starts a fresh stream below. Replies inside a subagent's
+    // dedicated thread finalize that subagent's stream; the status indicator
+    // always lives on the root conversation thread.
+    let status_actions = chat_messages.flat_map_ordered(q!(|event: SlackEvent| {
         let rt = crate::runtime::get();
-        let thread_ts = {
-            let routes = rt.subagent_routes.lock().expect("bug: lock poisoned");
-            routes
-                .get(&event.thread_ts)
-                .map(|r| r.root_thread_ts.clone())
-                .unwrap_or(event.thread_ts)
+        let route = rt
+            .subagent_routes
+            .lock()
+            .expect("bug: lock poisoned")
+            .get(&event.thread_ts)
+            .cloned();
+        let (root_ts, subagent) = match route {
+            Some(r) => (r.root_thread_ts, Some(r.subagent_id)),
+            None => (event.thread_ts, None),
         };
-        SlackAction::SetStatus {
-            channel: event.channel,
-            thread_ts,
-            status: "is thinking".to_owned(),
+        let mut actions = Vec::new();
+        let has_session = {
+            let sessions = rt.sessions.lock().expect("bug: lock poisoned");
+            sessions.get(&root_ts).is_some()
+        };
+        // Only finalize for known sessions (a brand-new thread has nothing to
+        // stop). Stale tool bookkeeping must be cleared even when no output
+        // was delivered yet, so the clear runs unconditionally for the key.
+        let was_in_flight =
+            crate::flow::clear_interrupted_turn_state(rt, &root_ts, subagent.as_deref());
+        if has_session && was_in_flight {
+            actions.push(SlackAction::StreamStop {
+                channel: event.channel.clone(),
+                thread_ts: root_ts.clone(),
+                subagent,
+                end_of_response: true,
+            });
         }
+        actions.push(SlackAction::SetStatus {
+            channel: event.channel,
+            thread_ts: root_ts,
+            status: "is thinking".to_owned(),
+        });
+        actions
     }));
 
     // --- Daemon events → Slack actions (streaming responses) ---
@@ -1052,6 +1084,56 @@ pub fn pair_tool_result(
         .and_then(|q| q.pop_front())
 }
 
+/// Clear the per-stream bookkeeping of a turn the user just interrupted by
+/// sending a message, returning whether anything suggested a response was in
+/// flight.
+///
+/// When user input arrives mid-turn, the daemon cancels the in-flight step
+/// and settles unanswered tool calls with *synthetic* results that are
+/// written to history only — no `ToolResult` events are broadcast — so the
+/// stream's FIFO queue entries for them would never be popped and would
+/// mislabel the next turn's completions. The orphan-result sentinels from a
+/// resume are stale for the same reason.
+///
+/// `had_tool_call` is deliberately **left alone**: the cancelled step still
+/// broadcasts exactly one `ResponseDone`, which consumes the flag (and is
+/// swallowed by the keep-open rule — harmless, since the stream was already
+/// finalized by the caller's `StreamStop`). Clearing it here would instead
+/// let that `ResponseDone` emit a second stop that wipes the fresh
+/// "is thinking" status.
+pub fn clear_interrupted_turn_state(
+    rt: &crate::runtime::Runtime,
+    thread_ts: &str,
+    subagent: Option<&str>,
+) -> bool {
+    let skey = crate::slack::stream_key(thread_ts, subagent);
+    let had_tasks = rt
+        .tool_tasks
+        .lock()
+        .expect("bug: lock poisoned")
+        .remove(&skey)
+        .map(|q| !q.is_empty())
+        .unwrap_or(false);
+    let orphans = rt
+        .resume_orphan_results
+        .lock()
+        .expect("bug: lock poisoned")
+        .remove(&skey)
+        .unwrap_or(0);
+    let delivering = rt
+        .stream_progress
+        .lock()
+        .expect("bug: lock poisoned")
+        .contains_key(&(thread_ts.to_owned(), subagent.map(str::to_owned)));
+    if had_tasks || orphans > 0 {
+        tracing::debug!(
+            "cleared interrupted-turn state for {skey} (open tasks: {had_tasks}, \
+             orphan sentinels: {orphans})"
+        );
+    }
+    had_tasks || orphans > 0 || delivering
+}
+
 pub fn subagent_of(
     msg: &infinity_protocol::DaemonMessage,
     root: Option<&infinity_protocol::ThreadRef>,
@@ -1303,6 +1385,68 @@ mod tests {
             choice_id: "c1".into(),
         };
         assert_eq!(subagent_of(&welcome, Some(&root)), None);
+    }
+
+    #[test]
+    fn clear_interrupted_turn_state_scopes_to_the_stream_key() {
+        crate::runtime::ensure_test_init();
+        let rt = crate::runtime::get();
+        // Unique ids: the runtime is shared process-wide across tests.
+        let thread_ts = "991.1";
+        let root_key = crate::slack::stream_key(thread_ts, None);
+        let sub_key = crate::slack::stream_key(thread_ts, Some("subA"));
+
+        // Idle thread: nothing to clear, nothing in flight.
+        assert!(!clear_interrupted_turn_state(rt, thread_ts, None));
+
+        // Root turn in flight (open tool task + delivery cursor + a stale
+        // orphan sentinel); the subagent's stream has its own open task.
+        rt.tool_tasks.lock().expect("lock").insert(
+            root_key.clone(),
+            [("t_root".to_owned(), "bash".to_owned(), "{}".to_owned())]
+                .into_iter()
+                .collect(),
+        );
+        rt.tool_tasks.lock().expect("lock").insert(
+            sub_key.clone(),
+            [("t_sub".to_owned(), "grep".to_owned(), "{}".to_owned())]
+                .into_iter()
+                .collect(),
+        );
+        rt.resume_orphan_results
+            .lock()
+            .expect("lock")
+            .insert(root_key.clone(), 2);
+        rt.stream_progress
+            .lock()
+            .expect("lock")
+            .insert((thread_ts.to_owned(), None), Default::default());
+
+        // Clearing the ROOT stream reports in-flight and leaves the subagent
+        // stream untouched.
+        assert!(clear_interrupted_turn_state(rt, thread_ts, None));
+        assert!(!rt.tool_tasks.lock().expect("lock").contains_key(&root_key));
+        assert!(!rt
+            .resume_orphan_results
+            .lock()
+            .expect("lock")
+            .contains_key(&root_key));
+        assert!(rt.tool_tasks.lock().expect("lock").contains_key(&sub_key));
+
+        // The delivery cursor alone (text-only turn) still reports in-flight;
+        // the cursor itself is owned by the I/O layer's end-of-response path
+        // and is not removed here.
+        assert!(clear_interrupted_turn_state(rt, thread_ts, None));
+
+        // The subagent stream clears independently.
+        assert!(clear_interrupted_turn_state(rt, thread_ts, Some("subA")));
+        assert!(!rt.tool_tasks.lock().expect("lock").contains_key(&sub_key));
+
+        // Clean up shared runtime state.
+        rt.stream_progress
+            .lock()
+            .expect("lock")
+            .remove(&(thread_ts.to_owned(), None));
     }
 
     #[test]

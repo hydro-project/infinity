@@ -182,8 +182,10 @@ fn choice_required(id: &str, prompt: &str) -> infinity_protocol::DaemonMessage {
     }
 }
 
-/// The non-`SetStatus` actions, which all originate from totally-ordered
-/// branches and therefore have a deterministic sequence.
+/// The non-`SetStatus` actions. In most tests these all originate from the
+/// totally-ordered daemon branch; tests that send a chat message while a turn
+/// is in flight additionally filter out `StreamStop` (the message-triggered
+/// finalize rides the slack-events branch and may interleave).
 fn non_status(actions: &[SlackAction]) -> Vec<&SlackAction> {
     actions
         .iter()
@@ -660,6 +662,162 @@ fn session_stop_interrupts_daemon_generation() {
                 assert!(text.contains("interrupted"), "confirmation text: {text}");
             }
             other => panic!("expected [HaltStreams, PostMessage], got {other:?}"),
+        }
+    });
+}
+
+/// A user message that interrupts an in-flight turn must finalize the active
+/// stream (so the old message stops and its cards complete) BEFORE the new
+/// turn streams — and the interrupted turn's never-resolved tool entries must
+/// not desync the next turn's completion pairing.
+///
+/// Mirrors the live incident: the daemon settles interrupted tool calls with
+/// history-only synthetic results (no ToolResult broadcast) and its cancel
+/// ResponseDone is swallowed by the keep-open rule, so without the
+/// message-triggered finalize the old stream stayed open forever.
+#[test]
+fn user_message_mid_turn_finalizes_the_stream() {
+    let mut flow = FlowBuilder::new();
+    let (slack_tx, daemon_tx, actions_out, commands_out) = build_sim(&mut flow);
+
+    flow.sim().unit_test_fuzz_iterations(256).fuzz(async || {
+        let thread_ts = fresh("interrupt");
+        let channel = fresh("C");
+        let session_id = fresh("sess");
+
+        // Establish the session.
+        slack_tx.send(chat("U1", "go", &channel, &thread_ts));
+        assert!(matches!(
+            commands_out.next().await.unwrap(),
+            DaemonCommand::CreateSession { .. }
+        ));
+        daemon_tx.send(devent(
+            &thread_ts,
+            infinity_protocol::DaemonMessage::Connected {
+                root_thread_id: session_id.clone().into(),
+                thread_id: session_id.clone().into(),
+                model_name: String::new(),
+                context_window: 0,
+                title: Some("T".to_owned()),
+                total_tokens_used: 0,
+                provider_id: String::new(),
+            },
+        ));
+        loop {
+            match actions_out.next().await.unwrap() {
+                SlackAction::SetThreadTitle { .. } => break,
+                SlackAction::SetStatus { .. } => {}
+                other => panic!("expected SetThreadTitle, got {other:?}"),
+            }
+        }
+
+        // A turn is in flight: text + a tool call whose result will never be
+        // broadcast (the user's message interrupts it daemon-side).
+        daemon_tx.send_many([
+            devent(&thread_ts, text_chunk("part one")),
+            devent(&thread_ts, tool_call("execute_command")),
+        ]);
+
+        // Mid-turn user message → SendInput (and, in the same slack-branch
+        // tick, the finalize StreamStop).
+        slack_tx.send(chat(
+            "U1",
+            "actually, do this instead",
+            &channel,
+            &thread_ts,
+        ));
+        match commands_out.next().await.unwrap() {
+            DaemonCommand::SendInput { thread_ts: t, .. } => assert_eq!(t, thread_ts),
+            other => panic!("expected SendInput, got {other:?}"),
+        }
+
+        // The daemon's post-interrupt behavior: the cancelled step's
+        // ResponseDone (swallowed: the old turn had a tool call), then the new
+        // turn with its own tool round.
+        daemon_tx.send_many([
+            devent(&thread_ts, response_done()),   // cancel notification
+            devent(&thread_ts, tool_call("bash")), // new turn
+            devent(&thread_ts, response_done()),   // round end (swallowed)
+            devent(&thread_ts, tool_result()),     // bash completes
+            devent(&thread_ts, text_chunk("done")),
+            devent(&thread_ts, response_done()), // final → stop
+        ]);
+
+        let actions: Vec<SlackAction> = actions_out.collect().await;
+
+        // The daemon-branch sequence is totally ordered; the slack-branch
+        // finalize stop may interleave anywhere, so pull the stops out and
+        // assert the rest by order.
+        let stops: Vec<_> = actions
+            .iter()
+            .filter(|a| matches!(a, SlackAction::StreamStop { .. }))
+            .collect();
+        assert_eq!(
+            stops.len(),
+            2,
+            "expected the message-triggered finalize stop and the final \
+             response stop, got {stops:?}"
+        );
+        for stop in &stops {
+            match stop {
+                SlackAction::StreamStop {
+                    thread_ts: t,
+                    subagent,
+                    end_of_response,
+                    ..
+                } => {
+                    assert_eq!(t, &thread_ts);
+                    assert!(subagent.is_none());
+                    assert!(*end_of_response, "both stops end their response");
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        // Everything else (appends and task updates) is daemon-branch ordered.
+        let core: Vec<_> = non_status(&actions)
+            .into_iter()
+            .filter(|a| !matches!(a, SlackAction::StreamStop { .. }))
+            .collect();
+        match &core[..] {
+            [SlackAction::StreamAppend { text: t1, .. }, SlackAction::StreamTaskUpdate {
+                task_id: old_task,
+                title: old_title,
+                status: s1,
+                ..
+            }, SlackAction::StreamTaskUpdate {
+                task_id: new_task,
+                title: new_title,
+                status: s2,
+                ..
+            }, SlackAction::StreamTaskUpdate {
+                task_id: done_task,
+                status: s3,
+                ..
+            }, SlackAction::StreamAppend { text: t2, .. }] => {
+                assert_eq!(t1, "part one");
+                assert_eq!(old_title, "execute_command");
+                assert_eq!(s1, "in_progress");
+                assert_eq!(new_title, "bash");
+                assert_eq!(s2, "in_progress");
+                assert_eq!(s3, "complete");
+                // The completion pairs with the NEW turn's call: the
+                // interrupted execute_command entry was cleared when the user
+                // message arrived, so it cannot swallow bash's result.
+                assert_eq!(
+                    done_task, new_task,
+                    "completion must pair with the new turn's call"
+                );
+                assert_ne!(
+                    done_task, old_task,
+                    "completion must not pair with the interrupted call"
+                );
+                assert_eq!(t2, "done");
+            }
+            other => panic!(
+                "expected [append, task(old in_progress), task(new in_progress), \
+                 task(new complete), append], got {other:?}"
+            ),
         }
     });
 }
