@@ -498,6 +498,45 @@ mod tests {
         assert!(obj.contains_key("custom"));
     }
 
+    /// Regression guard for Claude Opus 5.5: pins the exact invocation shape
+    /// that was verified live against Bedrock on 2026-10-19 (us-west-2;
+    /// `converse` and the provider's `invoke_model` streaming path both
+    /// completed successfully with these parameters). If this entry drifts
+    /// (id typo, lost thinking config, dropped tool-streaming beta), requests
+    /// would fail or degrade even though the model remains listed.
+    #[test]
+    fn opus_5_5_invocation_shape() {
+        let models = default_models();
+        let prepared = prepare_request(&models, "global.anthropic.claude-opus-5-5", request("hi"))
+            .expect("prepare");
+        // The catalog id IS the live global inference-profile id — no alias.
+        assert_eq!(
+            prepared.bedrock_model_id,
+            "global.anthropic.claude-opus-5-5"
+        );
+        // max_tokens defaults from the entry (128k verified against the model).
+        assert_eq!(prepared.inference_config.max_tokens, Some(128_000));
+        let aws_smithy_types::Document::Object(obj) =
+            prepared.additional_params.expect("params set")
+        else {
+            panic!("expected object params");
+        };
+        // Summarized adaptive thinking + fine-grained tool streaming.
+        assert_eq!(
+            obj.get("thinking"),
+            Some(&convert::json_to_document(serde_json::json!({
+                "type": "adaptive",
+                "display": "summarized"
+            })))
+        );
+        assert_eq!(
+            obj.get("anthropic_beta"),
+            Some(&convert::json_to_document(serde_json::json!([
+                FINE_GRAINED_TOOL_STREAMING_BETA
+            ])))
+        );
+    }
+
     #[test]
     fn unknown_model_passes_through_without_params() {
         let models = default_models();
