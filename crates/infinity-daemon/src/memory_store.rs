@@ -18,10 +18,10 @@ use infinity_agent_core::message::InfinityMessage;
 use infinity_agent_core::stores::{
     self as core_stores, CompactionSummary, ThreadInfo, ThreadState,
 };
-use infinity_agent_core::system::UserChoice;
+use infinity_agent_core::system::{UserChoice, tool_call_expects_result};
 use infinity_agent_core::traits::{ConversationStore, SpawnContext, StateStore};
 use infinity_protocol::ModelRef;
-use infinity_provider_protocol::message::Message;
+use infinity_provider_protocol::message::{Message, ToolCall};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -126,6 +126,30 @@ fn unset_model_ref() -> ModelRef {
     ModelRef {
         provider_id: String::new(),
         model_id: String::new(),
+    }
+}
+
+/// The trailing tool call of the thread snapshot at `path`, if it expects a
+/// result. Only the tail message is deserialized, so probing every thread at
+/// startup stays cheap. Other files and legacy snapshots have none.
+fn tail_call_expecting_result(path: &Path) -> Option<ToolCall> {
+    #[derive(Deserialize)]
+    struct Probe<'a> {
+        #[serde(borrow)]
+        messages: Vec<(&'a serde_json::value::RawValue, serde::de::IgnoredAny)>,
+    }
+    let json = std::fs::read(path)
+        .inspect_err(|e| tracing::error!("cannot read {}: {e}", path.display()))
+        .ok()?;
+    let (tail, _) = serde_json::from_slice::<Probe>(&json)
+        .ok()?
+        .messages
+        .pop()?;
+    match serde_json::from_str(tail.get()).ok()? {
+        InfinityMessage::ToolCall { call, .. } if tool_call_expects_result(&call.function.name) => {
+            Some(call)
+        }
+        _ => None,
     }
 }
 
@@ -454,6 +478,54 @@ impl PersistentConversationStore {
     pub fn has_thread(&self, thread_id: &ThreadId<str>) -> bool {
         self.ensure_thread_metadata_loaded(thread_id);
         self.core.thread_info(thread_id).is_some()
+    }
+
+    /// Cold start: settle each thread's trailing tool call whose result can
+    /// no longer arrive (its RAP server, input queue or timer died with the
+    /// previous daemon) with an [`InfinityMessage::Interrupt`], as an
+    /// interrupting message would. Otherwise any driver woken for the thread, even just to
+    /// replay it to a viewer, parks on the call and holds its session
+    /// running. Must run before the agent system starts, so that every
+    /// unanswered call is the previous process's. Returns how many calls were
+    /// settled.
+    pub async fn settle_orphaned_tool_calls(&self) -> usize {
+        let Some(dir) = &self.dir else { return 0 };
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                tracing::error!("cannot scan {} for orphaned tool calls: {e}", dir.display());
+                return 0;
+            }
+        };
+        let mut settled = 0;
+        for entry in entries {
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(e) => {
+                    tracing::error!("cannot scan {} for orphaned tool calls: {e}", dir.display());
+                    continue;
+                }
+            };
+            let Some(thread_id) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let Some(call) = tail_call_expecting_result(&path) else {
+                continue;
+            };
+            tracing::info!(%thread_id, tool = %call.function.name, "settling tool call orphaned by daemon restart");
+            let interrupt = (
+                InfinityMessage::Interrupt,
+                format!("{}-orphaned-by-restart", call.id),
+            );
+            match self
+                .append_messages(ThreadId::from_ref(thread_id), vec![interrupt])
+                .await
+            {
+                Ok(()) => settled += 1,
+                Err(e) => tracing::error!(%thread_id, "failed to settle orphaned tool call: {e}"),
+            }
+        }
+        settled
     }
 
     /// Resolve a thread ID to its root thread ID (i.e. the session ID).
@@ -1627,5 +1699,62 @@ mod tests {
         {
             assert_eq!(t.text, "c3");
         }
+    }
+
+    /// Cold-start settlement answers only calls whose results can no longer
+    /// arrive, persists the interrupt, and is idempotent.
+    #[tokio::test]
+    async fn settle_orphaned_tool_calls_answers_only_orphaned_calls() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let new_store = || {
+            PersistentConversationStore::new_with_dir(
+                dir.path(),
+                test_model(),
+                Arc::new(crate::ids::UuidIdSource),
+            )
+        };
+        let store = new_store();
+        for tool in [
+            "execute_command",
+            "sleep_until_event_or_input",
+            "close_thread",
+        ] {
+            let id = ThreadId::from_ref(tool);
+            store
+                .ensure_root_thread(id)
+                .await
+                .expect("ensure root thread");
+            let call = InfinityMessage::ToolCall {
+                call: ToolCall {
+                    id: format!("tc-{tool}"),
+                    call_id: None,
+                    function: infinity_provider_protocol::message::ToolFunction {
+                        name: tool.to_owned(),
+                        arguments: serde_json::json!({}),
+                    },
+                },
+                display_as: None,
+            };
+            store
+                .append_messages(id, vec![(call, "c".to_owned())])
+                .await
+                .expect("append tail tool call");
+        }
+
+        // Restart: a fresh store over the same directory.
+        let store = new_store();
+        assert_eq!(store.settle_orphaned_tool_calls().await, 1);
+        let tail = store
+            .core
+            .thread_messages(ThreadId::from_ref("execute_command"))
+            .and_then(|m| m.last().cloned())
+            .expect("thread has history");
+        assert!(
+            matches!(tail.0, InfinityMessage::Interrupt),
+            "expected an interrupt settling the orphaned call, got {tail:?}"
+        );
+
+        // Persisted, so a second restart finds nothing left to settle.
+        assert_eq!(new_store().settle_orphaned_tool_calls().await, 0);
     }
 }

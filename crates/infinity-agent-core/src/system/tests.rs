@@ -382,6 +382,27 @@ async fn driver_idles_after_close_thread_tool_call() {
         .await;
 }
 
+/// Likewise for `sleep_until_event_or_input`: the next event or input
+/// respawns the driver.
+#[tokio::test(flavor = "current_thread")]
+async fn driver_idles_after_sleep_until_event_or_input_call() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (mut running, mut rx, mut ctrl, _conv) = start_system(vec![], None);
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "wait")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_tool_call("tc-1", "sleep_until_event_or_input", serde_json::json!({}));
+            ctrl.finish();
+            collect_until_finished(&mut rx).await;
+            wait_idle(&mut running).await;
+            assert!(running.is_idle());
+        })
+        .await;
+}
+
 /// Thread reports arriving while waiting for a non-passive async tool result
 /// are deferred until the tool result is processed.
 #[tokio::test(flavor = "current_thread")]

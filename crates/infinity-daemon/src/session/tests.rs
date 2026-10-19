@@ -778,3 +778,71 @@ async fn shut_down_session_events_do_not_wake_threads() {
         })
         .await;
 }
+
+/// A thread whose history ends in a tool call from the previous daemon
+/// process is settled with an interrupt when the session manager starts.
+#[tokio::test(flavor = "current_thread")]
+async fn startup_settles_orphaned_tool_calls() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (model, _ctrl) = mock_model();
+            let entry = ModelEntry {
+                model_id: "model1".to_owned(),
+                display_name: "model1".to_owned(),
+                context_window: 100_000,
+                max_output_tokens: None,
+                supports_image_input: false,
+            };
+            let state_dir = tempfile::tempdir().expect("create daemon state dir");
+            let threads_dir = state_dir.path().join("threads");
+            let conv = PersistentConversationStore::new_with_dir(
+                &threads_dir,
+                model1_ref(),
+                Arc::new(SequentialIdSource::new()),
+            );
+            let killed = ThreadId::from_ref("killed");
+            conv.ensure_root_thread(killed).await.expect("ensure root");
+            let call = infinity_agent_core::message::InfinityMessage::ToolCall {
+                call: infinity_provider_protocol::message::ToolCall {
+                    id: "tc-exec".to_owned(),
+                    call_id: None,
+                    function: infinity_provider_protocol::message::ToolFunction {
+                        name: "execute_command".to_owned(),
+                        arguments: serde_json::json!({}),
+                    },
+                },
+                display_as: None,
+            };
+            conv.append_messages(killed, vec![(call, "c1".to_owned())])
+                .await
+                .expect("append orphaned call");
+
+            SessionManager::with_providers(
+                SessionManagerConfig {
+                    state_dir: state_dir.path().to_path_buf(),
+                    callback_url: "http://127.0.0.1:0".to_owned(),
+                    user_rap_config: None,
+                    id_source: Arc::new(SequentialIdSource::new()),
+                },
+                vec![(
+                    "provider1".to_owned(),
+                    Arc::new(SingleModelProvider::new(entry, model)) as Arc<dyn ModelProvider>,
+                )],
+                vec![],
+            )
+            .await
+            .expect("build session manager");
+
+            let snapshot: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(threads_dir.join("killed.json"))
+                    .expect("read thread snapshot"),
+            )
+            .expect("parse thread snapshot");
+            assert_eq!(
+                snapshot["messages"][1][0]["kind"], "interrupt",
+                "the orphaned call must be settled at startup: {snapshot}"
+            );
+        })
+        .await;
+}
