@@ -233,3 +233,31 @@ async fn spinner_states_animate_over_time() {
     advance_and_redraw(&h, Duration::from_millis(700)).await;
     insta::assert_snapshot!("spinner_waiting_tool_call", h.screen());
 }
+
+/// Streamed Markdown is rendered as it arrives: markers are dropped, list
+/// bullets, rules and code-fence frames are drawn, and chunk boundaries
+/// falling inside delimiters (`**`, `](`) don't affect the result.
+#[tokio::test(start_paused = true)]
+async fn markdown_streams_rendered() {
+    let h = TuiHarness::spawn(60, 20).await;
+
+    h.display(Evt::UserInput("plan?".to_owned()));
+    h.display(Evt::StartOutput);
+    for chunk in [
+        "## The *",
+        "plan*\n\n- **Fir",
+        "st** step with `code`\n- [x] done, see [docs](https://e.io/d)\n\n--",
+        "-\n```sh\necho **raw**\n``",
+        "`\nTrailing **bold",
+    ] {
+        h.display(Evt::TextChunk {
+            chunk: chunk.to_owned(),
+        });
+    }
+    h.settle().await;
+    insta::assert_snapshot!("markdown_mid_stream", h.screen());
+
+    h.display(Evt::ResponseDone(None));
+    h.settle().await;
+    insta::assert_snapshot!("markdown_response_done", h.screen());
+}

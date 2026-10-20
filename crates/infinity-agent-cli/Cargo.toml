@@ -22,6 +22,7 @@ infinity-provider-protocol = { path = "../infinity-provider-protocol", version =
 infinity-protocol = { path = "../infinity-protocol", version = "^0.2.0" }
 rap-protocol = { path = "../rap-protocol", version = "^0.2.0" }
 infinity-daemon = { path = "../infinity-daemon", version = "^0.2.0" }
+infinity-markdown = { path = "../infinity-markdown", version = "^0.2.0" }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

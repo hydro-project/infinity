@@ -3,6 +3,7 @@ use crate::{
     choice_picker::{ChoicePicker, ChoicePickerResult, ChoicePickerWidget},
     component::{Component, KeyResult},
     inline_viewport::{InlineViewport, ResetScrollRegion},
+    markdown::print_segments,
     model_picker::{ModelPicker, ModelPickerResult, ModelPickerWidget},
     quit_picker::{QuitPicker, QuitPickerResult, QuitPickerWidget},
     sanitize::strip_ansi,
@@ -180,6 +181,8 @@ where
     let mut sessions = initial_sessions;
     let mut mid_stream = false;
     let mut stream_start = true;
+    // Renders the root thread's streamed Markdown text.
+    let mut markdown = infinity_markdown::Renderer::new();
     let mut spinner_state: Option<SpinnerState> = None;
     let mut thinking_start = Instant::now();
     let mut total_tokens_used = 0;
@@ -411,7 +414,7 @@ where
                     }
                     DisplayEvent::StartOutput => {
                         if is_root {
-                            end_stream(&mut viewport, &mut mid_stream)?;
+                            end_stream(&mut viewport, &mut markdown, &mut mid_stream)?;
                             stream_start = true;
 
                             thinking_text_buffer.clear();
@@ -448,15 +451,9 @@ where
                             };
 
                             if !chunk.is_empty() {
-                                let first_chunk = !mid_stream;
-                                mid_stream = true;
-                                let sanitized = chunk.replace('\n', "\r\n");
-                                viewport.print_above(|w| {
-                                    if first_chunk {
-                                        write!(w, "\r\n")?;
-                                    }
-                                    write!(w, "{}", sanitized)
-                                })?;
+                                markdown.set_width(viewport.area().width as usize);
+                                let segments = markdown.push(chunk);
+                                print_segments(&mut viewport, &mut mid_stream, &segments)?;
                             }
                         } else {
                             thread_buffers.entry(child_tid).or_default().push_str(&strip_ansi(&chunk));
@@ -472,6 +469,10 @@ where
                             if let Some(u) = usage {
                                 total_tokens_used = u.total_tokens as usize;
                             }
+                            // The message is complete: flush anything the
+                            // renderer was still holding back.
+                            let segments = markdown.finish();
+                            print_segments(&mut viewport, &mut mid_stream, &segments)?;
                             if spinner_state != Some(SpinnerState::WaitingToolCall) {
                                 spinner_state = None;
                             }
@@ -480,7 +481,7 @@ where
                             }
                     }
                     DisplayEvent::ToolCall { name, args, display_as } => {
-                        end_stream(&mut viewport, &mut mid_stream)?;
+                        end_stream(&mut viewport, &mut markdown, &mut mid_stream)?;
                         thinking_text_buffer.clear();
 
                         let display_text = display_as
@@ -598,7 +599,7 @@ where
                         }
                     }
                     DisplayEvent::Info(text) => {
-                        end_stream(&mut viewport, &mut mid_stream)?;
+                        end_stream(&mut viewport, &mut markdown, &mut mid_stream)?;
                         // Print each line separately: ratatui `Line` drops
                         // embedded newlines, and raw LF would not return the
                         // cursor to column 0 in raw mode anyway.
@@ -609,7 +610,7 @@ where
                     }
                     DisplayEvent::CompactionApplied => {
                         if is_root {
-                            end_stream(&mut viewport, &mut mid_stream)?;
+                            end_stream(&mut viewport, &mut markdown, &mut mid_stream)?;
                             viewport.print_line_above(Line::from(vec![
                                 Span::styled("✦ Compaction applied", Style::default().fg(Color::Magenta)),
                             ]))?;
@@ -621,7 +622,7 @@ where
                     }
                     DisplayEvent::UserInput(text) => {
                         let sanitized = strip_ansi(&text).replace('\n', "\r\n");
-                        end_stream(&mut viewport, &mut mid_stream)?;
+                        end_stream(&mut viewport, &mut markdown, &mut mid_stream)?;
                         viewport.print_line_above(Line::from(vec![
                             Span::styled(format!("> {}", sanitized), Style::default().add_modifier(Modifier::BOLD)),
                         ]))?;
@@ -631,7 +632,7 @@ where
                         stream_start = true; // any new assistant output is a start
                     }
                     DisplayEvent::SubscriptionEvent { name, text } => {
-                        end_stream(&mut viewport, &mut mid_stream)?;
+                        end_stream(&mut viewport, &mut markdown, &mut mid_stream)?;
                         let pfx = if !is_root {
                             let rendered = child_tid.to_string();
                             format!("[{}] ", &rendered[..rendered.len().min(8)])
@@ -667,7 +668,7 @@ where
                         thinking_start = Instant::now();
                     }
                     DisplayEvent::OAuthRequired { auth_url } => {
-                        end_stream(&mut viewport, &mut mid_stream)?;
+                        end_stream(&mut viewport, &mut markdown, &mut mid_stream)?;
                         // Two separate prints: a raw LF inside a span would
                         // not return to column 0 in raw mode (staircase).
                         viewport.print_line_above(Line::from(vec![Span::styled(
@@ -1020,10 +1021,15 @@ fn print_continuation_lines<T: TermOut>(
     Ok(())
 }
 
+/// Close the current line of streamed model output, flushing whatever the
+/// Markdown renderer still holds back (e.g. an unterminated link).
 fn end_stream<T: TermOut>(
     viewport: &mut InlineViewport<T>,
+    markdown: &mut infinity_markdown::Renderer,
     mid_stream: &mut bool,
 ) -> Result<(), BoxError> {
+    let segments = markdown.finish();
+    print_segments(viewport, mid_stream, &segments)?;
     if *mid_stream {
         viewport.print_above(|w| write!(w, "\r\n"))?;
         *mid_stream = false;
