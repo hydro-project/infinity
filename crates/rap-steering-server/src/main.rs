@@ -26,17 +26,17 @@ struct AppState {
     callback_client: PlainCallbackClient,
 }
 
-fn build_manifest(endpoint: &str) -> ToolsetManifest {
+fn build_manifest(endpoint: &str, system_prompt: Option<String>) -> ToolsetManifest {
     ToolsetManifest {
         name: "steering-tools".to_owned(),
         description: Some("Discover and load project steering files (CLAUDE.md, AGENTS.md, .kiro/steering/, etc.)".to_owned()),
         endpoint: endpoint.to_owned(),
         needs_migration: false,
-        system_prompt: None,
+        system_prompt,
         tools: vec![
             ToolDef {
                 name: "list_steering".to_owned(),
-                description: "List all known steering/instruction files found in a project root. Call this immediately at the start of a session, before doing any other work, so the user's instructions can guide the rest of the task. Scans for CLAUDE.md, AGENTS.md, .kiro/steering/, .cursorrules, .github/copilot-instructions.md, .windsurfrules, CONVENTIONS.md, .cursor/rules/, .ai/rules/, etc. Also scans the user's home directory for user-level (non-project) steering files, returned with a `~/` prefix — these contain the user's global preferences and should generally be loaded. Returns deduplicated relative paths (symlinks resolved).".to_owned(),
+                description: "List all known steering/instruction files found in a project root. Call this immediately at the start of a session, before doing any other work, so the user's instructions can guide the rest of the task. Scans for CLAUDE.md, AGENTS.md, .kiro/steering/, .cursorrules, .github/copilot-instructions.md, .windsurfrules, CONVENTIONS.md, .cursor/rules/, .ai/rules/, etc. Also scans the user's home directory for user-level (non-project) steering files, returned with a `~/` prefix — most are already embedded in your system prompt; load any you have not seen. Returns deduplicated relative paths (symlinks resolved).".to_owned(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -84,7 +84,12 @@ async fn toolset_handler(headers: HeaderMap) -> Json<ToolsetManifest> {
     } else {
         "https"
     };
-    Json(build_manifest(&format!("{scheme}://{host}/invoke")))
+    // Rebuilt per fetch so new sessions pick up edits without a restart.
+    let system_prompt = rap_steering_server::global_steering_prompt().await;
+    Json(build_manifest(
+        &format!("{scheme}://{host}/invoke"),
+        system_prompt,
+    ))
 }
 
 async fn invoke_handler(
