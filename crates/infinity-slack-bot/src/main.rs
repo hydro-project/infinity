@@ -13,6 +13,7 @@
 //! synchronous output callbacks → mpsc → `slack_io`/`daemon_io` tasks.
 
 use infinity_slack_dataflow::config::Config;
+use infinity_slack_dataflow::resume;
 use infinity_slack_dataflow::runtime;
 use infinity_slack_dataflow::session_store::SessionStore;
 use tokio_stream::wrappers::ReceiverStream;
@@ -98,19 +99,89 @@ async fn run() -> Result<(), BoxError> {
     let sessions = std::sync::Arc::new(std::sync::Mutex::new(store));
     runtime::init(config, sessions);
 
+    // Restore cross-restart state (channel mappings, subagent thread routes,
+    // user-stop latches, posted choice buttons, and the delivery cursors of
+    // streams that had an open response at shutdown) before the I/O tasks
+    // spawn — the Slack outbound task seeds its subagent-anchor map from it.
+    let resume_path = resume::default_path();
+    let resume_streams = match resume::load(&resume_path) {
+        Ok(state) => {
+            let streams = state.streams.clone();
+            if !state.is_empty() {
+                tracing::info!(
+                    "restored resume state ({} stream(s) to catch up)",
+                    streams.len()
+                );
+            }
+            resume::restore(runtime::get(), state);
+            streams
+        }
+        Err(e) => {
+            tracing::error!(
+                "failed to load resume state from {}: {e}; starting without it \
+                 (in-flight responses from before the restart will not be caught up)",
+                resume_path.display()
+            );
+            Vec::new()
+        }
+    };
+
+    // Shutdown coordination: flipping the watch to `true` makes the inbound
+    // task close the Socket Mode WebSocket gracefully and the outbound task
+    // drain (flush + finalize all streams) and exit.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
     // I/O tasks. Slack credentials are validated before the tasks spawn, so
     // a bad token fails startup here instead of killing a detached task.
     let slack_io::SlackIo {
         events: slack_events_rx,
         actions: slack_actions_tx,
-        outbound: slack_outbound,
-        inbound: slack_inbound,
-    } = slack_io::spawn(config).await?;
+        outbound: mut slack_outbound,
+        inbound: mut slack_inbound,
+    } = slack_io::spawn(config, shutdown_rx).await?;
     let daemon_io::DaemonIo {
         events: daemon_events_rx,
         commands: daemon_commands_tx,
-        dispatch: daemon_dispatch,
+        dispatch: mut daemon_dispatch,
     } = daemon_io::spawn();
+
+    // Reconnect every stream that had an open response at shutdown. Each
+    // stream gets its own connection (the daemon replays — and an existing
+    // subagent driver broadcasts — per thread); the replay is trimmed to the
+    // undelivered remainder via the restored cursors (see `daemon_io`).
+    for stream in resume_streams {
+        let target_thread = match &stream.subagent {
+            None => None,
+            Some(sub) => match sub.parse::<infinity_protocol::ThreadRef>() {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    tracing::error!(
+                        "skipping resume of subagent stream in {}: bad thread id {sub:?}: {e}",
+                        stream.thread_ts
+                    );
+                    continue;
+                }
+            },
+        };
+        if daemon_commands_tx
+            .send(
+                infinity_slack_dataflow::daemon::DaemonCommand::ConnectSession {
+                    thread_ts: stream.thread_ts,
+                    session_id: stream.session_id,
+                    target_thread,
+                },
+            )
+            .is_err()
+        {
+            tracing::error!("daemon I/O task is gone, cannot resume streams");
+            break;
+        }
+    }
+
+    // Periodically snapshot the resume state so a crash (no clean shutdown)
+    // loses at most the last interval's worth of delivery accounting (which
+    // then re-posts or drops a few chunks on resume).
+    let snapshot_task = tokio::spawn(periodic_snapshots(resume_path.clone()));
 
     // Output callbacks fire synchronously while the dataflow ticks; they hand
     // work off to the async I/O tasks through unbounded channels (see
@@ -136,23 +207,107 @@ async fn run() -> Result<(), BoxError> {
 
     tracing::info!("infinity-slack-bot running (Hydro embedded dataflow)");
 
-    // DFIR graphs are !Send; drive the dataflow on a LocalSet until ctrl-c.
+    // DFIR graphs are !Send; drive the dataflow on a LocalSet until a
+    // shutdown signal arrives.
     let local = tokio::task::LocalSet::new();
-    local
+    let result = local
         .run_until(async {
             tokio::select! {
                 _ = flow.run() => unreachable!("bug: Dfir::run returns Never"),
-                result = slack_outbound => Err(io_task_exited("Slack outbound", result)),
-                result = slack_inbound => Err(io_task_exited("Slack inbound", result)),
-                result = daemon_dispatch => Err(io_task_exited("daemon dispatch", result)),
-                result = tokio::signal::ctrl_c() => {
-                    result.expect("failed to listen for ctrl-c");
-                    tracing::info!("shutting down");
+                result = &mut slack_outbound => Err(io_task_exited("Slack outbound", result)),
+                result = &mut slack_inbound => Err(io_task_exited("Slack inbound", result)),
+                result = &mut daemon_dispatch => Err(io_task_exited("daemon dispatch", result)),
+                result = shutdown_signal() => {
+                    result?;
                     Ok(())
                 }
             }
         })
-        .await
+        .await;
+    // The dataflow (and the action/event channels it held) is dropped here.
+    snapshot_task.abort();
+
+    if result.is_ok() {
+        // Clean shutdown: signal the I/O tasks and let them drain (the
+        // outbound task flushes buffers and finalizes every active stream;
+        // the inbound task closes the WebSocket), bounded so shutdown can
+        // never hang, then persist the resume state.
+        tracing::info!("shutting down");
+        if shutdown_tx.send(true).is_err() {
+            tracing::warn!("Slack I/O tasks already gone at shutdown");
+        }
+        let drain = async {
+            if let Err(e) = slack_outbound.await {
+                tracing::warn!("Slack outbound task failed during drain: {e}");
+            }
+            if let Err(e) = slack_inbound.await {
+                tracing::warn!("Slack inbound task failed during drain: {e}");
+            }
+        };
+        if tokio::time::timeout(std::time::Duration::from_secs(10), drain)
+            .await
+            .is_err()
+        {
+            tracing::warn!("Slack I/O drain timed out after 10s; persisting state as-is");
+        }
+        let state = resume::snapshot(runtime::get());
+        match resume::save(&resume_path, &state) {
+            Ok(()) => tracing::info!(
+                "persisted resume state ({} active stream(s)) to {}",
+                state.streams.len(),
+                resume_path.display()
+            ),
+            Err(e) => tracing::error!(
+                "failed to persist resume state to {}: {e}",
+                resume_path.display()
+            ),
+        }
+    }
+    result
+}
+
+/// Resolves when the process receives SIGINT (ctrl-c) or SIGTERM.
+async fn shutdown_signal() -> Result<(), BoxError> {
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|e| format!("failed to install SIGTERM handler: {e}"))?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            result.map_err(|e| format!("failed to listen for ctrl-c: {e}"))?;
+            tracing::info!("received ctrl-c");
+        }
+        _ = sigterm.recv() => {
+            tracing::info!("received SIGTERM");
+        }
+    }
+    Ok(())
+}
+
+/// Snapshot the resume state to disk every 30 seconds (when it changed), so
+/// a crash loses at most one interval of delivery accounting. The clean
+/// shutdown path writes the authoritative final snapshot.
+async fn periodic_snapshots(path: std::path::PathBuf) {
+    const INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+    let mut last_written: Option<String> = None;
+    let mut tick = tokio::time::interval(INTERVAL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        let state = resume::snapshot(runtime::get());
+        let json = match serde_json::to_string(&state) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::error!("failed to serialize resume snapshot: {e}");
+                continue;
+            }
+        };
+        if last_written.as_deref() == Some(&json) {
+            continue;
+        }
+        match resume::save(&path, &state) {
+            Ok(()) => last_written = Some(json),
+            Err(e) => tracing::warn!("periodic resume snapshot failed: {e}"),
+        }
+    }
 }
 
 /// An I/O task finished while the bot was running. Fatal regardless of how it

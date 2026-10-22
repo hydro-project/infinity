@@ -52,7 +52,12 @@ pub fn spawn() -> DaemonIo {
                             tracing::error!("CreateSession failed for {thread_ts}: {e}");
                             continue;
                         }
-                        spawn_receiver(thread_ts.clone(), &mut connections, daemon, &to_df_tx);
+                        spawn_receiver(
+                            ConnKey::root(thread_ts.clone()),
+                            &mut connections,
+                            daemon,
+                            &to_df_tx,
+                        );
                     }
                     Err(e) => {
                         tracing::error!("daemon connect failed for {thread_ts}: {e}");
@@ -61,18 +66,40 @@ pub fn spawn() -> DaemonIo {
                 DaemonCommand::ConnectSession {
                     thread_ts,
                     session_id,
-                } => match DaemonClient::connect().await {
-                    Ok(daemon) => {
-                        if let Err(e) = daemon.connect_session(&session_id, None).await {
-                            tracing::error!("ConnectSession failed for {thread_ts}: {e}");
-                            continue;
+                    target_thread,
+                } => {
+                    let subagent = target_thread.as_ref().map(|t| t.to_string());
+                    let map_key =
+                        infinity_slack_dataflow::slack::stream_key(&thread_ts, subagent.as_deref());
+                    if connections.contains_key(&map_key) {
+                        tracing::debug!("connection {map_key} already exists, skipping connect");
+                        continue;
+                    }
+                    match DaemonClient::connect().await {
+                        Ok(daemon) => {
+                            if let Err(e) = daemon
+                                .connect_session(&session_id, target_thread.clone())
+                                .await
+                            {
+                                tracing::error!("ConnectSession failed for {thread_ts}: {e}");
+                                continue;
+                            }
+                            spawn_receiver(
+                                ConnKey {
+                                    map_key,
+                                    thread_ts,
+                                    subagent,
+                                },
+                                &mut connections,
+                                daemon,
+                                &to_df_tx,
+                            );
                         }
-                        spawn_receiver(thread_ts.clone(), &mut connections, daemon, &to_df_tx);
+                        Err(e) => {
+                            tracing::error!("daemon connect failed for {thread_ts}: {e}");
+                        }
                     }
-                    Err(e) => {
-                        tracing::error!("daemon connect failed for {thread_ts}: {e}");
-                    }
-                },
+                }
                 DaemonCommand::SendInput {
                     thread_ts,
                     session_id,
@@ -95,7 +122,7 @@ pub fn spawn() -> DaemonIo {
                                     continue;
                                 }
                                 spawn_receiver(
-                                    thread_ts.clone(),
+                                    ConnKey::root(thread_ts.clone()),
                                     &mut connections,
                                     daemon,
                                     &to_df_tx,
@@ -123,7 +150,7 @@ pub fn spawn() -> DaemonIo {
                                     }
                                     let retry_result = daemon.send_input(input_thread, &text).await;
                                     spawn_receiver(
-                                        thread_ts.clone(),
+                                        ConnKey::root(thread_ts.clone()),
                                         &mut connections,
                                         daemon,
                                         &to_df_tx,
@@ -174,7 +201,7 @@ pub fn spawn() -> DaemonIo {
                                     continue;
                                 }
                                 spawn_receiver(
-                                    thread_ts.clone(),
+                                    ConnKey::root(thread_ts.clone()),
                                     &mut connections,
                                     daemon,
                                     &to_df_tx,
@@ -205,7 +232,12 @@ pub fn spawn() -> DaemonIo {
                             tracing::error!("ForkSession failed for {thread_ts}: {e}");
                             continue;
                         }
-                        spawn_receiver(thread_ts.clone(), &mut connections, daemon, &to_df_tx);
+                        spawn_receiver(
+                            ConnKey::root(thread_ts.clone()),
+                            &mut connections,
+                            daemon,
+                            &to_df_tx,
+                        );
                     }
                     Err(e) => {
                         tracing::error!("daemon connect failed for {thread_ts}: {e}");
@@ -222,11 +254,41 @@ pub fn spawn() -> DaemonIo {
     }
 }
 
+/// Identifies what a daemon connection serves: its key in the connections
+/// map, the Slack thread its events are tagged with, and — for a subagent
+/// resume connection — the subagent whose stream it carries.
+struct ConnKey {
+    /// Key in the connections map. The root connection of a Slack thread is
+    /// keyed by the bare `thread_ts`; a subagent resume connection by
+    /// `slack::stream_key(thread_ts, subagent)` so it can coexist with the
+    /// root connection.
+    map_key: String,
+    /// The Slack thread `DaemonEvent`s from this connection are tagged with
+    /// (always the root conversation thread; the dataflow routes subagent
+    /// events by their `thread_id`).
+    thread_ts: String,
+    /// `Some` for a subagent resume connection (`ThreadRef` string form).
+    subagent: Option<String>,
+}
+
+impl ConnKey {
+    /// The root connection for a Slack thread.
+    fn root(thread_ts: String) -> Self {
+        Self {
+            map_key: thread_ts.clone(),
+            thread_ts,
+            subagent: None,
+        }
+    }
+}
+
 /// Spawn a task that forwards DaemonMessages from a connection into the dataflow.
 /// On `Connected`, automatically sends any pending input text for this thread.
-/// Intercepts the initial `Welcome` message to update available models in the runtime.
+/// Intercepts the initial `Welcome` message to update available models in the
+/// runtime, and `Replay` messages to catch up resumed streams (see
+/// [`forward_replay`]).
 fn spawn_receiver(
-    thread_ts: String,
+    conn: ConnKey,
     connections: &mut HashMap<String, DaemonClient>,
     mut daemon: DaemonClient,
     to_df_tx: &mpsc::Sender<DaemonEvent>,
@@ -235,84 +297,84 @@ fn spawn_receiver(
     let tx_half = daemon;
 
     let to_df = to_df_tx.clone();
-    let ts = thread_ts.clone();
+    let ts = conn.thread_ts.clone();
+    let subagent = conn.subagent.clone();
     let tx_for_input = tx_half.tx.clone();
     tokio::spawn(async move {
         let mut rx = rx;
+        let mut first = true;
 
-        // The daemon sends a Welcome message as the first message on every
-        // connection. Intercept it to capture the available models list.
-        if let Some(first_msg) = rx.recv().await {
+        while let Some(msg) = rx.recv().await {
+            // The daemon sends a Welcome message as the first message on
+            // every connection. Intercept it to capture the available models
+            // list; skip Welcomes that arrive later (e.g. after reconnect).
             if let DaemonMessage::Welcome {
                 available_models, ..
-            } = &first_msg
+            } = &msg
             {
-                let rt = infinity_slack_dataflow::runtime::get();
-                let mut models = rt.available_models.lock().expect("bug: lock poisoned");
-                *models = available_models.clone();
-                tracing::info!(
-                    "updated available models from daemon Welcome ({} models)",
-                    models.len()
-                );
-            } else {
-                // Not a Welcome — forward it normally.
-                if let DaemonMessage::Connected {
-                    root_thread_id: ref session_id,
-                    ..
-                } = first_msg
-                {
+                if first {
+                    let rt = infinity_slack_dataflow::runtime::get();
+                    let mut models = rt.available_models.lock().expect("bug: lock poisoned");
+                    *models = available_models.clone();
+                    tracing::info!(
+                        "updated available models from daemon Welcome ({} models)",
+                        models.len()
+                    );
+                }
+                first = false;
+                continue;
+            }
+            first = false;
+
+            // On Connected, send pending input automatically (stashed by the
+            // dataflow until the session exists; root connections only — a
+            // subagent resume connection must not consume it).
+            if let DaemonMessage::Connected {
+                root_thread_id: ref session_id,
+                ..
+            } = msg
+            {
+                if subagent.is_none() {
                     let rt = infinity_slack_dataflow::runtime::get();
                     let pending_text = {
                         let mut pending = rt.pending_input.lock().expect("bug: lock poisoned");
                         pending.remove(&ts)
                     };
                     if let Some(text) = pending_text {
-                        let _ = tx_for_input
+                        if let Err(e) = tx_for_input
                             .send(infinity_protocol::ClientMessage::UserInput {
                                 thread_id: session_id.clone(),
                                 text,
                             })
-                            .await;
+                            .await
+                        {
+                            tracing::error!("sending pending input for {ts} failed: {e}");
+                        }
                     }
                 }
-
-                if to_df
-                    .send(DaemonEvent {
-                        thread_ts: ts.clone(),
-                        message: first_msg,
-                    })
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
             }
-        }
 
-        while let Some(msg) = rx.recv().await {
-            // On Connected, send pending input automatically.
-            if let DaemonMessage::Connected {
-                root_thread_id: ref session_id,
+            // Replays are only meaningful for streams being resumed after a
+            // restart; everything already on screen must not be re-posted.
+            if let DaemonMessage::Replay {
+                history,
+                pending_choices,
+                in_progress,
                 ..
             } = msg
             {
-                let rt = infinity_slack_dataflow::runtime::get();
-                let pending_text = {
-                    let mut pending = rt.pending_input.lock().expect("bug: lock poisoned");
-                    pending.remove(&ts)
-                };
-                if let Some(text) = pending_text {
-                    let _ = tx_for_input
-                        .send(infinity_protocol::ClientMessage::UserInput {
-                            thread_id: session_id.clone(),
-                            text,
-                        })
-                        .await;
+                if !forward_replay(
+                    &ts,
+                    subagent.as_deref(),
+                    &history,
+                    &pending_choices,
+                    in_progress,
+                    &to_df,
+                )
+                .await
+                {
+                    break;
                 }
-            }
-
-            // Skip Welcome messages that arrive later (e.g. after reconnect).
-            if matches!(msg, DaemonMessage::Welcome { .. }) {
                 continue;
             }
 
@@ -329,5 +391,128 @@ fn spawn_receiver(
         }
     });
 
-    connections.insert(thread_ts, tx_half);
+    connections.insert(conn.map_key, tx_half);
+}
+
+/// Forward the undelivered remainder of a resumed stream's `Replay` into the
+/// dataflow, trimmed by the delivery cursor persisted at shutdown (see
+/// [`infinity_slack_dataflow::resume::replay_delta`]). Replays for streams
+/// that are not being resumed are dropped: their content was already
+/// delivered before the restart (and for never-resumed threads the dataflow
+/// has always ignored replays). Returns `false` when the dataflow channel
+/// closed.
+async fn forward_replay(
+    thread_ts: &str,
+    subagent: Option<&str>,
+    history: &[DaemonMessage],
+    pending_choices: &[DaemonMessage],
+    in_progress: bool,
+    to_df: &mpsc::Sender<DaemonEvent>,
+) -> bool {
+    let rt = infinity_slack_dataflow::runtime::get();
+    let cursor = rt
+        .resuming
+        .lock()
+        .expect("bug: lock poisoned")
+        .remove(&(thread_ts.to_owned(), subagent.map(str::to_owned)));
+    let Some(cursor) = cursor else {
+        tracing::debug!("dropping replay for {thread_ts} (not resuming)");
+        return true;
+    };
+
+    let delta = infinity_slack_dataflow::resume::replay_delta(history, &cursor, in_progress);
+    tracing::info!(
+        "resuming stream in {thread_ts}{}: {} replayed event(s), {} synthetic done(s), \
+         {} orphan result(s), in_progress={in_progress}",
+        subagent
+            .map(|s| format!(" (subagent {s})"))
+            .unwrap_or_default(),
+        delta.events.len(),
+        delta.synthetic_dones,
+        delta.orphan_results,
+    );
+
+    // Seed sentinels for the results of calls skipped by the cursor BEFORE
+    // forwarding any delta event, so replayed orphan results already pair
+    // with sentinels (see `Runtime::resume_orphan_results`).
+    if delta.orphan_results > 0 {
+        let skey = infinity_slack_dataflow::slack::stream_key(thread_ts, subagent);
+        rt.resume_orphan_results
+            .lock()
+            .expect("bug: lock poisoned")
+            .insert(skey, delta.orphan_results);
+    }
+
+    for message in delta.events {
+        if to_df
+            .send(DaemonEvent {
+                thread_ts: thread_ts.to_owned(),
+                message,
+            })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+    }
+
+    // Re-post choice buttons that are still pending and were never posted
+    // (e.g. the choice arrived during downtime). Choices already on screen
+    // are tracked in choice_messages (restored from the resume file) — their
+    // buttons still work after the restart, so they must not be duplicated.
+    for choice in pending_choices {
+        let DaemonMessage::UserChoiceRequired { id, .. } = choice else {
+            continue;
+        };
+        let already_posted = rt
+            .choice_messages
+            .lock()
+            .expect("bug: lock poisoned")
+            .contains_key(id.as_str());
+        if already_posted {
+            continue;
+        }
+        if to_df
+            .send(DaemonEvent {
+                thread_ts: thread_ts.to_owned(),
+                message: choice.clone(),
+            })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+    }
+
+    // Synthesize the ResponseDone(s) replay history never carries, so the
+    // resumed stream ends in the same state the live event sequence would
+    // have produced (see `replay_delta`'s docs for the counting).
+    let done_thread_id = match subagent {
+        None => None,
+        Some(sub) => match sub.parse::<infinity_protocol::ThreadRef>() {
+            Ok(t) => Some(t),
+            Err(e) => {
+                // Round-tripped from a ThreadRef, so this would be a bug;
+                // fall back to the root rather than dropping the dones.
+                tracing::error!("bug: unparsable subagent thread id {sub:?}: {e}");
+                None
+            }
+        },
+    };
+    for _ in 0..delta.synthetic_dones {
+        if to_df
+            .send(DaemonEvent {
+                thread_ts: thread_ts.to_owned(),
+                message: DaemonMessage::ResponseDone {
+                    thread_id: done_thread_id.clone(),
+                    token_usage: None,
+                },
+            })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+    }
+    true
 }
