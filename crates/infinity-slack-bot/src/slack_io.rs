@@ -9,7 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 use infinity_slack_dataflow::config::Config;
 use infinity_slack_dataflow::slack::{
     SlackAction, SlackEvent, MODEL_PICKER_ACTION_ID, MODEL_PICKER_BLOCK_ID,
-    MODEL_PICKER_CALLBACK_ID,
+    MODEL_PICKER_CALLBACK_ID, REWIND_ACTION_ID, REWIND_BLOCK_ID, REWIND_MODAL_CALLBACK_ID,
 };
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -63,7 +63,8 @@ struct RawSlackEvent {
 
 #[derive(Deserialize)]
 struct InteractivePayload {
-    /// `block_actions` for button clicks, `view_submission` for modal submits.
+    /// `block_actions` for button clicks, `view_submission` for modal
+    /// submits, `message_action` for message shortcuts (context ⋮ menu).
     #[serde(rename = "type", default)]
     payload_type: String,
     #[serde(default)]
@@ -73,6 +74,16 @@ struct InteractivePayload {
     user: Option<InteractiveUser>,
     /// Present on `view_submission` payloads.
     view: Option<InteractiveView>,
+    /// The shortcut's callback_id (present on `message_action` payloads).
+    #[serde(default)]
+    callback_id: Option<String>,
+    /// Present on `message_action` payloads (and some others).
+    #[serde(default)]
+    trigger_id: Option<String>,
+    /// Present on `message_action` payloads: where ephemeral responses to
+    /// the invoking user can be POSTed.
+    #[serde(default)]
+    response_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -179,6 +190,9 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
 
     let (to_df_tx, to_df_rx) = mpsc::channel::<SlackEvent>(1024);
     let (from_df_tx, mut from_df_rx) = mpsc::unbounded_channel::<SlackAction>();
+    // The executor feeds synthesized events back into the dataflow (a fork's
+    // new Slack thread once its anchor exists).
+    let feedback_tx = to_df_tx.clone();
 
     // Outbound: execute SlackActions against the Slack API.
     let outbound = tokio::spawn(async move {
@@ -941,6 +955,52 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                         tracing::error!("CommandResponse failed: {e}");
                     }
                 }
+                SlackAction::OpenRewindModal {
+                    channel,
+                    thread_ts,
+                    target_ts,
+                    trigger_id,
+                    response_url,
+                } => {
+                    // Resolve the governing user turn (needs the thread's
+                    // replies) and open the edit modal; validation failures go
+                    // back to the invoking user ephemerally. Must stay quick:
+                    // the trigger_id expires ~3s after the shortcut click.
+                    if let Err(user_msg) =
+                        open_rewind_modal(&slack, &channel, &thread_ts, &target_ts, &trigger_id)
+                            .await
+                    {
+                        if let Err(e) = slack.respond_to_command(&response_url, &user_msg).await {
+                            tracing::error!("rewind error response failed: {e}");
+                        }
+                    }
+                }
+                SlackAction::ForkThread {
+                    channel,
+                    source_thread_ts,
+                    source_message_ts,
+                    user_turn,
+                    text,
+                } => {
+                    // Non-destructive fork: open the fork's own Slack thread,
+                    // then let the dataflow start the forked session in it.
+                    let Some(fork_ts) = post_fork_thread(
+                        &slack,
+                        &channel,
+                        &source_thread_ts,
+                        &source_message_ts,
+                        &text,
+                    )
+                    .await
+                    else {
+                        continue;
+                    };
+                    let ready =
+                        fork_ready_event(&channel, &fork_ts, &source_thread_ts, user_turn, &text);
+                    if feedback_tx.send(ready).await.is_err() {
+                        tracing::error!("dataflow channel closed; dropping fork of {fork_ts}");
+                    }
+                }
                 SlackAction::OpenView { trigger_id, view } => {
                     if let Err(e) = slack.open_view(&trigger_id, &view).await {
                         tracing::error!("OpenView failed: {e}");
@@ -1234,6 +1294,211 @@ async fn get_ws_url(app_token: &str) -> Result<String, crate::BoxError> {
         .ok_or_else(|| "No URL in apps.connections.open response".into())
 }
 
+/// Resolve the governing user turn for a "Rewind to here" invocation over a
+/// thread's replies (oldest to newest): the clicked message itself when it
+/// is a plain human message, otherwise the nearest human message before it.
+/// Returns the turn's 0-based index among the thread's human messages and
+/// its text (for the modal prefill).
+fn resolve_rewind_turn(
+    replies: &[crate::slack_client::ThreadMessage],
+    target_ts: &str,
+) -> Option<(usize, String)> {
+    let target: f64 = target_ts.parse().ok()?;
+    let mut governing: Option<(usize, String)> = None;
+    let mut human_count = 0usize;
+    for msg in replies {
+        let Ok(ts) = msg.ts.parse::<f64>() else {
+            continue;
+        };
+        if ts > target {
+            break;
+        }
+        if msg.is_human_message() {
+            governing = Some((human_count, msg.text.clone()));
+            human_count += 1;
+        }
+    }
+    governing
+}
+
+/// Fetch the thread, resolve the rewind point for `target_ts`, and open the
+/// edit modal. Returns a user-facing message on failure (reported
+/// ephemerally by the caller).
+async fn open_rewind_modal(
+    slack: &SlackClient,
+    channel: &str,
+    thread_ts: &str,
+    target_ts: &str,
+    trigger_id: &str,
+) -> Result<(), String> {
+    let replies = slack
+        .conversations_replies(channel, thread_ts)
+        .await
+        .map_err(|e| {
+            tracing::error!("conversations.replies for fork failed: {e}");
+            "⚠️ Could not read the thread to resolve the fork point.".to_owned()
+        })?;
+    let Some((user_turn, original)) = resolve_rewind_turn(&replies, target_ts) else {
+        return Err(
+            "⏪ No user message at or before that point — nothing to fork from.".to_owned(),
+        );
+    };
+
+    let metadata = serde_json::json!({
+        "channel": channel,
+        "thread_ts": thread_ts,
+        "message_ts": target_ts,
+        "user_turn": user_turn,
+    });
+    // Slack caps `plain_text_input.initial_value`; keep a healthy margin.
+    let prefill: String = if original.chars().count() > 2900 {
+        let head: String = original.chars().take(2900).collect();
+        format!("{head}…")
+    } else {
+        original
+    };
+    let view = serde_json::json!({
+        "type": "modal",
+        "callback_id": REWIND_MODAL_CALLBACK_ID,
+        "private_metadata": metadata.to_string(),
+        "title": { "type": "plain_text", "text": "Fork from here" },
+        "submit": { "type": "plain_text", "text": "Fork & send" },
+        "close": { "type": "plain_text", "text": "Cancel" },
+        "blocks": [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "Starts a new conversation in a new thread from just before \
+                             this message, continuing with your edited version. The \
+                             original conversation is kept as it is."
+                }
+            },
+            {
+                "type": "input",
+                "block_id": REWIND_BLOCK_ID,
+                "label": { "type": "plain_text", "text": "Message" },
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": REWIND_ACTION_ID,
+                    "multiline": true,
+                    "initial_value": prefill,
+                }
+            }
+        ],
+    });
+    slack.open_view(trigger_id, &view).await.map_err(|e| {
+        tracing::error!("views.open for fork failed: {e}");
+        "⚠️ Could not open the fork dialog.".to_owned()
+    })?;
+    Ok(())
+}
+
+/// Open a forked conversation's own Slack thread: a top-level anchor message
+/// in `channel` (thread replies cannot host threads) linking back to the
+/// message it forks from, plus a cross-link in the source thread. Returns the
+/// anchor's ts — the fork's `thread_ts` — or `None` if it could not be
+/// posted (the user is told in the source thread).
+async fn post_fork_thread(
+    slack: &SlackClient,
+    channel: &str,
+    source_thread_ts: &str,
+    source_message_ts: &str,
+    text: &str,
+) -> Option<String> {
+    let permalink = |ts: String| async move {
+        match slack.get_permalink(channel, &ts).await {
+            Ok(link) => link,
+            Err(e) => {
+                tracing::warn!("chat.getPermalink for fork failed: {e}");
+                None
+            }
+        }
+    };
+    let origin_ts = if source_message_ts.is_empty() {
+        source_thread_ts
+    } else {
+        source_message_ts
+    };
+    let quoted = infinity_slack_dataflow::flow::quote_snippet(text);
+    let anchor_text = match permalink(origin_ts.to_owned()).await {
+        Some(url) => {
+            format!("⏪ Forked from <{url}|an earlier message>, continuing with:\n{quoted}")
+        }
+        None => format!("⏪ Forked from an earlier conversation, continuing with:\n{quoted}"),
+    };
+    let fork_ts = match slack.post_message(channel, &anchor_text, None).await {
+        Ok(Some(ts)) => Some(ts),
+        Ok(None) => {
+            tracing::error!("posting the fork anchor in {channel} returned no ts");
+            None
+        }
+        Err(e) => {
+            tracing::error!("posting the fork anchor in {channel} failed: {e}");
+            None
+        }
+    };
+    let Some(fork_ts) = fork_ts else {
+        if let Err(e) = slack
+            .post_message(
+                channel,
+                "⚠️ Could not start the forked conversation.",
+                Some(source_thread_ts),
+            )
+            .await
+        {
+            tracing::error!("reporting the failed fork failed: {e}");
+        }
+        return None;
+    };
+    let link_text = match permalink(fork_ts.clone()).await {
+        Some(url) => {
+            format!("⏪ Forked into <{url}|a new thread>. This conversation is unchanged.")
+        }
+        None => "⏪ Forked into a new thread. This conversation is unchanged.".to_owned(),
+    };
+    if let Err(e) = slack
+        .post_message(channel, &link_text, Some(source_thread_ts))
+        .await
+    {
+        tracing::warn!("posting the fork cross-link failed: {e}");
+    }
+    Some(fork_ts)
+}
+
+/// The event the executor feeds back once a fork's Slack thread exists: the
+/// dataflow starts the forked session keyed on `fork_ts`.
+fn fork_ready_event(
+    channel: &str,
+    fork_ts: &str,
+    source_thread_ts: &str,
+    user_turn: usize,
+    text: &str,
+) -> SlackEvent {
+    SlackEvent {
+        user: String::new(),
+        text: text.to_owned(),
+        channel: channel.to_owned(),
+        thread_ts: fork_ts.to_owned(),
+        is_button_click: false,
+        button_value: None,
+        action_id: None,
+        message_ts: None,
+        button_text: None,
+        is_bot: false,
+        is_unauthorized: false,
+        slash_command: None,
+        response_url: None,
+        trigger_id: None,
+        is_app_home_opened: false,
+        is_session_stopped: false,
+        streaming_message_ts: Vec::new(),
+        shortcut: None,
+        rewind_user_turn: Some(user_turn),
+        fork_source_thread_ts: Some(source_thread_ts.to_owned()),
+    }
+}
+
 fn parse_envelope(envelope: SocketEnvelope) -> Option<SlackEvent> {
     match envelope.envelope_type.as_str() {
         "interactive" => parse_interactive(envelope.payload),
@@ -1268,6 +1533,9 @@ fn parse_slash_command(payload: serde_json::Value) -> Option<SlackEvent> {
         is_app_home_opened: false,
         is_session_stopped: false,
         streaming_message_ts: Vec::new(),
+        shortcut: None,
+        rewind_user_turn: None,
+        fork_source_thread_ts: None,
     })
 }
 
@@ -1276,6 +1544,9 @@ fn parse_interactive(payload: serde_json::Value) -> Option<SlackEvent> {
 
     if p.payload_type == "view_submission" {
         return parse_view_submission(p);
+    }
+    if p.payload_type == "message_action" {
+        return parse_message_action(p);
     }
 
     let action = p.actions.first()?;
@@ -1310,22 +1581,69 @@ fn parse_interactive(payload: serde_json::Value) -> Option<SlackEvent> {
         is_app_home_opened: false,
         is_session_stopped: false,
         streaming_message_ts: Vec::new(),
+        shortcut: None,
+        rewind_user_turn: None,
+        fork_source_thread_ts: None,
     })
 }
 
-/// Parse a modal `view_submission`. Currently only the model-picker modal is
-/// supported: the submission is normalized into a `/model <selection>` slash
-/// command event so it flows through the existing command handling.
+/// Parse a `message_action` payload (a message shortcut from the context ⋮
+/// menu, e.g. "Rewind to here"). `message_ts` carries the target message's
+/// ts and `thread_ts` the thread it belongs to (the message itself when it
+/// is a top-level/thread-parent message).
+fn parse_message_action(p: InteractivePayload) -> Option<SlackEvent> {
+    let callback_id = p.callback_id?;
+    let user = p.user?;
+    let chan = p.channel?;
+    let msg = p.message?;
+    let target_ts = msg.ts?;
+    let thread_ts = msg.thread_ts.unwrap_or_else(|| target_ts.clone());
+
+    Some(SlackEvent {
+        user: user.id,
+        text: String::new(),
+        channel: chan.id,
+        thread_ts,
+        is_button_click: false,
+        button_value: None,
+        action_id: None,
+        message_ts: Some(target_ts),
+        button_text: None,
+        is_bot: false,
+        is_unauthorized: false, // set later by caller
+        slash_command: None,
+        response_url: p.response_url,
+        trigger_id: p.trigger_id,
+        is_app_home_opened: false,
+        is_session_stopped: false,
+        streaming_message_ts: Vec::new(),
+        shortcut: Some(callback_id),
+        rewind_user_turn: None,
+        fork_source_thread_ts: None,
+    })
+}
+
+/// Parse a modal `view_submission`: the model-picker modal (normalized into
+/// a `/model <selection>` slash-command event so it flows through the
+/// existing command handling) or the rewind modal (normalized into a
+/// rewind-submission event carrying the edited text and the user turn
+/// resolved at modal-open time).
 fn parse_view_submission(p: InteractivePayload) -> Option<SlackEvent> {
     let view = p.view?;
-    if view.callback_id != MODEL_PICKER_CALLBACK_ID {
-        tracing::debug!(
-            "ignoring view_submission with callback_id: {}",
-            view.callback_id
-        );
-        return None;
+    match view.callback_id.as_str() {
+        MODEL_PICKER_CALLBACK_ID => parse_model_picker_submission(view, p.user?),
+        REWIND_MODAL_CALLBACK_ID => parse_rewind_submission(view, p.user?),
+        other => {
+            tracing::debug!("ignoring view_submission with callback_id: {other}");
+            None
+        }
     }
-    let user = p.user?;
+}
+
+fn parse_model_picker_submission(
+    view: InteractiveView,
+    user: InteractiveUser,
+) -> Option<SlackEvent> {
     let selected = view
         .state?
         .values
@@ -1355,6 +1673,63 @@ fn parse_view_submission(p: InteractivePayload) -> Option<SlackEvent> {
         is_app_home_opened: false,
         is_session_stopped: false,
         streaming_message_ts: Vec::new(),
+        shortcut: None,
+        rewind_user_turn: None,
+        fork_source_thread_ts: None,
+    })
+}
+
+/// The context the rewind modal round-trips through its `private_metadata`:
+/// where the rewind applies and which user turn it discards.
+#[derive(Debug, serde::Serialize, Deserialize)]
+struct RewindMetadata {
+    channel: String,
+    thread_ts: String,
+    /// The clicked message (for the fork's back-link). Absent in modals
+    /// opened by older builds.
+    #[serde(default)]
+    message_ts: Option<String>,
+    user_turn: usize,
+}
+
+fn parse_rewind_submission(view: InteractiveView, user: InteractiveUser) -> Option<SlackEvent> {
+    let meta: RewindMetadata = match serde_json::from_str(&view.private_metadata) {
+        Ok(meta) => meta,
+        Err(e) => {
+            tracing::error!("bug: unparsable rewind modal metadata: {e}");
+            return None;
+        }
+    };
+    let text = view
+        .state?
+        .values
+        .get(REWIND_BLOCK_ID)?
+        .get(REWIND_ACTION_ID)?
+        .get("value")?
+        .as_str()?
+        .to_owned();
+
+    Some(SlackEvent {
+        user: user.id,
+        text,
+        channel: meta.channel,
+        thread_ts: meta.thread_ts,
+        is_button_click: false,
+        button_value: None,
+        action_id: None,
+        message_ts: meta.message_ts,
+        button_text: None,
+        is_bot: false,
+        is_unauthorized: false, // set later by caller
+        slash_command: None,
+        response_url: None,
+        trigger_id: None,
+        is_app_home_opened: false,
+        is_session_stopped: false,
+        streaming_message_ts: Vec::new(),
+        shortcut: None,
+        rewind_user_turn: Some(meta.user_turn),
+        fork_source_thread_ts: None,
     })
 }
 
@@ -1386,6 +1761,9 @@ fn parse_events_api(payload: serde_json::Value) -> Option<SlackEvent> {
             is_app_home_opened: true,
             is_session_stopped: false,
             streaming_message_ts: Vec::new(),
+            shortcut: None,
+            rewind_user_turn: None,
+            fork_source_thread_ts: None,
         });
     }
 
@@ -1412,6 +1790,9 @@ fn parse_events_api(payload: serde_json::Value) -> Option<SlackEvent> {
             is_app_home_opened: false,
             is_session_stopped: true,
             streaming_message_ts: event.streaming_message_ts.unwrap_or_default(),
+            shortcut: None,
+            rewind_user_turn: None,
+            fork_source_thread_ts: None,
         });
     }
 
@@ -1447,6 +1828,9 @@ fn parse_events_api(payload: serde_json::Value) -> Option<SlackEvent> {
         is_app_home_opened: false,
         is_session_stopped: false,
         streaming_message_ts: Vec::new(),
+        shortcut: None,
+        rewind_user_turn: None,
+        fork_source_thread_ts: None,
     })
 }
 
@@ -1718,6 +2102,167 @@ mod tests {
             }
         });
         assert!(parse_interactive(payload).is_none());
+    }
+
+    #[test]
+    fn parse_message_action_rewind_shortcut() {
+        let payload = serde_json::json!({
+            "type": "message_action",
+            "callback_id": "rewind_to_here",
+            "trigger_id": "12345.98765.abcd",
+            "response_url": "https://hooks.slack.com/app/T1/1/x",
+            "user": {"id": "U123"},
+            "channel": {"id": "D456"},
+            "message": {"ts": "1111.2222", "thread_ts": "1000.0000", "text": "fix the bug"}
+        });
+        let event = parse_interactive(payload).expect("should parse");
+        assert_eq!(event.shortcut.as_deref(), Some("rewind_to_here"));
+        assert_eq!(event.user, "U123");
+        assert_eq!(event.channel, "D456");
+        assert_eq!(event.thread_ts, "1000.0000");
+        assert_eq!(event.message_ts.as_deref(), Some("1111.2222"));
+        assert_eq!(event.trigger_id.as_deref(), Some("12345.98765.abcd"));
+        assert_eq!(
+            event.response_url.as_deref(),
+            Some("https://hooks.slack.com/app/T1/1/x")
+        );
+        assert!(!event.is_button_click);
+        assert!(event.rewind_user_turn.is_none());
+    }
+
+    #[test]
+    fn parse_message_action_without_thread_uses_message_ts() {
+        // A shortcut on a top-level message (the thread parent): no
+        // `thread_ts` field — the message is its own thread.
+        let payload = serde_json::json!({
+            "type": "message_action",
+            "callback_id": "rewind_to_here",
+            "trigger_id": "t",
+            "response_url": "https://hooks.slack.com/app/T1/1/x",
+            "user": {"id": "U123"},
+            "channel": {"id": "D456"},
+            "message": {"ts": "1111.2222", "text": "hello"}
+        });
+        let event = parse_interactive(payload).expect("should parse");
+        assert_eq!(event.thread_ts, "1111.2222");
+        assert_eq!(event.message_ts.as_deref(), Some("1111.2222"));
+    }
+
+    #[test]
+    fn parse_view_submission_rewind_modal() {
+        let payload = serde_json::json!({
+            "type": "view_submission",
+            "user": {"id": "U123"},
+            "view": {
+                "callback_id": REWIND_MODAL_CALLBACK_ID,
+                "private_metadata": "{\"channel\":\"D456\",\"thread_ts\":\"1000.0000\",\"user_turn\":2}",
+                "state": {
+                    "values": {
+                        REWIND_BLOCK_ID: {
+                            REWIND_ACTION_ID: {
+                                "type": "plain_text_input",
+                                "value": "the edited message"
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let event = parse_interactive(payload).expect("should parse");
+        assert_eq!(event.rewind_user_turn, Some(2));
+        assert_eq!(event.text, "the edited message");
+        assert_eq!(event.channel, "D456");
+        assert_eq!(event.thread_ts, "1000.0000");
+        // Metadata from an older build has no message_ts; still parses.
+        assert!(event.message_ts.is_none());
+        assert!(event.fork_source_thread_ts.is_none());
+        assert!(event.shortcut.is_none());
+        assert!(event.slash_command.is_none());
+    }
+
+    #[test]
+    fn parse_view_submission_fork_modal_round_trips_message_ts() {
+        let payload = serde_json::json!({
+            "type": "view_submission",
+            "user": {"id": "U123"},
+            "view": {
+                "callback_id": REWIND_MODAL_CALLBACK_ID,
+                "private_metadata": "{\"channel\":\"D456\",\"thread_ts\":\"1000.0000\",\"message_ts\":\"1000.0042\",\"user_turn\":1}",
+                "state": {
+                    "values": {
+                        REWIND_BLOCK_ID: {
+                            REWIND_ACTION_ID: {
+                                "type": "plain_text_input",
+                                "value": "edited"
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let event = parse_interactive(payload).expect("should parse");
+        assert_eq!(event.message_ts.as_deref(), Some("1000.0042"));
+        assert_eq!(event.rewind_user_turn, Some(1));
+    }
+
+    #[test]
+    fn fork_ready_event_targets_the_new_thread() {
+        let event = fork_ready_event("C1", "2000.0001", "1000.0000", 3, "edited");
+        assert_eq!(event.thread_ts, "2000.0001");
+        assert_eq!(event.fork_source_thread_ts.as_deref(), Some("1000.0000"));
+        assert_eq!(event.rewind_user_turn, Some(3));
+        assert_eq!(event.text, "edited");
+        assert!(
+            !event.is_bot && !event.is_unauthorized,
+            "must pass the dataflow filter"
+        );
+    }
+
+    #[test]
+    fn resolve_rewind_turn_targets_human_and_bot_messages() {
+        use crate::slack_client::ThreadMessage;
+        let human = |ts: &str, text: &str| ThreadMessage {
+            ts: ts.to_owned(),
+            text: text.to_owned(),
+            user: Some("U1".to_owned()),
+            bot_id: None,
+            subtype: None,
+        };
+        let bot = |ts: &str, text: &str| ThreadMessage {
+            ts: ts.to_owned(),
+            text: text.to_owned(),
+            user: None,
+            bot_id: Some("B1".to_owned()),
+            subtype: None,
+        };
+        let replies = vec![
+            human("1.0", "first"),
+            bot("2.0", "answer one"),
+            human("3.0", "second"),
+            bot("4.0", "answer two"),
+        ];
+
+        // On a human message: that message is the turn.
+        assert_eq!(
+            resolve_rewind_turn(&replies, "3.0"),
+            Some((1, "second".to_owned()))
+        );
+        assert_eq!(
+            resolve_rewind_turn(&replies, "1.0"),
+            Some((0, "first".to_owned()))
+        );
+        // On a bot message: the nearest human message before it.
+        assert_eq!(
+            resolve_rewind_turn(&replies, "4.0"),
+            Some((1, "second".to_owned()))
+        );
+        assert_eq!(
+            resolve_rewind_turn(&replies, "2.0"),
+            Some((0, "first".to_owned()))
+        );
+        // Before any human message: nothing to rewind to.
+        let bot_first = vec![bot("1.0", "hi"), human("2.0", "hello")];
+        assert_eq!(resolve_rewind_turn(&bot_first, "1.0"), None);
     }
 
     #[test]

@@ -107,6 +107,24 @@ impl DaemonClient {
         Ok(())
     }
 
+    /// Fork session `thread_id` into a new session just before its
+    /// `user_turn`-th user turn (see [`ClientMessage::ForkSession`]). This
+    /// connection is attached to the fork, which replies `Connected`.
+    pub async fn fork_session(
+        &self,
+        thread_id: &infinity_protocol::ThreadRef,
+        user_turn: usize,
+    ) -> Result<(), BoxError> {
+        self.tx
+            .send(ClientMessage::ForkSession {
+                thread_id: thread_id.clone(),
+                user_turn,
+                keeps_session_alive: false,
+            })
+            .await?;
+        Ok(())
+    }
+
     pub async fn connect_session(
         &self,
         session_id: &infinity_protocol::ThreadRef,

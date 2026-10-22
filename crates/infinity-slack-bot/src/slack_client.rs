@@ -484,4 +484,93 @@ impl SlackClient {
         );
         self.stop_stream(channel, ts).await
     }
+
+    /// Fetch a thread's messages via `conversations.replies` (the parent
+    /// message first, then replies, oldest to newest). Paginates until the
+    /// thread is exhausted.
+    pub async fn conversations_replies(
+        &self,
+        channel: &str,
+        thread_ts: &str,
+    ) -> Result<Vec<ThreadMessage>, BoxError> {
+        #[derive(Debug, Deserialize)]
+        struct RepliesResponse {
+            ok: bool,
+            #[serde(default)]
+            error: Option<String>,
+            #[serde(default)]
+            messages: Vec<ThreadMessage>,
+            #[serde(default)]
+            has_more: bool,
+            #[serde(default)]
+            response_metadata: Option<RepliesMetadata>,
+        }
+        #[derive(Debug, Deserialize)]
+        struct RepliesMetadata {
+            #[serde(default)]
+            next_cursor: Option<String>,
+        }
+
+        let mut messages = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            // Channel/ts are Slack-issued identifiers (`[A-Za-z0-9.]`) and
+            // the cursor is base64; safe to interpolate (the workspace
+            // `reqwest` build has no `query` feature).
+            let mut url = format!(
+                "https://slack.com/api/conversations.replies?channel={channel}&ts={thread_ts}&limit=200"
+            );
+            if let Some(ref c) = cursor {
+                url.push_str(&format!("&cursor={c}"));
+            }
+            let resp: RepliesResponse = self
+                .http
+                .get(url)
+                .bearer_auth(&self.token)
+                .send()
+                .await?
+                .json()
+                .await?;
+            if !resp.ok {
+                return Err(format!(
+                    "conversations.replies failed: {}",
+                    resp.error.unwrap_or_default()
+                )
+                .into());
+            }
+            messages.extend(resp.messages);
+            cursor = resp
+                .response_metadata
+                .and_then(|m| m.next_cursor)
+                .filter(|c| !c.is_empty());
+            if !resp.has_more || cursor.is_none() {
+                return Ok(messages);
+            }
+        }
+    }
+}
+
+/// One message of a Slack thread, as returned by
+/// [`SlackClient::conversations_replies`]. Only the fields the bot needs.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThreadMessage {
+    #[serde(default)]
+    pub ts: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub bot_id: Option<String>,
+    #[serde(default)]
+    pub subtype: Option<String>,
+}
+
+impl ThreadMessage {
+    /// Whether this is a plain human message (the kind the bot forwards to
+    /// the daemon as a user turn): authored by a user, not a bot, and not a
+    /// system subtype (joins, thread broadcasts metadata, ...).
+    pub fn is_human_message(&self) -> bool {
+        self.user.is_some() && self.bot_id.is_none() && self.subtype.is_none()
+    }
 }
