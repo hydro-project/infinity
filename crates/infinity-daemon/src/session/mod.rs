@@ -171,6 +171,8 @@ impl SessionManager {
             id_source.clone(),
         );
         conversation_store.set_change_tx(change_tx_for_conv);
+        // Before the agent system starts, so every unanswered call is orphaned.
+        conversation_store.settle_orphaned_tool_calls().await;
         let state_store = PersistentStateStore::new(
             state_dir.join("state"),
             conversation_store.clone(),

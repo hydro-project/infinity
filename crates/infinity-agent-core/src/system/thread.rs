@@ -29,6 +29,16 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// "waiting for a tool result".
 const CLOSE_THREAD_TOOL: &str = "close_thread";
 
+/// The name of the built-in indefinite-wait tool. Its no-op call is never
+/// answered either: the next event or input interrupts it, respawning the
+/// driver through the router.
+const SLEEP_UNTIL_EVENT_OR_INPUT_TOOL: &str = "sleep_until_event_or_input";
+
+/// Whether an unanswered call to `tool_name` will ever receive a result.
+pub fn tool_call_expects_result(tool_name: &str) -> bool {
+    tool_name != CLOSE_THREAD_TOOL && tool_name != SLEEP_UNTIL_EVENT_OR_INPUT_TOOL
+}
+
 /// The result of one step (see [`AgentSystem::step`](super::AgentSystem::step)).
 #[derive(Debug)]
 pub enum StepOutcome {
@@ -226,15 +236,15 @@ where
     }
 
     /// Whether the thread must stay resident: the result of an unanswered
-    /// tool call (other than `close_thread`, whose result never arrives) is
-    /// still on its way. Active subscriptions do not keep a thread resident;
-    /// their events wake it through the router when they arrive.
+    /// tool call (see [`tool_call_expects_result`]) is still on its way.
+    /// Active subscriptions do not keep a thread resident; their events wake
+    /// it through the router when they arrive.
     ///
     /// Synchronous so a driver can make its exit decision atomically with
     /// respect to the router on the shared `LocalSet`.
     pub fn awaiting_tool_result(&self) -> bool {
         self.pending_tool_call()
-            .is_some_and(|(_, name)| name != CLOSE_THREAD_TOOL)
+            .is_some_and(|(_, name)| tool_call_expects_result(&name))
     }
 
     /// Apply the deferral policy to a batch of inputs.
