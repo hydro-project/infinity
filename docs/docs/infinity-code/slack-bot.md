@@ -38,6 +38,10 @@ features:
       type: message
       callback_id: rewind_to_here
       description: Fork the conversation from this message into a new thread, edit it, and resend
+    - name: Compact session
+      type: message
+      callback_id: compact_session
+      description: Summarize this session's older conversation to free up context space
 
 oauth_config:
   scopes:
@@ -206,6 +210,14 @@ Use the `/model` slash command (responses are ephemeral — only you see them):
 | `/model <display name or model id>` | Same, matching by name (case-insensitive) |
 
 The switch applies to sessions created afterwards; existing threads keep their model. The available model list is populated from the daemon after the first session is created.
+
+## Compacting Context
+
+Use the **Compact session** message shortcut (the **⋮** menu on any message in a session thread) to summarize the session's older conversation and free up context space. It works from the root conversation thread or from a subagent's dedicated thread — compaction is session-scoped either way. The ack is ephemeral (only you see it), and a "🗜️ Context compacted" note is posted in the session thread when done. The same note is posted when the daemon auto-compacts a session on its own.
+
+A slash command is deliberately not used here: Slack does not deliver developer slash commands typed inside message threads, which would force channel-level session disambiguation instead of the one-click shortcut.
+
+To enable the shortcut, add **Compact session** (type: message, callback ID `compact_session`) under **Interactivity & Shortcuts** in your [app settings](https://api.slack.com/apps) (or re-apply the manifest above — remembering that manifests replace rather than merge).
 
 ## Troubleshooting
 

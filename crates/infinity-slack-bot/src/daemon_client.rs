@@ -125,6 +125,20 @@ impl DaemonClient {
         Ok(())
     }
 
+    /// Trigger context compaction for the session rooted at `session_id`
+    /// (see [`ClientMessage::TriggerCompaction`]).
+    pub async fn trigger_compaction(
+        &self,
+        session_id: &infinity_protocol::ThreadRef,
+    ) -> Result<(), BoxError> {
+        self.tx
+            .send(ClientMessage::TriggerCompaction {
+                root_thread_id: session_id.clone(),
+            })
+            .await?;
+        Ok(())
+    }
+
     pub async fn connect_session(
         &self,
         session_id: &infinity_protocol::ThreadRef,

@@ -12,6 +12,11 @@ pub const MODEL_PICKER_ACTION_ID: &str = "model_select";
 /// kept so installed app manifests keep working) (declared in the
 /// Slack app manifest under `features.shortcuts`).
 pub const REWIND_SHORTCUT_CALLBACK_ID: &str = "rewind_to_here";
+/// Callback ID of the "Compact session" message shortcut (declared in the
+/// Slack app manifest under `features.shortcuts`). Message shortcuts work
+/// inside threads — unlike slash commands, which Slack rejects there — so
+/// this is the thread-friendly way to trigger context compaction.
+pub const COMPACT_SHORTCUT_CALLBACK_ID: &str = "compact_session";
 /// Callback ID for the rewind modal (set on the view when opening, echoed
 /// back by Slack in the `view_submission` payload).
 pub const REWIND_MODAL_CALLBACK_ID: &str = "rewind_submit";
