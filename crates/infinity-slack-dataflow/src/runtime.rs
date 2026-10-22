@@ -65,6 +65,14 @@ pub struct Runtime {
     /// dataflow to route user replies/button clicks made inside a subagent
     /// thread to the owning session (and subagent thread).
     pub subagent_routes: Arc<Mutex<HashMap<String, SubagentRoute>>>,
+    /// Slack threads (by resolved target thread ts — the root conversation
+    /// thread ts or a subagent anchor ts) whose current response was stopped
+    /// by the user via Slack's native stop button. While latched, the I/O
+    /// layer drops stream appends/task cards/status updates for the thread.
+    /// Set by the I/O layer (on `HaltStreams` or a `stopped_by_user` append
+    /// error); cleared by the I/O layer on the response's final `StreamStop`
+    /// and by the dataflow when the user sends a new message in the thread.
+    pub halted_streams: Arc<Mutex<HashSet<String>>>,
 }
 
 static RUNTIME: std::sync::OnceLock<Runtime> = std::sync::OnceLock::new();
@@ -86,6 +94,7 @@ pub fn init(config: &'static Config, sessions: Arc<Mutex<SessionStore>>) {
         thread_titles: Arc::new(Mutex::new(HashMap::new())),
         app_home_seen: Arc::new(Mutex::new(HashSet::new())),
         subagent_routes: Arc::new(Mutex::new(HashMap::new())),
+        halted_streams: Arc::new(Mutex::new(HashSet::new())),
     });
 }
 
@@ -114,6 +123,7 @@ pub fn ensure_test_init() {
             thread_titles: Arc::new(Mutex::new(HashMap::new())),
             app_home_seen: Arc::new(Mutex::new(HashSet::new())),
             subagent_routes: Arc::new(Mutex::new(HashMap::new())),
+            halted_streams: Arc::new(Mutex::new(HashSet::new())),
         }
     });
 }

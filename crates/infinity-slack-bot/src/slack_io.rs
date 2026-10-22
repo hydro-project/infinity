@@ -55,6 +55,10 @@ struct RawSlackEvent {
     /// Which App Home tab was opened (for `app_home_opened` events).
     #[serde(default)]
     tab: Option<String>,
+    /// Streaming message ts values Slack stopped client-side (for
+    /// `agent_session_stopped` events).
+    #[serde(default)]
+    streaming_message_ts: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -253,6 +257,36 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                     tracing::warn!("completing open task {task_id} failed: {e}");
                 }
             }
+        }
+
+        /// Whether the user stopped the current response in this target
+        /// thread via Slack's native stop button (see
+        /// `runtime::Runtime::halted_streams`).
+        fn is_halted(target_ts: &str) -> bool {
+            let rt = infinity_slack_dataflow::runtime::get();
+            rt.halted_streams
+                .lock()
+                .expect("bug: lock poisoned")
+                .contains(target_ts)
+        }
+
+        /// Latch a target thread as user-stopped: its remaining output for
+        /// the current response is suppressed.
+        fn set_halted(target_ts: &str) {
+            let rt = infinity_slack_dataflow::runtime::get();
+            rt.halted_streams
+                .lock()
+                .expect("bug: lock poisoned")
+                .insert(target_ts.to_owned());
+        }
+
+        /// Lift the user-stop latch (next response may stream again).
+        fn clear_halted(target_ts: &str) {
+            let rt = infinity_slack_dataflow::runtime::get();
+            rt.halted_streams
+                .lock()
+                .expect("bug: lock poisoned")
+                .remove(target_ts);
         }
 
         /// Finalize the active stream in `thread_ts`: flush its buffered
@@ -517,6 +551,16 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                     state.char_count += text.len();
                     state.in_code_block = update_code_block_state(text, state.in_code_block);
                 }
+                Ok(Some(ref err)) if err == "stopped_by_user" => {
+                    // The user clicked Slack's stop button on this message:
+                    // no further appends are accepted and the rest of this
+                    // response must NOT be resurrected in a fresh stream.
+                    // (Defense-in-depth: the `agent_session_stopped` event
+                    // sets the same latch.)
+                    tracing::info!("stream in {thread_ts} stopped by user; suppressing output");
+                    active_streams.remove(thread_ts);
+                    set_halted(thread_ts);
+                }
                 Ok(Some(ref err)) => {
                     // Recoverable (e.g. msg_too_long, expired stream): start a
                     // new stream and retry. Complete the open task cards and
@@ -593,7 +637,7 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                     // Flush all buffered text (one append per thread).
                     let ready: Vec<(String, PendingText)> = pending_text.drain().collect();
                     for (thread_ts, pending) in ready {
-                        if pending.text.is_empty() {
+                        if pending.text.is_empty() || is_halted(&thread_ts) {
                             continue;
                         }
                         append_text(
@@ -745,6 +789,12 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                     )
                     .await
                     .unwrap_or(thread_ts);
+                    // The user stopped this response: drop the chunk rather
+                    // than resurrecting the stream below the stop point.
+                    if is_halted(&target_ts) {
+                        tracing::debug!("dropping stream append for user-stopped {target_ts}");
+                        continue;
+                    }
                     // Buffer the text; it is flushed on the next interval tick
                     // (or immediately on a tool update / stream stop). This
                     // coalesces rapid chunks into one append to avoid Slack
@@ -770,14 +820,30 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                         None => Some(thread_ts.clone()),
                     };
                     if let Some(target_ts) = target_ts {
-                        finalize_stream(
-                            &slack,
-                            &channel,
-                            &target_ts,
-                            &mut active_streams,
-                            &mut pending_text,
-                        )
-                        .await;
+                        if is_halted(&target_ts) {
+                            // The user stopped this response; its stream is
+                            // already finalized by Slack and the suppressed
+                            // remainder was dropped. The response is over —
+                            // lift the latch so the next response streams.
+                            clear_halted(&target_ts);
+                            pending_text.remove(&target_ts);
+                            if let Some(state) = active_streams.remove(&target_ts) {
+                                // Shouldn't normally exist while halted, but
+                                // never leave a stream in streaming state.
+                                if let Err(e) = slack.stop_stream(&channel, &state.ts).await {
+                                    tracing::warn!("stop_stream after user stop failed: {e}");
+                                }
+                            }
+                        } else {
+                            finalize_stream(
+                                &slack,
+                                &channel,
+                                &target_ts,
+                                &mut active_streams,
+                                &mut pending_text,
+                            )
+                            .await;
+                        }
                     }
                     // Clear the thread status indicator. The status lives on
                     // the root conversation thread and tracks the root
@@ -789,11 +855,73 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                         last_status.remove(&thread_ts);
                     }
                 }
+                SlackAction::HaltStreams {
+                    channel,
+                    thread_ts,
+                    subagent,
+                    stopped_message_ts,
+                } => {
+                    // The user clicked Slack's native stop button. Slack has
+                    // already finalized the streaming message(s) client-side —
+                    // do not re-touch them. Discard buffered output and
+                    // in-flight task cards, and latch the thread so the
+                    // remainder of the current response is suppressed.
+                    // Look up the target thread without creating one: a stop
+                    // can only come from a thread that already exists.
+                    let target_ts = match &subagent {
+                        Some(sub) => anchors.get(&(thread_ts.clone(), sub.clone())).cloned(),
+                        None => Some(thread_ts.clone()),
+                    };
+                    let Some(target_ts) = target_ts else {
+                        tracing::warn!(
+                            "HaltStreams for unknown subagent thread (root {thread_ts})"
+                        );
+                        continue;
+                    };
+                    set_halted(&target_ts);
+                    let dropped_text = pending_text
+                        .remove(&target_ts)
+                        .map(|p| p.text.len())
+                        .unwrap_or(0);
+                    // Any open task cards in the removed stream are frozen by
+                    // Slack's client-side stop; discard them rather than
+                    // appending completions to a dead message.
+                    let mut dropped_tasks = 0;
+                    if let Some(state) = active_streams.remove(&target_ts) {
+                        dropped_tasks = state.open_tasks.len();
+                        if !stopped_message_ts.contains(&state.ts) {
+                            // Our live stream wasn't among the messages Slack
+                            // stopped (e.g. it raced a split); stop it
+                            // ourselves so nothing is left streaming.
+                            if let Err(e) = slack.stop_stream(&channel, &state.ts).await {
+                                tracing::warn!("stop_stream on user stop failed: {e}");
+                            }
+                        }
+                    }
+                    tracing::info!(
+                        "user stopped response in {target_ts} (dropped {dropped_text} buffered \
+                         chars, {dropped_tasks} task cards)"
+                    );
+                    // Transition the thread status out of "processing" (an
+                    // empty status bridges to the `active` session state).
+                    // Subagent threads carry no status indicator.
+                    if subagent.is_none() {
+                        if let Err(e) = slack.set_thread_status(&channel, &thread_ts, "").await {
+                            tracing::warn!("clearing thread status on stop failed: {e}");
+                        }
+                        last_status.remove(&thread_ts);
+                    }
+                }
                 SlackAction::SetStatus {
                     channel,
                     thread_ts,
                     status,
                 } => {
+                    // While the user has this thread's response stopped, do
+                    // not re-arm the "processing" status.
+                    if is_halted(&thread_ts) {
+                        continue;
+                    }
                     // Skip redundant updates (the same status is emitted on
                     // every text chunk) to avoid spamming the API.
                     if last_status.get(&thread_ts) == Some(&status) {
@@ -872,6 +1000,12 @@ pub async fn spawn(config: &'static Config) -> Result<SlackIo, crate::BoxError> 
                     )
                     .await
                     .unwrap_or(thread_ts);
+                    // The user stopped this response: drop the task card
+                    // rather than opening a fresh stream below the stop point.
+                    if is_halted(&target_ts) {
+                        tracing::debug!("dropping task update for user-stopped {target_ts}");
+                        continue;
+                    }
                     // Flush buffered text first so the tool indicator appears
                     // after the text that preceded it (preserves ordering).
                     if let Some(pending) = pending_text.remove(&target_ts) {
@@ -1132,6 +1266,8 @@ fn parse_slash_command(payload: serde_json::Value) -> Option<SlackEvent> {
         response_url: Some(p.response_url),
         trigger_id: p.trigger_id,
         is_app_home_opened: false,
+        is_session_stopped: false,
+        streaming_message_ts: Vec::new(),
     })
 }
 
@@ -1172,6 +1308,8 @@ fn parse_interactive(payload: serde_json::Value) -> Option<SlackEvent> {
         response_url: None,
         trigger_id: None,
         is_app_home_opened: false,
+        is_session_stopped: false,
+        streaming_message_ts: Vec::new(),
     })
 }
 
@@ -1215,6 +1353,8 @@ fn parse_view_submission(p: InteractivePayload) -> Option<SlackEvent> {
         response_url: (!view.private_metadata.is_empty()).then_some(view.private_metadata),
         trigger_id: None,
         is_app_home_opened: false,
+        is_session_stopped: false,
+        streaming_message_ts: Vec::new(),
     })
 }
 
@@ -1244,6 +1384,34 @@ fn parse_events_api(payload: serde_json::Value) -> Option<SlackEvent> {
             response_url: None,
             trigger_id: None,
             is_app_home_opened: true,
+            is_session_stopped: false,
+            streaming_message_ts: Vec::new(),
+        });
+    }
+
+    // The user clicked Slack's native stop button on a streaming response.
+    // Payload: { type: "agent_session_stopped", channel, thread_ts, user,
+    // streaming_message_ts: [..] } — `streaming_message_ts` lists the
+    // in-progress streaming messages Slack already stopped client-side.
+    if event.event_type == "agent_session_stopped" {
+        return Some(SlackEvent {
+            user: event.user.unwrap_or_default(),
+            text: String::new(),
+            channel: event.channel?,
+            thread_ts: event.thread_ts.or(event.ts).unwrap_or_default(),
+            is_button_click: false,
+            button_value: None,
+            action_id: None,
+            message_ts: None,
+            button_text: None,
+            is_bot: false,
+            is_unauthorized: false, // set later by caller
+            slash_command: None,
+            response_url: None,
+            trigger_id: None,
+            is_app_home_opened: false,
+            is_session_stopped: true,
+            streaming_message_ts: event.streaming_message_ts.unwrap_or_default(),
         });
     }
 
@@ -1277,12 +1445,52 @@ fn parse_events_api(payload: serde_json::Value) -> Option<SlackEvent> {
         response_url: None,
         trigger_id: None,
         is_app_home_opened: false,
+        is_session_stopped: false,
+        streaming_message_ts: Vec::new(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_events_api_agent_session_stopped() {
+        let payload = serde_json::json!({
+            "event": {
+                "type": "agent_session_stopped",
+                "user": "U123",
+                "channel": "D456",
+                "thread_ts": "1111.0000",
+                "event_ts": "2222.0000",
+                "streaming_message_ts": ["1234.5678", "1234.9999"]
+            }
+        });
+        let event = parse_events_api(payload).expect("should parse");
+        assert!(event.is_session_stopped);
+        assert_eq!(event.user, "U123");
+        assert_eq!(event.channel, "D456");
+        assert_eq!(event.thread_ts, "1111.0000");
+        assert_eq!(event.streaming_message_ts, vec!["1234.5678", "1234.9999"]);
+        assert!(!event.is_button_click);
+        assert!(!event.is_app_home_opened);
+    }
+
+    #[test]
+    fn parse_events_api_agent_session_stopped_without_message_list() {
+        // `streaming_message_ts` may be absent/empty — the stop still applies.
+        let payload = serde_json::json!({
+            "event": {
+                "type": "agent_session_stopped",
+                "user": "U123",
+                "channel": "D456",
+                "thread_ts": "1111.0000"
+            }
+        });
+        let event = parse_events_api(payload).expect("should parse");
+        assert!(event.is_session_stopped);
+        assert!(event.streaming_message_ts.is_empty());
+    }
 
     #[test]
     fn parse_events_api_normal_message() {

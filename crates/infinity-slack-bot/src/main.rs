@@ -211,6 +211,8 @@ mod tests {
                 response_url: None,
                 trigger_id: None,
                 is_app_home_opened: false,
+                is_session_stopped: false,
+                streaming_message_ts: Vec::new(),
             })
             .await
             .expect("send should succeed");
