@@ -22,6 +22,11 @@ pub enum DaemonCommand {
     SendInput {
         thread_ts: String,
         session_id: infinity_protocol::ThreadRef,
+        /// The agent thread to address the input to. `None` targets the
+        /// session root; `Some` targets a subagent thread (used when the
+        /// user replies inside a dedicated subagent Slack thread).
+        #[serde(default)]
+        target_thread: Option<infinity_protocol::ThreadRef>,
         text: String,
     },
     /// Answer a choice prompt on the connection for this thread.

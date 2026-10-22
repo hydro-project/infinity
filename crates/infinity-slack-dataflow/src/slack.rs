@@ -45,8 +45,44 @@ pub struct SlackEvent {
     pub is_app_home_opened: bool,
 }
 
+/// Serde adapter storing a `serde_json::Value` as its JSON string form.
+///
+/// `SlackAction`s cross the embedded-dataflow / simulator boundary in a
+/// non-self-describing binary format, which cannot *deserialize* a raw
+/// `serde_json::Value` (it requires `deserialize_any`). Round-tripping
+/// through a string keeps the ergonomic `Value` fields while staying
+/// compatible with that format.
+mod json_as_string {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &serde_json::Value, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&v.to_string())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<serde_json::Value, D::Error> {
+        let s = String::deserialize(d)?;
+        serde_json::from_str(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Key identifying a logical output stream: the root Slack thread plus an
+/// optional subagent id. Used by the dataflow and the Slack I/O layer to key
+/// per-stream state (in-flight tool tasks, tool-call flags) consistently.
+pub fn stream_key(thread_ts: &str, subagent: Option<&str>) -> String {
+    match subagent {
+        Some(id) => format!("{thread_ts}::{id}"),
+        None => thread_ts.to_owned(),
+    }
+}
+
 /// An action the dataflow instructs the Slack I/O layer to perform against
 /// the Slack API.
+///
+/// Actions that carry a `subagent` field target a *dedicated subagent Slack
+/// thread*: when set (to the subagent's agent thread id), the I/O layer
+/// routes the action into a separate Slack thread created lazily for that
+/// subagent instead of the root conversation thread (`thread_ts`). This
+/// keeps concurrent subagent output from interleaving in one thread.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum SlackAction {
     /// Post a text message to a channel/thread.
@@ -54,18 +90,30 @@ pub enum SlackAction {
         channel: String,
         text: String,
         thread_ts: Option<String>,
+        /// Route into the dedicated thread of this subagent (see enum docs).
+        #[serde(default)]
+        subagent: Option<String>,
     },
     /// Post a message with Block Kit blocks.
     PostBlocks {
         channel: String,
         fallback_text: String,
+        #[serde(with = "json_as_string")]
         blocks: serde_json::Value,
         thread_ts: Option<String>,
         /// If set, the Slack I/O layer will store the resulting message_ts
         /// under this choice_id so that a later `DismissChoiceButtons` can
         /// update it.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ///
+        /// NOTE: fields of this enum must not use `skip_serializing_if` —
+        /// actions cross the embedded-dataflow boundary in a
+        /// non-self-describing binary format where missing fields corrupt
+        /// the stream.
+        #[serde(default)]
         choice_id: Option<infinity_protocol::ChoiceId>,
+        /// Route into the dedicated thread of this subagent (see enum docs).
+        #[serde(default)]
+        subagent: Option<String>,
     },
     /// Dismiss interactive buttons for a completed choice (replace with a
     /// "resolved" indicator). The Slack I/O layer looks up the stored
@@ -78,6 +126,7 @@ pub enum SlackAction {
         channel: String,
         ts: String,
         text: String,
+        #[serde(with = "json_as_string")]
         blocks: serde_json::Value,
     },
     /// Append text to the active stream for this thread (starts a stream if needed).
@@ -85,9 +134,18 @@ pub enum SlackAction {
         channel: String,
         thread_ts: String,
         text: String,
+        /// Route into the dedicated thread of this subagent (see enum docs).
+        #[serde(default)]
+        subagent: Option<String>,
     },
     /// Stop/finalize the active stream for this thread.
-    StreamStop { channel: String, thread_ts: String },
+    StreamStop {
+        channel: String,
+        thread_ts: String,
+        /// Route into the dedicated thread of this subagent (see enum docs).
+        #[serde(default)]
+        subagent: Option<String>,
+    },
     /// Set a status indicator on the thread (e.g. "Thinking...").
     SetStatus {
         channel: String,
@@ -100,6 +158,7 @@ pub enum SlackAction {
     /// Open a modal view using the Slack `views.open` API.
     OpenView {
         trigger_id: String,
+        #[serde(with = "json_as_string")]
         view: serde_json::Value,
     },
     /// Set the title of an agent thread.
@@ -120,6 +179,9 @@ pub enum SlackAction {
         title: String,
         status: String,
         details: String,
+        /// Route into the dedicated thread of this subagent (see enum docs).
+        #[serde(default)]
+        subagent: Option<String>,
     },
 }
 
@@ -170,5 +232,19 @@ mod tests {
     fn filter_logic_passes_valid_message() {
         let event = base_event();
         assert!(!event.is_bot && !event.is_unauthorized);
+    }
+
+    #[test]
+    fn stream_key_is_distinct_per_subagent() {
+        assert_eq!(stream_key("1.0", None), "1.0");
+        assert_eq!(stream_key("1.0", Some("sub1")), "1.0::sub1");
+        assert_ne!(
+            stream_key("1.0", Some("sub1")),
+            stream_key("1.0", Some("sub2"))
+        );
+        assert_ne!(
+            stream_key("1.0", Some("sub1")),
+            stream_key("2.0", Some("sub1"))
+        );
     }
 }

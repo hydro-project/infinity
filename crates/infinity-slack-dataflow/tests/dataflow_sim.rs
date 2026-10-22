@@ -118,25 +118,62 @@ fn devent(thread_ts: &str, message: infinity_protocol::DaemonMessage) -> DaemonE
 }
 
 fn text_chunk(chunk: &str) -> infinity_protocol::DaemonMessage {
+    text_chunk_in(None, chunk)
+}
+
+fn text_chunk_in(thread_id: Option<&str>, chunk: &str) -> infinity_protocol::DaemonMessage {
     infinity_protocol::DaemonMessage::TextChunk {
-        thread_id: None,
+        thread_id: thread_id.map(Into::into),
         chunk: chunk.to_owned(),
     }
 }
 
 fn tool_call(name: &str) -> infinity_protocol::DaemonMessage {
+    tool_call_in(None, name)
+}
+
+fn tool_call_in(thread_id: Option<&str>, name: &str) -> infinity_protocol::DaemonMessage {
     infinity_protocol::DaemonMessage::ToolCall {
         name: name.to_owned(),
         args: "{}".to_owned(),
-        thread_id: None,
+        thread_id: thread_id.map(Into::into),
         display_as: None,
     }
 }
 
 fn response_done() -> infinity_protocol::DaemonMessage {
+    response_done_in(None)
+}
+
+fn response_done_in(thread_id: Option<&str>) -> infinity_protocol::DaemonMessage {
     infinity_protocol::DaemonMessage::ResponseDone {
-        thread_id: None,
+        thread_id: thread_id.map(Into::into),
         token_usage: None,
+    }
+}
+
+fn tool_result() -> infinity_protocol::DaemonMessage {
+    infinity_protocol::DaemonMessage::ToolResult {
+        // The dataflow ignores the segments; completion is paired by queue order.
+        segments: Vec::new(),
+        thread_id: None,
+    }
+}
+
+fn error_msg(text: &str) -> infinity_protocol::DaemonMessage {
+    infinity_protocol::DaemonMessage::Error {
+        thread_id: None,
+        text: text.to_owned(),
+    }
+}
+
+fn choice_required(id: &str, prompt: &str) -> infinity_protocol::DaemonMessage {
+    infinity_protocol::DaemonMessage::UserChoiceRequired {
+        thread_id: None,
+        id: id.into(),
+        prompt: prompt.to_owned(),
+        choices: vec!["Yes".to_owned(), "No".to_owned()],
+        default: 0,
     }
 }
 
@@ -273,10 +310,12 @@ fn existing_session_produces_send_input() {
             DaemonCommand::SendInput {
                 thread_ts: t,
                 session_id: s,
+                target_thread,
                 text,
             } => {
                 assert_eq!(t, thread_ts);
                 assert_eq!(s.to_string(), session_id);
+                assert!(target_thread.is_none(), "root replies target the root");
                 assert_eq!(text, "follow up");
             }
             other => panic!("expected SendInput, got {other:?}"),
@@ -330,6 +369,7 @@ fn tool_call_keeps_stream_open_across_response_done() {
             }, SlackAction::StreamAppend { text: t2, .. }, SlackAction::StreamStop {
                 channel: c2,
                 thread_ts: t,
+                ..
             }] => {
                 assert_eq!(t1, "Let me check...");
                 assert_eq!(c1, &channel);
@@ -351,6 +391,79 @@ fn tool_call_keeps_stream_open_across_response_done() {
             status_texts(&actions).contains(&"is running read_file"),
             "missing tool status in {actions:?}"
         );
+    });
+}
+
+/// A tool entry whose ToolResult never arrives (e.g. an interrupted tool)
+/// must be discarded when the response's stream stops: ToolResult pairs
+/// completions to calls by FIFO order only, so a stale entry would otherwise
+/// mislabel the next response's first completion with the OLD tool's
+/// title/task id (leaving the new tool's card stuck "in progress").
+#[test]
+fn stale_tool_tasks_discarded_at_response_end() {
+    let mut flow = FlowBuilder::new();
+    let (slack_tx, daemon_tx, actions_out, commands_out) = build_sim(&mut flow);
+
+    flow.sim().unit_test_fuzz_iterations(256).fuzz(async || {
+        let thread_ts = fresh("stale");
+        let channel = fresh("C");
+
+        slack_tx.send(chat("U1", "go", &channel, &thread_ts));
+        assert!(matches!(
+            commands_out.next().await.unwrap(),
+            DaemonCommand::CreateSession { .. }
+        ));
+
+        daemon_tx.send_many([
+            // Response 1: a tool is called but its result never arrives
+            // (interrupted). The second ResponseDone ends the response.
+            devent(&thread_ts, tool_call("orphaned_tool")),
+            devent(&thread_ts, response_done()), // had_tool → stream stays open
+            devent(&thread_ts, response_done()), // no tool this round → stop + discard
+            // Response 2: a fresh tool call that completes normally.
+            devent(&thread_ts, tool_call("fresh_tool")),
+            devent(&thread_ts, tool_result()),
+            devent(&thread_ts, response_done()), // had_tool → keep open
+            devent(&thread_ts, response_done()), // final stop
+        ]);
+
+        let actions: Vec<SlackAction> = actions_out.collect().await;
+
+        let core = non_status(&actions);
+        match &core[..] {
+            [SlackAction::StreamTaskUpdate {
+                title: t1,
+                status: s1,
+                task_id: id1,
+                ..
+            }, SlackAction::StreamStop { .. }, SlackAction::StreamTaskUpdate {
+                title: t2,
+                status: s2,
+                task_id: id2,
+                ..
+            }, SlackAction::StreamTaskUpdate {
+                title: t3,
+                status: s3,
+                task_id: id3,
+                ..
+            }, SlackAction::StreamStop { .. }] => {
+                assert_eq!((t1.as_str(), s1.as_str()), ("orphaned_tool", "in_progress"));
+                assert_eq!((t2.as_str(), s2.as_str()), ("fresh_tool", "in_progress"));
+                // The completion must pair with the FRESH tool, not the stale
+                // entry left behind by the orphaned one.
+                assert_eq!(
+                    (t3.as_str(), s3.as_str()),
+                    ("fresh_tool", "complete"),
+                    "completion mislabeled — stale task entry was not discarded"
+                );
+                assert_eq!(id2, id3, "completion must reuse the fresh card's task id");
+                assert_ne!(id1, id3, "completion must not reuse the orphaned card's id");
+            }
+            other => panic!(
+                "expected [task(orphaned), stop, task(fresh), task(fresh complete), stop], \
+                 got {other:?}"
+            ),
+        }
     });
 }
 
@@ -416,6 +529,117 @@ fn multiple_tool_calls_keep_stream_open() {
     });
 }
 
+/// Output from a subagent thread (a `thread_id` different from the session
+/// root) is tagged with the subagent id — so the I/O layer routes it into a
+/// dedicated Slack thread — and its tool/stream state is tracked separately
+/// from the root stream.
+#[test]
+fn subagent_output_is_tagged_and_tracked_separately() {
+    let mut flow = FlowBuilder::new();
+    let (slack_tx, daemon_tx, actions_out, commands_out) = build_sim(&mut flow);
+
+    flow.sim().unit_test_fuzz_iterations(256).fuzz(async || {
+        let thread_ts = fresh("subagent");
+        let channel = fresh("C");
+        let session_id = fresh("sess");
+        let subagent_id = fresh("agent");
+
+        slack_tx.send(chat("U1", "go", &channel, &thread_ts));
+        assert!(matches!(
+            commands_out.next().await.unwrap(),
+            DaemonCommand::CreateSession { .. }
+        ));
+
+        // Register the session root (subagent detection compares against it);
+        // the SetThreadTitle action is the synchronization point.
+        daemon_tx.send(devent(
+            &thread_ts,
+            infinity_protocol::DaemonMessage::Connected {
+                root_thread_id: session_id.clone().into(),
+                thread_id: session_id.clone().into(),
+                model_name: String::new(),
+                context_window: 0,
+                title: Some("Root".to_owned()),
+                total_tokens_used: 0,
+                provider_id: String::new(),
+            },
+        ));
+        loop {
+            match actions_out.next().await.unwrap() {
+                SlackAction::SetThreadTitle { .. } => break,
+                SlackAction::SetStatus { .. } => {}
+                other => panic!("expected SetThreadTitle, got {other:?}"),
+            }
+        }
+
+        daemon_tx.send_many([
+            // Root output (thread_id == session root → not a subagent).
+            devent(&thread_ts, text_chunk_in(Some(&session_id), "root text")),
+            // Subagent output and tool call.
+            devent(&thread_ts, text_chunk_in(Some(&subagent_id), "sub text")),
+            devent(&thread_ts, tool_call_in(Some(&subagent_id), "bash")),
+            // The subagent's tool call must keep *its* stream open...
+            devent(&thread_ts, response_done_in(Some(&subagent_id))),
+            // ...while the root (which ran no tool) stops independently.
+            devent(&thread_ts, response_done_in(Some(&session_id))),
+            // The subagent finishes afterwards.
+            devent(&thread_ts, text_chunk_in(Some(&subagent_id), "sub done")),
+            devent(&thread_ts, response_done_in(Some(&subagent_id))),
+        ]);
+
+        let actions: Vec<SlackAction> = actions_out.collect().await;
+
+        let core = non_status(&actions);
+        match &core[..] {
+            [SlackAction::StreamAppend {
+                text: t1,
+                subagent: s1,
+                ..
+            }, SlackAction::StreamAppend {
+                text: t2,
+                subagent: s2,
+                ..
+            }, SlackAction::StreamTaskUpdate {
+                title,
+                subagent: s3,
+                ..
+            }, SlackAction::StreamStop {
+                subagent: s4,
+                thread_ts: stop_ts,
+                ..
+            }, SlackAction::StreamAppend {
+                text: t3,
+                subagent: s5,
+                ..
+            }, SlackAction::StreamStop { subagent: s6, .. }] => {
+                assert_eq!(t1, "root text");
+                assert!(s1.is_none(), "root output must not be subagent-tagged");
+                assert_eq!(t2, "sub text");
+                assert_eq!(s2.as_deref(), Some(subagent_id.as_str()));
+                assert_eq!(title, "bash");
+                assert_eq!(s3.as_deref(), Some(subagent_id.as_str()));
+                // The first stop is the root's: the subagent's ResponseDone is
+                // swallowed because its tool call is still in flight.
+                assert!(s4.is_none(), "first stop must be the root stream");
+                assert_eq!(stop_ts, &thread_ts);
+                assert_eq!(t3, "sub done");
+                assert_eq!(s5.as_deref(), Some(subagent_id.as_str()));
+                assert_eq!(s6.as_deref(), Some(subagent_id.as_str()));
+            }
+            other => panic!(
+                "expected [append(root), append(sub), task(sub), stop(root), \
+                 append(sub), stop(sub)], got {other:?}"
+            ),
+        }
+
+        // Subagent activity must not drive the root thread status: the only
+        // statuses are "is thinking" (user message + root text chunk).
+        for status in status_texts(&actions) {
+            assert_eq!(status, "is thinking");
+        }
+    });
+}
+
 #[test]
 fn daemon_text_chunk_produces_stream_append() {
     let mut flow = FlowBuilder::new();
@@ -444,15 +668,22 @@ fn daemon_text_chunk_produces_stream_append() {
                 channel: c1,
                 thread_ts: t1,
                 text,
+                subagent,
             }, SlackAction::StreamStop {
                 channel: c2,
                 thread_ts: t2,
+                subagent: stop_subagent,
             }] => {
                 assert_eq!(c1, &channel);
                 assert_eq!(t1, &thread_ts);
                 assert_eq!(text, "Hello world");
+                assert!(
+                    subagent.is_none(),
+                    "root output must not be subagent-tagged"
+                );
                 assert_eq!(c2, &channel);
                 assert_eq!(t2, &thread_ts);
+                assert!(stop_subagent.is_none());
             }
             other => panic!("expected [append, stop], got {other:?}"),
         }
@@ -467,6 +698,110 @@ fn daemon_text_chunk_produces_stream_append() {
                 assert_eq!(c, &channel);
                 assert_eq!(status, "is thinking");
             }
+        }
+    });
+}
+
+/// A discrete block posted into a thread must never leave the stream above it
+/// active: an `Error` message finalizes the in-flight stream *before* the
+/// error post, so continued generation starts a fresh message below it
+/// (instead of editing the message above the block — discontinuity).
+#[test]
+fn error_stops_stream_before_posting() {
+    let mut flow = FlowBuilder::new();
+    let (slack_tx, daemon_tx, actions_out, commands_out) = build_sim(&mut flow);
+
+    flow.sim().unit_test_fuzz_iterations(256).fuzz(async || {
+        let thread_ts = fresh("err");
+        let channel = fresh("C");
+
+        slack_tx.send(chat("U1", "do it", &channel, &thread_ts));
+        assert!(matches!(
+            commands_out.next().await.unwrap(),
+            DaemonCommand::CreateSession { .. }
+        ));
+
+        daemon_tx.send_many([
+            devent(&thread_ts, text_chunk("working...")),
+            devent(&thread_ts, error_msg("boom")),
+            devent(&thread_ts, text_chunk("recovered")),
+            devent(&thread_ts, response_done()),
+        ]);
+
+        let actions: Vec<SlackAction> = actions_out.collect().await;
+
+        let core = non_status(&actions);
+        match &core[..] {
+            [SlackAction::StreamAppend { text: t1, .. }, SlackAction::StreamStop {
+                thread_ts: stop_ts, ..
+            }, SlackAction::PostMessage {
+                text: err_text,
+                thread_ts: post_ts,
+                ..
+            }, SlackAction::StreamAppend { text: t2, .. }, SlackAction::StreamStop { .. }] => {
+                assert_eq!(t1, "working...");
+                assert_eq!(stop_ts, &thread_ts);
+                assert_eq!(err_text, "⚠️ boom");
+                assert_eq!(post_ts.as_deref(), Some(thread_ts.as_str()));
+                assert_eq!(t2, "recovered");
+            }
+            other => panic!(
+                "expected [append, stop, post(error), append, stop] — the \
+                 stream must be finalized before the error post — got {other:?}"
+            ),
+        }
+    });
+}
+
+/// Choice buttons likewise finalize the in-flight stream before being posted,
+/// so post-choice output starts a fresh message below the buttons.
+#[test]
+fn choice_buttons_stop_stream_before_posting() {
+    let mut flow = FlowBuilder::new();
+    let (slack_tx, daemon_tx, actions_out, commands_out) = build_sim(&mut flow);
+
+    flow.sim().unit_test_fuzz_iterations(256).fuzz(async || {
+        let thread_ts = fresh("choice");
+        let channel = fresh("C");
+        let choice_id = fresh("ch");
+
+        slack_tx.send(chat("U1", "risky op", &channel, &thread_ts));
+        assert!(matches!(
+            commands_out.next().await.unwrap(),
+            DaemonCommand::CreateSession { .. }
+        ));
+
+        daemon_tx.send_many([
+            devent(&thread_ts, text_chunk("about to ask...")),
+            devent(&thread_ts, choice_required(&choice_id, "Allow?")),
+            devent(&thread_ts, text_chunk("after choice")),
+            devent(&thread_ts, response_done()),
+        ]);
+
+        let actions: Vec<SlackAction> = actions_out.collect().await;
+
+        let core = non_status(&actions);
+        match &core[..] {
+            [SlackAction::StreamAppend { text: t1, .. }, SlackAction::StreamStop {
+                thread_ts: stop_ts, ..
+            }, SlackAction::PostBlocks {
+                fallback_text,
+                choice_id: posted_choice,
+                ..
+            }, SlackAction::StreamAppend { text: t2, .. }, SlackAction::StreamStop { .. }] => {
+                assert_eq!(t1, "about to ask...");
+                assert_eq!(stop_ts, &thread_ts);
+                assert_eq!(fallback_text, "Allow?");
+                assert_eq!(
+                    posted_choice.as_ref().map(|c| c.as_str()),
+                    Some(choice_id.as_str())
+                );
+                assert_eq!(t2, "after choice");
+            }
+            other => panic!(
+                "expected [append, stop, blocks(choice), append, stop] — the \
+                 stream must be finalized before the buttons — got {other:?}"
+            ),
         }
     });
 }
