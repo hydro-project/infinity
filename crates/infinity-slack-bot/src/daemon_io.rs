@@ -278,6 +278,47 @@ pub fn spawn() -> DaemonIo {
                         }
                     }
                 }
+                DaemonCommand::SwitchModel {
+                    thread_ts,
+                    session_id,
+                    target_thread,
+                    model,
+                } => {
+                    // The agent thread to switch: a subagent thread when the
+                    // shortcut was invoked inside a dedicated subagent Slack
+                    // thread, the session root otherwise.
+                    let switch_thread = target_thread.as_ref().unwrap_or(&session_id);
+                    if !connections.contains_key(&thread_ts) {
+                        // Reconnect after restart so the switch still lands
+                        // (and its ModelSwitched broadcast reaches this
+                        // thread's receiver for the Slack note).
+                        match DaemonClient::connect().await {
+                            Ok(daemon) => {
+                                if let Err(e) = daemon.connect_session(&session_id, None).await {
+                                    tracing::error!(
+                                        "reconnect to session failed for {thread_ts}: {e}"
+                                    );
+                                    continue;
+                                }
+                                spawn_receiver(
+                                    ConnKey::root(thread_ts.clone()),
+                                    &mut connections,
+                                    daemon,
+                                    &to_df_tx,
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!("daemon connect failed for {thread_ts}: {e}");
+                                continue;
+                            }
+                        }
+                    }
+                    if let Some(daemon) = connections.get(&thread_ts) {
+                        if let Err(e) = daemon.switch_model(switch_thread, &model).await {
+                            tracing::error!("SwitchModel failed for {thread_ts}: {e}");
+                        }
+                    }
+                }
             }
         }
     });

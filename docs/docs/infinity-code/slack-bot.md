@@ -42,6 +42,10 @@ features:
       type: message
       callback_id: compact_session
       description: Summarize this session's older conversation to free up context space
+    - name: Switch model
+      type: message
+      callback_id: switch_model
+      description: Switch the model for this conversation thread
 
 oauth_config:
   scopes:
@@ -210,6 +214,12 @@ Use the `/model` slash command (responses are ephemeral — only you see them):
 | `/model <display name or model id>` | Same, matching by name (case-insensitive) |
 
 The switch applies to sessions created afterwards; existing threads keep their model. The available model list is populated from the daemon after the first session is created.
+
+### Switching the model for one thread
+
+Slack does not deliver slash commands from inside message threads, so per-thread switching uses the **Switch model** message shortcut instead: open the ⋮ menu on any message in the conversation → **Switch model** → pick a model in the modal. The switch applies only to that thread's agent (invoked inside a subagent's dedicated thread, it switches just that subagent) and does not change the default for new sessions. A "🧠 Model switched" note is posted in the thread when the daemon confirms.
+
+The shortcut must be added to the Slack app (it is included in the manifest above; when configuring by hand: **App Settings → Interactivity & Shortcuts → Create New Shortcut** → On messages, name "Switch model", callback ID `switch_model`).
 
 ## Compacting Context
 

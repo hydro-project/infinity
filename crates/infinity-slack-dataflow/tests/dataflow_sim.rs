@@ -112,6 +112,7 @@ fn chat(user: &str, text: &str, channel: &str, thread_ts: &str) -> SlackEvent {
         shortcut: None,
         rewind_user_turn: None,
         fork_source_thread_ts: None,
+        thread_model_selection: None,
     }
 }
 
@@ -1266,6 +1267,213 @@ fn rewind_shortcut_without_session_reports_error() {
             }
             other => panic!("expected [CommandResponse], got {other:?}"),
         }
+    });
+}
+
+/// A "Switch model" shortcut: without a session it reports ephemerally; with
+/// a session but no known models it falls back to an ephemeral explanation
+/// (the model list lives in I/O-layer-fed runtime state the sim starts
+/// empty). Neither path emits daemon commands.
+#[test]
+fn switch_model_shortcut_validates_session_and_model_list() {
+    let mut flow = FlowBuilder::new();
+    let (slack_tx, daemon_tx, actions_out, commands_out) = build_sim(&mut flow);
+
+    flow.sim().unit_test_fuzz_iterations(256).fuzz(async || {
+        let no_session_ts = fresh("smnone");
+        let thread_ts = fresh("smok");
+        let channel = fresh("C");
+        let session_id = fresh("sess");
+
+        // 1. No session → ephemeral error.
+        let mut shortcut = chat("U1", "", &channel, &no_session_ts);
+        shortcut.shortcut = Some("switch_model".to_owned());
+        shortcut.message_ts = Some("1111.2222".to_owned());
+        shortcut.trigger_id = Some("trig1".to_owned());
+        shortcut.response_url = Some("https://hooks.slack.com/app/T1/1/a".to_owned());
+        slack_tx.send(shortcut);
+
+        // 2. Establish a session, then invoke the shortcut on its thread.
+        slack_tx.send(chat("U1", "hi", &channel, &thread_ts));
+        match commands_out.next().await.unwrap() {
+            DaemonCommand::CreateSession { thread_ts: t, .. } => assert_eq!(t, thread_ts),
+            other => panic!("expected CreateSession, got {other:?}"),
+        }
+        daemon_tx.send(devent(
+            &thread_ts,
+            infinity_protocol::DaemonMessage::Connected {
+                root_thread_id: session_id.clone().into(),
+                thread_id: session_id.clone().into(),
+                model_name: String::new(),
+                context_window: 0,
+                title: Some("Switchable".to_owned()),
+                total_tokens_used: 0,
+                provider_id: String::new(),
+            },
+        ));
+        let mut early_responses: Vec<SlackAction> = Vec::new();
+        loop {
+            match actions_out.next().await.unwrap() {
+                SlackAction::SetThreadTitle { .. } => break,
+                SlackAction::SetStatus { .. } => {}
+                resp @ SlackAction::CommandResponse { .. } => early_responses.push(resp),
+                other => panic!("expected SetThreadTitle, got {other:?}"),
+            }
+        }
+        let mut shortcut = chat("U1", "", &channel, &thread_ts);
+        shortcut.shortcut = Some("switch_model".to_owned());
+        shortcut.message_ts = Some("1111.3333".to_owned());
+        shortcut.trigger_id = Some("trig2".to_owned());
+        shortcut.response_url = Some("https://hooks.slack.com/app/T1/1/b".to_owned());
+        slack_tx.send(shortcut);
+
+        let cmds: Vec<DaemonCommand> = commands_out.collect().await;
+        assert!(cmds.is_empty(), "shortcuts emit no commands, got {cmds:?}");
+
+        let mut actions: Vec<SlackAction> = actions_out.collect().await;
+        actions.extend(early_responses);
+        let responses: Vec<(&str, &str)> = actions
+            .iter()
+            .filter_map(|a| match a {
+                SlackAction::CommandResponse { response_url, text } => {
+                    Some((response_url.as_str(), text.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        let no_session = responses
+            .iter()
+            .find(|(url, _)| *url == "https://hooks.slack.com/app/T1/1/a")
+            .expect("no-session shortcut must be answered");
+        assert!(
+            no_session.1.contains("no Infinity session"),
+            "got: {}",
+            no_session.1
+        );
+        // The session exists but the sim runtime knows no models → fallback
+        // explanation instead of a modal.
+        let no_models = responses
+            .iter()
+            .find(|(url, _)| *url == "https://hooks.slack.com/app/T1/1/b")
+            .expect("no-models shortcut must be answered");
+        assert!(
+            no_models.1.contains("No models are known yet"),
+            "got: {}",
+            no_models.1
+        );
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, SlackAction::OpenView { .. })),
+            "no modal without models: {actions:?}"
+        );
+    });
+}
+
+/// A per-thread model-picker submission emits `SwitchModel` targeting the
+/// session root (invoked from the root conversation thread), and the
+/// daemon's `ModelSwitched` broadcast is surfaced as a note in the thread.
+#[test]
+fn thread_model_submission_switches_and_posts_note() {
+    let mut flow = FlowBuilder::new();
+    let (slack_tx, daemon_tx, actions_out, commands_out) = build_sim(&mut flow);
+
+    flow.sim().unit_test_fuzz_iterations(256).fuzz(async || {
+        let thread_ts = fresh("smsub");
+        let channel = fresh("C");
+        let session_id = fresh("sess");
+
+        // Establish the session + channel mapping through the dataflow.
+        slack_tx.send(chat("U1", "hi", &channel, &thread_ts));
+        assert!(matches!(
+            commands_out.next().await.unwrap(),
+            DaemonCommand::CreateSession { .. }
+        ));
+        daemon_tx.send(devent(
+            &thread_ts,
+            infinity_protocol::DaemonMessage::Connected {
+                root_thread_id: session_id.clone().into(),
+                thread_id: session_id.clone().into(),
+                model_name: String::new(),
+                context_window: 0,
+                title: Some("Switchable".to_owned()),
+                total_tokens_used: 0,
+                provider_id: String::new(),
+            },
+        ));
+        loop {
+            match actions_out.next().await.unwrap() {
+                SlackAction::SetThreadTitle { .. } => break,
+                SlackAction::SetStatus { .. } => {}
+                other => panic!("expected SetThreadTitle, got {other:?}"),
+            }
+        }
+
+        // Modal submission (parsed from view_submission by the I/O layer).
+        let mut submit = chat("U1", "", &channel, &thread_ts);
+        submit.thread_model_selection = Some("bedrock/claude-opus".to_owned());
+        slack_tx.send(submit);
+
+        match commands_out.next().await.unwrap() {
+            DaemonCommand::SwitchModel {
+                thread_ts: t,
+                session_id: s,
+                target_thread,
+                model,
+            } => {
+                assert_eq!(t, thread_ts);
+                assert_eq!(s.to_string(), session_id);
+                assert!(
+                    target_thread.is_none(),
+                    "root-thread switch targets the session root"
+                );
+                assert_eq!(model.provider_id, "bedrock");
+                assert_eq!(model.model_id, "claude-opus");
+            }
+            other => panic!("expected SwitchModel, got {other:?}"),
+        }
+
+        // Daemon confirms → note in the thread.
+        daemon_tx.send(devent(
+            &thread_ts,
+            infinity_protocol::DaemonMessage::ModelSwitched {
+                thread_id: session_id.clone().into(),
+                model_name: "Claude Opus".to_owned(),
+                context_window: 200_000,
+                provider_id: "bedrock".to_owned(),
+            },
+        ));
+
+        let actions: Vec<SlackAction> = actions_out.collect().await;
+        let note = actions
+            .iter()
+            .find_map(|a| match a {
+                SlackAction::PostMessage {
+                    channel: c,
+                    text,
+                    thread_ts: t,
+                    subagent,
+                } => {
+                    assert_eq!(c, &channel);
+                    assert_eq!(t.as_deref(), Some(thread_ts.as_str()));
+                    assert!(subagent.is_none(), "root switch routes to root thread");
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .expect("ModelSwitched must post a note");
+        assert!(
+            note.contains("Model switched") && note.contains("Claude Opus"),
+            "note should name the model, got: {note}"
+        );
+        // No error report for a successful submission.
+        assert!(
+            !actions.iter().any(|a| matches!(
+                a,
+                SlackAction::PostMessage { text, .. } if text.contains("Could not switch")
+            )),
+            "unexpected error report: {actions:?}"
+        );
     });
 }
 

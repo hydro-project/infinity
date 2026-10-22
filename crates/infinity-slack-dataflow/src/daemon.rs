@@ -76,6 +76,22 @@ pub enum DaemonCommand {
         thread_ts: String,
         session_id: infinity_protocol::ThreadRef,
     },
+    /// Switch the model for ONE agent thread (see
+    /// [`infinity_protocol::ClientMessage::SwitchModel`] — per-thread, does
+    /// not propagate to children and does not change the default for new
+    /// sessions). Emitted by the "Switch model" message shortcut; the daemon
+    /// broadcasts `ModelSwitched` as confirmation, which the dataflow
+    /// surfaces as a note in the thread.
+    SwitchModel {
+        thread_ts: String,
+        session_id: infinity_protocol::ThreadRef,
+        /// The agent thread to switch. `None` targets the session root;
+        /// `Some` targets a subagent thread (used when the shortcut was
+        /// invoked inside a dedicated subagent Slack thread).
+        #[serde(default)]
+        target_thread: Option<infinity_protocol::ThreadRef>,
+        model: infinity_protocol::ModelRef,
+    },
 }
 
 /// A message received from a daemon connection, tagged with the thread it belongs to.
