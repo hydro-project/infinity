@@ -66,6 +66,10 @@ pub enum AgentEvent {
     UserChoiceDismissed { choice_id: rap_protocol::ChoiceId },
     /// Human-readable progress/diagnostic information (retries, warnings).
     Info { text: String },
+    /// A failure the user must see (completion could not start or gave up,
+    /// a step failed). Unlike [`AgentEvent::Info`], every client surface is
+    /// expected to render these prominently.
+    Error { text: String },
 }
 
 /// A live view of a thread, used to bring a newly attached subscriber up to
