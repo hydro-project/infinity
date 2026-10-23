@@ -57,6 +57,13 @@ pub fn is_user_text_input(msg: &InputMessage) -> bool {
         )
 }
 
+/// Whether this input is an interrupt marker.
+pub fn is_interrupt_input(msg: &InputMessage) -> bool {
+    msg.synthetic
+        .as_ref()
+        .is_some_and(SyntheticKind::is_interrupt)
+}
+
 /// Whether this input is a synthetic event that can be deferred while the
 /// thread waits on a pending tool call (subscription events, thread reports,
 /// parent messages).
@@ -405,6 +412,63 @@ where
         }
     }
 
+    /// Best-effort: notify RAP tool servers about interrupted tool calls.
+    /// Dismissing the associated pending user choices is a durable state
+    /// transition: it is awaited before the caller continues, so the agent
+    /// cannot proceed past an interruption whose dismissal has not been
+    /// persisted.
+    async fn settle_interrupted_tool_calls<O: ThreadObserver>(
+        &self,
+        config: &ResolvedConfig<M, H>,
+        observer: &O,
+        thread_id: &ThreadId<str>,
+    ) -> Result<(), BoxError> {
+        let interrupted = self.history.take_interrupted_tool_calls();
+        if interrupted.is_empty() {
+            return Ok(());
+        }
+        if let Some(notifier) = config.rap_notifier.as_ref() {
+            for call_id in &interrupted {
+                notifier.notify_tool_cancelled(thread_id, call_id).await;
+            }
+        }
+        for call_id in interrupted {
+            self.inner
+                .state_store
+                .remove_pending_user_choice(thread_id, &call_id)
+                .await?;
+            self.pending_choices
+                .borrow_mut()
+                .retain(|choice| choice.id != call_id);
+            observer.on_event(
+                thread_id,
+                &AgentEvent::UserChoiceDismissed { choice_id: call_id },
+            );
+        }
+        Ok(())
+    }
+
+    /// Record an interrupt without running a completion: fold `inputs` into
+    /// history, settle a trailing unanswered tool call, and persist. The
+    /// interrupt entries are persisted right away since no completion will
+    /// validate them; user text stays unvalidated like any input cancelled
+    /// before model output.
+    pub async fn record_interrupt<O: ThreadObserver>(
+        &self,
+        inputs: Vec<(InputMessage, String)>,
+        observer: &O,
+    ) -> Result<(), BoxError> {
+        let thread_id = self.history.thread_id.clone();
+        let config = self.resolved_config().await?;
+        for (input_msg, message_id) in inputs {
+            self.prepare_one(input_msg, message_id, observer).await?;
+        }
+        self.settle_interrupted_tool_calls(&config, observer, &thread_id)
+            .await?;
+        self.history.promote_harness_settlements();
+        self.history.sync().await
+    }
+
     /// Execute one step over a batch that has **not** been run through the
     /// deferral policy: prepare `inputs` into history, run at most one
     /// completion round, commit durably, and dispatch at most one
@@ -445,32 +509,8 @@ where
             }
         }
 
-        // Best-effort: notify RAP tool servers about interrupted tool calls.
-        // Dismissing the associated pending user choices is a durable state
-        // transition: it is awaited before the step continues, so the agent
-        // cannot proceed past an interruption whose dismissal has not been
-        // persisted.
-        let interrupted = self.history.take_interrupted_tool_calls();
-        if !interrupted.is_empty() {
-            if let Some(notifier) = config.rap_notifier.as_ref() {
-                for call_id in &interrupted {
-                    notifier.notify_tool_cancelled(&thread_id, call_id).await;
-                }
-            }
-            for call_id in interrupted {
-                self.inner
-                    .state_store
-                    .remove_pending_user_choice(&thread_id, &call_id)
-                    .await?;
-                self.pending_choices
-                    .borrow_mut()
-                    .retain(|choice| choice.id != call_id);
-                observer.on_event(
-                    &thread_id,
-                    &AgentEvent::UserChoiceDismissed { choice_id: call_id },
-                );
-            }
-        }
+        self.settle_interrupted_tool_calls(&config, observer, &thread_id)
+            .await?;
 
         if !any_ready {
             // Commit anything already known-safe (e.g. processed IDs from
