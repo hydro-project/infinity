@@ -3637,6 +3637,8 @@ Used by:
   aws-sdk-dynamodb 1.111.0
   aws-sdk-scheduler 1.98.0
   aws-sdk-sqs 1.98.0
+  aws-sdk-sso 1.98.0
+  aws-sdk-ssooidc 1.100.0
   aws-sdk-sts 1.103.0
 
 --------------------------------------------------------------------------------
