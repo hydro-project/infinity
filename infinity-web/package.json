@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "infinity-ui": "file:../infinity-ui",
-    "@pierre/diffs": "^1.2.1",
+    "@pierre/diffs": "^1.5.2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
