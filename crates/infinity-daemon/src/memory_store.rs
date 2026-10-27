@@ -1,16 +1,44 @@
-//! The daemon's stores: the core in-memory stores wrapped with per-thread
-//! JSON-file persistence and daemon-only bookkeeping.
+//! The daemon's stores: the core in-memory stores wrapped with crash-safe
+//! per-thread file persistence and daemon-only bookkeeping.
 //!
 //! All shared [`ConversationStore`] / [`StateStore`] semantics (spawn orders,
 //! ancestor chains, compaction cutoffs, dedup sets, subscriptions, metadata)
 //! live in `infinity_agent_core::stores` — the trait impls here are pure
 //! delegation. This module layers on top:
 //!
-//! - lazy per-thread loading from and saving to `{dir}/{thread_id}*.json`,
+//! - lazy per-thread loading from and saving to the files below,
 //! - daemon-only per-thread extras ([`ThreadExtras`]: title, children,
 //!   token totals, timestamps, the selected model),
 //! - transient and persisted views,
 //! - session serialization for migration.
+//!
+//! # On-disk layout
+//!
+//! Under the threads directory (`{state_dir}/threads`):
+//!
+//! | file | contents | write pattern |
+//! |---|---|---|
+//! | `{thread_id}.jsonl` | conversation log: messages (with dedup ids) and compaction summaries | append-only ([`ThreadLog`]) |
+//! | `{thread_id}.meta.json` | [`ThreadMeta`]: core thread info + daemon extras | atomic replace |
+//! | `{thread_id}.views.json` | RAP views (`view_type → content`) | atomic replace |
+//!
+//! Under the state directory (`{state_dir}/state`):
+//!
+//! | file | contents | write pattern |
+//! |---|---|---|
+//! | `{thread_id}.state.json` | subscriptions, pending user choices, session metadata | atomic replace |
+//!
+//! The conversation log is the single source of truth for everything that is
+//! derived from the conversation. In particular processed (dedup) message ids
+//! are *not* stored separately: each log entry carries its dedup id, and
+//! [`ConversationStore::is_message_processed`] looks ids up in the loaded
+//! log. This removes the partial-write hazard of a message landing in one
+//! file but its dedup id not landing in another.
+//!
+//! Every file is versioned (see [`crate::persist`]). Threads persisted by
+//! older daemons (a whole-snapshot `{thread_id}.json` instead of the log, and
+//! unversioned metadata/state files) are migrated on first load; the legacy
+//! snapshot file is left in place and ignored once the log exists.
 
 use async_trait::async_trait;
 use infinity_agent_core::ThreadId;
@@ -26,6 +54,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+#[cfg(test)]
+use crate::persist::THREAD_LOG_VERSION;
+use crate::persist::{
+    self, LoadedThreadLog, PersistError, THREAD_META_VERSION, THREAD_STATE_VERSION,
+    THREAD_VIEWS_VERSION, ThreadLog, ThreadLogEntry,
+};
 
 // ── Error type ──
 
@@ -44,6 +79,35 @@ impl From<core_stores::InMemoryStoreError> for MemoryError {
     }
 }
 
+impl From<PersistError> for MemoryError {
+    fn from(e: PersistError) -> Self {
+        MemoryError(e.to_string())
+    }
+}
+
+// ── File paths ──
+
+fn log_path(dir: &Path, thread_id: &ThreadId<str>) -> PathBuf {
+    dir.join(format!("{thread_id}.jsonl"))
+}
+
+/// The pre-log whole-snapshot file written by older daemons.
+fn legacy_snapshot_path(dir: &Path, thread_id: &ThreadId<str>) -> PathBuf {
+    dir.join(format!("{thread_id}.json"))
+}
+
+fn meta_path(dir: &Path, thread_id: &ThreadId<str>) -> PathBuf {
+    dir.join(format!("{thread_id}.meta.json"))
+}
+
+fn views_path(dir: &Path, thread_id: &ThreadId<str>) -> PathBuf {
+    dir.join(format!("{thread_id}.views.json"))
+}
+
+fn state_path(dir: &Path, thread_id: &ThreadId<str>) -> PathBuf {
+    dir.join(format!("{thread_id}.state.json"))
+}
+
 // ── Persistent conversation store backed by shared in-memory semantics ──
 
 #[derive(Clone)]
@@ -54,9 +118,9 @@ pub struct PersistentConversationStore {
     /// here iff it has one in `core` (both are created together by the
     /// spawn/load/import paths of this wrapper).
     extras: Arc<Mutex<HashMap<ThreadId, ThreadExtras>>>,
-    /// Directory where per-thread JSON files are stored. `None` disables persistence.
+    /// Directory where per-thread files are stored. `None` disables persistence.
     dir: Option<PathBuf>,
-    /// Tracks which thread IDs have had their full data loaded from disk.
+    /// Tracks which thread IDs have had their conversation log loaded.
     loaded: Arc<Mutex<HashSet<ThreadId>>>,
     /// Tracks which thread IDs have had their metadata loaded from disk.
     metadata_loaded: Arc<Mutex<HashSet<ThreadId>>>,
@@ -105,17 +169,52 @@ impl ThreadExtras {
     }
 }
 
-/// The serialization shape of a thread's metadata (`{thread_id}.meta.json`
-/// and the `metadata` field of [`SerializedThread`]): the core
-/// [`ThreadInfo`] and the daemon's [`ThreadExtras`] flattened into one
-/// object, byte-compatible with the format written before the core/daemon
-/// store split.
+/// The serialization shape of a thread's metadata (the body of
+/// `{thread_id}.meta.json` and the `metadata` field of [`SerializedThread`]):
+/// the core [`ThreadInfo`] and the daemon's [`ThreadExtras`] flattened into
+/// one object, byte-compatible with the format written before the
+/// core/daemon store split.
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct ThreadMeta {
     #[serde(flatten)]
     pub(crate) info: ThreadInfo,
     #[serde(flatten)]
     pub(crate) extras: ThreadExtras,
+}
+
+/// `{thread_id}.meta.json`: a [`ThreadMeta`] plus the format version. Files
+/// written before versioning lack the field and read as
+/// [`persist::LEGACY_VERSION`]; the layout is otherwise identical.
+#[derive(Serialize, Deserialize)]
+struct ThreadMetaFile {
+    #[serde(default)]
+    version: u32,
+    #[serde(flatten)]
+    meta: ThreadMeta,
+}
+
+/// `{thread_id}.views.json`. Files written before versioning were the bare
+/// `views` map; see [`PersistentConversationStore::load_views`].
+#[derive(Serialize, Deserialize)]
+struct ViewsFile {
+    version: u32,
+    views: HashMap<String, serde_json::Value>,
+}
+
+/// `{thread_id}.state.json`: a thread's [`ThreadState`] plus the format
+/// version. Files written before versioning carried a `processed_message_ids`
+/// field; it is ignored on load (processed ids are derived from the
+/// conversation log, see the module docs).
+#[derive(Serialize, Deserialize)]
+struct ThreadStateFile {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    subscriptions: HashSet<rap_protocol::ToolCallId>,
+    #[serde(default)]
+    pending_user_choices: Vec<UserChoice>,
 }
 
 /// Serde default marking `selected_model` as absent in old serialized
@@ -129,12 +228,23 @@ fn unset_model_ref() -> ModelRef {
     }
 }
 
-/// Per-thread snapshot written to `{dir}/{thread_id}.json`.
+/// A thread's full conversation, as exchanged in [`SerializedThread`] (the
+/// daemon-to-daemon migration wire format) and as read from the legacy
+/// whole-snapshot `{thread_id}.json` file.
 #[derive(Serialize)]
 pub(crate) struct ThreadSnapshot {
     messages: Vec<(InfinityMessage, String)>,
     #[serde(default)]
     compaction_summaries: Vec<CompactionSummary>,
+}
+
+impl From<ThreadSnapshot> for LoadedThreadLog {
+    fn from(s: ThreadSnapshot) -> Self {
+        LoadedThreadLog {
+            messages: s.messages,
+            compaction_summaries: s.compaction_summaries,
+        }
+    }
 }
 
 /// Helper struct for deserializing the new format directly.
@@ -231,7 +341,7 @@ pub(crate) struct SerializedThread {
 }
 
 impl PersistentConversationStore {
-    /// Create a store that persists each thread to its own JSON file under `dir`.
+    /// Create a store that persists each thread to its own files under `dir`.
     /// `default_model` is assigned to new threads and backfilled into metadata
     /// that predates per-thread model tracking. `id_source` generates ids for
     /// newly spawned threads (deterministic in tests).
@@ -241,7 +351,9 @@ impl PersistentConversationStore {
         id_source: Arc<dyn crate::ids::IdSource>,
     ) -> Self {
         let dir = dir.as_ref().to_path_buf();
-        std::fs::create_dir_all(&dir).ok();
+        if let Err(error) = std::fs::create_dir_all(&dir) {
+            tracing::error!(dir = %dir.display(), %error, "failed to create threads directory");
+        }
         Self {
             core: core_stores::InMemoryConversationStore::new(),
             extras: Arc::new(Mutex::new(HashMap::new())),
@@ -311,7 +423,7 @@ impl PersistentConversationStore {
                 e.total_tokens_used = total_tokens_used;
             }
         }
-        self.save_thread_metadata(thread_id);
+        self.save_thread_metadata_logged(thread_id);
     }
 
     /// Notify that a session's thread tree changed.
@@ -346,68 +458,114 @@ impl PersistentConversationStore {
             .insert(thread_id.to_owned(), meta.extras);
     }
 
-    /// Write a single thread's metadata to `{dir}/{thread_id}.meta.json`.
-    fn save_thread_metadata(&self, thread_id: &ThreadId<str>) {
-        let Some(ref dir) = self.dir else { return };
-        if let Some(meta) = self.thread_meta(thread_id) {
-            let path = dir.join(format!("{}.meta.json", thread_id));
-            if let Ok(json) = serde_json::to_string_pretty(&meta) {
-                std::fs::write(path, json).ok();
-            }
+    /// Atomically write a single thread's metadata to `{dir}/{thread_id}.meta.json`.
+    fn save_thread_metadata(&self, thread_id: &ThreadId<str>) -> Result<(), MemoryError> {
+        let Some(ref dir) = self.dir else {
+            return Ok(());
+        };
+        let Some(meta) = self.thread_meta(thread_id) else {
+            return Ok(());
+        };
+        persist::write_json_atomic(
+            &meta_path(dir, thread_id),
+            &ThreadMetaFile {
+                version: THREAD_META_VERSION,
+                meta,
+            },
+        )?;
+        Ok(())
+    }
+
+    /// [`Self::save_thread_metadata`] for synchronous callers that cannot
+    /// propagate the error: it is logged instead (the in-memory state stays
+    /// authoritative and the next successful save catches up).
+    fn save_thread_metadata_logged(&self, thread_id: &ThreadId<str>) {
+        if let Err(error) = self.save_thread_metadata(thread_id) {
+            tracing::error!(%thread_id, %error, "failed to persist thread metadata");
         }
     }
 
-    /// Write a single thread's data to `{dir}/{thread_id}.json` and metadata to `.meta.json`.
-    /// No-op when persistence is disabled.
-    fn save_thread(&self, thread_id: &ThreadId<str>) {
-        let Some(ref dir) = self.dir else { return };
-        let snapshot = ThreadSnapshot {
+    /// Append committed conversation entries to the thread's log.
+    fn append_log(
+        &self,
+        thread_id: &ThreadId<str>,
+        entries: &[ThreadLogEntry],
+    ) -> Result<(), MemoryError> {
+        let Some(ref dir) = self.dir else {
+            return Ok(());
+        };
+        ThreadLog {
+            path: &log_path(dir, thread_id),
+            thread_id,
+        }
+        .append(entries)?;
+        Ok(())
+    }
+
+    /// Replace the thread's whole conversation log with the in-memory
+    /// contents (import/migration only; ordinary writes append).
+    fn rewrite_log(&self, thread_id: &ThreadId<str>) -> Result<(), MemoryError> {
+        let Some(ref dir) = self.dir else {
+            return Ok(());
+        };
+        let contents = LoadedThreadLog {
             messages: self.core.thread_messages(thread_id).unwrap_or_default(),
             compaction_summaries: self.core.thread_compaction_summaries(thread_id),
         };
-
-        let path = dir.join(format!("{}.json", thread_id));
-        if let Ok(json) = serde_json::to_string_pretty(&snapshot) {
-            std::fs::write(path, json).ok();
+        ThreadLog {
+            path: &log_path(dir, thread_id),
+            thread_id,
         }
-        self.save_thread_metadata(thread_id);
+        .rewrite(&contents)?;
+        Ok(())
     }
 
     /// Ensure a thread's metadata (core info + extras) is loaded from disk.
-    /// Tries `.meta.json` first; falls back to extracting from the full `.json` snapshot
-    /// and writes the `.meta.json` for future fast loads.
-    fn ensure_thread_metadata_loaded(&self, thread_id: &ThreadId<str>) {
-        let Some(ref dir) = self.dir else { return };
+    /// Tries `.meta.json` first; falls back to extracting from the legacy
+    /// `.json` snapshot and writes the `.meta.json` for future fast loads.
+    ///
+    /// On failure the thread is *not* marked loaded (so nothing is saved over
+    /// the unreadable file) and the error is returned.
+    fn ensure_thread_metadata_loaded(&self, thread_id: &ThreadId<str>) -> Result<(), MemoryError> {
+        let Some(ref dir) = self.dir else {
+            return Ok(());
+        };
 
         let mut meta_loaded = self.metadata_loaded.lock().expect("bug: mutex poisoned");
         if meta_loaded.contains(thread_id) {
-            return;
+            return Ok(());
         }
 
         // Never overwrite a thread that already exists in memory (e.g. it
         // was created via ensure_root_thread before anything was persisted).
         let already_in_memory = self.core.thread_info(thread_id).is_some();
 
-        // Try the fast metadata file first.
-        let meta_path = dir.join(format!("{}.meta.json", thread_id));
-        if let Ok(json) = std::fs::read_to_string(&meta_path)
-            && let Ok(meta) = serde_json::from_str::<ThreadMeta>(&json)
-        {
-            if !already_in_memory {
-                self.restore_thread_meta(thread_id, meta);
+        let meta_file = meta_path(dir, thread_id);
+        match persist::read_json::<ThreadMetaFile>(&meta_file)? {
+            Some(file) => {
+                persist::check_version(&meta_file, file.version, THREAD_META_VERSION)?;
+                if !already_in_memory {
+                    let outdated = file.version < THREAD_META_VERSION;
+                    self.restore_thread_meta(thread_id, file.meta);
+                    if outdated {
+                        // Upgrade eagerly so every file on disk is at the
+                        // current version once it has been read.
+                        self.save_thread_metadata(thread_id)?;
+                    }
+                }
             }
-        } else {
-            // Fall back: extract thread_info from the full snapshot file.
-            let full_path = dir.join(format!("{}.json", thread_id));
-            if let Ok(json) = std::fs::read_to_string(&full_path)
-                && let Ok(val) = serde_json::from_str::<serde_json::Value>(&json)
-                && let Some(info_val) = val.get("thread_info")
-                && let Ok(meta) = serde_json::from_value::<ThreadMeta>(info_val.clone())
-                && !already_in_memory
-            {
-                self.restore_thread_meta(thread_id, meta);
-                // Migrate: write the .meta.json for next time.
-                self.save_thread_metadata(thread_id);
+            None => {
+                // Fall back: extract thread_info from the legacy snapshot file.
+                let full_path = legacy_snapshot_path(dir, thread_id);
+                if let Some(val) = persist::read_json::<serde_json::Value>(&full_path)?
+                    && let Some(info_val) = val.get("thread_info")
+                    && let Ok(meta) = serde_json::from_value::<ThreadMeta>(info_val.clone())
+                    && !already_in_memory
+                {
+                    self.restore_thread_meta(thread_id, meta);
+                    // Migrate: write the .meta.json for next time.
+                    self.save_thread_metadata(thread_id)?;
+                }
             }
         }
 
@@ -415,50 +573,101 @@ impl PersistentConversationStore {
         self.migrate_from_session_store(thread_id, dir);
 
         meta_loaded.insert(thread_id.to_owned());
+        Ok(())
     }
 
-    /// Ensure a thread's full data (messages, compaction summaries) is loaded.
-    /// Calls `ensure_thread_metadata_loaded` first.
-    fn ensure_thread_loaded(&self, thread_id: &ThreadId<str>) {
-        self.ensure_thread_metadata_loaded(thread_id);
+    /// [`Self::ensure_thread_metadata_loaded`] for synchronous getters that
+    /// cannot propagate the error: it is logged and `false` returned, so the
+    /// caller falls back to its "unknown thread" answer and skips any save.
+    fn metadata_loaded_or_log(&self, thread_id: &ThreadId<str>) -> bool {
+        match self.ensure_thread_metadata_loaded(thread_id) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::error!(%thread_id, %error, "failed to load thread metadata");
+                false
+            }
+        }
+    }
 
-        let Some(ref dir) = self.dir else { return };
+    /// Ensure a thread's conversation (messages, compaction summaries, views)
+    /// is loaded. Calls `ensure_thread_metadata_loaded` first.
+    ///
+    /// Loads the thread's log, recovering the longest valid prefix after a
+    /// crash (see [`ThreadLog::load`]). A thread with no log but a legacy
+    /// whole-snapshot `{thread_id}.json` is migrated: the log is written
+    /// (atomically) from the snapshot and used from then on.
+    fn ensure_thread_loaded(&self, thread_id: &ThreadId<str>) -> Result<(), MemoryError> {
+        self.ensure_thread_metadata_loaded(thread_id)?;
+
+        let Some(ref dir) = self.dir else {
+            return Ok(());
+        };
 
         let mut loaded = self.loaded.lock().expect("bug: mutex poisoned");
         if loaded.contains(thread_id) {
-            return;
+            return Ok(());
         }
 
-        let path = dir.join(format!("{}.json", thread_id));
-        if let Ok(json) = std::fs::read_to_string(&path)
-            && let Ok(snapshot) = serde_json::from_str::<ThreadSnapshot>(&json)
-        {
+        let path = log_path(dir, thread_id);
+        let log = ThreadLog {
+            path: &path,
+            thread_id,
+        };
+        let contents = match log.load()? {
+            Some(contents) => Some(contents),
+            None => self.migrate_legacy_snapshot(dir, &log)?,
+        };
+        if let Some(contents) = contents {
             assert!(
-                !self.core.set_thread_messages(thread_id, snapshot.messages),
+                !self.core.set_thread_messages(thread_id, contents.messages),
                 "bug: thread {thread_id} messages loaded twice"
             );
             assert!(
                 !self
                     .core
-                    .set_thread_compaction_summaries(thread_id, snapshot.compaction_summaries),
+                    .set_thread_compaction_summaries(thread_id, contents.compaction_summaries),
                 "bug: thread {thread_id} compaction summaries loaded twice"
             );
         }
 
         loaded.insert(thread_id.to_owned());
 
-        self.load_views(thread_id);
+        self.load_views(thread_id)?;
+        Ok(())
+    }
+
+    /// If a legacy whole-snapshot `{thread_id}.json` exists, convert it into
+    /// the thread's log (written atomically, so a crash mid-migration simply
+    /// retries next time) and return its contents. The legacy file is left
+    /// in place; it is never read again once the log exists.
+    fn migrate_legacy_snapshot(
+        &self,
+        dir: &Path,
+        log: &ThreadLog<'_>,
+    ) -> Result<Option<LoadedThreadLog>, MemoryError> {
+        let legacy = legacy_snapshot_path(dir, log.thread_id);
+        let Some(snapshot) = persist::read_json::<ThreadSnapshot>(&legacy)? else {
+            return Ok(None);
+        };
+        let contents = LoadedThreadLog::from(snapshot);
+        log.rewrite(&contents)?;
+        tracing::info!(
+            thread_id = %log.thread_id,
+            messages = contents.messages.len(),
+            "migrated legacy thread snapshot to the conversation log"
+        );
+        Ok(Some(contents))
     }
 
     /// Whether metadata exists for this thread (in memory or on disk).
     pub fn has_thread(&self, thread_id: &ThreadId<str>) -> bool {
-        self.ensure_thread_metadata_loaded(thread_id);
+        self.metadata_loaded_or_log(thread_id);
         self.core.thread_info(thread_id).is_some()
     }
 
     /// Resolve a thread ID to its root thread ID (i.e. the session ID).
     pub fn get_root_thread_id(&self, thread_id: &ThreadId<str>) -> ThreadId {
-        self.ensure_thread_metadata_loaded(thread_id);
+        self.metadata_loaded_or_log(thread_id);
         self.core
             .thread_info(thread_id)
             .map(|t| t.root_thread_id)
@@ -467,7 +676,7 @@ impl PersistentConversationStore {
 
     /// Get the parent thread ID, if any.
     pub fn get_thread_parent_id(&self, thread_id: &ThreadId<str>) -> Option<ThreadId> {
-        self.ensure_thread_metadata_loaded(thread_id);
+        self.metadata_loaded_or_log(thread_id);
         self.core
             .thread_info(thread_id)
             .and_then(|t| t.parent_thread_id)
@@ -475,21 +684,23 @@ impl PersistentConversationStore {
 
     /// Set the title for a thread.
     pub fn set_thread_title(&self, thread_id: &ThreadId<str>, title: &str) {
-        self.ensure_thread_metadata_loaded(thread_id);
+        if !self.metadata_loaded_or_log(thread_id) {
+            return;
+        }
         {
             let mut extras = self.extras.lock().expect("bug: mutex poisoned");
             if let Some(e) = extras.get_mut(thread_id) {
                 e.title = Some(title.to_owned());
             }
         }
-        self.save_thread_metadata(thread_id);
+        self.save_thread_metadata_logged(thread_id);
         self.notify_session(thread_id);
     }
 
     /// Get the model selected for this specific thread. Does NOT fall back to
     /// the parent thread — every thread is assigned a model at creation time.
     pub fn get_thread_model(&self, thread_id: &ThreadId<str>) -> ModelRef {
-        self.ensure_thread_metadata_loaded(thread_id);
+        self.metadata_loaded_or_log(thread_id);
         let extras = self.extras.lock().expect("bug: mutex poisoned");
         extras
             .get(thread_id)
@@ -499,14 +710,16 @@ impl PersistentConversationStore {
 
     /// Set the model selected for a thread.
     pub fn set_thread_model(&self, thread_id: &ThreadId<str>, model: ModelRef) {
-        self.ensure_thread_metadata_loaded(thread_id);
+        if !self.metadata_loaded_or_log(thread_id) {
+            return;
+        }
         {
             let mut extras = self.extras.lock().expect("bug: mutex poisoned");
             if let Some(e) = extras.get_mut(thread_id) {
                 e.selected_model = model;
             }
         }
-        self.save_thread_metadata(thread_id);
+        self.save_thread_metadata_logged(thread_id);
     }
 
     /// List every thread in a session, including the root and descendants that
@@ -522,7 +735,7 @@ impl PersistentConversationStore {
             if !visited.insert(thread_id.to_owned()) {
                 continue;
             }
-            self.ensure_thread_metadata_loaded(&thread_id);
+            self.metadata_loaded_or_log(&thread_id);
             let children = {
                 let extras = self.extras.lock().expect("bug: mutex poisoned");
                 extras
@@ -543,7 +756,7 @@ impl PersistentConversationStore {
         &self,
         parent_id: &ThreadId<str>,
     ) -> Vec<infinity_protocol::SubthreadInfo> {
-        self.ensure_thread_metadata_loaded(parent_id);
+        self.metadata_loaded_or_log(parent_id);
         let mut result = Vec::new();
         let mut queue = vec![parent_id.to_owned()];
         while let Some(pid) = queue.pop() {
@@ -555,7 +768,7 @@ impl PersistentConversationStore {
                     .unwrap_or_default()
             };
             for child_id in children {
-                self.ensure_thread_metadata_loaded(&child_id);
+                self.metadata_loaded_or_log(&child_id);
                 let Some(info) = self.core.thread_info(&child_id) else {
                     continue;
                 };
@@ -577,7 +790,7 @@ impl PersistentConversationStore {
     }
 
     pub fn get_total_tokens_used(&self, thread_id: &ThreadId<str>) -> usize {
-        self.ensure_thread_metadata_loaded(thread_id);
+        self.metadata_loaded_or_log(thread_id);
         self.extras
             .lock()
             .expect("bug: mutex poisoned")
@@ -587,7 +800,9 @@ impl PersistentConversationStore {
     }
 
     pub fn set_total_tokens_used(&self, thread_id: &ThreadId<str>, tokens: usize) {
-        self.ensure_thread_metadata_loaded(thread_id);
+        if !self.metadata_loaded_or_log(thread_id) {
+            return;
+        }
         if let Some(e) = self
             .extras
             .lock()
@@ -596,12 +811,12 @@ impl PersistentConversationStore {
         {
             e.total_tokens_used = tokens;
         }
-        self.save_thread_metadata(thread_id);
+        self.save_thread_metadata_logged(thread_id);
         self.notify_session(thread_id);
     }
 
     pub fn get_last_updated(&self, thread_id: &ThreadId<str>) -> String {
-        self.ensure_thread_metadata_loaded(thread_id);
+        self.metadata_loaded_or_log(thread_id);
         self.extras
             .lock()
             .expect("bug: mutex poisoned")
@@ -611,7 +826,9 @@ impl PersistentConversationStore {
     }
 
     pub fn set_last_updated(&self, thread_id: &ThreadId<str>, ts: &str) {
-        self.ensure_thread_metadata_loaded(thread_id);
+        if !self.metadata_loaded_or_log(thread_id) {
+            return;
+        }
         if let Some(e) = self
             .extras
             .lock()
@@ -620,48 +837,71 @@ impl PersistentConversationStore {
         {
             e.last_updated = ts.to_owned();
         }
-        self.save_thread_metadata(thread_id);
+        self.save_thread_metadata_logged(thread_id);
     }
 
-    /// Write views to `{dir}/{thread_id}.views.json`.
-    fn save_views(&self, thread_id: &ThreadId<str>) {
-        let Some(ref dir) = self.dir else { return };
+    /// Atomically write views to `{dir}/{thread_id}.views.json` (or remove
+    /// the file when there are none).
+    fn save_views(&self, thread_id: &ThreadId<str>) -> Result<(), MemoryError> {
+        let Some(ref dir) = self.dir else {
+            return Ok(());
+        };
         let views = self.views.lock().expect("bug: mutex poisoned");
-        let path = dir.join(format!("{}.views.json", thread_id));
+        let path = views_path(dir, thread_id);
         match views.get(thread_id) {
             Some(v) if !v.is_empty() => {
-                if let Ok(json) = serde_json::to_string_pretty(v) {
-                    std::fs::write(path, json).ok();
-                }
+                persist::write_json_atomic(
+                    &path,
+                    &ViewsFile {
+                        version: THREAD_VIEWS_VERSION,
+                        views: v.clone(),
+                    },
+                )?;
             }
-            _ => {
-                let _ = std::fs::remove_file(path); // file might already not exist
-            }
-        }
-    }
-
-    /// Load views from `{dir}/{thread_id}.views.json`.
-    fn load_views(&self, thread_id: &ThreadId<str>) {
-        tracing::info!("Loading views for thread {thread_id}");
-        let Some(ref dir) = self.dir else { return };
-        let path = dir.join(format!("{}.views.json", thread_id));
-        match std::fs::read_to_string(&path) {
-            Ok(json) => match serde_json::from_str::<HashMap<String, serde_json::Value>>(&json) {
-                Ok(v) => {
-                    self.views
-                        .lock()
-                        .expect("bug: mutex poisoned")
-                        .insert(thread_id.to_owned(), v);
-                }
+            _ => match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => {
-                    tracing::error!("Failed to deserialize views: {e}");
+                    return Err(MemoryError(format!(
+                        "failed to remove {}: {e}",
+                        path.display()
+                    )));
                 }
             },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // file does not exist, okay
-            Err(e) => {
-                tracing::error!("Failed to load views file: {e}");
-            }
         }
+        Ok(())
+    }
+
+    /// Load views from `{dir}/{thread_id}.views.json`, accepting both the
+    /// versioned [`ViewsFile`] and the pre-versioning bare map.
+    fn load_views(&self, thread_id: &ThreadId<str>) -> Result<(), MemoryError> {
+        let Some(ref dir) = self.dir else {
+            return Ok(());
+        };
+        let path = views_path(dir, thread_id);
+        let Some(raw) = persist::read_json::<serde_json::Value>(&path)? else {
+            return Ok(());
+        };
+        let (views, outdated) = match serde_json::from_value::<ViewsFile>(raw.clone()) {
+            Ok(file) => {
+                persist::check_version(&path, file.version, THREAD_VIEWS_VERSION)?;
+                (file.views, file.version < THREAD_VIEWS_VERSION)
+            }
+            // Legacy: the bare `view_type → content` map.
+            Err(_) => (
+                serde_json::from_value::<HashMap<String, serde_json::Value>>(raw)
+                    .map_err(|e| MemoryError(format!("{}: corrupt: {e}", path.display())))?,
+                true,
+            ),
+        };
+        self.views
+            .lock()
+            .expect("bug: mutex poisoned")
+            .insert(thread_id.to_owned(), views);
+        if outdated {
+            self.save_views(thread_id)?;
+        }
+        Ok(())
     }
 
     /// Update a view for a thread and persist.
@@ -673,12 +913,16 @@ impl PersistentConversationStore {
                 .or_default()
                 .insert(view_type.to_owned(), content);
         }
-        self.save_views(thread_id);
+        if let Err(error) = self.save_views(thread_id) {
+            tracing::error!(%thread_id, %error, "failed to persist views");
+        }
     }
 
     /// Get all views for a thread.
     pub fn get_views(&self, thread_id: &ThreadId<str>) -> HashMap<String, serde_json::Value> {
-        self.ensure_thread_loaded(thread_id);
+        if let Err(error) = self.ensure_thread_loaded(thread_id) {
+            tracing::error!(%thread_id, %error, "failed to load thread");
+        }
         self.views
             .lock()
             .expect("bug: mutex poisoned")
@@ -688,7 +932,7 @@ impl PersistentConversationStore {
     }
 
     pub fn get_thread_title(&self, thread_id: &ThreadId<str>) -> Option<String> {
-        self.ensure_thread_metadata_loaded(thread_id);
+        self.metadata_loaded_or_log(thread_id);
         self.extras
             .lock()
             .expect("bug: mutex poisoned")
@@ -701,7 +945,10 @@ impl PersistentConversationStore {
         let mut threads: HashMap<ThreadId, SerializedThread> = HashMap::new();
         let mut queue = vec![root_thread_id.to_owned()];
         while let Some(tid) = queue.pop() {
-            self.ensure_thread_loaded(&tid);
+            if let Err(error) = self.ensure_thread_loaded(&tid) {
+                tracing::error!(thread_id = %tid, %error, "failed to load thread for serialization");
+                continue;
+            }
             let Some(metadata) = self.thread_meta(&tid) else {
                 continue;
             };
@@ -752,8 +999,9 @@ impl PersistentConversationStore {
                 .lock()
                 .expect("bug: mutex poisoned")
                 .insert(tid.clone());
-            self.save_thread(&tid);
-            self.save_views(&tid);
+            self.rewrite_log(&tid)?;
+            self.save_thread_metadata(&tid)?;
+            self.save_views(&tid)?;
         }
         Ok(())
     }
@@ -764,7 +1012,7 @@ impl ConversationStore for PersistentConversationStore {
     type Error = MemoryError;
 
     async fn ensure_root_thread(&self, thread_id: &ThreadId<str>) -> Result<(), MemoryError> {
-        self.ensure_thread_loaded(thread_id);
+        self.ensure_thread_loaded(thread_id)?;
         let inserted = self.core.thread_info(thread_id).is_none();
         if inserted {
             self.core.ensure_root_thread(thread_id).await?;
@@ -772,13 +1020,15 @@ impl ConversationStore for PersistentConversationStore {
                 thread_id.to_owned(),
                 ThreadExtras::new(self.default_model.clone()),
             );
-            self.save_thread(thread_id);
+            // The conversation log is created by the first append.
+            self.save_thread_metadata(thread_id)?;
         }
         Ok(())
     }
 
     async fn thread_exists(&self, thread_id: &ThreadId<str>) -> Result<bool, MemoryError> {
-        Ok(self.has_thread(thread_id))
+        self.ensure_thread_metadata_loaded(thread_id)?;
+        Ok(self.core.thread_info(thread_id).is_some())
     }
 
     async fn load_history_up_to(
@@ -787,7 +1037,7 @@ impl ConversationStore for PersistentConversationStore {
         start_from: Option<i64>,
         up_to: Option<i64>,
     ) -> Result<Vec<InfinityMessage>, MemoryError> {
-        self.ensure_thread_loaded(session_id);
+        self.ensure_thread_loaded(session_id)?;
         Ok(self
             .core
             .load_history_up_to(session_id, start_from, up_to)
@@ -799,11 +1049,32 @@ impl ConversationStore for PersistentConversationStore {
         session_id: &ThreadId<str>,
         messages: Vec<(InfinityMessage, String)>,
     ) -> Result<(), MemoryError> {
-        self.ensure_thread_loaded(session_id);
+        self.ensure_thread_loaded(session_id)?;
         tracing::trace!("Appending messages to store");
+        // Durable first, then in memory: a failed append must not leave the
+        // in-memory history ahead of the log.
+        let entries: Vec<ThreadLogEntry> = messages
+            .iter()
+            .map(|(message, id)| ThreadLogEntry::Message {
+                id: id.clone(),
+                message: message.clone(),
+            })
+            .collect();
+        self.append_log(session_id, &entries)?;
         self.core.append_messages(session_id, messages).await?;
-        self.save_thread(session_id);
         Ok(())
+    }
+
+    async fn is_message_processed(
+        &self,
+        thread_id: &ThreadId<str>,
+        message_id: &str,
+    ) -> Result<bool, MemoryError> {
+        self.ensure_thread_loaded(thread_id)?;
+        Ok(self
+            .core
+            .is_message_processed(thread_id, message_id)
+            .await?)
     }
 
     async fn spawn_thread(
@@ -813,7 +1084,7 @@ impl ConversationStore for PersistentConversationStore {
         is_for_subscription_event: bool,
         context: SpawnContext,
     ) -> Result<ThreadId, MemoryError> {
-        self.ensure_thread_loaded(parent_thread_id);
+        self.ensure_thread_loaded(parent_thread_id)?;
         let new_id = self.id_source.generate();
         {
             // Hold the load-tracking locks while creating the thread so a
@@ -849,21 +1120,25 @@ impl ConversationStore for PersistentConversationStore {
             meta_loaded.insert(new_id.clone());
         }
 
-        self.save_thread(&new_id);
-        self.save_thread_metadata(parent_thread_id);
+        // The child's identity first (its own file), then the parent's
+        // children list. A crash in between leaves an orphan child file that
+        // nothing references — harmless — rather than a parent pointing at a
+        // child that does not exist.
+        self.save_thread_metadata(&new_id)?;
+        self.save_thread_metadata(parent_thread_id)?;
         self.notify_session(parent_thread_id);
         Ok(new_id)
     }
 
     async fn is_thread_closed(&self, thread_id: &ThreadId<str>) -> Result<bool, MemoryError> {
-        self.ensure_thread_metadata_loaded(thread_id);
+        self.ensure_thread_metadata_loaded(thread_id)?;
         Ok(self.core.is_thread_closed(thread_id).await?)
     }
 
     async fn close_thread(&self, thread_id: &ThreadId<str>) -> Result<(), MemoryError> {
-        self.ensure_thread_metadata_loaded(thread_id);
+        self.ensure_thread_metadata_loaded(thread_id)?;
         self.core.close_thread(thread_id).await?;
-        self.save_thread_metadata(thread_id);
+        self.save_thread_metadata(thread_id)?;
         self.notify_session(thread_id);
         Ok(())
     }
@@ -872,7 +1147,7 @@ impl ConversationStore for PersistentConversationStore {
         &self,
         thread_id: &ThreadId<str>,
     ) -> Result<bool, MemoryError> {
-        self.ensure_thread_metadata_loaded(thread_id);
+        self.ensure_thread_metadata_loaded(thread_id)?;
         Ok(self.core.is_subscription_event_thread(thread_id).await?)
     }
 
@@ -880,7 +1155,7 @@ impl ConversationStore for PersistentConversationStore {
         &self,
         thread_id: &ThreadId<str>,
     ) -> Result<bool, MemoryError> {
-        self.ensure_thread_metadata_loaded(thread_id);
+        self.ensure_thread_metadata_loaded(thread_id)?;
         Ok(self.core.is_fresh_context_thread(thread_id).await?)
     }
 
@@ -888,7 +1163,7 @@ impl ConversationStore for PersistentConversationStore {
         &self,
         thread_id: &ThreadId<str>,
     ) -> Result<Option<(ThreadId, rap_protocol::ToolCallId)>, MemoryError> {
-        self.ensure_thread_metadata_loaded(thread_id);
+        self.ensure_thread_metadata_loaded(thread_id)?;
         Ok(self.core.get_thread_parent_info(thread_id).await?)
     }
 
@@ -900,7 +1175,7 @@ impl ConversationStore for PersistentConversationStore {
         // (and its ordering semantics) to the core store.
         let mut current = thread_id.to_owned();
         loop {
-            self.ensure_thread_metadata_loaded(&current);
+            self.ensure_thread_metadata_loaded(&current)?;
             match self
                 .core
                 .thread_info(&current)
@@ -919,11 +1194,17 @@ impl ConversationStore for PersistentConversationStore {
         summary: &str,
         up_to_order: i64,
     ) -> Result<(), MemoryError> {
-        self.ensure_thread_loaded(thread_id);
+        self.ensure_thread_loaded(thread_id)?;
+        self.append_log(
+            thread_id,
+            &[ThreadLogEntry::CompactionSummary {
+                summary: summary.to_owned(),
+                up_to_order,
+            }],
+        )?;
         self.core
             .save_compaction_summary(thread_id, summary, up_to_order)
             .await?;
-        self.save_thread(thread_id);
         Ok(())
     }
 
@@ -932,7 +1213,7 @@ impl ConversationStore for PersistentConversationStore {
         thread_id: &ThreadId<str>,
         up_to_order: Option<i64>,
     ) -> Result<Option<(String, i64)>, MemoryError> {
-        self.ensure_thread_loaded(thread_id);
+        self.ensure_thread_loaded(thread_id)?;
         Ok(self
             .core
             .load_latest_compaction_summary_up_to(thread_id, up_to_order)
@@ -940,7 +1221,7 @@ impl ConversationStore for PersistentConversationStore {
     }
 
     async fn is_compaction_thread(&self, thread_id: &ThreadId<str>) -> Result<bool, MemoryError> {
-        self.ensure_thread_metadata_loaded(thread_id);
+        self.ensure_thread_metadata_loaded(thread_id)?;
         Ok(self.core.is_compaction_thread(thread_id).await?)
     }
 
@@ -948,9 +1229,9 @@ impl ConversationStore for PersistentConversationStore {
         &self,
         thread_id: &ThreadId<str>,
     ) -> Result<(), MemoryError> {
-        self.ensure_thread_metadata_loaded(thread_id);
+        self.ensure_thread_metadata_loaded(thread_id)?;
         self.core.mark_thread_as_compaction(thread_id).await?;
-        self.save_thread_metadata(thread_id);
+        self.save_thread_metadata(thread_id)?;
         Ok(())
     }
 
@@ -958,7 +1239,7 @@ impl ConversationStore for PersistentConversationStore {
         &self,
         thread_id: &ThreadId<str>,
     ) -> Result<Option<i64>, MemoryError> {
-        self.ensure_thread_metadata_loaded(thread_id);
+        self.ensure_thread_metadata_loaded(thread_id)?;
         Ok(self.core.get_thread_spawn_order(thread_id).await?)
     }
 }
@@ -967,11 +1248,11 @@ impl ConversationStore for PersistentConversationStore {
 
 #[derive(Clone)]
 pub struct PersistentStateStore {
-    /// The shared store semantics (processed IDs, metadata, subscriptions).
+    /// The shared store semantics (metadata, subscriptions, pending choices).
     core: core_stores::InMemoryStateStore,
     /// Directory where per-thread state JSON files are stored.
     dir: PathBuf,
-    /// Tracks which keys have already been loaded (or attempted) from disk.
+    /// Tracks which keys have already been loaded from disk.
     loaded: Arc<Mutex<HashSet<ThreadId>>>,
     // Used to resolve child threads for stopped-session policy.
     conversation_store: PersistentConversationStore,
@@ -985,7 +1266,9 @@ impl PersistentStateStore {
         session_store: Arc<tokio::sync::Mutex<crate::session_store::SessionStore>>,
     ) -> Self {
         let dir = dir.as_ref().to_path_buf();
-        std::fs::create_dir_all(&dir).ok();
+        if let Err(error) = std::fs::create_dir_all(&dir) {
+            tracing::error!(dir = %dir.display(), %error, "failed to create state directory");
+        }
         Self {
             core: core_stores::InMemoryStateStore::new(),
             dir,
@@ -996,7 +1279,7 @@ impl PersistentStateStore {
     }
 
     pub fn has_pending_choices(&self, thread_id: &ThreadId<str>) -> bool {
-        self.ensure_loaded(thread_id);
+        self.loaded_or_log(thread_id);
         !self
             .core
             .thread_state(thread_id)
@@ -1019,7 +1302,7 @@ impl PersistentStateStore {
         thread_id: &ThreadId<str>,
         choice_id: &rap_protocol::ChoiceId<str>,
     ) -> Option<UserChoice> {
-        self.ensure_loaded(thread_id);
+        self.loaded_or_log(thread_id);
         self.core
             .thread_state(thread_id)
             .pending_user_choices
@@ -1051,31 +1334,60 @@ impl PersistentStateStore {
         Ok(())
     }
 
-    /// Write a single key's state data to `{dir}/{key}.state.json`. The file
-    /// is the serialized core [`ThreadState`] snapshot.
-    fn save_key(&self, key: &ThreadId<str>) {
-        let snapshot = self.core.thread_state(key);
-        let path = self.dir.join(format!("{}.state.json", key));
-        if let Ok(json) = serde_json::to_string_pretty(&snapshot) {
-            std::fs::write(path, json).ok();
-        }
+    /// Atomically write a single key's state to `{dir}/{key}.state.json`.
+    fn save_key(&self, key: &ThreadId<str>) -> Result<(), MemoryError> {
+        let state = self.core.thread_state(key);
+        persist::write_json_atomic(
+            &state_path(&self.dir, key),
+            &ThreadStateFile {
+                version: THREAD_STATE_VERSION,
+                metadata: state.metadata,
+                subscriptions: state.subscriptions,
+                pending_user_choices: state.pending_user_choices,
+            },
+        )?;
+        Ok(())
     }
 
-    /// Ensure a key's data is loaded from disk into the core store.
-    fn ensure_loaded(&self, key: &ThreadId<str>) {
+    /// Ensure a key's data is loaded from disk into the core store. On
+    /// failure the key is not marked loaded (so nothing is saved over the
+    /// unreadable file) and the error is returned.
+    fn ensure_loaded(&self, key: &ThreadId<str>) -> Result<(), MemoryError> {
         let mut loaded = self.loaded.lock().expect("bug: mutex poisoned");
         if loaded.contains(key) {
-            return;
+            return Ok(());
         }
 
-        let path = self.dir.join(format!("{}.state.json", key));
-        if let Ok(json) = std::fs::read_to_string(&path)
-            && let Ok(snapshot) = serde_json::from_str::<ThreadState>(&json)
-        {
-            self.core.set_thread_state(key, snapshot);
+        let path = state_path(&self.dir, key);
+        let mut outdated = false;
+        if let Some(file) = persist::read_json::<ThreadStateFile>(&path)? {
+            persist::check_version(&path, file.version, THREAD_STATE_VERSION)?;
+            outdated = file.version < THREAD_STATE_VERSION;
+            self.core.set_thread_state(
+                key,
+                ThreadState {
+                    metadata: file.metadata,
+                    subscriptions: file.subscriptions,
+                    pending_user_choices: file.pending_user_choices,
+                },
+            );
         }
 
         loaded.insert(key.to_owned());
+        if outdated {
+            // Upgrade eagerly (this also drops the legacy
+            // `processed_message_ids` field).
+            self.save_key(key)?;
+        }
+        Ok(())
+    }
+
+    /// [`Self::ensure_loaded`] for synchronous getters that cannot propagate
+    /// the error: it is logged instead.
+    fn loaded_or_log(&self, key: &ThreadId<str>) {
+        if let Err(error) = self.ensure_loaded(key) {
+            tracing::error!(thread_id = %key, %error, "failed to load thread state");
+        }
     }
 }
 
@@ -1083,32 +1395,11 @@ impl PersistentStateStore {
 impl StateStore for PersistentStateStore {
     type Error = MemoryError;
 
-    async fn get_processed_ids(
-        &self,
-        thread_id: &ThreadId<str>,
-    ) -> Result<HashSet<String>, MemoryError> {
-        self.ensure_loaded(thread_id);
-        Ok(self.core.get_processed_ids(thread_id).await?)
-    }
-
-    async fn add_processed_message_ids(
-        &self,
-        thread_id: &ThreadId<str>,
-        message_ids: Vec<String>,
-    ) -> Result<(), MemoryError> {
-        self.ensure_loaded(thread_id);
-        self.core
-            .add_processed_message_ids(thread_id, message_ids)
-            .await?;
-        self.save_key(thread_id);
-        Ok(())
-    }
-
     async fn get_metadata(
         &self,
         root_thread_id: &ThreadId<str>,
     ) -> Result<Option<serde_json::Value>, MemoryError> {
-        self.ensure_loaded(root_thread_id);
+        self.ensure_loaded(root_thread_id)?;
         Ok(self.core.get_metadata(root_thread_id).await?)
     }
 
@@ -1117,17 +1408,16 @@ impl StateStore for PersistentStateStore {
         root_thread_id: &ThreadId<str>,
         metadata: serde_json::Value,
     ) -> Result<(), MemoryError> {
-        self.ensure_loaded(root_thread_id);
+        self.ensure_loaded(root_thread_id)?;
         self.core.set_metadata(root_thread_id, metadata).await?;
-        self.save_key(root_thread_id);
-        Ok(())
+        self.save_key(root_thread_id)
     }
 
     async fn get_active_subscriptions(
         &self,
         thread_id: &ThreadId<str>,
     ) -> Result<Vec<rap_protocol::ToolCallId>, MemoryError> {
-        self.ensure_loaded(thread_id);
+        self.ensure_loaded(thread_id)?;
         Ok(self.core.get_active_subscriptions(thread_id).await?)
     }
 
@@ -1136,12 +1426,11 @@ impl StateStore for PersistentStateStore {
         thread_id: &ThreadId<str>,
         tool_call_id: &rap_protocol::ToolCallId<str>,
     ) -> Result<(), MemoryError> {
-        self.ensure_loaded(thread_id);
+        self.ensure_loaded(thread_id)?;
         self.core
             .add_active_subscription(thread_id, tool_call_id)
             .await?;
-        self.save_key(thread_id);
-        Ok(())
+        self.save_key(thread_id)
     }
 
     async fn remove_active_subscription(
@@ -1149,12 +1438,11 @@ impl StateStore for PersistentStateStore {
         thread_id: &ThreadId<str>,
         tool_call_id: &rap_protocol::ToolCallId<str>,
     ) -> Result<(), MemoryError> {
-        self.ensure_loaded(thread_id);
+        self.ensure_loaded(thread_id)?;
         self.core
             .remove_active_subscription(thread_id, tool_call_id)
             .await?;
-        self.save_key(thread_id);
-        Ok(())
+        self.save_key(thread_id)
     }
 
     async fn add_pending_user_choice(
@@ -1162,9 +1450,9 @@ impl StateStore for PersistentStateStore {
         thread_id: &ThreadId<str>,
         choice: UserChoice,
     ) -> Result<(), MemoryError> {
-        self.ensure_loaded(thread_id);
+        self.ensure_loaded(thread_id)?;
         self.core.add_pending_user_choice(thread_id, choice).await?;
-        self.save_key(thread_id);
+        self.save_key(thread_id)?;
         self.conversation_store.notify_session(thread_id);
         Ok(())
     }
@@ -1174,11 +1462,11 @@ impl StateStore for PersistentStateStore {
         thread_id: &ThreadId<str>,
         choice_id: &rap_protocol::ChoiceId<str>,
     ) -> Result<(), MemoryError> {
-        self.ensure_loaded(thread_id);
+        self.ensure_loaded(thread_id)?;
         self.core
             .remove_pending_user_choice(thread_id, choice_id)
             .await?;
-        self.save_key(thread_id);
+        self.save_key(thread_id)?;
         self.conversation_store.notify_session(thread_id);
         Ok(())
     }
@@ -1187,7 +1475,7 @@ impl StateStore for PersistentStateStore {
         &self,
         thread_id: &ThreadId<str>,
     ) -> Result<Vec<UserChoice>, MemoryError> {
-        self.ensure_loaded(thread_id);
+        self.ensure_loaded(thread_id)?;
         Ok(self.core.get_pending_user_choices(thread_id).await?)
     }
 
@@ -1627,5 +1915,444 @@ mod tests {
         {
             assert_eq!(t.text, "c3");
         }
+    }
+
+    // ── Durability ──
+
+    fn open_store(dir: &Path) -> PersistentConversationStore {
+        PersistentConversationStore::new_with_dir(
+            dir,
+            test_model(),
+            Arc::new(crate::ids::UuidIdSource),
+        )
+    }
+
+    fn texts(history: &[InfinityMessage]) -> Vec<String> {
+        history
+            .iter()
+            .map(|m| match m {
+                InfinityMessage::User {
+                    content: UserContent::Text(t),
+                } => t.text.clone(),
+                InfinityMessage::Assistant {
+                    content: AssistantContent::Text(t),
+                } => t.text.clone(),
+                other => panic!("unexpected message {other:?}"),
+            })
+            .collect()
+    }
+
+    /// A fresh store over the same directory (a daemon restart) sees every
+    /// committed message, compaction summary, metadata field and view.
+    #[tokio::test]
+    async fn restart_reloads_everything_from_disk() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = ThreadId::from_ref("root");
+        let child = {
+            let store = open_store(dir.path());
+            store.ensure_root_thread(root).await.expect("root");
+            store
+                .append_messages(
+                    root,
+                    vec![
+                        (user_msg("hi"), "m1".into()),
+                        (asst_msg("hello"), "m2".into()),
+                    ],
+                )
+                .await
+                .expect("append");
+            store
+                .append_messages(root, vec![(user_msg("more"), "m3".into())])
+                .await
+                .expect("append again");
+            store
+                .save_compaction_summary(root, "summary", 2)
+                .await
+                .expect("compaction");
+            store.set_thread_title(root, "My session");
+            store.set_total_tokens_used(root, 1234);
+            store.set_view(root, "diff", serde_json::json!({"files": 1}));
+            let child = store
+                .spawn_thread(
+                    root,
+                    rap_protocol::ToolCallId::from_ref("tc-1"),
+                    false,
+                    SpawnContext::InheritUpTo(3),
+                )
+                .await
+                .expect("spawn");
+            store
+                .append_messages(&child, vec![(user_msg("child"), "c1".into())])
+                .await
+                .expect("append child");
+            child
+        };
+
+        // Only the new file kinds exist; nothing writes the legacy snapshot.
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("list")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&"root.jsonl".to_owned()), "{names:?}");
+        assert!(names.contains(&"root.meta.json".to_owned()), "{names:?}");
+        assert!(names.contains(&"root.views.json".to_owned()), "{names:?}");
+        assert!(!names.contains(&"root.json".to_owned()), "{names:?}");
+
+        let store = open_store(dir.path());
+        let own = store
+            .load_history_up_to(root, None, None)
+            .await
+            .expect("load");
+        assert_eq!(texts(&own), vec!["hi", "hello", "more"]);
+        let (history, compacted, _) = store
+            .load_history_with_ancestors(root)
+            .await
+            .expect("load with ancestors");
+        assert_eq!(compacted, Some(2));
+        assert_eq!(history.len(), 2, "summary + the one message after it");
+        assert_eq!(store.get_thread_title(root), Some("My session".to_owned()));
+        assert_eq!(store.get_total_tokens_used(root), 1234);
+        assert_eq!(
+            store.get_views(root).get("diff"),
+            Some(&serde_json::json!({"files": 1}))
+        );
+        assert_eq!(store.get_thread_parent_id(&child), Some(root.to_owned()));
+        assert_eq!(store.get_open_subthreads(root).len(), 1);
+        assert_eq!(
+            texts(
+                &store
+                    .load_history_up_to(&child, None, None)
+                    .await
+                    .expect("load child")
+            ),
+            vec!["child"]
+        );
+    }
+
+    /// Each append adds lines to the log rather than rewriting it, so the
+    /// per-completion write cost is proportional to the new content.
+    #[tokio::test]
+    async fn appends_are_append_only() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = ThreadId::from_ref("root");
+        let store = open_store(dir.path());
+        store.ensure_root_thread(root).await.expect("root");
+        let path = dir.path().join("root.jsonl");
+
+        store
+            .append_messages(root, vec![(user_msg("a"), "m1".into())])
+            .await
+            .expect("append");
+        let first = std::fs::read(&path).expect("read");
+        store
+            .append_messages(root, vec![(user_msg("b"), "m2".into())])
+            .await
+            .expect("append");
+        let second = std::fs::read(&path).expect("read");
+        assert!(
+            second.starts_with(&first),
+            "the earlier contents are a byte prefix of the later file"
+        );
+        assert_eq!(
+            std::str::from_utf8(&second).expect("utf8").lines().count(),
+            3,
+            "header + two messages"
+        );
+    }
+
+    /// A crash mid-append leaves a torn last line; on restart the thread
+    /// loads the complete prefix and keeps working.
+    #[tokio::test]
+    async fn torn_append_recovers_prefix_on_restart() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = ThreadId::from_ref("root");
+        {
+            let store = open_store(dir.path());
+            store.ensure_root_thread(root).await.expect("root");
+            store
+                .append_messages(
+                    root,
+                    vec![(user_msg("a"), "m1".into()), (asst_msg("b"), "m2".into())],
+                )
+                .await
+                .expect("append");
+        }
+        // Simulate the crash: the third message was only partially written.
+        let path = dir.path().join("root.jsonl");
+        let mut torn = std::fs::read(&path).expect("read");
+        let full_line = serde_json::to_vec(&ThreadLogEntry::Message {
+            id: "m3".to_owned(),
+            message: user_msg("c"),
+        })
+        .expect("serialize");
+        torn.extend_from_slice(&full_line[..full_line.len() / 2]);
+        std::fs::write(&path, &torn).expect("write torn");
+
+        let store = open_store(dir.path());
+        let history = store
+            .load_history_up_to(root, None, None)
+            .await
+            .expect("load");
+        assert_eq!(texts(&history), vec!["a", "b"]);
+
+        // The thread keeps working after recovery, and a further restart sees
+        // the repaired log plus the new message.
+        store
+            .append_messages(root, vec![(user_msg("d"), "m4".into())])
+            .await
+            .expect("append after recovery");
+        let store = open_store(dir.path());
+        let history = store
+            .load_history_up_to(root, None, None)
+            .await
+            .expect("load");
+        assert_eq!(texts(&history), vec!["a", "b", "d"]);
+    }
+
+    /// A thread persisted by an older daemon as a whole-snapshot `.json`
+    /// (with unversioned `.meta.json`) is migrated into the log on first
+    /// load, and the migrated log is what later loads use.
+    #[tokio::test]
+    async fn legacy_snapshot_is_migrated_to_log() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = ThreadId::from_ref("root");
+        let legacy_snapshot = serde_json::json!({
+            "messages": [
+                [serde_json::to_value(user_msg("old hi")).expect("ser"), "m1"],
+                [serde_json::to_value(asst_msg("old hello")).expect("ser"), "m2"],
+            ],
+            "compaction_summaries": [{"summary": "old summary", "up_to_order": 1}],
+        });
+        std::fs::write(
+            dir.path().join("root.json"),
+            serde_json::to_vec(&legacy_snapshot).expect("ser"),
+        )
+        .expect("write legacy snapshot");
+        std::fs::write(
+            dir.path().join("root.meta.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "parent_thread_id": null,
+                "root_thread_id": "root",
+                "spawn_message_order": null,
+                "spawn_tool_call_id": null,
+                "closed": false,
+                "is_subscription_event": false,
+                "title": "legacy title",
+                "children": [],
+                "total_tokens_used": 7,
+                "last_updated": "2024",
+            }))
+            .expect("ser"),
+        )
+        .expect("write legacy meta");
+
+        let store = open_store(dir.path());
+        let history = store
+            .load_history_up_to(root, None, None)
+            .await
+            .expect("load");
+        assert_eq!(texts(&history), vec!["old hi", "old hello"]);
+        assert_eq!(
+            store
+                .load_latest_compaction_summary_up_to(root, None)
+                .await
+                .expect("compaction"),
+            Some(("old summary".to_owned(), 1))
+        );
+        assert_eq!(
+            store.get_thread_title(root),
+            Some("legacy title".to_owned())
+        );
+        assert_eq!(
+            store.get_thread_model(root),
+            test_model(),
+            "missing selected_model is backfilled"
+        );
+        assert!(dir.path().join("root.jsonl").exists(), "log written");
+        assert!(
+            dir.path().join("root.json").exists(),
+            "legacy snapshot left in place"
+        );
+
+        // Appends go to the log; the legacy snapshot is never consulted again.
+        store
+            .append_messages(root, vec![(user_msg("new"), "m3".into())])
+            .await
+            .expect("append");
+        std::fs::remove_file(dir.path().join("root.json")).expect("remove legacy");
+        let store = open_store(dir.path());
+        let history = store
+            .load_history_up_to(root, None, None)
+            .await
+            .expect("load");
+        assert_eq!(texts(&history), vec!["old hi", "old hello", "new"]);
+        // The rewritten metadata is versioned.
+        let meta: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join("root.meta.json")).expect("read meta"),
+        )
+        .expect("parse meta");
+        assert_eq!(meta["version"], serde_json::json!(THREAD_META_VERSION));
+        assert_eq!(meta["title"], serde_json::json!("legacy title"));
+    }
+
+    /// Processed-id lookups are answered from the log itself, so they
+    /// survive a restart with no separate file to fall out of sync.
+    #[tokio::test]
+    async fn processed_ids_are_looked_up_in_the_log() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = ThreadId::from_ref("root");
+        let conv = open_store(dir.path());
+        conv.ensure_root_thread(root).await.expect("root");
+        conv.append_messages(
+            root,
+            vec![
+                (user_msg("u"), "user-1".into()),
+                (asst_msg("a"), "asst-1".into()),
+                (InfinityMessage::Interrupt, "tc-1-interrupted".into()),
+            ],
+        )
+        .await
+        .expect("append");
+
+        for store in [conv, open_store(dir.path())] {
+            for id in ["user-1", "asst-1", "tc-1-interrupted"] {
+                assert!(
+                    store.is_message_processed(root, id).await.expect("lookup"),
+                    "{id} is persisted"
+                );
+            }
+            assert!(
+                !store
+                    .is_message_processed(root, "user-2")
+                    .await
+                    .expect("lookup")
+            );
+            assert!(
+                !store
+                    .is_message_processed(ThreadId::from_ref("other"), "user-1")
+                    .await
+                    .expect("lookup"),
+                "ids are scoped per thread"
+            );
+        }
+        assert!(
+            !dir.path().join("root.state.json").exists(),
+            "no state file is written for processed ids"
+        );
+    }
+
+    /// The metadata and views files are written in their versioned shape,
+    /// and pre-versioning views files still load.
+    #[tokio::test]
+    async fn atomic_files_are_versioned() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = ThreadId::from_ref("root");
+        let store = open_store(dir.path());
+        store.ensure_root_thread(root).await.expect("root");
+        store.set_view(root, "v", serde_json::json!(1));
+
+        let meta: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join("root.meta.json")).expect("read"),
+        )
+        .expect("parse");
+        assert_eq!(meta["version"], serde_json::json!(THREAD_META_VERSION));
+        let views: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join("root.views.json")).expect("read"),
+        )
+        .expect("parse");
+        assert_eq!(views["version"], serde_json::json!(THREAD_VIEWS_VERSION));
+        assert_eq!(views["views"]["v"], serde_json::json!(1));
+
+        // Legacy bare-map views still load.
+        std::fs::write(
+            dir.path().join("root.views.json"),
+            serde_json::to_vec(&serde_json::json!({"legacy": {"x": 2}})).expect("ser"),
+        )
+        .expect("write legacy views");
+        let store = open_store(dir.path());
+        assert_eq!(
+            store.get_views(root).get("legacy"),
+            Some(&serde_json::json!({"x": 2}))
+        );
+    }
+
+    /// A log written by a newer daemon is refused (never appended to in the
+    /// old format), and the refusal surfaces as an error rather than an
+    /// empty thread.
+    #[tokio::test]
+    async fn newer_log_version_is_refused() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = ThreadId::from_ref("root");
+        std::fs::write(
+            dir.path().join("root.jsonl"),
+            format!(
+                "{{\"kind\":\"header\",\"version\":{},\"thread_id\":\"root\"}}\n",
+                THREAD_LOG_VERSION + 1
+            ),
+        )
+        .expect("write");
+        let store = open_store(dir.path());
+        let err = store
+            .append_messages(root, vec![(user_msg("x"), "m1".into())])
+            .await
+            .expect_err("newer version must be refused");
+        assert!(err.to_string().contains("newer"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("root.jsonl"))
+                .expect("read")
+                .lines()
+                .count(),
+            1,
+            "nothing was appended"
+        );
+    }
+
+    /// A pre-versioning state file (which carried processed ids) loads, is
+    /// rewritten in the versioned shape without them, and its subscriptions
+    /// and pending choices survive.
+    #[tokio::test]
+    async fn legacy_state_file_is_upgraded() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = ThreadId::from_ref("root");
+        let (change_tx, _change_rx) = tokio::sync::mpsc::unbounded_channel();
+        let session_store = Arc::new(tokio::sync::Mutex::new(
+            crate::session_store::SessionStore::load(
+                &dir.path().join("sessions.json").to_string_lossy(),
+                change_tx,
+            ),
+        ));
+        let state_dir = dir.path().join("state");
+        std::fs::create_dir_all(&state_dir).expect("mkdir");
+        std::fs::write(
+            state_dir.join("root.state.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "processed_message_ids": ["stale-1"],
+                "metadata": {"user_id": "u1"},
+                "subscriptions": ["sub-1"],
+                "pending_user_choices": [],
+            }))
+            .expect("ser"),
+        )
+        .expect("write legacy state");
+
+        let conv = open_store(&dir.path().join("threads"));
+        let state = PersistentStateStore::new(&state_dir, conv.clone(), session_store);
+        assert_eq!(
+            state.get_active_subscriptions(root).await.expect("subs"),
+            vec![rap_protocol::ToolCallId::from("sub-1")]
+        );
+        assert_eq!(
+            state.get_metadata(root).await.expect("metadata"),
+            Some(serde_json::json!({"user_id": "u1"}))
+        );
+        let upgraded: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(state_dir.join("root.state.json")).expect("read"),
+        )
+        .expect("parse");
+        assert_eq!(upgraded["version"], serde_json::json!(THREAD_STATE_VERSION));
+        assert!(
+            upgraded.get("processed_message_ids").is_none(),
+            "processed ids are no longer stored: {upgraded}"
+        );
     }
 }

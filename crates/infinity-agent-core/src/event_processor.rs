@@ -145,6 +145,10 @@ pub struct HistoryManager<C: ConversationStore, S: StateStore> {
     pub root_thread_id: ThreadId,
     ancestor_chain: Vec<ThreadId>,
     pub history: RefCell<Vec<InfinityMessage>>,
+    /// Dedup ids handled during this process lifetime (persisted or not).
+    /// Ids persisted by an earlier incarnation are not preloaded; they are
+    /// looked up in the conversation store on demand by
+    /// [`Self::handle_input`] and cached here once seen.
     processed_message_ids: RefCell<HashSet<String>>,
     metadata: RefCell<Option<serde_json::Value>>,
     // Un-persisted content moves through three phases:
@@ -215,11 +219,6 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             .await
             .unwrap_or(None);
 
-        let processed_message_ids = state_store
-            .get_processed_ids(&thread_id)
-            .await
-            .unwrap_or_default();
-
         Ok(Self {
             conversation_store,
             state_store,
@@ -227,7 +226,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             root_thread_id,
             ancestor_chain,
             history: RefCell::new(history),
-            processed_message_ids: RefCell::new(processed_message_ids),
+            processed_message_ids: RefCell::new(HashSet::new()),
             metadata: RefCell::new(metadata),
             pending_items: RefCell::new(Vec::new()),
             unvalidated_items: RefCell::new(Vec::new()),
@@ -238,6 +237,38 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         })
     }
 
+    /// Fold an incoming input into history unless it has already been
+    /// processed — either during this process lifetime (tracked in memory)
+    /// or durably, by a previous incarnation of the thread (looked up in the
+    /// conversation store). Returns `false` for duplicates.
+    ///
+    /// Anything this commits as known-safe (an interrupt marker settling a
+    /// tool call) is made durable by the step's commit barrier right after
+    /// the prepare phase, before the model is invoked.
+    pub async fn handle_input(
+        &self,
+        message: InfinityMessage,
+        message_id: String,
+    ) -> Result<bool, BoxError> {
+        if !self.processed_message_ids.borrow().contains(&message_id)
+            && self
+                .conversation_store
+                .is_message_processed(&self.thread_id, &message_id)
+                .await
+                .map_err(|e| Box::new(e) as BoxError)?
+        {
+            tracing::info!("Message {} already persisted, skipping", message_id);
+            self.processed_message_ids.borrow_mut().insert(message_id);
+            return Ok(false);
+        }
+        self.handle_content(message, message_id)
+    }
+
+    /// Fold content into history unless its id was already handled during
+    /// this process lifetime. Inputs that may have been persisted by an
+    /// earlier incarnation must go through [`Self::handle_input`], which also
+    /// consults the store; this synchronous form is for content minted
+    /// in-process (synthetic tool results) whose ids are fresh.
     pub fn handle_content(
         &self,
         message: InfinityMessage,
@@ -258,6 +289,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             }
         );
 
+        let mut interrupts_tool_call = false;
         if !is_self_contained_subscription {
             if let Some(tool_result) = message.tool_result() {
                 match self.match_tool_result(&tool_result.id) {
@@ -279,13 +311,19 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                     }
                 }
             } else {
-                self.interrupt_pending_tool_call();
+                interrupts_tool_call = self.interrupt_pending_tool_call(&message);
             }
         } else {
-            self.interrupt_pending_tool_call();
+            interrupts_tool_call = self.interrupt_pending_tool_call(&message);
         }
 
-        self.append_unvalidated(message, message_id.clone());
+        if interrupts_tool_call && matches!(message, InfinityMessage::Interrupt) {
+            // The incoming marker is the one settling the call; same
+            // reasoning as in `interrupt_pending_tool_call`.
+            self.append_known_safe(message, message_id.clone());
+        } else {
+            self.append_unvalidated(message, message_id.clone());
+        }
         self.processed_message_ids.borrow_mut().insert(message_id);
         Ok(true)
     }
@@ -318,10 +356,36 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         ToolResultMatch::NoPendingCall
     }
 
-    /// If the last history entry is an unanswered tool call, inject a
-    /// synthetic "interrupted" result. (A tool call at the tail is unanswered
-    /// by construction: its result would have been appended after it.)
-    fn interrupt_pending_tool_call(&self) {
+    /// If the last history entry is an unanswered tool call, the incoming
+    /// item interrupts it: record the call for cancellation and return
+    /// `true`. (A tool call at the tail is unanswered by construction: its
+    /// result would have been appended after it.)
+    ///
+    /// How the interruption is *recorded* depends on who caused it:
+    ///
+    /// * **User text** gets an explicit [`InfinityMessage::Interrupt`]
+    ///   appended here, committed as **known-safe** so the step's commit
+    ///   barrier persists it before the model is invoked or the tool is
+    ///   cancelled. The user stopping the agent must be durable
+    ///   even if the text itself is later dropped as oversized (a stopped
+    ///   agent is idle; it must not look like it was cut off mid-flight), and
+    ///   the marker renders to a fixed short token so it can never be the
+    ///   overflow cause. Committing it known-safe is sound because a tool
+    ///   call at the tail is committed model output, which implies every
+    ///   earlier input was already validated (asserted by
+    ///   [`Self::append_known_safe`]).
+    /// * **Events** (subscription events, child reports) get no marker: the
+    ///   event itself is the record, and `render_history` infers the
+    ///   interruption from it. Events are never dropped (overflow recovery
+    ///   placeholder-replaces them), so nothing is lost — and if the process
+    ///   dies before the event is validated, the persisted history ends on
+    ///   the bare tool call, which correctly reads as "in flight" to a
+    ///   future resume rather than as a deliberate stop.
+    /// * An incoming **interrupt marker** is appended by the caller (known-
+    ///   safe when it settles a call, otherwise unvalidated; see
+    ///   [`Self::drop_unvalidated_user_inputs`] for how it survives either
+    ///   way).
+    fn interrupt_pending_tool_call(&self, incoming: &InfinityMessage) -> bool {
         let last_call = self.history.borrow().last().and_then(|m| {
             if let InfinityMessage::ToolCall { call, .. } = m {
                 Some(call.clone())
@@ -329,25 +393,18 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 None
             }
         });
-        if let Some(tool_call) = last_call {
-            tracing::info!("Tool call {} interrupted by incoming message", tool_call.id);
-            self.interrupted_tool_calls
-                .borrow_mut()
-                .push(ToolCallId::from(tool_call.id.clone()));
-            let synthetic_result = InfinityMessage::ToolResult {
-                result: ToolResult {
-                    id: tool_call.id.clone(),
-                    call_id: tool_call.call_id.clone(),
-                    content: vec![ToolResultContent::Text(
-                        infinity_provider_protocol::message::Text {
-                            text: TOOL_CALL_INTERRUPTED_TEXT.to_owned(),
-                        },
-                    )],
-                },
-                display_segments: None,
-            };
-            self.append_unvalidated(synthetic_result, format!("{}-interrupted", tool_call.id));
+        let Some(tool_call) = last_call else {
+            return false;
+        };
+        tracing::info!("Tool call {} interrupted by incoming message", tool_call.id);
+        self.interrupted_tool_calls
+            .borrow_mut()
+            .push(ToolCallId::from(tool_call.id.clone()));
+        if matches!(incoming, InfinityMessage::User { .. }) {
+            let id = format!("{}-interrupted", tool_call.id);
+            self.append_known_safe(InfinityMessage::Interrupt, id);
         }
+        true
     }
 
     /// Buffer a streamed assistant chunk for the current turn. The chunk is
@@ -520,7 +577,10 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     /// Drop all unvalidated *user* inputs: items that are neither tool
     /// results nor subscription events (those are placeholder-replaceable,
     /// see [`Self::replace_unvalidated_tool_results`], and answering a tool
-    /// call is always better than stranding it). Dropped items are removed
+    /// call is always better than stranding it) nor interrupt markers (an
+    /// interruption happened regardless of what becomes of the input that
+    /// caused it, and the marker cannot be the overflow cause). Dropped
+    /// items are removed
     /// from the in-memory history and their dedup IDs forgotten so a
     /// redelivery is not silently ignored. Returns how many items were
     /// dropped.
@@ -544,7 +604,9 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         for item in unvalidated.drain(..) {
             if matches!(
                 item.message,
-                InfinityMessage::ToolResult { .. } | InfinityMessage::SubscriptionEvent { .. }
+                InfinityMessage::ToolResult { .. }
+                    | InfinityMessage::SubscriptionEvent { .. }
+                    | InfinityMessage::Interrupt
             ) {
                 kept.push(item);
             } else {
@@ -642,31 +704,13 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             .iter()
             .map(|item| (item.message.clone(), item.message_id.clone()))
             .collect();
+        // The dedup ids travel with the messages: the store answers later
+        // `is_message_processed` lookups from them, so there is no second
+        // write that could be lost separately.
         self.conversation_store
             .append_messages(&self.thread_id, msgs)
             .await
             .map_err(|e| Box::new(e) as BoxError)?;
-        // Only inputs that are not naturally idempotent need durable dedup
-        // IDs: user text and subscription events (a redelivered subscription
-        // event would mint a fresh invocation and be appended again). Tool
-        // results are deduplicated against the history tail itself, and
-        // assistant/tool-call items only exist downstream of a deduped input.
-        let msg_ids: Vec<String> = pending_items
-            .iter()
-            .filter(|i| {
-                matches!(
-                    i.message,
-                    InfinityMessage::User { .. } | InfinityMessage::SubscriptionEvent { .. }
-                )
-            })
-            .map(|i| i.message_id.clone())
-            .collect();
-        if !msg_ids.is_empty() {
-            let _ = self
-                .state_store
-                .add_processed_message_ids(&self.thread_id, msg_ids)
-                .await;
-        }
         Ok(())
     }
 
@@ -685,10 +729,8 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     /// `false`, image tool-result content is replaced with a text placeholder
     /// so the history can be sent to models without image support.
     pub fn get_history(&self, supports_image_input: bool) -> Vec<Message> {
-        self.history
-            .borrow()
-            .iter()
-            .flat_map(|m| m.clone().into_messages())
+        crate::message::render_history(self.history.borrow().iter())
+            .into_iter()
             .map(|mut msg| {
                 if !supports_image_input {
                     strip_image_tool_results(&mut msg);
@@ -1038,6 +1080,19 @@ where
         });
     }
 
+    // Interrupt marker: like any non-result entry, folding it settles a
+    // trailing unanswered tool call.
+    if input_msg
+        .synthetic
+        .as_ref()
+        .is_some_and(SyntheticKind::is_interrupt)
+    {
+        current_history
+            .handle_input(InfinityMessage::Interrupt, message_id)
+            .await?;
+        return Ok(PrepareResult::Handled);
+    }
+
     let is_subscription = input_msg.subscription;
 
     let user_content = match input_msg.content {
@@ -1282,7 +1337,9 @@ where
         }
     };
 
-    let is_new = current_history.handle_content(infinity_msg, message_id.clone())?;
+    let is_new = current_history
+        .handle_input(infinity_msg, message_id.clone())
+        .await?;
 
     if !is_new {
         tracing::info!("Message was duplicate or ignored, skipping agent processing");
@@ -1364,9 +1421,8 @@ where
             ),
         })
     } else if let InputMessageContent::User(UserContent::Text(ref text)) = input_msg.content {
-        let display_text = text.text.strip_prefix("<interrupt>").unwrap_or(&text.text);
         Some(AgentEvent::UserInput {
-            text: display_text.to_owned(),
+            text: text.text.clone(),
         })
     } else {
         None
@@ -1390,14 +1446,7 @@ pub const IMAGE_OMITTED_PLACEHOLDER: &str =
 pub const TOOL_RESULT_TOO_LARGE_PLACEHOLDER: &str =
     "[tool result omitted: it was too large for the model's remaining context window]";
 
-/// Text used to settle a tool call as interrupted. Injected when a user
-/// message arrives while the call is unanswered, and also substituted for a
-/// pending tool result during overflow recovery when user input had to be
-/// dropped: the next thing the model sees is a fresh user message, and
-/// "interrupted by user" describes that situation accurately, whereas a
-/// "too large" placeholder could mislead the model into re-running the
-/// tool.
-pub const TOOL_CALL_INTERRUPTED_TEXT: &str = "Tool call interrupted by user";
+pub use crate::message::TOOL_CALL_INTERRUPTED_TEXT;
 
 /// Maximum number of retries for one completion round (transient and
 /// throttled provider errors).
@@ -1410,6 +1459,7 @@ const TRANSIENT_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 /// How [`run_completion`] recovered from a provider-declared context
 /// overflow (see [`ErrorClass::ContextOverflow`]).
+#[derive(Debug, PartialEq, Eq)]
 enum OverflowRecovery {
     /// The not-known-safe queue was exactly one replaceable item (tool
     /// result / subscription event) — the culprit is unambiguous, so it was
@@ -2452,8 +2502,187 @@ mod tests {
         .expect("prepare input");
 
         assert_eq!(result, PrepareResult::Ready);
-        // Should have: original user, tool call, synthetic interrupted result, new user msg
-        insta::assert_json_snapshot!(hm.history.into_inner());
+        // Should have: original user, tool call, interrupt, new user msg
+        // (no synthetic result is stored)...
+        insta::assert_json_snapshot!(hm.history.borrow().clone());
+        // ...but the model still sees the call answered as interrupted.
+        let rendered = hm.get_history(true);
+        assert_eq!(
+            rendered[2..],
+            [
+                Message::User {
+                    content: vec![UserContent::ToolResult(ToolResult {
+                        id: "tc-1".to_owned(),
+                        call_id: None,
+                        content: vec![ToolResultContent::Text(
+                            infinity_provider_protocol::message::Text {
+                                text: TOOL_CALL_INTERRUPTED_TEXT.to_owned(),
+                            }
+                        )],
+                    })],
+                },
+                Message::User {
+                    content: vec![UserContent::text("actually, never mind")],
+                },
+            ]
+        );
+    }
+
+    /// An interrupt marker settles a pending call by itself (no second
+    /// entry), and a late real result for the call is ignored.
+    #[tokio::test]
+    async fn interrupt_marker_settles_pending_tool_call() {
+        let store = InMemoryConversationStore::new();
+        let initial = vec![tool_call_msg("tc-1", "some_tool", serde_json::json!({}))];
+        let hm = make_history(&store, initial).await;
+        for (input, id) in [
+            (InputMessage::interrupt("thread-1"), "msg-1"),
+            (tool_result_input("thread-1", "tc-1", "late", None), "msg-2"),
+        ] {
+            prepare_input(input, id.to_owned(), &hm, &store, &StubSender)
+                .await
+                .expect("prepare input");
+        }
+        assert!(matches!(
+            hm.history.borrow().as_slice(),
+            [InfinityMessage::ToolCall { .. }, InfinityMessage::Interrupt]
+        ));
+        assert_eq!(
+            hm.take_interrupted_tool_calls(),
+            vec![ToolCallId::from("tc-1")]
+        );
+    }
+
+    /// An interruption that settles a pending tool call is committed
+    /// known-safe, so the step's commit barrier persists it before any
+    /// completion runs — while the interrupting input itself stays
+    /// unvalidated and unpersisted.
+    #[tokio::test]
+    async fn interrupt_settling_tool_call_is_known_safe() {
+        let store = InMemoryConversationStore::new();
+        let initial = vec![
+            Message::User {
+                content: vec![UserContent::text("do something")],
+            },
+            tool_call_msg("tc-1", "some_tool", serde_json::json!({})),
+        ];
+        let hm = make_history(&store, initial).await;
+
+        prepare_input(
+            user_text_msg("thread-1", "never mind"),
+            "msg-2".to_owned(),
+            &hm,
+            &store,
+            &StubSender,
+        )
+        .await
+        .expect("prepare input");
+
+        assert!(
+            matches!(
+                hm.pending_items.borrow().as_slice(),
+                [PendingItem {
+                    message: InfinityMessage::Interrupt,
+                    ..
+                }]
+            ),
+            "the marker is the only known-safe item"
+        );
+        assert_eq!(hm.unvalidated_len(), 1, "the user text awaits validation");
+
+        // What the step's commit barrier writes before invoking the model:
+        hm.sync().await.expect("sync");
+        let stored = persisted(&store);
+        assert!(
+            stored.contains("(Interrupt, \"tc-1-interrupted\")"),
+            "interrupt is durable: {stored}"
+        );
+        assert!(
+            !stored.contains("never mind"),
+            "the interrupting input is not: {stored}"
+        );
+    }
+
+    /// If the interrupting input turns out to be oversized and is dropped on
+    /// context overflow, the interruption is still recorded and the tool
+    /// call stays settled in the retry request.
+    #[tokio::test]
+    async fn oversized_interrupting_input_keeps_the_tool_call_settled() {
+        let store = InMemoryConversationStore::new();
+        let initial = vec![
+            Message::User {
+                content: vec![UserContent::text("do something")],
+            },
+            tool_call_msg("tc-1", "some_tool", serde_json::json!({})),
+        ];
+        let hm = make_history(&store, initial).await;
+        prepare_input(
+            user_text_msg("thread-1", "enormous"),
+            "msg-2".to_owned(),
+            &hm,
+            &store,
+            &StubSender,
+        )
+        .await
+        .expect("prepare input");
+
+        assert_eq!(
+            recover_from_overflow(&hm),
+            OverflowRecovery::DroppedInputs(1)
+        );
+        assert!(matches!(
+            hm.history.borrow().as_slice(),
+            [
+                InfinityMessage::User { .. },
+                InfinityMessage::ToolCall { .. },
+                InfinityMessage::Interrupt
+            ]
+        ));
+        // The model never sees an unanswered tool_use.
+        let rendered = hm.get_history(true);
+        assert_eq!(
+            rendered.last(),
+            Some(&Message::User {
+                content: vec![UserContent::ToolResult(ToolResult {
+                    id: "tc-1".to_owned(),
+                    call_id: None,
+                    content: vec![ToolResultContent::Text(
+                        infinity_provider_protocol::message::Text {
+                            text: TOOL_CALL_INTERRUPTED_TEXT.to_owned(),
+                        }
+                    )],
+                })],
+            })
+        );
+    }
+
+    /// An interrupt marker that does not settle a tool call (user text
+    /// interrupting a streaming completion whose inputs were not yet
+    /// validated) cannot be committed known-safe without breaking the
+    /// safe-after-unvalidated ordering, so it stays unvalidated — but an
+    /// overflow drop still preserves it.
+    #[tokio::test]
+    async fn interrupt_after_unvalidated_input_survives_overflow_drop() {
+        let store = InMemoryConversationStore::new();
+        let hm = make_history(&store, vec![]).await;
+        let user = |text: &str| InfinityMessage::User {
+            content: UserContent::text(text),
+        };
+        hm.handle_content(user("first"), "a".to_owned())
+            .expect("first");
+        hm.handle_content(InfinityMessage::Interrupt, "b-interrupt".to_owned())
+            .expect("interrupt");
+        hm.handle_content(user("second, oversized"), "b".to_owned())
+            .expect("second");
+        assert_eq!(hm.unvalidated_len(), 3, "nothing was committed known-safe");
+        assert!(hm.pending_items.borrow().is_empty());
+
+        assert_eq!(hm.drop_unvalidated_user_inputs(), 2);
+        assert!(matches!(
+            hm.history.borrow().as_slice(),
+            [InfinityMessage::Interrupt]
+        ));
+        assert_eq!(hm.unvalidated_len(), 1);
     }
 
     #[tokio::test]
@@ -2559,7 +2788,7 @@ mod tests {
         assert_eq!(result, PrepareResult::Ready);
         insta::assert_json_snapshot!(
             hm.history.into_inner(),
-            { "[3].result.id" => "[uuid]", "[3].invocation.id" => "[uuid]" }
+            { "[2].result.id" => "[uuid]", "[2].invocation.id" => "[uuid]" }
         );
     }
 
@@ -2787,7 +3016,76 @@ mod tests {
         assert_eq!(hm.thread_id.as_str(), "thread-1");
         insta::assert_json_snapshot!(
             hm.history.into_inner(),
-            { "[3].result.id" => "[uuid]", "[3].invocation.id" => "[uuid]" }
+            { "[2].result.id" => "[uuid]", "[2].invocation.id" => "[uuid]" }
+        );
+    }
+
+    /// An event that interrupts a pending tool call records no marker: the
+    /// event is the record. Nothing is persisted until the model validates
+    /// it (so a crash here leaves the log ending on the tool call — "in
+    /// flight", not "stopped"), the call is still reported for
+    /// cancellation, and the model sees it answered as interrupted by an
+    /// event.
+    #[tokio::test]
+    async fn event_interruption_is_inferred_not_recorded() {
+        let store = InMemoryConversationStore::new();
+        let initial = vec![
+            Message::User {
+                content: vec![UserContent::text("wait for it")],
+            },
+            tool_call_msg("tc-sleep", "sleep", serde_json::json!({"seconds": 60})),
+        ];
+        let hm = make_history(&store, initial).await;
+
+        let input = tool_result_input(
+            "thread-1",
+            "tc-sleep",
+            "something happened",
+            Some(SyntheticKind::Tagged(
+                TaggedSyntheticKind::SubscriptionEvent {
+                    tool_call_id: "tc-sleep".into(),
+                    associative: true,
+                    r#final: false,
+                },
+            )),
+        );
+        prepare_input(input, "msg-2".to_owned(), &hm, &store, &StubSender)
+            .await
+            .expect("prepare input");
+
+        assert!(matches!(
+            hm.history.borrow().as_slice(),
+            [
+                InfinityMessage::User { .. },
+                InfinityMessage::ToolCall { .. },
+                InfinityMessage::SubscriptionEvent { .. }
+            ]
+        ));
+        assert_eq!(hm.unvalidated_len(), 1, "the event is unvalidated");
+        assert!(hm.pending_items.borrow().is_empty(), "nothing known-safe");
+        assert_eq!(
+            persisted(&store),
+            "[]",
+            "nothing reached the store before validation"
+        );
+        assert_eq!(
+            hm.take_interrupted_tool_calls(),
+            vec![ToolCallId::from("tc-sleep")]
+        );
+        let rendered = hm.get_history(true);
+        assert_eq!(
+            rendered[2],
+            Message::User {
+                content: vec![UserContent::ToolResult(ToolResult {
+                    id: "tc-sleep".to_owned(),
+                    call_id: None,
+                    content: vec![ToolResultContent::Text(
+                        infinity_provider_protocol::message::Text {
+                            text: crate::message::TOOL_CALL_INTERRUPTED_BY_EVENT_TEXT.to_owned(),
+                        }
+                    )],
+                })],
+            }
         );
     }
 

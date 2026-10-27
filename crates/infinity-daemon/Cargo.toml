@@ -42,6 +42,7 @@ http-body-util = "0.1"
 tokio-util = { version = "0.7", features = ["codec", "rt"] }
 bytes = "1"
 dirs = "6"
+tempfile = { workspace = true }
 tokio-tungstenite = "0.26"
 include_dir = { version = "0.7", optional = true }
 
@@ -57,7 +58,6 @@ nix = { version = "0.31", features = ["signal"] }
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 rap-test-servers = { path = "../rap-test-servers" }
-tempfile = { workspace = true }
 infinity-provider-protocol = { path = "../infinity-provider-protocol", version = "^0.2.0", features = ["mock"] }
 insta = { workspace = true }
 
