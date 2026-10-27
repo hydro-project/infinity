@@ -189,7 +189,7 @@ async fn user_text_interrupts_active_completion() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let (running, mut rx, mut ctrl, _conv) = start_system(vec![], None);
+            let (running, mut rx, mut ctrl, conv) = start_system(vec![], None);
             running
                 .send_user_text(ThreadId::from_ref("t1"), "first")
                 .await;
@@ -205,18 +205,30 @@ async fn user_text_interrupts_active_completion() {
                 .send_user_text(ThreadId::from_ref("t1"), "stop that")
                 .await;
             let req2 = ctrl.next_request().await;
-            let has_interrupt = req2.chat_history.into_iter().any(|m| {
-                if let infinity_provider_protocol::message::Message::User { content } = &m
-                    && let Some(UserContent::Text(t)) = content.first()
-                {
-                    return t.text.contains("<interrupt>");
-                }
-                false
-            });
-            assert!(has_interrupt, "interrupting input should carry the marker");
+            assert_eq!(
+                req2.chat_history.last(),
+                Some(&infinity_provider_protocol::message::Message::User {
+                    content: vec![UserContent::text("<interrupt>stop that")]
+                })
+            );
             ctrl.send_text("ok stopped");
             ctrl.finish();
+            // The cancelled first round reports its own completion first.
             collect_until_finished(&mut rx).await;
+            collect_until_finished(&mut rx).await;
+
+            // The interrupt is its own history entry; the text is stored as typed.
+            let stored = conv
+                .thread_messages(ThreadId::from_ref("t1"))
+                .unwrap_or_default();
+            assert!(
+                stored.windows(2).any(|w| matches!(
+                    w,
+                    [(crate::message::InfinityMessage::Interrupt, _), (crate::message::InfinityMessage::User { content: UserContent::Text(t) }, _)]
+                        if t.text == "stop that"
+                )),
+                "{stored:?}"
+            );
         })
         .await;
 }
@@ -512,7 +524,7 @@ async fn shutdown_persists_model_validated_tool_result() {
 /// arrived tool result must not persist that result: the model never
 /// validated it, and it could be the oversized input that permanently
 /// wedges the thread. The durable state keeps the tool call unanswered
-/// (a later user input settles it with a synthetic "interrupted" result).
+/// (a later user input settles it as interrupted).
 #[tokio::test(flavor = "current_thread")]
 async fn shutdown_does_not_persist_unvalidated_tool_result() {
     let local = tokio::task::LocalSet::new();
@@ -1329,8 +1341,8 @@ async fn oversized_tool_result_never_wedges_the_thread() {
 /// Reboot recovery: a session dies while a tool result was still
 /// unvalidated, so the durable store ends on the unanswered tool *call*.
 /// When a fresh session boots from that store and user input arrives, the
-/// stranded call must be settled with a synthetic "interrupted" result and
-/// the thread must keep working.
+/// stranded call must be settled with an interrupt (rendered to the model
+/// as an "interrupted" result) and the thread must keep working.
 #[tokio::test(flavor = "current_thread")]
 async fn rebooted_session_settles_persisted_unanswered_tool_call() {
     let local = tokio::task::LocalSet::new();
@@ -1401,10 +1413,12 @@ async fn rebooted_session_settles_persisted_unanswered_tool_call() {
             assert_eq!(texts, vec!["back online"]);
             wait_idle(&mut running2).await;
 
-            // Everything from the recovered round is validated + persisted.
+            // Everything from the recovered round is validated + persisted;
+            // the call is settled by an interrupt entry, not a fake result.
             let stored = persisted(&conv, "t1");
             assert!(
-                stored.contains("Tool call interrupted by user")
+                stored.contains("(Interrupt, \"tc-1-interrupted\")")
+                    && !stored.contains("Tool call interrupted by user")
                     && stored.contains("hello again")
                     && stored.contains("back online"),
                 "recovered round must persist; store: {stored}"

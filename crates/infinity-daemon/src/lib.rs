@@ -5,6 +5,7 @@ pub mod mcp_proxy;
 pub mod memory_store;
 pub mod migrate;
 pub mod models;
+pub mod persist;
 pub mod rap_callback;
 pub mod rap_servers;
 pub mod remote;

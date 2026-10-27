@@ -4,8 +4,8 @@
 //! When a thread has dispatched a tool call and is waiting for its result,
 //! processing an unrelated synthetic event (a subscription event, a child
 //! thread's report, a message from the parent) would *interrupt* the pending
-//! call: the runtime injects a synthetic "interrupted" result so the history
-//! stays well-formed, and the real result is later dropped as stale. To avoid
+//! call: the event is appended after it, the call is rendered to the model as
+//! interrupted, and the real result is later dropped as stale. To avoid
 //! cancelling work that is still running, such events should be deferred
 //! until the pending call is answered.
 //!

@@ -208,8 +208,8 @@ where
     /// The thread is waiting for the result of a dispatched tool call whose
     /// tool represents in-flight work (i.e. it is not a passive tool like the
     /// sleep family). While this is `Some`, deferrable synthetic events must
-    /// not be processed — doing so would inject an "interrupted" result for
-    /// a call that is actually still running.
+    /// not be processed — doing so would settle a call that is actually
+    /// still running as interrupted.
     ///
     /// If the thread's configuration has not been resolved yet (no step has
     /// run), the call is conservatively treated as active.
@@ -445,6 +445,14 @@ where
             }
         }
 
+        // ── Commit barrier: everything known-safe after folding the inputs
+        // (an interrupt marker settling a tool call, a partial turn flushed
+        // by a cancelled step) becomes durable before anything external
+        // reacts to it — before tools are cancelled below and before the
+        // model is invoked. Unvalidated inputs are untouched by `sync`, so
+        // this is always safe to do unconditionally. ──
+        self.history.sync().await?;
+
         // Best-effort: notify RAP tool servers about interrupted tool calls.
         // Dismissing the associated pending user choices is a durable state
         // transition: it is awaited before the step continues, so the agent
@@ -473,11 +481,8 @@ where
         }
 
         if !any_ready {
-            // Commit anything already known-safe (e.g. processed IDs from
-            // deduped inputs). Interruption results and other fresh inputs
-            // stay unvalidated — and unpersisted — until a completion
-            // produces model output for them.
-            self.history.sync().await?;
+            // Fresh inputs stay unvalidated — and unpersisted — until a
+            // completion produces model output for them.
             return Ok(StepOutcome::Skipped);
         }
 

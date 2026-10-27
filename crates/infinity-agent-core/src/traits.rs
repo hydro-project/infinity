@@ -154,6 +154,21 @@ pub trait ConversationStore: Send + Sync + Clone {
         messages: Vec<(InfinityMessage, String)>,
     ) -> Result<(), Self::Error>;
 
+    /// Whether a message with dedup id `message_id` has already been
+    /// persisted to `thread_id`'s own history.
+    ///
+    /// The runtime consults this for each incoming input it has not seen in
+    /// its own lifetime, so a redelivered input (after a crash, or a retried
+    /// delivery) is not appended twice. The answer is a point lookup against
+    /// the persisted history rather than a separately recorded set, so a
+    /// crash between two writes can never leave a message persisted without
+    /// its dedup id (or vice versa).
+    async fn is_message_processed(
+        &self,
+        thread_id: &ThreadId<str>,
+        message_id: &str,
+    ) -> Result<bool, Self::Error>;
+
     async fn spawn_thread(
         &self,
         parent_thread_id: &ThreadId<str>,
@@ -217,25 +232,15 @@ pub trait ConversationStore: Send + Sync + Clone {
     ) -> Result<Option<(String, i64)>, Self::Error>;
 }
 
-/// Key-value state store for processed message IDs, metadata, toolset caches
-/// (DynamoDB in Lambda, in-memory HashMap for CLI).
+/// Key-value state store for session metadata, active subscriptions and
+/// pending user choices (DynamoDB in Lambda, in-memory HashMap for CLI).
+///
+/// Processed message ids are deliberately *not* part of this store: they are
+/// looked up in the conversation history itself (see
+/// [`ConversationStore::is_message_processed`]).
 #[async_trait]
 pub trait StateStore: Send + Sync + Clone {
     type Error: std::error::Error + Send + Sync + 'static;
-
-    /// Durably deduplicated message IDs for this thread. Only inputs that are
-    /// not naturally idempotent are tracked (user text and subscription
-    /// events); tool results are deduplicated against history itself.
-    async fn get_processed_ids(
-        &self,
-        thread_id: &ThreadId<str>,
-    ) -> Result<std::collections::HashSet<String>, Self::Error>;
-
-    async fn add_processed_message_ids(
-        &self,
-        thread_id: &ThreadId<str>,
-        message_ids: Vec<String>,
-    ) -> Result<(), Self::Error>;
 
     async fn get_metadata(
         &self,
