@@ -121,10 +121,15 @@ pub enum CompletionEvent {
 
 // ── HistoryManager (unchanged from before) ──
 
+/// A history entry awaiting persistence.
 #[derive(Serialize, Clone)]
 pub struct PendingItem {
     message: InfinityMessage,
-    message_id: String,
+    /// The dedup id for inputs that arrived on the input queue (see
+    /// [`HistoryManager::handle_input`]); `None` for entries the runtime
+    /// minted itself (model output, synthetic tool results, interrupt
+    /// markers settling a tool call), which can never be redelivered.
+    dedup_id: Option<String>,
 }
 
 /// Result of matching an incoming tool result against the history tail (see
@@ -145,6 +150,12 @@ pub struct HistoryManager<C: ConversationStore, S: StateStore> {
     pub root_thread_id: ThreadId,
     ancestor_chain: Vec<ThreadId>,
     pub history: RefCell<Vec<InfinityMessage>>,
+    /// Dedup ids of inputs handled during this process lifetime (persisted
+    /// or not). Ids persisted by an earlier incarnation are not preloaded;
+    /// they are looked up in the conversation store on demand by
+    /// [`Self::handle_input`] and cached here once seen. Only
+    /// `handle_input` reads or writes this set (plus
+    /// [`Self::drop_unvalidated_user_inputs`], which forgets dropped ids).
     processed_message_ids: RefCell<HashSet<String>>,
     metadata: RefCell<Option<serde_json::Value>>,
     // Un-persisted content moves through three phases:
@@ -215,11 +226,6 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             .await
             .unwrap_or(None);
 
-        let processed_message_ids = state_store
-            .get_processed_ids(&thread_id)
-            .await
-            .unwrap_or_default();
-
         Ok(Self {
             conversation_store,
             state_store,
@@ -227,7 +233,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             root_thread_id,
             ancestor_chain,
             history: RefCell::new(history),
-            processed_message_ids: RefCell::new(processed_message_ids),
+            processed_message_ids: RefCell::new(HashSet::new()),
             metadata: RefCell::new(metadata),
             pending_items: RefCell::new(Vec::new()),
             unvalidated_items: RefCell::new(Vec::new()),
@@ -238,7 +244,17 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         })
     }
 
-    pub fn handle_content(
+    /// Fold an incoming input into history unless its dedup id has already
+    /// been processed — either during this process lifetime (tracked in
+    /// memory) or durably, by a previous incarnation of the thread (looked up
+    /// in the conversation store). Returns `false` for duplicates and for
+    /// inputs [`Self::handle_content`] ignores. This is the only place dedup
+    /// ids are checked and recorded.
+    ///
+    /// Anything this commits as known-safe (an interrupt marker settling a
+    /// tool call) is made durable by the step's commit barrier right after
+    /// the prepare phase, before the model is invoked.
+    pub async fn handle_input(
         &self,
         message: InfinityMessage,
         message_id: String,
@@ -247,7 +263,35 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             tracing::info!("Message {} already processed, skipping", message_id);
             return Ok(false);
         }
+        if self
+            .conversation_store
+            .is_message_processed(&self.thread_id, &message_id)
+            .await
+            .map_err(|e| Box::new(e) as BoxError)?
+        {
+            tracing::info!("Message {} already persisted, skipping", message_id);
+            self.processed_message_ids.borrow_mut().insert(message_id);
+            return Ok(false);
+        }
+        let is_new = self.fold(message, Some(message_id.clone()))?;
+        self.processed_message_ids.borrow_mut().insert(message_id);
+        Ok(is_new)
+    }
 
+    /// Fold runtime-minted content (a synthetic tool result produced during a
+    /// completion round) into history, settling or interrupting a pending
+    /// tool call as appropriate. Returns `false` if the content was ignored
+    /// (a tool result for an already-answered or non-existent call).
+    ///
+    /// Such content carries no dedup id — it is created in-process and can
+    /// never be redelivered. Inputs from the input queue go through
+    /// [`Self::handle_input`] instead.
+    pub fn handle_content(&self, message: InfinityMessage) -> Result<bool, BoxError> {
+        self.fold(message, None)
+    }
+
+    /// Shared body of [`Self::handle_input`] and [`Self::handle_content`].
+    fn fold(&self, message: InfinityMessage, dedup_id: Option<String>) -> Result<bool, BoxError> {
         // SubscriptionEvent with an embedded invocation is self-contained —
         // treat it like a non-tool-result (may interrupt a pending call).
         let is_self_contained_subscription = matches!(
@@ -258,6 +302,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
             }
         );
 
+        let mut interrupts_tool_call = false;
         if !is_self_contained_subscription {
             if let Some(tool_result) = message.tool_result() {
                 match self.match_tool_result(&tool_result.id) {
@@ -267,7 +312,6 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                             "Tool call {} already processed, ignoring duplicate",
                             tool_result.id
                         );
-                        self.processed_message_ids.borrow_mut().insert(message_id);
                         return Ok(false);
                     }
                     ToolResultMatch::NoPendingCall => {
@@ -279,14 +323,19 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                     }
                 }
             } else {
-                self.interrupt_pending_tool_call();
+                interrupts_tool_call = self.interrupt_pending_tool_call(&message);
             }
         } else {
-            self.interrupt_pending_tool_call();
+            interrupts_tool_call = self.interrupt_pending_tool_call(&message);
         }
 
-        self.append_unvalidated(message, message_id.clone());
-        self.processed_message_ids.borrow_mut().insert(message_id);
+        if interrupts_tool_call && matches!(message, InfinityMessage::Interrupt) {
+            // The incoming marker is the one settling the call; same
+            // reasoning as in `interrupt_pending_tool_call`.
+            self.append_known_safe(message, dedup_id);
+        } else {
+            self.append_unvalidated(message, dedup_id);
+        }
         Ok(true)
     }
 
@@ -318,10 +367,36 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         ToolResultMatch::NoPendingCall
     }
 
-    /// If the last history entry is an unanswered tool call, inject a
-    /// synthetic "interrupted" result. (A tool call at the tail is unanswered
-    /// by construction: its result would have been appended after it.)
-    fn interrupt_pending_tool_call(&self) {
+    /// If the last history entry is an unanswered tool call, the incoming
+    /// item interrupts it: record the call for cancellation and return
+    /// `true`. (A tool call at the tail is unanswered by construction: its
+    /// result would have been appended after it.)
+    ///
+    /// How the interruption is *recorded* depends on who caused it:
+    ///
+    /// * **User text** gets an explicit [`InfinityMessage::Interrupt`]
+    ///   appended here, committed as **known-safe** so the step's commit
+    ///   barrier persists it before the model is invoked or the tool is
+    ///   cancelled. The user stopping the agent must be durable
+    ///   even if the text itself is later dropped as oversized (a stopped
+    ///   agent is idle; it must not look like it was cut off mid-flight), and
+    ///   the marker renders to a fixed short token so it can never be the
+    ///   overflow cause. Committing it known-safe is sound because a tool
+    ///   call at the tail is committed model output, which implies every
+    ///   earlier input was already validated (asserted by
+    ///   [`Self::append_known_safe`]).
+    /// * **Events** (subscription events, child reports) get no marker: the
+    ///   event itself is the record, and `render_history` infers the
+    ///   interruption from it. Events are never dropped (overflow recovery
+    ///   placeholder-replaces them), so nothing is lost — and if the process
+    ///   dies before the event is validated, the persisted history ends on
+    ///   the bare tool call, which correctly reads as "in flight" to a
+    ///   future resume rather than as a deliberate stop.
+    /// * An incoming **interrupt marker** is appended by the caller (known-
+    ///   safe when it settles a call, otherwise unvalidated; see
+    ///   [`Self::drop_unvalidated_user_inputs`] for how it survives either
+    ///   way).
+    fn interrupt_pending_tool_call(&self, incoming: &InfinityMessage) -> bool {
         let last_call = self.history.borrow().last().and_then(|m| {
             if let InfinityMessage::ToolCall { call, .. } = m {
                 Some(call.clone())
@@ -329,25 +404,17 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
                 None
             }
         });
-        if let Some(tool_call) = last_call {
-            tracing::info!("Tool call {} interrupted by incoming message", tool_call.id);
-            self.interrupted_tool_calls
-                .borrow_mut()
-                .push(ToolCallId::from(tool_call.id.clone()));
-            let synthetic_result = InfinityMessage::ToolResult {
-                result: ToolResult {
-                    id: tool_call.id.clone(),
-                    call_id: tool_call.call_id.clone(),
-                    content: vec![ToolResultContent::Text(
-                        infinity_provider_protocol::message::Text {
-                            text: TOOL_CALL_INTERRUPTED_TEXT.to_owned(),
-                        },
-                    )],
-                },
-                display_segments: None,
-            };
-            self.append_unvalidated(synthetic_result, format!("{}-interrupted", tool_call.id));
+        let Some(tool_call) = last_call else {
+            return false;
+        };
+        tracing::info!("Tool call {} interrupted by incoming message", tool_call.id);
+        self.interrupted_tool_calls
+            .borrow_mut()
+            .push(ToolCallId::from(tool_call.id));
+        if matches!(incoming, InfinityMessage::User { .. }) {
+            self.append_known_safe(InfinityMessage::Interrupt, None);
         }
+        true
     }
 
     /// Buffer a streamed assistant chunk for the current turn. The chunk is
@@ -355,15 +422,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     /// until the turn reaches a flush point ([`Self::flush_turn`]) or is
     /// discarded on failure ([`Self::discard_turn`]). This keeps partial,
     /// possibly-abandoned turns out of committed history.
-    pub fn handle_completion(
-        &self,
-        completion: &StreamChunk,
-        completion_id: String,
-        display_as: Option<String>,
-    ) {
-        if self.processed_message_ids.borrow().contains(&completion_id) {
-            return;
-        }
+    pub fn handle_completion(&self, completion: &StreamChunk, display_as: Option<String>) {
         // Coalesce consecutive streamed text chunks into a single buffer entry
         // so that a multi-chunk assistant response is persisted as one message
         // rather than one row per chunk (which blows up disk usage).
@@ -391,7 +450,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         };
         self.turn_buffer.borrow_mut().push(PendingItem {
             message: infinity_message,
-            message_id: completion_id,
+            dedup_id: None,
         });
     }
 
@@ -407,7 +466,7 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     pub fn flush_turn(&self) {
         let drained = std::mem::take(&mut *self.turn_buffer.borrow_mut());
         for item in drained {
-            self.append_known_safe(item.message, item.message_id);
+            self.append_known_safe(item.message, item.dedup_id);
         }
     }
 
@@ -465,23 +524,22 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     /// result) to the in-memory history. The item is not persistable yet:
     /// it stays in `unvalidated_items` until the model produces output for
     /// it (see [`Self::mark_inputs_model_validated`]).
-    fn append_unvalidated(&self, message: InfinityMessage, message_id: String) {
+    fn append_unvalidated(&self, message: InfinityMessage, dedup_id: Option<String>) {
         assert!(
             self.turn_buffer.borrow().is_empty(),
             "bug: append_unvalidated called with un-flushed turn_buffer content"
         );
 
         self.history.borrow_mut().push(message.clone());
-        self.unvalidated_items.borrow_mut().push(PendingItem {
-            message,
-            message_id,
-        });
+        self.unvalidated_items
+            .borrow_mut()
+            .push(PendingItem { message, dedup_id });
     }
 
     /// Append *model-produced* content (assistant text/reasoning, tool
     /// calls) to the in-memory history and the known-safe persistence
     /// queue.
-    fn append_known_safe(&self, message: InfinityMessage, message_id: String) {
+    fn append_known_safe(&self, message: InfinityMessage, dedup_id: Option<String>) {
         assert!(
             self.turn_buffer.borrow().is_empty(),
             "bug: append_known_safe called with un-flushed turn_buffer content"
@@ -496,10 +554,9 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         );
 
         self.history.borrow_mut().push(message.clone());
-        self.pending_items.borrow_mut().push(PendingItem {
-            message,
-            message_id,
-        });
+        self.pending_items
+            .borrow_mut()
+            .push(PendingItem { message, dedup_id });
     }
 
     /// Promote all unvalidated inputs to the known-safe persistence queue.
@@ -520,7 +577,10 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     /// Drop all unvalidated *user* inputs: items that are neither tool
     /// results nor subscription events (those are placeholder-replaceable,
     /// see [`Self::replace_unvalidated_tool_results`], and answering a tool
-    /// call is always better than stranding it). Dropped items are removed
+    /// call is always better than stranding it) nor interrupt markers (an
+    /// interruption happened regardless of what becomes of the input that
+    /// caused it, and the marker cannot be the overflow cause). Dropped
+    /// items are removed
     /// from the in-memory history and their dedup IDs forgotten so a
     /// redelivery is not silently ignored. Returns how many items were
     /// dropped.
@@ -544,11 +604,15 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         for item in unvalidated.drain(..) {
             if matches!(
                 item.message,
-                InfinityMessage::ToolResult { .. } | InfinityMessage::SubscriptionEvent { .. }
+                InfinityMessage::ToolResult { .. }
+                    | InfinityMessage::SubscriptionEvent { .. }
+                    | InfinityMessage::Interrupt
             ) {
                 kept.push(item);
             } else {
-                processed.remove(&item.message_id);
+                if let Some(id) = &item.dedup_id {
+                    processed.remove(id);
+                }
                 dropped += 1;
             }
         }
@@ -638,35 +702,17 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
         if pending_items.is_empty() {
             return Ok(());
         }
-        let msgs: Vec<(InfinityMessage, String)> = pending_items
+        let msgs: Vec<(InfinityMessage, Option<String>)> = pending_items
             .iter()
-            .map(|item| (item.message.clone(), item.message_id.clone()))
+            .map(|item| (item.message.clone(), item.dedup_id.clone()))
             .collect();
+        // The dedup ids travel with the messages: the store answers later
+        // `is_message_processed` lookups from them, so there is no second
+        // write that could be lost separately.
         self.conversation_store
             .append_messages(&self.thread_id, msgs)
             .await
             .map_err(|e| Box::new(e) as BoxError)?;
-        // Only inputs that are not naturally idempotent need durable dedup
-        // IDs: user text and subscription events (a redelivered subscription
-        // event would mint a fresh invocation and be appended again). Tool
-        // results are deduplicated against the history tail itself, and
-        // assistant/tool-call items only exist downstream of a deduped input.
-        let msg_ids: Vec<String> = pending_items
-            .iter()
-            .filter(|i| {
-                matches!(
-                    i.message,
-                    InfinityMessage::User { .. } | InfinityMessage::SubscriptionEvent { .. }
-                )
-            })
-            .map(|i| i.message_id.clone())
-            .collect();
-        if !msg_ids.is_empty() {
-            let _ = self
-                .state_store
-                .add_processed_message_ids(&self.thread_id, msg_ids)
-                .await;
-        }
         Ok(())
     }
 
@@ -685,10 +731,8 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     /// `false`, image tool-result content is replaced with a text placeholder
     /// so the history can be sent to models without image support.
     pub fn get_history(&self, supports_image_input: bool) -> Vec<Message> {
-        self.history
-            .borrow()
-            .iter()
-            .flat_map(|m| m.clone().into_messages())
+        crate::message::render_history(self.history.borrow().iter())
+            .into_iter()
             .map(|mut msg| {
                 if !supports_image_input {
                     strip_image_tool_results(&mut msg);
@@ -970,13 +1014,7 @@ where
             display_as: None,
         };
         conversation_store
-            .append_messages(
-                &sub_thread_id,
-                vec![(
-                    spawn_tool_call,
-                    format!("{}-compaction-call", spawn_call_id),
-                )],
-            )
+            .append_messages(&sub_thread_id, vec![(spawn_tool_call, None)])
             .await
             .map_err(|e| Box::new(e) as BoxError)?;
 
@@ -1036,6 +1074,19 @@ where
             default: choice.default,
             response_url: choice.response_url.clone(),
         });
+    }
+
+    // Interrupt marker: like any non-result entry, folding it settles a
+    // trailing unanswered tool call.
+    if input_msg
+        .synthetic
+        .as_ref()
+        .is_some_and(SyntheticKind::is_interrupt)
+    {
+        current_history
+            .handle_input(InfinityMessage::Interrupt, message_id)
+            .await?;
+        return Ok(PrepareResult::Handled);
     }
 
     let is_subscription = input_msg.subscription;
@@ -1166,7 +1217,7 @@ where
             // No need to prepend an "interrupted" result for trailing tool calls
             // because the safe_spawn_point already excludes them from the child's
             // inherited history.
-            let mut child_messages: Vec<(InfinityMessage, String)> = Vec::new();
+            let mut child_messages: Vec<(InfinityMessage, Option<String>)> = Vec::new();
 
             // Write event + spawn tool calls directly to child's store
             let event_tool_call = InfinityMessage::ToolCall {
@@ -1213,9 +1264,9 @@ where
                 display_segments: None,
             };
             child_messages.extend(vec![
-                (spawn_tool_call, format!("{}-spawn-call", spawn_call_id)),
-                (spawn_tool_result, format!("{}-spawn-result", spawn_call_id)),
-                (event_tool_call, format!("{}-event-call", event_call_id)),
+                (spawn_tool_call, None),
+                (spawn_tool_result, None),
+                (event_tool_call, None),
             ]);
             conversation_store
                 .append_messages(&sub_thread_id, child_messages)
@@ -1282,7 +1333,9 @@ where
         }
     };
 
-    let is_new = current_history.handle_content(infinity_msg, message_id.clone())?;
+    let is_new = current_history
+        .handle_input(infinity_msg, message_id.clone())
+        .await?;
 
     if !is_new {
         tracing::info!("Message was duplicate or ignored, skipping agent processing");
@@ -1364,9 +1417,8 @@ where
             ),
         })
     } else if let InputMessageContent::User(UserContent::Text(ref text)) = input_msg.content {
-        let display_text = text.text.strip_prefix("<interrupt>").unwrap_or(&text.text);
         Some(AgentEvent::UserInput {
-            text: display_text.to_owned(),
+            text: text.text.clone(),
         })
     } else {
         None
@@ -1390,14 +1442,7 @@ pub const IMAGE_OMITTED_PLACEHOLDER: &str =
 pub const TOOL_RESULT_TOO_LARGE_PLACEHOLDER: &str =
     "[tool result omitted: it was too large for the model's remaining context window]";
 
-/// Text used to settle a tool call as interrupted. Injected when a user
-/// message arrives while the call is unanswered, and also substituted for a
-/// pending tool result during overflow recovery when user input had to be
-/// dropped: the next thing the model sees is a fresh user message, and
-/// "interrupted by user" describes that situation accurately, whereas a
-/// "too large" placeholder could mislead the model into re-running the
-/// tool.
-pub const TOOL_CALL_INTERRUPTED_TEXT: &str = "Tool call interrupted by user";
+pub use crate::message::TOOL_CALL_INTERRUPTED_TEXT;
 
 /// Maximum number of retries for one completion round (transient and
 /// throttled provider errors).
@@ -1410,6 +1455,7 @@ const TRANSIENT_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 /// How [`run_completion`] recovered from a provider-declared context
 /// overflow (see [`ErrorClass::ContextOverflow`]).
+#[derive(Debug, PartialEq, Eq)]
 enum OverflowRecovery {
     /// The not-known-safe queue was exactly one replaceable item (tool
     /// result / subscription event) — the culprit is unambiguous, so it was
@@ -1489,8 +1535,6 @@ pub fn run_completion<'a: 'b, 'b, P, C, S, M>(
     tools: &'a [ToolDefinition],
     tool_registry: &'a HashMap<String, &'a dyn Tool<M>>,
     tool_context: &'a ToolContext<M>,
-    group_id: &'a ThreadId,
-    message_id: &'a str,
     extra_system_prompt: Option<&'a str>,
     cancel_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> impl futures_util::Stream<Item = Result<CompletionEvent, BoxError>> + 'b
@@ -1502,7 +1546,6 @@ where
 {
     async_stream::try_stream! {
         let mut cancel_rx = cancel_rx;
-        let mut completion_counter: usize = 0;
         let mut is_thinking = false;
         let mut retry_count = 0;
 
@@ -1739,9 +1782,6 @@ where
                 if let StreamChunk::Reasoning(ref r) = chunk
                     && r.first_signature().is_none() { continue; }
 
-                let completion_id = format!("{}-{}-completion-{}", group_id, message_id, completion_counter);
-                completion_counter += 1;
-
                 // After the turn's first tool call, the model may keep
                 // streaming: Bedrock emits *concurrent* tool calls in one
                 // assistant message (each closed content block yields
@@ -1769,7 +1809,7 @@ where
                     } else {
                         None
                     };
-                    history.handle_completion(&chunk, completion_id, tool_display_as.clone());
+                    history.handle_completion(&chunk, tool_display_as.clone());
                     match chunk {
                         StreamChunk::Text(text) => {
                             if is_thinking {
@@ -1806,7 +1846,7 @@ where
                                     },
                                     display_segments: None,
                                 };
-                                history.handle_content(tool_result, format!("{}-unknown-tool", call.id))?;
+                                history.handle_content(tool_result)?;
                                 should_loop_back = true;
                                 continue;
                             } else if !tool_names.contains(call.function.name.as_str()) {
@@ -1822,7 +1862,7 @@ where
                                     },
                                     display_segments: None,
                                 };
-                                history.handle_content(tool_result, format!("{}-unknown-tool", call.id))?;
+                                history.handle_content(tool_result)?;
                                 should_loop_back = true;
                                 continue;
                             }
@@ -1859,15 +1899,10 @@ where
                                 };
                                 yield CompletionEvent::SyncToolResult(res.clone());
 
-                                let sync_id = format!("{}-sync-result-{}", call.id, completion_counter);
-                                completion_counter += 1;
-                                history.handle_content(
-                                    InfinityMessage::ToolResult {
-                                        result: res,
-                                        display_segments: None,
-                                    },
-                                    sync_id,
-                                )?;
+                                history.handle_content(InfinityMessage::ToolResult {
+                                    result: res,
+                                    display_segments: None,
+                                })?;
                                 should_loop_back = true;
                             } else {
                                 yield CompletionEvent::Action(CompletionAction::ExecuteToolCall {
@@ -2131,9 +2166,9 @@ mod tests {
 
         let text_chunk = |s: &str| StreamChunk::Text(s.to_owned());
 
-        hm.handle_completion(&text_chunk("Hello"), "c-1".to_owned(), None);
-        hm.handle_completion(&text_chunk(", "), "c-2".to_owned(), None);
-        hm.handle_completion(&text_chunk("world"), "c-3".to_owned(), None);
+        hm.handle_completion(&text_chunk("Hello"), None);
+        hm.handle_completion(&text_chunk(", "), None);
+        hm.handle_completion(&text_chunk("world"), None);
 
         // While streaming, the chunks accumulate in the buffer (not yet
         // committed) and coalesce into a single entry.
@@ -2162,10 +2197,10 @@ mod tests {
             },
         });
 
-        hm.handle_completion(&text_chunk("before"), "c-1".to_owned(), None);
+        hm.handle_completion(&text_chunk("before"), None);
         // A non-text item in between breaks the run of text chunks.
-        hm.handle_completion(&tool_call, "c-2".to_owned(), None);
-        hm.handle_completion(&text_chunk("after"), "c-3".to_owned(), None);
+        hm.handle_completion(&tool_call, None);
+        hm.handle_completion(&text_chunk("after"), None);
 
         // The tool call between the two text chunks should prevent them from
         // being coalesced, leaving three distinct buffered items which commit
@@ -2193,8 +2228,8 @@ mod tests {
             ),
         );
         let text = StreamChunk::Text("partial answer".to_owned());
-        hm.handle_completion(&reasoning, "c-1".to_owned(), None);
-        hm.handle_completion(&text, "c-2".to_owned(), None);
+        hm.handle_completion(&reasoning, None);
+        hm.handle_completion(&text, None);
 
         // Mid-turn: committed history still ends on the user message; the
         // streamed content lives only in the buffer, so nothing is persisted or
@@ -2224,7 +2259,7 @@ mod tests {
         .await;
 
         let text = StreamChunk::Text("partial answer".to_owned());
-        hm.handle_completion(&text, "c-1".to_owned(), None);
+        hm.handle_completion(&text, None);
         assert_eq!(hm.turn_buffer.borrow().len(), 1);
 
         hm.discard_turn();
@@ -2259,8 +2294,8 @@ mod tests {
                 Some("sig".to_owned()),
             ),
         );
-        hm.handle_completion(&text, "c-1".to_owned(), None);
-        hm.handle_completion(&reasoning, "c-2".to_owned(), None);
+        hm.handle_completion(&text, None);
+        hm.handle_completion(&reasoning, None);
         assert_eq!(hm.turn_buffer.borrow().len(), 2);
 
         hm.flush_turn_trimming_reasoning();
@@ -2302,9 +2337,9 @@ mod tests {
             )
         };
         let empty_text = StreamChunk::Text("  ".to_owned());
-        hm.handle_completion(&reasoning("first"), "c-1".to_owned(), None);
-        hm.handle_completion(&empty_text, "c-2".to_owned(), None);
-        hm.handle_completion(&reasoning("second"), "c-3".to_owned(), None);
+        hm.handle_completion(&reasoning("first"), None);
+        hm.handle_completion(&empty_text, None);
+        hm.handle_completion(&reasoning("second"), None);
 
         hm.flush_turn_trimming_reasoning();
 
@@ -2329,7 +2364,7 @@ mod tests {
         assert_eq!(hm.current_turn_view().len(), 1);
 
         let text = StreamChunk::Text("streaming...".to_owned());
-        hm.handle_completion(&text, "c-1".to_owned(), None);
+        hm.handle_completion(&text, None);
 
         // Mid-turn the view includes the buffered partial message even though
         // it is not yet in committed history (for subscriber replay).
@@ -2452,8 +2487,191 @@ mod tests {
         .expect("prepare input");
 
         assert_eq!(result, PrepareResult::Ready);
-        // Should have: original user, tool call, synthetic interrupted result, new user msg
-        insta::assert_json_snapshot!(hm.history.into_inner());
+        // Should have: original user, tool call, interrupt, new user msg
+        // (no synthetic result is stored)...
+        insta::assert_json_snapshot!(hm.history.borrow().clone());
+        // ...but the model still sees the call answered as interrupted.
+        let rendered = hm.get_history(true);
+        assert_eq!(
+            rendered[2..],
+            [
+                Message::User {
+                    content: vec![UserContent::ToolResult(ToolResult {
+                        id: "tc-1".to_owned(),
+                        call_id: None,
+                        content: vec![ToolResultContent::Text(
+                            infinity_provider_protocol::message::Text {
+                                text: TOOL_CALL_INTERRUPTED_TEXT.to_owned(),
+                            }
+                        )],
+                    })],
+                },
+                Message::User {
+                    content: vec![UserContent::text("actually, never mind")],
+                },
+            ]
+        );
+    }
+
+    /// An interrupt marker settles a pending call by itself (no second
+    /// entry), and a late real result for the call is ignored.
+    #[tokio::test]
+    async fn interrupt_marker_settles_pending_tool_call() {
+        let store = InMemoryConversationStore::new();
+        let initial = vec![tool_call_msg("tc-1", "some_tool", serde_json::json!({}))];
+        let hm = make_history(&store, initial).await;
+        for (input, id) in [
+            (InputMessage::interrupt("thread-1"), "msg-1"),
+            (tool_result_input("thread-1", "tc-1", "late", None), "msg-2"),
+        ] {
+            prepare_input(input, id.to_owned(), &hm, &store, &StubSender)
+                .await
+                .expect("prepare input");
+        }
+        assert!(matches!(
+            hm.history.borrow().as_slice(),
+            [InfinityMessage::ToolCall { .. }, InfinityMessage::Interrupt]
+        ));
+        assert_eq!(
+            hm.take_interrupted_tool_calls(),
+            vec![ToolCallId::from("tc-1")]
+        );
+    }
+
+    /// An interruption that settles a pending tool call is committed
+    /// known-safe, so the step's commit barrier persists it before any
+    /// completion runs — while the interrupting input itself stays
+    /// unvalidated and unpersisted.
+    #[tokio::test]
+    async fn interrupt_settling_tool_call_is_known_safe() {
+        let store = InMemoryConversationStore::new();
+        let initial = vec![
+            Message::User {
+                content: vec![UserContent::text("do something")],
+            },
+            tool_call_msg("tc-1", "some_tool", serde_json::json!({})),
+        ];
+        let hm = make_history(&store, initial).await;
+
+        prepare_input(
+            user_text_msg("thread-1", "never mind"),
+            "msg-2".to_owned(),
+            &hm,
+            &store,
+            &StubSender,
+        )
+        .await
+        .expect("prepare input");
+
+        assert!(
+            matches!(
+                hm.pending_items.borrow().as_slice(),
+                [PendingItem {
+                    message: InfinityMessage::Interrupt,
+                    ..
+                }]
+            ),
+            "the marker is the only known-safe item"
+        );
+        assert_eq!(hm.unvalidated_len(), 1, "the user text awaits validation");
+
+        // What the step's commit barrier writes before invoking the model:
+        hm.sync().await.expect("sync");
+        let stored = persisted(&store);
+        assert!(
+            stored.contains("(Interrupt, None)"),
+            "interrupt is durable: {stored}"
+        );
+        assert!(
+            !stored.contains("never mind"),
+            "the interrupting input is not: {stored}"
+        );
+    }
+
+    /// If the interrupting input turns out to be oversized and is dropped on
+    /// context overflow, the interruption is still recorded and the tool
+    /// call stays settled in the retry request.
+    #[tokio::test]
+    async fn oversized_interrupting_input_keeps_the_tool_call_settled() {
+        let store = InMemoryConversationStore::new();
+        let initial = vec![
+            Message::User {
+                content: vec![UserContent::text("do something")],
+            },
+            tool_call_msg("tc-1", "some_tool", serde_json::json!({})),
+        ];
+        let hm = make_history(&store, initial).await;
+        prepare_input(
+            user_text_msg("thread-1", "enormous"),
+            "msg-2".to_owned(),
+            &hm,
+            &store,
+            &StubSender,
+        )
+        .await
+        .expect("prepare input");
+
+        assert_eq!(
+            recover_from_overflow(&hm),
+            OverflowRecovery::DroppedInputs(1)
+        );
+        assert!(matches!(
+            hm.history.borrow().as_slice(),
+            [
+                InfinityMessage::User { .. },
+                InfinityMessage::ToolCall { .. },
+                InfinityMessage::Interrupt
+            ]
+        ));
+        // The model never sees an unanswered tool_use.
+        let rendered = hm.get_history(true);
+        assert_eq!(
+            rendered.last(),
+            Some(&Message::User {
+                content: vec![UserContent::ToolResult(ToolResult {
+                    id: "tc-1".to_owned(),
+                    call_id: None,
+                    content: vec![ToolResultContent::Text(
+                        infinity_provider_protocol::message::Text {
+                            text: TOOL_CALL_INTERRUPTED_TEXT.to_owned(),
+                        }
+                    )],
+                })],
+            })
+        );
+    }
+
+    /// An interrupt marker that does not settle a tool call (user text
+    /// interrupting a streaming completion whose inputs were not yet
+    /// validated) cannot be committed known-safe without breaking the
+    /// safe-after-unvalidated ordering, so it stays unvalidated — but an
+    /// overflow drop still preserves it.
+    #[tokio::test]
+    async fn interrupt_after_unvalidated_input_survives_overflow_drop() {
+        let store = InMemoryConversationStore::new();
+        let hm = make_history(&store, vec![]).await;
+        let user = |text: &str| InfinityMessage::User {
+            content: UserContent::text(text),
+        };
+        // Inputs with dedup ids, exactly as the driver would deliver them.
+        hm.handle_input(user("first"), "a".to_owned())
+            .await
+            .expect("first");
+        hm.handle_input(InfinityMessage::Interrupt, "b-interrupt".to_owned())
+            .await
+            .expect("interrupt");
+        hm.handle_input(user("second, oversized"), "b".to_owned())
+            .await
+            .expect("second");
+        assert_eq!(hm.unvalidated_len(), 3, "nothing was committed known-safe");
+        assert!(hm.pending_items.borrow().is_empty());
+
+        assert_eq!(hm.drop_unvalidated_user_inputs(), 2);
+        assert!(matches!(
+            hm.history.borrow().as_slice(),
+            [InfinityMessage::Interrupt]
+        ));
+        assert_eq!(hm.unvalidated_len(), 1);
     }
 
     #[tokio::test]
@@ -2559,7 +2777,7 @@ mod tests {
         assert_eq!(result, PrepareResult::Ready);
         insta::assert_json_snapshot!(
             hm.history.into_inner(),
-            { "[3].result.id" => "[uuid]", "[3].invocation.id" => "[uuid]" }
+            { "[2].result.id" => "[uuid]", "[2].invocation.id" => "[uuid]" }
         );
     }
 
@@ -2787,7 +3005,76 @@ mod tests {
         assert_eq!(hm.thread_id.as_str(), "thread-1");
         insta::assert_json_snapshot!(
             hm.history.into_inner(),
-            { "[3].result.id" => "[uuid]", "[3].invocation.id" => "[uuid]" }
+            { "[2].result.id" => "[uuid]", "[2].invocation.id" => "[uuid]" }
+        );
+    }
+
+    /// An event that interrupts a pending tool call records no marker: the
+    /// event is the record. Nothing is persisted until the model validates
+    /// it (so a crash here leaves the log ending on the tool call — "in
+    /// flight", not "stopped"), the call is still reported for
+    /// cancellation, and the model sees it answered as interrupted by an
+    /// event.
+    #[tokio::test]
+    async fn event_interruption_is_inferred_not_recorded() {
+        let store = InMemoryConversationStore::new();
+        let initial = vec![
+            Message::User {
+                content: vec![UserContent::text("wait for it")],
+            },
+            tool_call_msg("tc-sleep", "sleep", serde_json::json!({"seconds": 60})),
+        ];
+        let hm = make_history(&store, initial).await;
+
+        let input = tool_result_input(
+            "thread-1",
+            "tc-sleep",
+            "something happened",
+            Some(SyntheticKind::Tagged(
+                TaggedSyntheticKind::SubscriptionEvent {
+                    tool_call_id: "tc-sleep".into(),
+                    associative: true,
+                    r#final: false,
+                },
+            )),
+        );
+        prepare_input(input, "msg-2".to_owned(), &hm, &store, &StubSender)
+            .await
+            .expect("prepare input");
+
+        assert!(matches!(
+            hm.history.borrow().as_slice(),
+            [
+                InfinityMessage::User { .. },
+                InfinityMessage::ToolCall { .. },
+                InfinityMessage::SubscriptionEvent { .. }
+            ]
+        ));
+        assert_eq!(hm.unvalidated_len(), 1, "the event is unvalidated");
+        assert!(hm.pending_items.borrow().is_empty(), "nothing known-safe");
+        assert_eq!(
+            persisted(&store),
+            "[]",
+            "nothing reached the store before validation"
+        );
+        assert_eq!(
+            hm.take_interrupted_tool_calls(),
+            vec![ToolCallId::from("tc-sleep")]
+        );
+        let rendered = hm.get_history(true);
+        assert_eq!(
+            rendered[2],
+            Message::User {
+                content: vec![UserContent::ToolResult(ToolResult {
+                    id: "tc-sleep".to_owned(),
+                    call_id: None,
+                    content: vec![ToolResultContent::Text(
+                        infinity_provider_protocol::message::Text {
+                            text: crate::message::TOOL_CALL_INTERRUPTED_BY_EVENT_TEXT.to_owned(),
+                        }
+                    )],
+                })],
+            }
         );
     }
 
@@ -2842,7 +3129,6 @@ mod tests {
 
                 // Spawn the stream consumer
                 let handle = tokio::task::spawn_local(async move {
-                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -2852,8 +3138,6 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        &thread_id,
-                        "msg-1",
                         None,
                         cancel_rx,
                     );
@@ -2904,7 +3188,6 @@ mod tests {
                 let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -2914,8 +3197,6 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        &thread_id,
-                        "msg-1",
                         None,
                         cancel_rx,
                     );
@@ -2969,7 +3250,6 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -2979,8 +3259,6 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        &thread_id,
-                        "msg-1",
                         None,
                         cancel_rx,
                     );
@@ -3055,7 +3333,6 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -3065,8 +3342,6 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        &thread_id,
-                        "msg-1",
                         None,
                         cancel_rx,
                     );
@@ -3173,7 +3448,6 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -3183,8 +3457,6 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        &thread_id,
-                        "msg-1",
                         None,
                         cancel_rx,
                     );
@@ -3299,8 +3571,6 @@ mod tests {
                 let (tool_names, tool_defs, tool_registry) = no_tools();
                 let ctx = tool_context();
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
-
-                let thread_id_owned = ThreadId::from("thread-1");
                 let handle = tokio::task::spawn_local(async move {
                     let stream = run_completion(
                         &provider,
@@ -3311,8 +3581,6 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        &thread_id_owned,
-                        "msg-1",
                         None,
                         cancel_rx,
                     );
@@ -3350,7 +3618,6 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -3360,8 +3627,6 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        &thread_id,
-                        "msg-1",
                         None,
                         cancel_rx,
                     );
@@ -3409,7 +3674,6 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -3419,8 +3683,6 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        &thread_id,
-                        "msg-1",
                         None,
                         cancel_rx,
                     );
@@ -3513,7 +3775,6 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -3523,8 +3784,6 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        &thread_id,
-                        "msg-1",
                         None,
                         cancel_rx,
                     );
@@ -3616,7 +3875,6 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -3626,8 +3884,6 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        &thread_id,
-                        "msg-1",
                         None,
                         cancel_rx,
                     );
@@ -3744,7 +4000,6 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -3754,8 +4009,6 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        &thread_id,
-                        "msg-1",
                         None,
                         cancel_rx,
                     );
@@ -3810,7 +4063,6 @@ mod tests {
                 let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -3820,8 +4072,6 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        &thread_id,
-                        "msg-1",
                         None,
                         cancel_rx,
                     );
@@ -3884,7 +4134,6 @@ mod tests {
                 let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let hm_task = hm.clone();
-                let thread_id_owned = ThreadId::from("thread-1");
                 let handle = tokio::task::spawn_local(async move {
                     let stream = run_completion(
                         &provider,
@@ -3895,8 +4144,6 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        &thread_id_owned,
-                        "msg-1",
                         None,
                         cancel_rx,
                     );
@@ -3971,7 +4218,6 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -3981,8 +4227,6 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        &thread_id,
-                        "msg-1",
                         None,
                         cancel_rx,
                     );
@@ -4046,7 +4290,6 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider,
                         "mock",
@@ -4056,8 +4299,6 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        &thread_id,
-                        "msg-1",
                         None,
                         cancel_rx,
                     );
@@ -4161,7 +4402,6 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let hm_task = hm.clone();
-                let thread_id_owned = ThreadId::from("thread-1");
                 let handle = tokio::task::spawn_local(async move {
                     let stream = run_completion(
                         &provider,
@@ -4172,8 +4412,6 @@ mod tests {
                         &tool_defs,
                         &tool_registry,
                         &ctx,
-                        &thread_id_owned,
-                        "msg-1",
                         None,
                         cancel_rx,
                     );
@@ -4250,10 +4488,9 @@ mod tests {
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
-                    let thread_id = ThreadId::from("thread-1");
                     let stream = run_completion(
                         &provider, "mock", false, &hm, &tool_names, &tool_defs, &tool_registry,
-                        &ctx, &thread_id, "msg-1", None, cancel_rx,
+                        &ctx, None, cancel_rx,
                     );
                     tokio::pin!(stream);
                     let mut got_done = false;
@@ -4505,31 +4742,32 @@ mod tests {
     /// Feed a user text input through the same path a step uses
     /// (`handle_content`), as opposed to `make_history` which fabricates
     /// already-committed history.
-    fn add_user_input(
+    async fn add_user_input(
         hm: &HistoryManager<InMemoryConversationStore, InMemoryStateStore>,
         text: &str,
         message_id: &str,
     ) {
         let accepted = hm
-            .handle_content(
+            .handle_input(
                 InfinityMessage::User {
                     content: UserContent::text(text),
                 },
                 message_id.to_owned(),
             )
+            .await
             .expect("handle user input");
         assert!(accepted, "input should be accepted");
     }
 
     /// Feed a tool-result input through the same path a step uses.
-    fn add_tool_result_input(
+    async fn add_tool_result_input(
         hm: &HistoryManager<InMemoryConversationStore, InMemoryStateStore>,
         tool_call_id: &str,
         text: &str,
         message_id: &str,
     ) {
         let accepted = hm
-            .handle_content(
+            .handle_input(
                 InfinityMessage::ToolResult {
                     result: ToolResult {
                         id: tool_call_id.to_owned(),
@@ -4544,6 +4782,7 @@ mod tests {
                 },
                 message_id.to_owned(),
             )
+            .await
             .expect("handle tool result input");
         assert!(accepted, "tool result should be accepted");
     }
@@ -4557,7 +4796,6 @@ mod tests {
     ) -> Vec<String> {
         let (tool_names, tool_defs, tool_registry) = no_tools();
         let ctx = tool_context();
-        let thread_id = ThreadId::from("thread-1");
         let stream = run_completion(
             provider,
             "mock",
@@ -4567,8 +4805,6 @@ mod tests {
             &tool_defs,
             &tool_registry,
             &ctx,
-            &thread_id,
-            "msg-1",
             None,
             cancel_rx,
         );
@@ -4617,7 +4853,7 @@ mod tests {
                 let (provider, mut ctrl) = mock_provider();
                 let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(&convo_store, vec![]).await;
-                add_user_input(&hm, "HUGE INPUT", "msg-huge");
+                add_user_input(&hm, "HUGE INPUT", "msg-huge").await;
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
@@ -4669,7 +4905,7 @@ mod tests {
                     ],
                 )
                 .await;
-                add_tool_result_input(&hm, "tc-1", "HUGE RESULT", "msg-tr");
+                add_tool_result_input(&hm, "tc-1", "HUGE RESULT", "msg-tr").await;
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
@@ -4732,7 +4968,7 @@ mod tests {
                 )
                 .await;
                 let accepted = hm
-                    .handle_content(
+                    .handle_input(
                         InfinityMessage::SubscriptionEvent {
                             result: Box::new(ToolResult {
                                 id: "evt-1".to_owned(),
@@ -4753,6 +4989,7 @@ mod tests {
                         },
                         "msg-evt".to_owned(),
                     )
+                    .await
                     .expect("handle subscription event");
                 assert!(accepted);
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
@@ -4820,8 +5057,8 @@ mod tests {
                 .await;
                 // The tool result arrives first, then a huge user input
                 // interrupts before the model produced any output.
-                add_tool_result_input(&hm, "tc-1", "normal tool result", "msg-tr");
-                add_user_input(&hm, "HUGE USER INPUT", "msg-huge");
+                add_tool_result_input(&hm, "tc-1", "normal tool result", "msg-tr").await;
+                add_user_input(&hm, "HUGE USER INPUT", "msg-huge").await;
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
@@ -4907,7 +5144,7 @@ mod tests {
                     ],
                 )
                 .await;
-                add_tool_result_input(&hm, "tc-1", "HUGE RESULT", "msg-tr");
+                add_tool_result_input(&hm, "tc-1", "HUGE RESULT", "msg-tr").await;
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
@@ -4956,7 +5193,7 @@ mod tests {
 
                 // A later user input does not need to interrupt anything —
                 // the call is already answered in memory.
-                add_user_input(&hm, "hello again", "msg-next");
+                add_user_input(&hm, "hello again", "msg-next").await;
                 let history = format!("{:?}", hm.history.borrow());
                 assert!(history.contains(TOOL_CALL_INTERRUPTED_TEXT));
                 assert!(history.contains("hello again"));
@@ -4976,7 +5213,7 @@ mod tests {
                 let (provider, mut ctrl) = mock_provider();
                 let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(&convo_store, vec![]).await;
-                add_user_input(&hm, "hello there", "msg-1");
+                add_user_input(&hm, "hello there", "msg-1").await;
                 let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
@@ -5015,7 +5252,7 @@ mod tests {
                 let (provider, mut ctrl) = mock_provider();
                 let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(&convo_store, vec![]).await;
-                add_user_input(&hm, "hello there", "msg-1");
+                add_user_input(&hm, "hello there", "msg-1").await;
                 let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
@@ -5055,7 +5292,7 @@ mod tests {
                 let (provider, mut ctrl) = mock_provider();
                 let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(&convo_store, vec![]).await;
-                add_user_input(&hm, "hi", "msg-1");
+                add_user_input(&hm, "hi", "msg-1").await;
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
@@ -5096,7 +5333,7 @@ mod tests {
                 let (provider, mut ctrl) = mock_provider();
                 let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(&convo_store, vec![]).await;
-                add_user_input(&hm, "hi", "msg-1");
+                add_user_input(&hm, "hi", "msg-1").await;
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
@@ -5131,7 +5368,7 @@ mod tests {
                 let (provider, mut ctrl) = mock_provider();
                 let convo_store = InMemoryConversationStore::new();
                 let hm = make_history(&convo_store, vec![]).await;
-                add_user_input(&hm, "hi", "msg-1");
+                add_user_input(&hm, "hi", "msg-1").await;
                 let (_cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
 
                 let handle = tokio::task::spawn_local(async move {
@@ -5166,7 +5403,7 @@ mod tests {
     async fn sync_does_not_persist_inputs_before_model_output() {
         let store = InMemoryConversationStore::new();
         let hm = make_history(&store, vec![]).await;
-        add_user_input(&hm, "not yet validated", "msg-1");
+        add_user_input(&hm, "not yet validated", "msg-1").await;
         hm.sync().await.expect("sync");
         assert!(
             !persisted(&store).contains("not yet validated"),
@@ -5182,12 +5419,8 @@ mod tests {
     async fn flushing_model_output_with_unvalidated_inputs_panics() {
         let store = InMemoryConversationStore::new();
         let hm = make_history(&store, vec![]).await;
-        add_user_input(&hm, "pending input", "msg-1");
-        hm.handle_completion(
-            &StreamChunk::Text("model output".to_owned()),
-            "completion-1".to_owned(),
-            None,
-        );
+        add_user_input(&hm, "pending input", "msg-1").await;
+        hm.handle_completion(&StreamChunk::Text("model output".to_owned()), None);
         // Flushing without validating the pending input first violates
         // sequentiality.
         hm.flush_turn();
@@ -5199,7 +5432,7 @@ mod tests {
     async fn safe_spawn_point_excludes_unvalidated_inputs() {
         let store = InMemoryConversationStore::new();
         let hm = make_history(&store, vec![]).await;
-        add_user_input(&hm, "not persisted yet", "msg-1");
+        add_user_input(&hm, "not persisted yet", "msg-1").await;
         assert_eq!(
             hm.safe_spawn_point(),
             0,
