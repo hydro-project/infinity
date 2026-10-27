@@ -212,6 +212,163 @@ async fn session_loaded_updates_model_name() {
     insta::assert_snapshot!(h.screen());
 }
 
+/// A connected remote daemon with its own model catalog, as advertised in
+/// `RemoteInfo`.
+fn devbox_remote() -> infinity_protocol::RemoteInfo {
+    infinity_protocol::RemoteInfo {
+        name: "devbox".into(),
+        status: infinity_protocol::RemoteStatus::Connected {
+            available_models: vec![
+                infinity_protocol::ModelInfo {
+                    display_name: "Remote Large".to_owned(),
+                    provider_id: "remote-prov".to_owned(),
+                    model_id: "remote-large".to_owned(),
+                    context_window: 200_000,
+                },
+                infinity_protocol::ModelInfo {
+                    display_name: "Remote Small".to_owned(),
+                    provider_id: "remote-prov".to_owned(),
+                    model_id: "remote-small".to_owned(),
+                    context_window: 8_000,
+                },
+            ],
+        },
+    }
+}
+
+fn load_remote_session(h: &TuiHarness) {
+    h.session_tx
+        .send(infinity_agent_cli::terminal::SessionChanged {
+            session_id: "devbox/aaa-bbb".into(),
+            title: Some("Remote session".to_owned()),
+            total_tokens_used: 1_000,
+            model_name: "Remote Large".to_owned(),
+            context_window: 200_000,
+            provider_id: "remote-prov".to_owned(),
+        })
+        .expect("UI task dropped session channel");
+}
+
+/// `/model` must list the models of the daemon hosting the loaded session:
+/// the remote's catalog for a remote session, the local one after switching
+/// back to a local session. The selection resolves against whichever list
+/// was shown.
+#[tokio::test(start_paused = true)]
+async fn model_picker_follows_session_host() {
+    let mut h = TuiHarness::spawn_with(common::HarnessOptions {
+        remotes: vec![devbox_remote()],
+        ..common::HarnessOptions::default()
+    })
+    .await;
+
+    // Remote session: remote models only.
+    load_remote_session(&h);
+    h.settle().await;
+
+    h.type_str("/model");
+    h.key(KeyCode::Enter);
+    h.settle().await;
+    let screen = h.screen();
+    assert!(
+        screen.contains("Remote Large") && screen.contains("Remote Small"),
+        "picker should list the remote's models:\n{screen}"
+    );
+    assert!(
+        !screen.contains("Mock Model") && !screen.contains("Mock Mini"),
+        "picker must not list the local daemon's models:\n{screen}"
+    );
+    insta::assert_snapshot!("model_picker_remote_session", screen);
+
+    // Pick the second entry: the switch request carries the remote model ref.
+    h.key(KeyCode::Down);
+    h.key(KeyCode::Enter);
+    h.settle().await;
+    let picked = h
+        .model_switch_rx
+        .try_recv()
+        .expect("model switch should be forwarded");
+    assert_eq!(picked.provider_id, "remote-prov");
+    assert_eq!(picked.model_id, "remote-small");
+
+    // Back to a local session: local models only.
+    h.session_tx
+        .send(infinity_agent_cli::terminal::SessionChanged {
+            session_id: "ccc-ddd".into(),
+            title: Some("Local session".to_owned()),
+            total_tokens_used: 0,
+            model_name: "Mock Model".to_owned(),
+            context_window: 100_000,
+            provider_id: "mock".to_owned(),
+        })
+        .expect("UI task dropped session channel");
+    h.settle().await;
+
+    h.type_str("/model");
+    h.key(KeyCode::Enter);
+    h.settle().await;
+    let screen = h.screen();
+    // Picker rows render as "<provider> <model> <ctx>"; the scrollback above
+    // still mentions "Remote Small" from the switch confirmation.
+    assert!(
+        screen.contains("mock       Mock Mini") && !screen.contains("remote-prov Remote"),
+        "picker should list the local daemon's models:\n{screen}"
+    );
+
+    h.key(KeyCode::Down);
+    h.key(KeyCode::Enter);
+    h.settle().await;
+    let picked = h
+        .model_switch_rx
+        .try_recv()
+        .expect("model switch should be forwarded");
+    assert_eq!(picked.provider_id, "mock");
+    assert_eq!(picked.model_id, "mock-mini");
+}
+
+/// The remote model list is refreshed from `RemotesUpdated`: a remote that
+/// was still connecting at startup becomes pickable once it connects.
+#[tokio::test(start_paused = true)]
+async fn model_picker_picks_up_remotes_updated() {
+    let h = TuiHarness::spawn_with(common::HarnessOptions {
+        remotes: vec![infinity_protocol::RemoteInfo {
+            name: "devbox".into(),
+            status: infinity_protocol::RemoteStatus::Connecting,
+        }],
+        ..common::HarnessOptions::default()
+    })
+    .await;
+
+    load_remote_session(&h);
+    h.settle().await;
+
+    // Not connected yet: the picker does not open, and the user is told why.
+    h.type_str("/model");
+    h.key(KeyCode::Enter);
+    h.settle().await;
+    let screen = h.screen();
+    assert!(
+        screen.contains("Cannot list models for remote 'devbox': still connecting"),
+        "should explain the missing model list:\n{screen}"
+    );
+    // ("Remote Large" is the session's current model and shows in the status
+    // bar regardless; "Remote Small" only appears in an open picker.)
+    assert!(!screen.contains("Remote Small"), "{screen}");
+
+    h.remotes_updated_tx
+        .send(vec![devbox_remote()])
+        .expect("UI task dropped remotes channel");
+    h.settle().await;
+
+    h.type_str("/model");
+    h.key(KeyCode::Enter);
+    h.settle().await;
+    let screen = h.screen();
+    assert!(
+        screen.contains("Remote Large") && screen.contains("Remote Small"),
+        "picker should list the remote's models after RemotesUpdated:\n{screen}"
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn spinner_states_animate_over_time() {
     let h = TuiHarness::spawn(80, 16).await;

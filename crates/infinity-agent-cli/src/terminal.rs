@@ -124,14 +124,20 @@ pub async fn run<T, E>(
         infinity_protocol::SessionInfo,
     >,
     load_session_tx: mpsc::UnboundedSender<(Option<infinity_protocol::ThreadRef>, bool)>,
-    model_switch_tx: mpsc::UnboundedSender<usize>,
+    model_switch_tx: mpsc::UnboundedSender<infinity_protocol::ModelRef>,
+    // Models offered by the local daemon. Used for the picker when no session
+    // is loaded or the loaded session is local.
     available_models: Vec<crate::model_picker::ModelInfo>,
+    // Remotes (and their model lists) known at startup; kept current via
+    // `remotes_updated_rx`.
+    initial_remotes: Vec<infinity_protocol::RemoteInfo>,
     initial_message: Option<String>,
     mut session_rx: mpsc::UnboundedReceiver<SessionChanged>,
     mut model_switched_rx: mpsc::UnboundedReceiver<ModelSwitched>,
     mut sessions_updated_rx: mpsc::UnboundedReceiver<
         std::collections::HashMap<infinity_protocol::ThreadRef, infinity_protocol::SessionInfo>,
     >,
+    mut remotes_updated_rx: mpsc::UnboundedReceiver<Vec<infinity_protocol::RemoteInfo>>,
     soft_detach_tx: mpsc::UnboundedSender<()>,
     mut detach_result_rx: mpsc::UnboundedReceiver<DetachResult>,
     choice_answered_tx: mpsc::UnboundedSender<(infinity_protocol::ChoiceId, usize)>,
@@ -178,6 +184,7 @@ where
     let mut choice_picker: Option<ChoicePicker> = None;
     let mut choice_queue: VecDeque<PendingChoice> = VecDeque::new();
     let mut sessions = initial_sessions;
+    let mut remotes = initial_remotes;
     let mut mid_stream = false;
     let mut stream_start = true;
     let mut spinner_state: Option<SpinnerState> = None;
@@ -307,6 +314,21 @@ where
                 }
 
                 draw_viewport(&mut viewport, &input, &session_picker, &model_picker, &quit_picker, &choice_picker, &ui_mode, spinner_state, &thinking_start, &model_name, &provider_id, total_tokens_used, context_window, &thread_buffers, &thinking_text_buffer, &tab_complete, &thread_id)?;
+            }
+
+            updated = remotes_updated_rx.recv() => {
+                let Some(updated) = updated else {
+                    viewport.print_line_above(Line::from(vec![
+                        Span::styled("Connection to daemon dropped unexpectedly, exiting", Style::default().fg(Color::Red)),
+                    ]))?;
+
+                    tracing::error!("Remotes-updated channel closed, exiting");
+                    cleanup(viewport.term_mut())?;
+                    return Ok(true);
+                };
+                // Only affects which models the next `/model` picker lists;
+                // an already-open picker keeps its snapshot.
+                remotes = updated;
             }
 
             result = detach_result_rx.recv() => {
@@ -761,19 +783,20 @@ where
                                         picker.handle_keystroke(key);
                                         if let Some(result) = picker.take_result() {
                                             match result {
-                                                ModelPickerResult::Selected(idx) => {
-                                                    if let Some(entry) = available_models.get(idx) {
-                                                        model_name = entry.display_name.to_string();
-                                                        provider_id = entry.provider_id.clone();
-                                                        context_window = entry.context_window;
-                                                        let _ = model_switch_tx.send(idx);
-                                                        viewport.print_line_above(Line::from(vec![
-                                                            Span::styled(
-                                                                format!("✦ Switched to model: {}", entry.display_name),
-                                                                Style::default().fg(Color::Yellow),
-                                                            ),
-                                                        ]))?;
-                                                    }
+                                                ModelPickerResult::Selected(entry) => {
+                                                    model_name = entry.display_name.clone();
+                                                    provider_id = entry.provider_id.clone();
+                                                    context_window = entry.context_window;
+                                                    let _ = model_switch_tx.send(infinity_protocol::ModelRef {
+                                                        provider_id: entry.provider_id,
+                                                        model_id: entry.model_id,
+                                                    });
+                                                    viewport.print_line_above(Line::from(vec![
+                                                        Span::styled(
+                                                            format!("✦ Switched to model: {model_name}"),
+                                                            Style::default().fg(Color::Yellow),
+                                                        ),
+                                                    ]))?;
                                                 }
                                                 ModelPickerResult::Cancelled => {}
                                             }
@@ -922,8 +945,42 @@ where
                                                 ui_mode = UiMode::SessionPicker;
                                             }
                                             Some("/model") => {
-                                                model_picker = Some(ModelPicker::new(available_models.clone()));
-                                                ui_mode = UiMode::ModelPicker;
+                                                // List the models of the daemon hosting the
+                                                // current session: a remote daemon may have a
+                                                // different catalog than the local one.
+                                                let models = match thread_id.as_ref().and_then(|t| t.remote.as_ref()) {
+                                                    Some(remote_name) => {
+                                                        use infinity_protocol::RemoteStatus;
+                                                        let status = remotes.iter()
+                                                            .find(|r| &r.name == remote_name)
+                                                            .map(|r| &r.status);
+                                                        let unavailable = match status {
+                                                            Some(RemoteStatus::Connected { available_models }) => {
+                                                                Ok(available_models.clone())
+                                                            }
+                                                            Some(RemoteStatus::Connecting) => Err("still connecting".to_owned()),
+                                                            Some(RemoteStatus::Disconnected { reason }) => Err(format!("disconnected: {reason}")),
+                                                            None => Err("unknown remote".to_owned()),
+                                                        };
+                                                        match unavailable {
+                                                            Ok(models) => models,
+                                                            Err(why) => {
+                                                                viewport.print_line_above(Line::from(vec![
+                                                                    Span::styled(
+                                                                        format!("✦ Cannot list models for remote '{remote_name}': {why}"),
+                                                                        Style::default().fg(Color::Yellow),
+                                                                    ),
+                                                                ]))?;
+                                                                Vec::new()
+                                                            }
+                                                        }
+                                                    }
+                                                    None => available_models.clone(),
+                                                };
+                                                if !models.is_empty() {
+                                                    model_picker = Some(ModelPicker::new(models));
+                                                    ui_mode = UiMode::ModelPicker;
+                                                }
                                             }
                                             Some("/compact") => {
                                                 let _ = input_tx.send("__compact__".to_owned());
