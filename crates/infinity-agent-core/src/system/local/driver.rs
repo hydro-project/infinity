@@ -120,7 +120,7 @@ pub(crate) async fn drive_thread<C, S, H, O>(
         Err(e) => {
             observer.on_event(
                 &thread_id,
-                &AgentEvent::Info {
+                &AgentEvent::Error {
                     text: format!("Error: {e}"),
                 },
             );
@@ -298,7 +298,7 @@ pub(crate) async fn drive_thread<C, S, H, O>(
             Err(e) => {
                 observer.on_event(
                     &thread_id,
-                    &AgentEvent::Info {
+                    &AgentEvent::Error {
                         text: format!("Error: {e}"),
                     },
                 );
@@ -416,7 +416,7 @@ fn handle_step_result(
         Err(e) => {
             observer.on_event(
                 thread_id,
-                &AgentEvent::Info {
+                &AgentEvent::Error {
                     text: format!("Error: {e}"),
                 },
             );

@@ -117,6 +117,9 @@ pub enum CompletionEvent {
     SyncToolResult(ToolResult),
     /// Some piece of information to log to the user.
     Info(String),
+    /// A failure the user must see (first failure of a retry sequence, or
+    /// the final give-up), mapped to [`AgentEvent::Error`].
+    Error(String),
 }
 
 // ── HistoryManager (unchanged from before) ──
@@ -1408,6 +1411,37 @@ const THROTTLED_RETRY_DELAY: Duration = Duration::from_secs(30);
 /// error.
 const TRANSIENT_RETRY_DELAY: Duration = Duration::from_secs(5);
 
+/// A retry notice. The first failure of a retry sequence is an
+/// [`CompletionEvent::Error`] so users don't wait out a silent retry loop;
+/// later retries stay [`CompletionEvent::Info`].
+fn retry_notice(retry_count: u32, text: String) -> CompletionEvent {
+    if retry_count == 0 {
+        CompletionEvent::Error(text)
+    } else {
+        CompletionEvent::Info(text)
+    }
+}
+
+/// The give-up error. The round's unvalidated inputs are not persisted
+/// (nothing shows they are safe), so the user is asked to resend.
+fn give_up<C: ConversationStore, S: StateStore>(
+    history: &HistoryManager<C, S>,
+    retry_count: u32,
+    reason: impl std::fmt::Display,
+) -> CompletionEvent {
+    let retries = if retry_count > 0 {
+        format!(" after {retry_count} retries")
+    } else {
+        String::new()
+    };
+    let outcome = if history.unvalidated_len() == 0 {
+        ""
+    } else {
+        " Your message was not kept; please resend it."
+    };
+    CompletionEvent::Error(format!("Completion failed{retries}: {reason}.{outcome}"))
+}
+
 /// How [`run_completion`] recovered from a provider-declared context
 /// overflow (see [`ErrorClass::ContextOverflow`]).
 enum OverflowRecovery {
@@ -1555,7 +1589,7 @@ where
                     match e.class() {
                         ErrorClass::Throttled if retry_count < MAX_COMPLETION_RETRIES => {
                             tracing::warn!("Stream error (rate limit), retrying...");
-                            yield CompletionEvent::Info(format!(
+                            yield retry_notice(retry_count, format!(
                                 "Stream error (rate limit), retrying after {} seconds...",
                                 THROTTLED_RETRY_DELAY.as_secs()
                             ));
@@ -1571,7 +1605,7 @@ where
                         }
                         ErrorClass::Transient if retry_count < MAX_COMPLETION_RETRIES => {
                             tracing::warn!("Stream error ({e}), retrying...");
-                            yield CompletionEvent::Info(format!("Stream error ({e}), retrying..."));
+                            yield retry_notice(retry_count, format!("Stream error ({e}), retrying..."));
                             tokio::select! {
                                 _ = tokio::time::sleep(TRANSIENT_RETRY_DELAY) => {}
                                 _ = &mut cancel_rx => {
@@ -1601,6 +1635,7 @@ where
                             }
                         }
                         _ => {
+                            yield give_up(history, retry_count, &e);
                             Err(Into::<BoxError>::into(e))?;
                             unreachable!()
                         }
@@ -1656,7 +1691,9 @@ where
                     } else {
                         // Giving up: keep visible text, trim trailing reasoning
                         // (the next appended message is a user turn).
+                        let error = give_up(history, retry_count, "the model stream ended unexpectedly");
                         history.flush_turn_trimming_reasoning();
+                        yield error;
                         Err(Into::<BoxError>::into("Stream ended unexpectedly"))?;
                         unreachable!()
                     }
@@ -1681,7 +1718,7 @@ where
                             ErrorClass::Transient if retry_count < MAX_COMPLETION_RETRIES => {
                                 // Retry rebuilds from committed history.
                                 history.discard_turn();
-                                yield CompletionEvent::Info(format!("Stream error ({e}), retrying..."));
+                                yield retry_notice(retry_count, format!("Stream error ({e}), retrying..."));
                                 tracing::warn!("Stream error (transient), discarding partial turn and retrying...");
                                 tokio::time::sleep(Duration::from_secs(1)).await;
                                 retry_count += 1;
@@ -1689,7 +1726,7 @@ where
                             }
                             ErrorClass::Throttled if retry_count < MAX_COMPLETION_RETRIES => {
                                 history.discard_turn();
-                                yield CompletionEvent::Info(format!(
+                                yield retry_notice(retry_count, format!(
                                     "Stream error (rate limit), retrying after {} seconds...",
                                     THROTTLED_RETRY_DELAY.as_secs()
                                 ));
@@ -1727,7 +1764,9 @@ where
                             _ => {
                                 // Giving up: keep visible text, trim trailing reasoning
                                 // (the next appended message is a user turn).
+                                let error = give_up(history, retry_count, &e);
                                 history.flush_turn_trimming_reasoning();
+                                yield error;
                                 Err(Into::<BoxError>::into(e))?;
                                 unreachable!()
                             }
@@ -3636,6 +3675,7 @@ mod tests {
                     while let Some(ev) = stream.next().await {
                         tags.push(match ev.expect("receive stream event") {
                             CompletionEvent::Info(_) => "Info",
+                            CompletionEvent::Error(_) => "Error",
                             CompletionEvent::TextChunk(_) => "Text",
                             CompletionEvent::ThinkingStart => "ThinkingStart",
                             CompletionEvent::ThinkingEnd => "ThinkingEnd",
