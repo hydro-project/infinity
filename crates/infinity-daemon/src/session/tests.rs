@@ -686,6 +686,177 @@ async fn child_pending_choice_updates_root_session_status() {
         .await;
 }
 
+/// Forking creates a new session holding the original's history before the
+/// chosen user turn (plus a compaction summary that predates the cut) and
+/// leaves the original untouched; an out-of-range turn creates nothing.
+#[tokio::test(flavor = "current_thread")]
+async fn fork_session_copies_prefix_and_leaves_original_untouched() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (model1, mut ctrl1) = mock_model();
+            let entry = ModelEntry {
+                model_id: "model1".to_owned(),
+                display_name: "model1".to_owned(),
+                context_window: 100_000,
+                max_output_tokens: None,
+                supports_image_input: false,
+            };
+            let state_dir = tempfile::tempdir().expect("create daemon state dir");
+            let cwd = tempfile::tempdir().expect("create session cwd");
+            let manager = SessionManager::with_providers(
+                SessionManagerConfig {
+                    state_dir: state_dir.path().to_path_buf(),
+                    callback_url: "http://127.0.0.1:0".to_owned(),
+                    user_rap_config: None,
+                    id_source: Arc::new(SequentialIdSource::new()),
+                },
+                vec![(
+                    "provider1".to_owned(),
+                    Arc::new(SingleModelProvider::new(entry, model1)) as Arc<dyn ModelProvider>,
+                )],
+                vec![],
+            )
+            .await
+            .expect("build session manager");
+
+            let mut emit = |_message| async {};
+            let original = manager
+                .create_session(cwd.path(), model1_ref(), &mut emit)
+                .await
+                .expect("create session");
+            let (client_tx, mut client_rx) = mpsc::unbounded_channel();
+            manager
+                .attach_client(&original, client_tx, false, true)
+                .await;
+
+            let user_text = |thread: &ThreadId<str>, text: &str| {
+                (InputMessage::user_text(thread.to_owned(), text), None)
+            };
+            // Texts of the user messages in a request, oldest first.
+            let user_texts = |req: &infinity_provider_protocol::CompletionRequest| -> Vec<String> {
+                req.chat_history
+                    .iter()
+                    .filter_map(|m| match m {
+                        infinity_provider_protocol::message::Message::User { content } => {
+                            content.iter().find_map(|c| match c {
+                                UserContent::Text(t) => Some(t.text.clone()),
+                                _ => None,
+                            })
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            };
+
+            // Three complete turns on the original.
+            for (input, reply) in [("one", "r1"), ("two", "r2"), ("three", "r3")] {
+                assert!(manager.send_input(user_text(&original, input)).await);
+                let _ = ctrl1.next_request().await;
+                ctrl1.send_text(reply);
+                ctrl1.finish();
+                collect_until_done(&mut client_rx).await;
+            }
+            let original_rows = manager
+                .conversation_store
+                .load_history_up_to(&original, None, None)
+                .await
+                .expect("load original");
+
+            // Out of range: an error, and no session is created.
+            let sessions_before = manager.session_store.lock().await.sessions.len();
+            let mut emit = |_message| async {};
+            let err = manager
+                .fork_session(&original, 3, &mut emit)
+                .await
+                .expect_err("turn 3 does not exist");
+            assert!(err.to_string().contains("only 3 user turns"), "got: {err}");
+            assert_eq!(
+                manager.session_store.lock().await.sessions.len(),
+                sessions_before
+            );
+
+            // Fork at turn 1 ("two"): the fork holds exactly turn 0.
+            let mut connected = Vec::new();
+            let mut emit = async |m: DaemonMessage| connected.push(m);
+            let fork = manager
+                .fork_session(&original, 1, &mut emit)
+                .await
+                .expect("fork at turn 1");
+            assert!(
+                matches!(&connected[..], [DaemonMessage::Connected { root_thread_id, .. }]
+                    if root_thread_id.id == fork),
+                "fork must emit Connected for the new session, got {connected:?}"
+            );
+            let fork_rows = manager
+                .conversation_store
+                .load_history_up_to(&fork, None, None)
+                .await
+                .expect("load fork");
+            assert_eq!(
+                format!("{fork_rows:?}"),
+                format!("{:?}", &original_rows[..2])
+            );
+            {
+                let store = manager.session_store.lock().await;
+                assert_eq!(store.get_cwd(&fork), store.get_cwd(&original));
+            }
+
+            // The original is untouched.
+            let after = manager
+                .conversation_store
+                .load_history_up_to(&original, None, None)
+                .await
+                .expect("reload original");
+            assert_eq!(format!("{after:?}"), format!("{original_rows:?}"));
+
+            // The fork accepts input and its model sees only the prefix.
+            let (fork_tx, mut fork_rx) = mpsc::unbounded_channel();
+            manager.attach_client(&fork, fork_tx, false, true).await;
+            assert!(manager.send_input(user_text(&fork, "two, edited")).await);
+            let req = ctrl1.next_request().await;
+            assert_eq!(user_texts(&req), ["one", "two, edited"]);
+            ctrl1.send_text("forked");
+            ctrl1.finish();
+            collect_until_done(&mut fork_rx).await;
+
+            // A compaction summary that predates the cut is carried over; one
+            // covering discarded rows is not.
+            manager
+                .conversation_store
+                .save_compaction_summary(&original, "summary of turn 0", 2)
+                .await
+                .expect("save summary");
+            let mut emit = |_message| async {};
+            let fork2 = manager
+                .fork_session(&original, 2, &mut emit)
+                .await
+                .expect("fork at turn 2");
+            assert_eq!(
+                manager
+                    .conversation_store
+                    .load_latest_compaction_summary_up_to(&fork2, None)
+                    .await
+                    .expect("load fork2 summary"),
+                Some(("summary of turn 0".to_owned(), 2))
+            );
+            let mut emit = |_message| async {};
+            let fork3 = manager
+                .fork_session(&original, 0, &mut emit)
+                .await
+                .expect("fork at turn 0");
+            assert_eq!(
+                manager
+                    .conversation_store
+                    .load_latest_compaction_summary_up_to(&fork3, None)
+                    .await
+                    .expect("load fork3 summary"),
+                None
+            );
+        })
+        .await;
+}
+
 /// A callback-style event (a tool result with no live driver) for a session
 /// the user shut down is refused by the stopped-thread policy inside the
 /// router, while the same event for a live session wakes its thread. This
