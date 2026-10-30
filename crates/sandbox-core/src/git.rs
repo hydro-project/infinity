@@ -172,7 +172,7 @@ pub async fn detect_mode(
                 .to_owned(),
         ));
     };
-    let base_revision = output.trim().to_owned();
+    let starting_revision = output.trim().to_owned();
 
     let message = match base_bookmark {
         Some(rev) => format!("Repository initialized on top of {rev}."),
@@ -182,7 +182,7 @@ pub async fn detect_mode(
     // compares it against a canonicalized requested path.
     let repo_root = repo_path.canonicalize().map_err(SandboxError::Io)?;
     Ok(Some(ModeInit {
-        mode: SandboxMode::Git { base_revision },
+        mode: SandboxMode::Git { starting_revision },
         repo_root,
         message,
         precreate: false,
