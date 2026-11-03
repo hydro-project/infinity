@@ -106,6 +106,8 @@ The TUI runs anywhere you have a terminal. Start it with `infinity` in any repo.
 
 Most commands have single-letter aliases (`/q`, `/n`, `/l`, `/m`, `/s`, `/a`).
 
+Session titles and remote names can contain Unicode. Short labels are truncated at UTF-8 character boundaries, so a label can be shorter than its byte budget.
+
 [Ghostty](https://ghostty.org) provides the best experience with the TUI.
 
 ### Useful flags
