@@ -621,6 +621,7 @@ impl PersistentConversationStore {
             e.last_updated = ts.to_owned();
         }
         self.save_thread_metadata(thread_id);
+        self.notify_session(thread_id);
     }
 
     /// Write views to `{dir}/{thread_id}.views.json`.
