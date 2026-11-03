@@ -1,5 +1,12 @@
 
 
+## Unreleased
+
+### Fixes
+
+- Route user choice answers across the connected session's root and descendant threads, including clients attached to a child, without answering choices from other sessions.
+- Log transport errors and unsuccessful HTTP responses when posting user choice answers.
+
 ## v0.1.0 (2026-09-03)
 
 ### Chore
