@@ -36,6 +36,18 @@ infinity provider install bedrock --crate infinity-provider-bedrock
 infinity rap install --user --crate sandbox-local
 ```
 
+On Linux, `sandbox-local` uses Bubblewrap (`bwrap`). Install the system package before installing the RAP server. If `bwrap` is missing, the build script attempts to build it from source and requires Git, a C compiler, and the `libcap` development headers. For example:
+
+```bash
+# Debian / Ubuntu
+sudo apt install bubblewrap build-essential libcap-dev
+
+# Fedora / Amazon Linux 2023
+sudo dnf install bubblewrap gcc libcap-devel
+```
+
+On macOS, the sandbox uses `sandbox-exec` and does not require Bubblewrap.
+
 [Model providers](./model-providers.md) run as separate processes managed by the daemon and are registered in `~/.infinity/providers.json`; at least one must be installed. The Bedrock provider uses your ambient AWS configuration (e.g. `AWS_PROFILE` or environment credentials).
 
 To update later:
