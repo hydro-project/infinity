@@ -778,3 +778,60 @@ async fn shut_down_session_events_do_not_wake_threads() {
         })
         .await;
 }
+
+/// A session persisted as running by a daemon that died mid-completion must
+/// come back Idle (and stay so on disk), not Running forever; an explicitly
+/// stopped session stays Stopped.
+#[tokio::test(flavor = "current_thread")]
+async fn restart_reconciles_stale_sessions() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (model, _ctrl) = mock_model();
+            let entry = ModelEntry {
+                model_id: "model1".to_owned(),
+                display_name: "model1".to_owned(),
+                context_window: 100_000,
+                max_output_tokens: None,
+                supports_image_input: false,
+            };
+            let state_dir = tempfile::tempdir().expect("create daemon state dir");
+            let sessions_path = state_dir.path().join("sessions.json");
+            let sessions = serde_json::json!({ "sessions": {
+                "killed": { "cwd": "/tmp", "shut_down": false, "idle": false },
+                "stopped": { "cwd": "/tmp", "shut_down": true, "idle": false },
+            }});
+            std::fs::write(&sessions_path, sessions.to_string()).expect("write sessions.json");
+
+            let manager = SessionManager::with_providers(
+                SessionManagerConfig {
+                    state_dir: state_dir.path().to_path_buf(),
+                    callback_url: "http://127.0.0.1:0".to_owned(),
+                    user_rap_config: None,
+                    id_source: Arc::new(SequentialIdSource::new()),
+                },
+                vec![(
+                    "provider1".to_owned(),
+                    Arc::new(SingleModelProvider::new(entry, model)) as Arc<dyn ModelProvider>,
+                )],
+                vec![],
+            )
+            .await
+            .expect("build session manager");
+
+            let sessions = manager.list_sessions(None).await;
+            let status = |id: &str| {
+                sessions[&infinity_protocol::ThreadRef::local(ThreadId::from_ref(id).to_owned())]
+                    .status
+                    .clone()
+            };
+            assert_eq!(status("killed"), SessionStatus::Idle);
+            assert_eq!(status("stopped"), SessionStatus::Stopped);
+            let persisted: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(&sessions_path).expect("read sessions.json"),
+            )
+            .expect("parse sessions.json");
+            assert_eq!(persisted["sessions"]["killed"]["idle"], true);
+        })
+        .await;
+}

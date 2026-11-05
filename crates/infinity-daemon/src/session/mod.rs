@@ -156,10 +156,16 @@ impl SessionManager {
         let sessions_path = state_dir.join("sessions.json");
         let (change_tx, mut change_rx) = mpsc::unbounded_channel::<ThreadId>();
         let change_tx_for_conv = change_tx.clone();
-        let session_store = Arc::new(tokio::sync::Mutex::new(session_store::SessionStore::load(
-            &sessions_path.to_string_lossy(),
-            change_tx,
-        )));
+        let session_store = {
+            let mut store =
+                session_store::SessionStore::load(&sessions_path.to_string_lossy(), change_tx);
+            if store.reconcile_cold_start()
+                && let Err(e) = store.save()
+            {
+                tracing::error!("failed to persist reconciled session statuses: {e}");
+            }
+            Arc::new(tokio::sync::Mutex::new(store))
+        };
         let broadcast_clients: Arc<std::sync::Mutex<Vec<mpsc::UnboundedSender<DaemonMessage>>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
 
