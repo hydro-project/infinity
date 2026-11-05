@@ -101,6 +101,21 @@ impl DsqlConversationStore {
         .await
         .map_err(|e| Error::from(format!("Failed to create index: {}", e)))?;
 
+        // Runtime-minted entries (model output, synthetic tool results,
+        // interrupt markers) have no dedup id; only inputs do. Idempotent.
+        sqlx::query(r#"ALTER TABLE conversation_history ALTER COLUMN message_id DROP NOT NULL"#)
+            .execute(&pool)
+            .await
+            .map_err(|e| Error::from(format!("Failed to make message_id nullable: {}", e)))?;
+
+        sqlx::query(
+            r#"CREATE INDEX ASYNC IF NOT EXISTS idx_conversation_history_session_message_id
+            ON conversation_history (session_id, message_id)"#,
+        )
+        .execute(&pool)
+        .await
+        .map_err(|e| Error::from(format!("Failed to create message_id index: {}", e)))?;
+
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS thread_hierarchy (
                 thread_id VARCHAR(255) PRIMARY KEY,
@@ -150,6 +165,20 @@ impl DsqlConversationStore {
         })?;
 
         Ok(Self { pool })
+    }
+}
+
+/// Decode a `message_data` column: the current [`InfinityMessage`] JSON, or
+/// the legacy bare [`Message`] written before display metadata was stored.
+/// Undecodable rows are logged and skipped.
+fn parse_message_data(json_str: String) -> Option<InfinityMessage> {
+    if let Ok(msg) = serde_json::from_str::<InfinityMessage>(&json_str) {
+        Some(msg)
+    } else if let Ok(msg) = serde_json::from_str::<Message>(&json_str) {
+        Some(InfinityMessage::from_message(msg))
+    } else {
+        tracing::error!("skipping undecodable conversation_history row: {json_str}");
+        None
     }
 }
 
@@ -212,23 +241,16 @@ impl ConversationStore for DsqlConversationStore {
             .await
             .map_err(|e| DsqlError(format!("Failed to load history: {}", e)))?;
 
-        let mut messages = Vec::new();
-        for row in rows {
-            let json_str: String = row.get("message_data");
-            // Try new InfinityMessage format first, fall back to the legacy bare Message
-            if let Ok(msg) = serde_json::from_str::<InfinityMessage>(&json_str) {
-                messages.push(msg);
-            } else if let Ok(msg) = serde_json::from_str::<Message>(&json_str) {
-                messages.push(InfinityMessage::from_message(msg));
-            }
-        }
-        Ok(messages)
+        Ok(rows
+            .iter()
+            .filter_map(|row| parse_message_data(row.get("message_data")))
+            .collect())
     }
 
     async fn append_messages(
         &self,
         session_id: &ThreadId<str>,
-        messages: Vec<(InfinityMessage, String)>,
+        messages: Vec<(InfinityMessage, Option<String>)>,
     ) -> Result<(), DsqlError> {
         if messages.is_empty() {
             return Ok(());
@@ -246,7 +268,7 @@ impl ConversationStore for DsqlConversationStore {
         let mut current_order = max_order.unwrap_or(0);
         let mut session_ids = Vec::new();
         let mut message_orders = Vec::new();
-        let mut message_ids_vec = Vec::new();
+        let mut message_ids_vec: Vec<Option<String>> = Vec::new();
         let mut message_data = Vec::new();
 
         for (message, message_id) in messages {
@@ -282,6 +304,26 @@ impl ConversationStore for DsqlConversationStore {
             .await
             .map_err(|e| DsqlError(format!("Failed to commit transaction: {}", e)))?;
         Ok(())
+    }
+
+    async fn is_message_processed(
+        &self,
+        thread_id: &ThreadId<str>,
+        message_id: &str,
+    ) -> Result<bool, DsqlError> {
+        // Every history row carries the dedup id it was appended under, so
+        // this is a point lookup on the history itself (no separate table to
+        // drift out of sync with it).
+        sqlx::query_scalar(
+            r#"SELECT EXISTS (
+                SELECT 1 FROM conversation_history WHERE session_id = $1 AND message_id = $2
+            )"#,
+        )
+        .bind(thread_id.as_str())
+        .bind(message_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| DsqlError(format!("Failed to check processed message id: {e}")))
     }
 
     async fn spawn_thread(
