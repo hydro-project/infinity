@@ -1,11 +1,11 @@
-import { useMemo, useCallback, useRef, useState, memo } from "react";
+import { useMemo, useCallback, useRef, useEffect, memo } from "react";
 import {
   CodeView,
   type CodeViewHandle,
   WorkerPoolContextProvider,
 } from "@pierre/diffs/react";
 import { parseDiffFromFile, type CodeViewItem } from "@pierre/diffs";
-import { FileTree } from "@pierre/trees/react";
+import { FileTree, useFileTree } from "@pierre/trees/react";
 import type { GitStatusEntry } from "@pierre/trees";
 import css from "./DiffView.module.css";
 
@@ -52,12 +52,25 @@ function sortFiles(files: FileEntry[]): FileEntry[] {
   });
 }
 
+/** All ancestor directory paths of the given file paths. */
+function directoriesOf(paths: Iterable<string>): Set<string> {
+  const dirs = new Set<string>();
+  for (const p of paths) {
+    const parts = p.split("/");
+    for (let i = 1; i < parts.length; i++)
+      dirs.add(parts.slice(0, i).join("/"));
+  }
+  return dirs;
+}
+
 export const DiffView = memo(function DiffView({
   files,
   theme,
   workerFactory,
 }: DiffViewProps) {
-  const viewerRef = useRef<CodeViewHandle<undefined>>(null);
+  // No annotation or caret metadata: @pierre/diffs >= 1.4 requires the
+  // metadata type arguments to be spelled out on type-only APIs.
+  const viewerRef = useRef<CodeViewHandle<undefined, undefined>>(null);
 
   const sorted = useMemo(() => sortFiles(files), [files]);
   const filePaths = useMemo(() => sorted.map((f) => f.path), [sorted]);
@@ -66,18 +79,54 @@ export const DiffView = memo(function DiffView({
     [sorted],
   );
 
-  const allDirs = useMemo(() => {
-    const dirs = new Set<string>();
-    for (const p of filePaths) {
-      const parts = p.split("/");
-      for (let i = 1; i < parts.length; i++)
-        dirs.add(parts.slice(0, i).join("/"));
+  const handleSelect = useCallback((paths: readonly string[]) => {
+    if (paths[0]) {
+      viewerRef.current?.scrollTo({
+        type: "item",
+        id: `diff:${paths[0]}`,
+        align: "start",
+        behavior: "smooth-auto",
+      });
     }
-    return [...dirs];
-  }, [filePaths]);
-  const [expandedItems, setExpandedItems] = useState<string[]>();
-  const [selectedItems, setSelectedItems] = useState<string[]>([]);
-  const treeOptions = useMemo(() => ({ flattenEmptyDirectories: true }), []);
+  }, []);
+
+  // The tree model is created once (the hook ignores later option changes),
+  // seeded with the initial file list; subsequent updates are applied
+  // imperatively below. `initialExpansion: "open"` also makes directories
+  // that appear later start expanded, while preserving the user's
+  // collapse state for directories that already existed.
+  const { model: tree } = useFileTree({
+    paths: filePaths,
+    gitStatus,
+    flattenEmptyDirectories: true,
+    initialExpansion: "open",
+    onSelectionChange: handleSelect,
+  });
+
+  // Sync file list changes into the tree as add/remove operations (rather
+  // than a full reset) so expansion, selection and focus are preserved.
+  // Removing a file does not prune its now-empty ancestors, so directories
+  // that vanished from the file set are removed explicitly, deepest first.
+  const treePathsRef = useRef<readonly string[]>(filePaths);
+  useEffect(() => {
+    const prev = new Set(treePathsRef.current);
+    const next = new Set(filePaths);
+    const prevDirs = directoriesOf(prev);
+    const nextDirs = directoriesOf(next);
+    const ops: { type: "add" | "remove"; path: string }[] = [];
+    for (const p of prev)
+      if (!next.has(p)) ops.push({ type: "remove", path: p });
+    const goneDirs = [...prevDirs].filter((d) => !nextDirs.has(d));
+    goneDirs.sort((a, b) => b.length - a.length);
+    for (const d of goneDirs) ops.push({ type: "remove", path: d });
+    for (const p of next) if (!prev.has(p)) ops.push({ type: "add", path: p });
+    if (ops.length > 0) tree.batch(ops);
+    treePathsRef.current = filePaths;
+  }, [tree, filePaths]);
+
+  useEffect(() => {
+    tree.setGitStatus(gitStatus);
+  }, [tree, gitStatus]);
 
   const diffCacheRef = useRef<
     Map<
@@ -91,7 +140,7 @@ export const DiffView = memo(function DiffView({
     >
   >(new Map());
 
-  const items: CodeViewItem[] = useMemo(() => {
+  const items: CodeViewItem<undefined>[] = useMemo(() => {
     const cache = diffCacheRef.current;
     return sorted.map((f) => {
       const cached = cache.get(f.path);
@@ -130,18 +179,6 @@ export const DiffView = memo(function DiffView({
     });
   }, [sorted]);
 
-  const handleSelect = useCallback((paths: string[]) => {
-    setSelectedItems(paths);
-    if (paths[0]) {
-      viewerRef.current?.scrollTo({
-        type: "item",
-        id: `diff:${paths[0]}`,
-        align: "start",
-        behavior: "smooth-auto",
-      });
-    }
-  }, []);
-
   const options = useMemo(
     () => ({
       theme: { dark: "pierre-dark", light: "pierre-light" } as const,
@@ -162,15 +199,7 @@ export const DiffView = memo(function DiffView({
     <div className={css.root}>
       <div className={css.sidebar}>
         <div className={css.sidebarHeader}>Files</div>
-        <FileTree
-          files={filePaths}
-          gitStatus={gitStatus}
-          options={treeOptions}
-          selectedItems={selectedItems}
-          expandedItems={expandedItems ?? allDirs}
-          onExpandedItemsChange={setExpandedItems}
-          onSelectedItemsChange={handleSelect}
-        />
+        <FileTree model={tree} className={css.fileTree} />
       </div>
       <div className={css.diffPaneWrapper}>
         <CodeView
