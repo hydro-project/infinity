@@ -1,0 +1,28 @@
+---
+source: crates/infinity-agent-cli/tests/tui_snapshots.rs
+expression: screen
+---
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│                                                                                │
+│Infinity Agent CLI                                                              │
+│Type your messages below. /help for commands. Ctrl+C to exit.                   │
+│                                                                                │
+│                                                                                │
+│✦ Loading session — thread devbox/aaa-bbb                                       │
+│                                                                                │
+│────────────────────────────────────────────────────────────────────────────────│
+│ remote-prov Remote Large               200k ctx                                │
+│ remote-prov Remote Small                 8k ctx                                │
+│                                                                                │
+│↑↓ navigate  enter select  esc cancel     remote-prov: Remote Large · 0% context│
+└────────────────────────────────────────────────────────────────────────────────┘
+cursor: row=13 col=41 (hidden)
+title: Remote session

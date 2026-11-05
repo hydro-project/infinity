@@ -36,9 +36,40 @@ export interface ModelRef {
   model_id: string;
 }
 
+/**
+ * Connection state of a configured remote daemon. Serialized as an
+ * externally-tagged Rust enum (like `DaemonMessage`).
+ */
+export type RemoteStatus =
+  | "Connecting"
+  | { Connected: { available_models: ModelInfo[] } }
+  | { Disconnected: { reason: string } };
+
 export interface RemoteInfo {
   name: string;
-  status: string;
+  status: RemoteStatus;
+}
+
+export type RemoteStatusKind = "connected" | "connecting" | "disconnected";
+
+export function remoteStatusKind(status: RemoteStatus): RemoteStatusKind {
+  if (status === "Connecting") return "connecting";
+  if ("Connected" in status) return "connected";
+  return "disconnected";
+}
+
+/** Human-readable status, e.g. for the sidebar banner. */
+export function remoteStatusLabel(status: RemoteStatus): string {
+  if (status === "Connecting") return "connecting";
+  if ("Connected" in status) return "connected";
+  return `disconnected: ${status.Disconnected.reason}`;
+}
+
+/** The remote's model catalog, or `[]` when it is not connected. */
+export function remoteModels(status: RemoteStatus): ModelInfo[] {
+  return status !== "Connecting" && "Connected" in status
+    ? status.Connected.available_models
+    : [];
 }
 
 export interface TokenUsage {

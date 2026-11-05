@@ -396,6 +396,8 @@ pub struct HarnessOptions {
     pub context_window: usize,
     pub initial_sessions: HashMap<infinity_protocol::ThreadRef, SessionInfo>,
     pub available_models: Vec<ModelInfo>,
+    /// Remotes known at startup (with their model lists).
+    pub remotes: Vec<infinity_protocol::RemoteInfo>,
     pub initial_message: Option<String>,
 }
 
@@ -423,6 +425,7 @@ impl Default for HarnessOptions {
                     context_window: 32_000,
                 },
             ],
+            remotes: Vec::new(),
             initial_message: None,
         }
     }
@@ -437,10 +440,11 @@ pub struct TuiHarness {
     pub model_switched_tx: mpsc::UnboundedSender<terminal::ModelSwitched>,
     pub sessions_updated_tx:
         mpsc::UnboundedSender<HashMap<infinity_protocol::ThreadRef, SessionInfo>>,
+    pub remotes_updated_tx: mpsc::UnboundedSender<Vec<infinity_protocol::RemoteInfo>>,
     pub detach_result_tx: mpsc::UnboundedSender<DetachResult>,
     pub input_rx: mpsc::UnboundedReceiver<String>,
     pub load_session_rx: mpsc::UnboundedReceiver<(Option<infinity_protocol::ThreadRef>, bool)>,
-    pub model_switch_rx: mpsc::UnboundedReceiver<usize>,
+    pub model_switch_rx: mpsc::UnboundedReceiver<infinity_protocol::ModelRef>,
     pub soft_detach_rx: mpsc::UnboundedReceiver<()>,
     pub choice_answered_rx: mpsc::UnboundedReceiver<(infinity_protocol::ChoiceId, usize)>,
     pub handle: tokio::task::JoinHandle<Result<bool, BoxError>>,
@@ -504,6 +508,7 @@ impl TuiHarness {
         let (session_tx, session_rx) = mpsc::unbounded_channel();
         let (model_switched_tx, model_switched_rx) = mpsc::unbounded_channel();
         let (sessions_updated_tx, sessions_updated_rx) = mpsc::unbounded_channel();
+        let (remotes_updated_tx, remotes_updated_rx) = mpsc::unbounded_channel();
         let (soft_detach_tx, soft_detach_rx) = mpsc::unbounded_channel();
         let (detach_result_tx, detach_result_rx) = mpsc::unbounded_channel();
         let (choice_answered_tx, choice_answered_rx) = mpsc::unbounded_channel();
@@ -520,10 +525,12 @@ impl TuiHarness {
             load_session_tx,
             model_switch_tx,
             opts.available_models,
+            opts.remotes,
             opts.initial_message,
             session_rx,
             model_switched_rx,
             sessions_updated_rx,
+            remotes_updated_rx,
             soft_detach_tx,
             detach_result_rx,
             choice_answered_tx,
@@ -536,6 +543,7 @@ impl TuiHarness {
             session_tx,
             model_switched_tx,
             sessions_updated_tx,
+            remotes_updated_tx,
             detach_result_tx,
             input_rx,
             load_session_rx,

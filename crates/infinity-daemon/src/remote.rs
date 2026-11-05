@@ -27,14 +27,11 @@ pub fn load_remotes_config() -> Vec<RemoteConfig> {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum RemoteStatus {
-    Connecting,
-    Connected,
-    Disconnected(String),
-}
+pub use infinity_protocol::RemoteStatus;
 
 pub struct RemoteState {
+    /// Connection status; the `Connected` variant carries the remote's model
+    /// catalog from its `Welcome`.
     pub status: RemoteStatus,
     pub sessions: HashMap<infinity_protocol::ThreadRef, SessionInfo>,
     /// Local socket path for the SSH tunnel (set when connected).
@@ -80,7 +77,7 @@ impl RemoteDaemons {
         let map = self.remotes.lock().expect("bug: mutex poisoned");
         let mut result = HashMap::new();
         for (remote_name, state) in map.iter() {
-            if !matches!(state.status, RemoteStatus::Connected) {
+            if !matches!(state.status, RemoteStatus::Connected { .. }) {
                 continue;
             }
             for (sid, info) in &state.sessions {
@@ -473,7 +470,9 @@ async fn control_worker(
                 tracing::warn!("Remote '{}' control connection failed: {e}", name);
                 let mut map = remotes.lock().expect("bug: mutex poisoned");
                 if let Some(state) = map.get_mut(&name) {
-                    state.status = RemoteStatus::Disconnected(e.to_string());
+                    state.status = RemoteStatus::Disconnected {
+                        reason: e.to_string(),
+                    };
                     state.sessions.clear();
                     state.local_sock = None;
                 }
@@ -518,7 +517,12 @@ async fn control_worker_inner(
     let welcome: DaemonMessage =
         serde_json::from_slice(&first).map_err(|e| format!("invalid Welcome: {e}"))?;
 
-    let DaemonMessage::Welcome { sessions, .. } = welcome else {
+    let DaemonMessage::Welcome {
+        sessions,
+        available_models,
+        ..
+    } = welcome
+    else {
         return Err("expected Welcome as first message".into());
     };
 
@@ -529,7 +533,7 @@ async fn control_worker_inner(
     {
         let mut map = remotes.lock().expect("bug: mutex poisoned");
         if let Some(state) = map.get_mut(name) {
-            state.status = RemoteStatus::Connected;
+            state.status = RemoteStatus::Connected { available_models };
             state.sessions = sessions;
         }
     }
@@ -575,11 +579,7 @@ fn build_remote_info_list(remotes: &RemoteMap) -> Vec<infinity_protocol::RemoteI
     map.iter()
         .map(|(name, state)| infinity_protocol::RemoteInfo {
             name: name.clone(),
-            status: match &state.status {
-                RemoteStatus::Connecting => "connecting".to_owned(),
-                RemoteStatus::Connected => "connected".to_owned(),
-                RemoteStatus::Disconnected(reason) => format!("disconnected: {reason}"),
-            },
+            status: state.status.clone(),
         })
         .collect()
 }

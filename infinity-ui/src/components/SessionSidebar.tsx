@@ -1,9 +1,11 @@
 import { useCallback, useRef, useState, useEffect, memo, useMemo } from "react";
-import type {
-  SessionInfo,
-  SubthreadInfo,
-  RemoteInfo,
-  ConnectionStatus,
+import {
+  remoteStatusKind,
+  remoteStatusLabel,
+  type SessionInfo,
+  type SubthreadInfo,
+  type RemoteInfo,
+  type ConnectionStatus,
 } from "../types";
 import css from "./SessionSidebar.module.css";
 import {
@@ -245,7 +247,9 @@ export const SessionSidebar = memo(function SessionSidebar({
   const disconnectedRemotes = useMemo(
     () =>
       new Set(
-        remotes.filter((r) => r.status !== "connected").map((r) => r.name),
+        remotes
+          .filter((r) => remoteStatusKind(r.status) !== "connected")
+          .map((r) => r.name),
       ),
     [remotes],
   );
@@ -347,25 +351,21 @@ export const SessionSidebar = memo(function SessionSidebar({
           </div>
         </div>
       )}
-      {remotes.some((r) => r.status !== "connected") && (
+      {remotes.some((r) => remoteStatusKind(r.status) !== "connected") && (
         <div className={css.remoteBanner}>
           {remotes
-            .filter((r) => r.status !== "connected")
+            .filter((r) => remoteStatusKind(r.status) !== "connected")
             .map((r) => (
               <div
                 key={r.name}
                 className={css.remoteBannerItem}
-                data-status={
-                  r.status === "connecting" ? "connecting" : "disconnected"
-                }
+                data-status={remoteStatusKind(r.status)}
               >
                 <span
                   className={css.remoteBannerDot}
-                  data-status={
-                    r.status === "connecting" ? "connecting" : "disconnected"
-                  }
+                  data-status={remoteStatusKind(r.status)}
                 />
-                {r.name}: {r.status}
+                {r.name}: {remoteStatusLabel(r.status)}
               </div>
             ))}
         </div>
