@@ -148,7 +148,12 @@ impl SessionPicker {
             let name = if let Some(ref title) = info.title {
                 if title.len() + extra_len > name_width {
                     let trunc = name_width.saturating_sub(extra_len + 1);
-                    format!("{}…{}{}", &title[..trunc], remote_label, current_suffix)
+                    format!(
+                        "{}…{}{}",
+                        &title[..title.floor_char_boundary(trunc)],
+                        remote_label,
+                        current_suffix
+                    )
                 } else {
                     format!("{}{}{}", title, remote_label, current_suffix)
                 }
@@ -156,7 +161,12 @@ impl SessionPicker {
                 let id = id.to_string();
                 if id.len() + extra_len > name_width {
                     let trunc = name_width.saturating_sub(extra_len + 1);
-                    format!("{}…{}{}", &id[..trunc], remote_label, current_suffix)
+                    format!(
+                        "{}…{}{}",
+                        &id[..id.floor_char_boundary(trunc)],
+                        remote_label,
+                        current_suffix
+                    )
                 } else {
                     format!("{}{}{}", id, remote_label, current_suffix)
                 }
@@ -165,7 +175,7 @@ impl SessionPicker {
             let name_char_len = name.chars().count();
             let current_label_start = 1 + name_char_len - suffix_len;
             let current_label_end = 1 + name_char_len;
-            let remote_label_start = current_label_start - remote_len;
+            let remote_label_start = current_label_start - remote_label.chars().count();
             let remote_label_end = current_label_start;
 
             let status_str = match info.status {
@@ -266,5 +276,44 @@ impl<'a> SessionPickerWidget<'a> {
 impl<'a> Widget for SessionPickerWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         self.picker.render(area, buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unicode_session_names_and_remote_labels_render_without_panicking() {
+        for (id, title, remote, expected) in [
+            ("local", Some("123456é-session"), None, " 123456…"),
+            ("123456é/root", None, None, " 123456…"),
+            (
+                "local",
+                Some("a"),
+                Some("日本語日本語"),
+                " a [日本語日本語]",
+            ),
+        ] {
+            let picker = SessionPicker::new(
+                vec![(
+                    id.into(),
+                    SessionInfo {
+                        title: title.map(str::to_owned),
+                        last_updated: String::new(),
+                        total_tokens_used: 0,
+                        status: SessionStatus::Idle,
+                        threads: vec![],
+                        remote: remote.map(Into::into),
+                    },
+                )],
+                None,
+            );
+            let area = Rect::new(0, 0, if remote.is_some() { 80 } else { 41 }, 1);
+            let mut buf = Buffer::empty(area);
+            picker.render(area, &mut buf);
+            let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+            assert!(rendered.starts_with(expected), "{rendered:?}");
+        }
     }
 }

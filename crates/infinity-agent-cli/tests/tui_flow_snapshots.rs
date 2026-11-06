@@ -445,6 +445,32 @@ async fn empty_session_picker_shows_placeholder() {
     insta::assert_snapshot!("picker_empty_dismissed", h.screen());
 }
 
+#[tokio::test(start_paused = true)]
+async fn unicode_thread_id_in_status_line() {
+    let h = TuiHarness::spawn(80, 14).await;
+    send_session(&h, "1234567é/root", "Unicode remote", 0);
+    h.settle().await;
+    assert!(h.screen().contains("1234567 | /help"), "{}", h.screen());
+}
+
+#[tokio::test(start_paused = true)]
+async fn unicode_child_subscription_prefix() {
+    let h = TuiHarness::spawn(80, 14).await;
+    h.display_for_thread(
+        "1234567é/child",
+        Evt::SubscriptionEvent {
+            name: "watch".to_owned(),
+            text: "changed".to_owned(),
+        },
+    );
+    h.settle().await;
+    assert!(
+        h.screen().contains("[1234567] ⚡watch: changed"),
+        "{}",
+        h.screen()
+    );
+}
+
 /// Feedback lines for commands that act without a session: /compact prints
 /// its trigger, /stop and /archive print "no active session" notes.
 #[tokio::test(start_paused = true)]
