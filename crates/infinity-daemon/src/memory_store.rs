@@ -1005,8 +1005,7 @@ impl PersistentStateStore {
     }
 
     /// Whether any thread in the session rooted at `session_id` has a pending
-    /// user choice. The exact-thread query above remains available for routing
-    /// choice responses to the thread that requested them.
+    /// user choice.
     pub fn has_pending_choices_for_session(&self, session_id: &ThreadId<str>) -> bool {
         self.conversation_store
             .get_session_thread_ids(session_id)
@@ -1025,6 +1024,17 @@ impl PersistentStateStore {
             .pending_user_choices
             .into_iter()
             .find(|choice| choice.id == *choice_id)
+    }
+
+    pub fn pending_choice_for_session(
+        &self,
+        session_id: &ThreadId<str>,
+        choice_id: &rap_protocol::ChoiceId<str>,
+    ) -> Option<UserChoice> {
+        self.conversation_store
+            .get_session_thread_ids(session_id)
+            .iter()
+            .find_map(|thread_id| self.pending_choice(thread_id, choice_id))
     }
 
     pub async fn clear_pending_choices(

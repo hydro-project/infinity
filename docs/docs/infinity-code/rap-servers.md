@@ -20,7 +20,7 @@ infinity rap install --user --crate sandbox-local
 A few behaviors worth knowing:
 
 - **Streaming output**: `execute_command` streams the output of long-running commands back to the agent as subscription events, so the agent can react to logs while the command is still running, and commands can be cancelled mid-flight.
-- **Permission approvals**: the sandbox restricts writes to the sandbox workspace. When the agent requests extra permissions (`write-orig` to write to your original repo directory, e.g. for `git push`, or `write:/some/path` for a specific path), you get an approve/deny prompt in the TUI or web UI before anything runs.
+- **Permission approvals**: the sandbox restricts writes to the sandbox workspace. When the agent requests extra permissions (`write-orig` to write to your original repo directory, e.g. for `git push`, or `write:/some/path` for a specific path), you get an approve/deny prompt in the TUI or web UI before anything runs. Answers are routed to the requesting thread anywhere within the connected session, including child threads, whether the client is connected to the root or a child. Choices from other sessions cannot be answered through that connection.
 - **Direct mode**: `open_sandbox_direct` operates on the original directory without a worktree, for repos where sandboxing is not possible (e.g. no commits yet). In this mode every file edit requires your approval.
 
 ## Steering
