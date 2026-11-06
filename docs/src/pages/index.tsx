@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React from "react";
 import Layout from "@theme/Layout";
 import CodeBlock from "@theme/CodeBlock";
 import MemoryChart from "../components/MemoryChart";
@@ -6,25 +6,7 @@ import RuntimeDiagram from "../components/RuntimeDiagram";
 import AgentTrace from "../components/AgentTrace";
 import ProtocolDiagram from "../components/ProtocolDiagram";
 import DesktopMini from "../components/DesktopMini";
-
-/** Tracks whether an element is in the viewport, so diagrams animate on scroll. */
-function useInView(
-  threshold = 0.25,
-): [React.RefObject<HTMLElement | null>, boolean] {
-  const ref = useRef<HTMLElement | null>(null);
-  const [inView, setInView] = useState(false);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const obs = new IntersectionObserver(
-      ([entry]) => setInView(entry.isIntersecting),
-      { threshold },
-    );
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, [threshold]);
-  return [ref, inView];
-}
+import { useInView } from "../components/InView";
 
 // Trimmed from the real quickstart; see /docs/infinity-runtime/quickstart/launching-your-first-agent.
 const HERO_CODE = `let system = AgentSystemBuilder::new_local(
