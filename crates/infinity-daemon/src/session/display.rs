@@ -30,6 +30,41 @@ pub(crate) fn agent_event_to_daemon(thread_id: &ThreadId<str>, evt: &AgentEvent)
             thread_id: tid,
             text: text.clone(),
         },
+        AgentEvent::CompletionRetrying {
+            error,
+            attempt,
+            delay,
+        } => {
+            let text = format!(
+                "Completion failed ({error}); retrying in {}s...",
+                delay.as_secs()
+            );
+            // The first failure is an error so a failing completion is never
+            // a silent retry loop; later retries are progress.
+            if *attempt == 1 {
+                DaemonMessage::Error {
+                    thread_id: tid,
+                    text,
+                }
+            } else {
+                DaemonMessage::Info {
+                    thread_id: tid,
+                    text,
+                }
+            }
+        }
+        AgentEvent::CompletionFailed {
+            error,
+            retries,
+            discarded_user_messages,
+        } => DaemonMessage::Error {
+            thread_id: tid,
+            text: completion_failed_text(error, *retries, *discarded_user_messages),
+        },
+        AgentEvent::Error { error } => DaemonMessage::Error {
+            thread_id: tid,
+            text: format!("Error: {error}"),
+        },
         AgentEvent::CompletionFinished { usage } => {
             let token_usage = usage.map(|u| TokenUsage {
                 input_tokens: Some(u.input_tokens),
@@ -72,6 +107,22 @@ pub(crate) fn agent_event_to_daemon(thread_id: &ThreadId<str>, evt: &AgentEvent)
         },
         AgentEvent::CompactionApplied => DaemonMessage::CompactionApplied { thread_id: tid },
     }
+}
+
+/// The give-up message. User messages in a daemon session come from its
+/// clients, so a discarded one is the reader's to resend.
+fn completion_failed_text(error: &str, retries: u32, discarded_user_messages: usize) -> String {
+    let after = match retries {
+        0 => String::new(),
+        1 => " after 1 retry".to_owned(),
+        n => format!(" after {n} retries"),
+    };
+    let outcome = match discarded_user_messages {
+        0 => String::new(),
+        1 => " Your message was not kept; please resend it.".to_owned(),
+        n => format!(" Your last {n} messages were not kept; please resend them."),
+    };
+    format!("Completion failed{after}: {error}.{outcome}")
 }
 
 pub(crate) fn history_message_to_daemon(
@@ -169,5 +220,54 @@ pub(crate) fn history_message_to_daemon(
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    fn text_of(msg: DaemonMessage) -> (bool, String) {
+        match msg {
+            DaemonMessage::Error { text, .. } => (true, text),
+            DaemonMessage::Info { text, .. } => (false, text),
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    /// Only the first retry is an error; later retries are progress.
+    #[test]
+    fn first_retry_is_an_error_later_retries_are_info() {
+        let tid = ThreadId::from_ref("t");
+        let retry = |attempt| AgentEvent::CompletionRetrying {
+            error: "backend hiccup".to_owned(),
+            attempt,
+            delay: Duration::from_secs(5),
+        };
+        let (is_error, text) = text_of(agent_event_to_daemon(tid, &retry(1)));
+        assert!(is_error && text.contains("backend hiccup"), "{text}");
+        let (is_error, _) = text_of(agent_event_to_daemon(tid, &retry(2)));
+        assert!(!is_error);
+    }
+
+    /// The give-up error asks for a resend only when a user message was
+    /// discarded.
+    #[test]
+    fn give_up_asks_for_resend_only_when_a_user_message_was_discarded() {
+        let tid = ThreadId::from_ref("t");
+        let failed = |discarded_user_messages| AgentEvent::CompletionFailed {
+            error: "access denied".to_owned(),
+            retries: 0,
+            discarded_user_messages,
+        };
+        let (is_error, text) = text_of(agent_event_to_daemon(tid, &failed(1)));
+        assert!(
+            is_error && text.contains("access denied") && text.contains("resend"),
+            "{text}"
+        );
+        let (_, text) = text_of(agent_event_to_daemon(tid, &failed(0)));
+        assert!(!text.contains("resend"), "{text}");
     }
 }

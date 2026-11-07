@@ -547,6 +547,8 @@ where
                         &mut usage,
                     ),
                     Err(e) => {
+                        // Already surfaced via `CompletionEvent::Failed`; Info
+                        // avoids double-reporting.
                         observer.on_event(
                             &thread_id,
                             &AgentEvent::Info {
@@ -580,8 +582,8 @@ where
         {
             observer.on_event(
                 &thread_id,
-                &AgentEvent::Info {
-                    text: format!("Error: {}", e),
+                &AgentEvent::Error {
+                    error: e.to_string(),
                 },
             );
         }
@@ -603,6 +605,34 @@ where
         match event {
             CompletionEvent::Info(text) => {
                 observer.on_event(thread_id, &AgentEvent::Info { text });
+            }
+            CompletionEvent::Retrying {
+                error,
+                attempt,
+                delay,
+            } => {
+                observer.on_event(
+                    thread_id,
+                    &AgentEvent::CompletionRetrying {
+                        error,
+                        attempt,
+                        delay,
+                    },
+                );
+            }
+            CompletionEvent::Failed {
+                error,
+                retries,
+                discarded_user_messages,
+            } => {
+                observer.on_event(
+                    thread_id,
+                    &AgentEvent::CompletionFailed {
+                        error,
+                        retries,
+                        discarded_user_messages,
+                    },
+                );
             }
             CompletionEvent::TextChunk(text) => {
                 *self.current_thinking.borrow_mut() = None;
