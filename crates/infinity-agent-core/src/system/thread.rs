@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use infinity_provider_protocol::message::{ToolResultContent, UserContent};
 use infinity_provider_protocol::{ToolDefinition, Usage};
 use tokio::sync::oneshot;
@@ -407,13 +408,16 @@ where
 
     /// Execute one step over a batch that has **not** been run through the
     /// deferral policy: prepare `inputs` into history, run at most one
-    /// completion round, commit durably, and dispatch at most one
-    /// asynchronous tool call. Callers are expected to apply
+    /// completion round, commit durably, and dispatch the asynchronous tool
+    /// call (if any). Callers are expected to apply
     /// [`filter_deferrable`](Self::filter_deferrable) first.
     ///
-    /// Events are delivered to `observer` synchronously as they occur; the
-    /// turn is synced to the conversation store before the tool call (if
-    /// any) is dispatched.
+    /// Events are delivered to `observer` synchronously as they occur. A tool
+    /// call is dispatched *eagerly*, as soon as the completion stream yields
+    /// it (the stream has synced the call to the conversation store by then),
+    /// rather than after the model's stream has fully ended; the dispatch
+    /// runs concurrently with draining the rest of the stream, and the step
+    /// does not return until it has completed.
     ///
     /// `cancel` aborts the completion stream early (user interruption). The
     /// cancelled step still flushes and commits whatever streamed before the
@@ -519,7 +523,6 @@ where
         observer.on_event(&thread_id, &AgentEvent::CompletionStarted);
         self.in_flight.set(true);
 
-        let mut action = None;
         let mut usage: Option<Usage> = None;
         {
             let mut stream = std::pin::pin!(event_processor::run_completion(
@@ -535,54 +538,70 @@ where
                 cancel,
             ));
 
-            while let Some(ev) = stream.next().await {
-                match ev {
-                    Ok(event) => self.handle_completion_event(
-                        event,
-                        observer,
-                        &thread_id,
-                        &mut action,
-                        &mut usage,
-                    ),
-                    Err(e) => {
-                        observer.on_event(
-                            &thread_id,
-                            &AgentEvent::Info {
-                                text: format!("Error: {}", e),
-                            },
-                        );
-                        break;
+            // ── Eager dispatch: a tool call is fired the moment the stream
+            // yields it, while the model's tail (the `Final` chunk carrying
+            // usage, plus any ignored post-call content) is still being
+            // drained. `run_completion` has already synced the call to the
+            // store before yielding it, so the durability barrier holds. A
+            // failed dispatch enqueues an error tool result so the agent
+            // recovers instead of waiting forever. The set is drained before
+            // the step returns, so a step never leaves a dispatch in flight.
+            // (A set rather than a single slot so that, once the stream
+            // yields several calls per turn, they all dispatch eagerly.) ──
+            let mut dispatches = FuturesUnordered::new();
+            let mut stream_done = false;
+            loop {
+                tokio::select! {
+                    ev = stream.next(), if !stream_done => match ev {
+                        Some(Ok(event)) => {
+                            if let Some(action) = self.handle_completion_event(
+                                event,
+                                observer,
+                                &thread_id,
+                                &mut usage,
+                            ) {
+                                dispatches.push(
+                                    event_processor::execute_action_with_error_result(
+                                        action,
+                                        &tool_registry,
+                                        &tool_context,
+                                    ),
+                                );
+                            }
+                        }
+                        Some(Err(e)) => {
+                            observer.on_event(
+                                &thread_id,
+                                &AgentEvent::Info {
+                                    text: format!("Error: {}", e),
+                                },
+                            );
+                            stream_done = true;
+                        }
+                        None => stream_done = true,
+                    },
+                    Some(res) = dispatches.next(), if !dispatches.is_empty() => {
+                        if let Err(e) = res {
+                            observer.on_event(
+                                &thread_id,
+                                &AgentEvent::Info {
+                                    text: format!("Error: {}", e),
+                                },
+                            );
+                        }
                     }
+                    else => break,
                 }
             }
         }
         self.in_flight.set(false);
         *self.current_thinking.borrow_mut() = None;
 
-        // ── Commit phase: the turn becomes durable before anything external
-        // can react to it. ──
+        // ── Commit phase: anything the round left pending (a text-only turn,
+        // or the tail of a tool-call turn) becomes durable before the round
+        // is reported finished. ──
         self.history.sync().await?;
         observer.on_event(&thread_id, &AgentEvent::CompletionFinished { usage });
-
-        // ── Dispatch phase: fire the tool call (if any) after the commit
-        // barrier, so the call is durable in history before its result can
-        // possibly arrive. A failed dispatch enqueues an error tool result
-        // so the agent recovers instead of waiting forever. ──
-        if let Some(action) = action
-            && let Err(e) = event_processor::execute_action_with_error_result(
-                action,
-                &tool_registry,
-                &tool_context,
-            )
-            .await
-        {
-            observer.on_event(
-                &thread_id,
-                &AgentEvent::Info {
-                    text: format!("Error: {}", e),
-                },
-            );
-        }
 
         Ok(StepOutcome::Completed {
             usage,
@@ -590,14 +609,15 @@ where
         })
     }
 
+    /// Translate one completion event into observer events and local state.
+    /// Returns the action to dispatch, if the event carried one.
     fn handle_completion_event(
         &self,
         event: CompletionEvent,
         observer: &impl ThreadObserver,
         thread_id: &ThreadId<str>,
-        action: &mut Option<CompletionAction>,
         usage: &mut Option<Usage>,
-    ) {
+    ) -> Option<CompletionAction> {
         match event {
             CompletionEvent::Info(text) => {
                 observer.on_event(thread_id, &AgentEvent::Info { text });
@@ -655,33 +675,130 @@ where
                     *usage = Some(u);
                 }
             }
-            CompletionEvent::Action(a) => {
-                if let CompletionAction::ExecuteToolCall {
-                    ref tool_name,
-                    ref tool_args,
-                    ref display_as,
+            CompletionEvent::Action(action @ CompletionAction::ExecuteToolCall { .. }) => {
+                let CompletionAction::ExecuteToolCall {
+                    tool_name,
+                    tool_args,
+                    display_as,
                     ..
-                } = a
-                {
-                    *self.current_thinking.borrow_mut() = None;
-                    observer.on_event(
-                        thread_id,
-                        &AgentEvent::ToolCall {
-                            name: tool_name.clone(),
-                            args: tool_args.clone(),
-                            display_as: display_as.clone(),
-                        },
-                    );
-                }
-                assert!(action.is_none(), "bug: multiple terminal actions");
-                *action = Some(a);
+                } = &action
+                else {
+                    unreachable!("bug: matched ExecuteToolCall above")
+                };
+                *self.current_thinking.borrow_mut() = None;
+                observer.on_event(
+                    thread_id,
+                    &AgentEvent::ToolCall {
+                        name: tool_name.clone(),
+                        args: tool_args.clone(),
+                        display_as: display_as.clone(),
+                    },
+                );
+                return Some(action);
             }
         }
+        None
     }
 }
 #[cfg(test)]
 mod tests {
+    use crate::message::InfinityMessage;
+    use crate::system::local::ChannelSender;
     use crate::system::test_support::*;
+    use crate::tools::{Tool, ToolContext};
+    use async_trait::async_trait;
+    use tokio::sync::mpsc;
+
+    /// An async tool that reports (on a channel) the moment its dispatch
+    /// runs, so a test can observe *when* the runtime fired it.
+    struct NotifyingTool {
+        tx: mpsc::UnboundedSender<()>,
+    }
+
+    #[async_trait]
+    impl Tool<ChannelSender> for NotifyingTool {
+        fn name(&self) -> &str {
+            "notifying_tool"
+        }
+        fn description(&self) -> &str {
+            "notifies on dispatch"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type":"object","properties":{}})
+        }
+        async fn execute(
+            &self,
+            _: serde_json::Value,
+            _: rap_protocol::ToolCallId,
+            _: Option<rap_protocol::ProviderCallId>,
+            _: &ToolContext<ChannelSender>,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.tx.send(()).expect("test receiver alive");
+            Ok(())
+        }
+    }
+
+    /// A tool call is dispatched as soon as the model emits it, not once the
+    /// model's stream has ended, and the call is already durable in the store
+    /// at that point.
+    #[tokio::test(flavor = "current_thread")]
+    async fn tool_call_dispatches_before_stream_finishes() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (dispatched_tx, mut dispatched_rx) = mpsc::unbounded_channel();
+                let (mut running, mut rx, mut ctrl, conv) = start_system(
+                    vec![Box::new(NotifyingTool { tx: dispatched_tx })],
+                    None,
+                );
+                let thread_id = rap_protocol::ThreadId::from_ref("t1");
+                running.send_user_text(thread_id, "use tool").await;
+                let _req = ctrl.next_request().await;
+
+                // Emit the tool call but keep the model stream open: no
+                // `Final` chunk yet.
+                ctrl.send_tool_call("call-1", "notifying_tool", serde_json::json!({}));
+
+                tokio::time::timeout(std::time::Duration::from_secs(5), dispatched_rx.recv())
+                    .await
+                    .expect("tool must be dispatched while the model stream is still open")
+                    .expect("dispatch channel closed");
+
+                // The durability barrier held: the call reached the store
+                // before the tool ran.
+                let stored = conv.thread_messages(thread_id).unwrap_or_default();
+                assert!(
+                    stored
+                        .iter()
+                        .any(|(m, _)| matches!(m, InfinityMessage::ToolCall { call, .. } if call.id == "call-1")),
+                    "tool call must be persisted before dispatch; stored: {}",
+                    stored.len()
+                );
+
+                // The round is not reported finished until the stream ends.
+                let mut finished_events = 0;
+                while let Ok(ev) = rx.try_recv() {
+                    if let Evt::E(crate::system::events::AgentEvent::CompletionFinished { .. }) = ev {
+                        finished_events += 1;
+                    }
+                }
+                assert_eq!(finished_events, 0, "round must still be in progress");
+
+                ctrl.finish();
+                collect_until_finished(&mut rx).await;
+
+                // Settle the call so the thread can idle out.
+                running
+                    .send(tool_result_input("t1", "call-1", "tool done").0, "res-1")
+                    .await;
+                let _req2 = ctrl.next_request().await;
+                ctrl.send_text("all done");
+                ctrl.finish();
+                collect_until_finished(&mut rx).await;
+                wait_idle(&mut running).await;
+            })
+            .await;
+    }
 
     /// A tool call whose dispatch fails must feed an error result back to the
     /// agent (as a new input through the loopback queue) instead of leaving the
