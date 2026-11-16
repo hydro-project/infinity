@@ -153,7 +153,7 @@ impl SessionPicker {
                     format!("{}{}{}", title, remote_label, current_suffix)
                 }
             } else {
-                let id = id.to_string();
+                let id = id.short_id();
                 if id.len() + extra_len > name_width {
                     let trunc = name_width.saturating_sub(extra_len + 1);
                     format!("{}…{}{}", &id[..trunc], remote_label, current_suffix)
