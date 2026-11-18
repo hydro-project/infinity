@@ -447,3 +447,161 @@ fn theme_colors_are_applied() {
     let out = Renderer::new().push("`x`");
     assert_eq!(out[0].style.fg, Some(Color::Cyan));
 }
+
+// --------------------------------------------------------------------------
+// Tables
+
+#[test]
+fn simple_table() {
+    assert_eq!(
+        render("| a | bb |\n|---|---|\n| 1 | 2 |\n| 333 | 4 |\n"),
+        "\
+┌─────┬────┐
+│ {b:a}   │ {b:bb} │
+├─────┼────┤
+│ 1   │ 2  │
+│ 333 │ 4  │
+└─────┴────┘
+"
+    );
+}
+
+#[test]
+fn table_alignment_and_inline_markup() {
+    assert_eq!(
+        render("| L | C | R |\n|:--|:-:|--:|\n| **x** | `y` | [z](u) |\n"),
+        "\
+┌───┬───┬───────┐
+│ {b:L} │ {b:C} │     {b:R} │
+├───┼───┼───────┤
+│ {b:x} │ {Cyan:y} │ {u,Blue,href=u:z}{d: (u)} │
+└───┴───┴───────┘
+"
+    );
+}
+
+#[test]
+fn table_cells_wrap_to_width() {
+    // width 21 → line width 20; 2 cols cost 7 → 13 for content.
+    assert_eq!(
+        render("| name | description |\n|---|---|\n| x | a fairly long description here |\n"),
+        "\
+┌──────┬───────────┐
+│ {b:name} │ {b:descripti} │
+│      │ {b:on}        │
+├──────┼───────────┤
+│ x    │ a fairly  │
+│      │ long      │
+│      │ descripti │
+│      │ on here   │
+└──────┴───────────┘
+"
+    );
+}
+
+#[test]
+fn table_too_narrow_falls_back_to_text() {
+    let mut md = Renderer::new();
+    md.set_width(8);
+    let mut out = md.push("| a | b |\n|---|---|\n| 1 | 2 |\n");
+    out.extend(md.finish());
+    assert_eq!(plain(&out), "| a | b |\n|---|---|\n| 1 | 2 |\n");
+}
+
+#[test]
+fn table_ragged_rows_and_escaped_pipes() {
+    assert_eq!(
+        render("| a | b |\n|---|---|\n| 1 |\n| 2 | 3 | 4 |\n| x \\| y | z |\n"),
+        "\
+┌───────┬───┐
+│ {b:a}     │ {b:b} │
+├───────┼───┤
+│ 1     │   │
+│ 2     │ 3 │
+│ x | y │ z │
+└───────┴───┘
+"
+    );
+}
+
+#[test]
+fn table_ends_at_non_row_line() {
+    assert_eq!(
+        render("| a |\n|---|\n| 1 |\nafter **b**\n"),
+        "┌───┐\n│ {b:a} │\n├───┤\n│ 1 │\n└───┘\nafter {b:b}\n"
+    );
+    assert_eq!(
+        render("| a |\n|---|\n| 1 |\n\nnext\n"),
+        "┌───┐\n│ {b:a} │\n├───┤\n│ 1 │\n└───┘\n\nnext\n"
+    );
+    assert_eq!(
+        render("- item\n| a |\n|---|\n| 1 |\n- item\n"),
+        "• item\n┌───┐\n│ {b:a} │\n├───┤\n│ 1 │\n└───┘\n• item\n"
+    );
+}
+
+#[test]
+fn table_without_trailing_newline_at_finish() {
+    assert_eq!(
+        render("| a |\n|---|\n| 1 |"),
+        "┌───┐\n│ {b:a} │\n├───┤\n│ 1 │\n└───┘"
+    );
+    // Header only (no body rows yet); the source newline is kept.
+    assert_eq!(render("| a |\n|---|\n"), "┌───┐\n│ {b:a} │\n├───┤\n└───┘\n");
+}
+
+#[test]
+fn pipe_line_without_delimiter_is_text() {
+    assert_eq!(
+        render("| not | a table |\nplain\n"),
+        "| not | a table |\nplain\n"
+    );
+    assert_eq!(render("|x|\n|y|\n"), "|x|\n|y|\n");
+    assert_eq!(render("| a |\n"), "| a |\n");
+    assert_eq!(render("| a |"), "| a |");
+    assert_eq!(render("| a |\n|-"), "| a |\n|-");
+    assert_eq!(render("a | b\n--|--\n"), "a | b\n--|--\n");
+}
+
+#[test]
+fn table_holds_until_complete_then_streams_rest() {
+    let mut md = Renderer::new();
+    assert!(md.push("| a |\n|---|\n| 1 |\n").is_empty());
+    let out = md.push("done");
+    assert_eq!(plain(&out), "┌───┐\n│ a │\n├───┤\n│ 1 │\n└───┘\ndone");
+}
+
+#[test]
+fn candidate_rejected_early_streams_header() {
+    let mut md = Renderer::new();
+    assert!(md.push("| a | b |\n").is_empty());
+    // Second line can't be a delimiter row as soon as `x` arrives, so the
+    // header is released (`|x` itself is now held as a possible header).
+    assert_eq!(plain(&md.push("|x")), "| a | b |\n");
+    assert_eq!(plain(&md.push(" y\nz")), "|x y\nz");
+}
+
+#[test]
+fn table_chunking_is_transparent() {
+    let docs = [
+        "| a | b |\n|---|:-:|\n| **1** | 2 |\n| 3 | `4` |\n\nafter\n",
+        "| a |\n|---|\n| 1 |",
+        "| a |\n|x|\n",
+        "| a |\n|---\n",
+        "text\n| a | b |\n|---|---|\n| 1 |\n- list\n",
+    ];
+    for doc in docs {
+        let mut whole = Renderer::new();
+        let mut expected = whole.push(doc);
+        expected.extend(whole.finish());
+        let expected = tagged(&expected);
+
+        let mut per_char = Renderer::new();
+        let mut out = Vec::new();
+        for ch in doc.chars() {
+            out.extend(per_char.push(&ch.to_string()));
+        }
+        out.extend(per_char.finish());
+        assert_eq!(tagged(&out), expected, "per-char chunking of {doc:?}");
+    }
+}

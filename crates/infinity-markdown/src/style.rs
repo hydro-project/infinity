@@ -83,6 +83,10 @@ pub struct Theme {
     pub bullet: Style,
     /// Thematic breaks (`---`).
     pub rule: Style,
+    /// Table header cells.
+    pub table_header: Style,
+    /// Table box-drawing borders.
+    pub table_border: Style,
 }
 
 impl Default for Theme {
@@ -124,6 +128,11 @@ impl Default for Theme {
                 dim: true,
                 ..Style::PLAIN
             },
+            table_header: Style {
+                bold: true,
+                ..Style::PLAIN
+            },
+            table_border: Style::PLAIN,
         }
     }
 }

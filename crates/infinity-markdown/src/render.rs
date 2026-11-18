@@ -13,10 +13,17 @@
 //!   only need the previous and next character) and switched off at the
 //!   closing delimiter or the end of the line. Links are the one inline
 //!   construct that is held, because the URL follows the text.
+//! * **Tables** ([`Line::TableCandidate`], [`Line::Table`]) are the
+//!   exception to streaming: column widths depend on every cell, so a
+//!   table is held until its last row and then drawn with box characters.
 
 use unicode_width::UnicodeWidthStr;
 
 use crate::style::{Segment, Style, Theme};
+use crate::table::{
+    Align, border, column_widths, is_delimiter_char, pad_line, parse_delimiter_row, parse_row,
+    wrap_cell,
+};
 
 /// Width assumed before [`Renderer::set_width`] is called.
 const DEFAULT_WIDTH: usize = 80;
@@ -68,6 +75,23 @@ enum Line {
     FenceStart(String),
     /// Inside a line of a fenced code block.
     FenceBody,
+    /// A complete line starting with `|` was seen; `delim` accumulates the
+    /// next line, which makes it a table if it is a delimiter row.
+    TableCandidate {
+        indent: usize,
+        header: String,
+        delim: String,
+    },
+    /// Inside a table: `cur` accumulates the current (possible) row.
+    Table { table: TableAcc, cur: String },
+}
+
+/// Raw lines of a table being accumulated.
+struct TableAcc {
+    indent: usize,
+    header: String,
+    delim: String,
+    rows: Vec<String>,
 }
 
 impl Default for Line {
@@ -178,12 +202,32 @@ impl Renderer {
                     // then drop the newline that resolution produced.
                     self.line = Line::Prefix(buf);
                     self.feed('\n');
+                    if let Line::TableCandidate { header, .. } = std::mem::take(&mut self.line) {
+                        // A lone `| ... |` line is just text.
+                        self.paragraph(&header);
+                    }
                     self.pop_trailing_newline();
                 }
             }
             Line::Body | Line::FenceBody => {}
             Line::FenceStart(buf) => {
                 self.emit(&buf, self.theme.code_block);
+            }
+            Line::TableCandidate { header, delim, .. } => {
+                self.paragraph(&header);
+                self.paragraph(&delim);
+            }
+            Line::Table { mut table, cur } => {
+                if cur.trim_start().starts_with('|') {
+                    // A last row without a trailing newline: the table
+                    // shouldn't end with one either.
+                    table.rows.push(cur);
+                    self.render_table(table);
+                    self.pop_trailing_newline();
+                } else {
+                    self.render_table(table);
+                    self.paragraph(&cur);
+                }
             }
         }
         self.finish_inline();
@@ -307,6 +351,8 @@ impl Renderer {
                     self.emit(ch.encode_utf8(&mut buf), self.theme.code_block);
                 }
             }
+            Line::TableCandidate { .. } => self.table_candidate_char(ch),
+            Line::Table { .. } => self.table_char(ch),
         }
     }
 
@@ -373,6 +419,19 @@ impl Renderer {
             '-' | '*' | '+' | '_' => self.resolve_marker_line(&buf, indent),
             '0'..='9' => self.resolve_ordered(&buf, indent),
             '`' | '~' => self.resolve_fence_open(&buf, indent),
+            '|' => {
+                if rest.ends_with('\n') {
+                    self.line = Line::TableCandidate {
+                        indent,
+                        header: buf,
+                        delim: String::new(),
+                    };
+                } else {
+                    // Hold the whole line: it's a table header if a
+                    // delimiter row follows.
+                    self.line = Line::Prefix(buf);
+                }
+            }
             _ => self.paragraph(&buf),
         }
     }
@@ -597,6 +656,170 @@ impl Renderer {
                 self.fence = None;
                 self.reset_line();
             }
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // Tables
+
+    fn table_candidate_char(&mut self, ch: char) {
+        let Line::TableCandidate {
+            indent,
+            header,
+            mut delim,
+        } = std::mem::take(&mut self.line)
+        else {
+            unreachable!("bug: table_candidate_char outside TableCandidate state");
+        };
+        delim.push(ch);
+        if ch == '\n' && parse_delimiter_row(&delim).is_some() {
+            self.line = Line::Table {
+                table: TableAcc {
+                    indent,
+                    header,
+                    delim,
+                    rows: Vec::new(),
+                },
+                cur: String::new(),
+            };
+        } else if ch == '\n' || !is_delimiter_char(ch) || delim.len() > MAX_HOLD {
+            // Not a table after all: the held line was ordinary text.
+            self.paragraph(&header);
+            self.feed_str(&delim);
+        } else {
+            self.line = Line::TableCandidate {
+                indent,
+                header,
+                delim,
+            };
+        }
+    }
+
+    fn table_char(&mut self, ch: char) {
+        let Line::Table { mut table, mut cur } = std::mem::take(&mut self.line) else {
+            unreachable!("bug: table_char outside Table state");
+        };
+        let at_row_start = cur.chars().all(|c| c == ' ');
+        if at_row_start && ch != ' ' && ch != '|' {
+            // Anything but a row ends the table; the line is then parsed
+            // normally (a blank line stays a blank line).
+            self.render_table(table);
+            cur.push(ch);
+            self.feed_str(&cur);
+            return;
+        }
+        cur.push(ch);
+        if ch == '\n' {
+            table.rows.push(std::mem::take(&mut cur));
+        }
+        self.line = Line::Table { table, cur };
+    }
+
+    /// Render inline Markdown in isolation (for table cells), leaving the
+    /// main output and inline state untouched.
+    fn render_inline(&mut self, text: &str, base: Style) -> Vec<Segment> {
+        let saved_out = std::mem::take(&mut self.out);
+        let saved_inline = std::mem::take(&mut self.inline);
+        self.inline.base = base;
+        for ch in text.chars() {
+            self.inline_char(ch);
+        }
+        self.finish_inline();
+        let cell = std::mem::replace(&mut self.out, saved_out);
+        self.inline = saved_inline;
+        cell
+    }
+
+    /// Draw an accumulated table with box characters, then reset to a fresh
+    /// line.
+    fn render_table(&mut self, table: TableAcc) {
+        let header_cells = parse_row(&table.header);
+        let ncols = header_cells.len();
+        let mut aligns = parse_delimiter_row(&table.delim).unwrap_or_default();
+        aligns.resize(ncols, Align::Left);
+
+        let header: Vec<Vec<Segment>> = header_cells
+            .iter()
+            .map(|c| self.render_inline(c, self.theme.table_header))
+            .collect();
+        let body: Vec<Vec<Vec<Segment>>> = table
+            .rows
+            .iter()
+            .map(|row| {
+                let mut cells = parse_row(row);
+                cells.resize(ncols, String::new());
+                cells
+                    .iter()
+                    .map(|c| self.render_inline(c, Style::PLAIN))
+                    .collect()
+            })
+            .collect();
+
+        // Each column costs its content width plus `│ ` and ` ` framing,
+        // plus the closing `│`.
+        let frame = 3 * ncols + 1;
+        let available = self.line_width().saturating_sub(table.indent + frame);
+        let Some(widths) = column_widths(
+            std::iter::once(&header).chain(body.iter()),
+            ncols,
+            available,
+        ) else {
+            // Too narrow for a box: show the source lines as text.
+            self.reset_line();
+            self.paragraph(&table.header);
+            self.paragraph(&table.delim);
+            for row in &table.rows {
+                self.paragraph(row);
+            }
+            return;
+        };
+
+        let indent = table.indent;
+        let border_style = self.theme.table_border;
+        let line = |this: &mut Self, text: &str| {
+            this.emit_indent(indent);
+            this.emit(text, border_style);
+            this.emit_newline();
+        };
+
+        line(self, &border(&widths, '┌', '┬', '┐'));
+        self.emit_table_row(&header, &widths, &aligns, indent);
+        line(self, &border(&widths, '├', '┼', '┤'));
+        for row in &body {
+            self.emit_table_row(row, &widths, &aligns, indent);
+        }
+        line(self, &border(&widths, '└', '┴', '┘'));
+        self.reset_line();
+    }
+
+    fn emit_table_row(
+        &mut self,
+        cells: &[Vec<Segment>],
+        widths: &[usize],
+        aligns: &[Align],
+        indent: usize,
+    ) {
+        let wrapped: Vec<Vec<Vec<Segment>>> = cells
+            .iter()
+            .zip(widths)
+            .map(|(cell, &w)| wrap_cell(cell, w))
+            .collect();
+        let height = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
+        let border_style = self.theme.table_border;
+        for li in 0..height {
+            self.emit_indent(indent);
+            self.emit("│", border_style);
+            for (ci, lines) in wrapped.iter().enumerate() {
+                self.emit(" ", Style::PLAIN);
+                let empty = Vec::new();
+                let line = lines.get(li).unwrap_or(&empty);
+                for seg in pad_line(line, widths[ci], aligns[ci]) {
+                    self.emit_href(&seg.text, seg.style, seg.href.as_deref());
+                }
+                self.emit(" ", Style::PLAIN);
+                self.emit("│", border_style);
+            }
+            self.emit_newline();
         }
     }
 

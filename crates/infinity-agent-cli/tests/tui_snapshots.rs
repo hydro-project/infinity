@@ -290,3 +290,30 @@ async fn markdown_styles_switch_off() {
     h.settle().await;
     insta::assert_snapshot!("markdown_styles_switch_off", h.screen_with_attrs());
 }
+
+/// Markdown tables are held until complete and drawn with box characters;
+/// wide tables wrap cell contents to fit the terminal.
+#[tokio::test(start_paused = true)]
+async fn markdown_tables() {
+    let h = TuiHarness::spawn(50, 26).await;
+
+    h.display(Evt::UserInput("compare".to_owned()));
+    h.display(Evt::StartOutput);
+    for chunk in [
+        "Here:\n\n| Crate | Purpose | Notes |\n|---|:-:|--:|\n| `ser",
+        "de` | **serialization** | widely used |\n| tokio | async runt",
+        "ime | has a very long note that will need to wrap |\n\nThen a tiny one:\n",
+        "| a |\n|-|\n| 1 |",
+    ] {
+        h.display(Evt::TextChunk {
+            chunk: chunk.to_owned(),
+        });
+    }
+    h.settle().await;
+    // The last table has no trailing newline yet, so it is still held.
+    insta::assert_snapshot!("markdown_tables_mid_stream", h.screen());
+
+    h.display(Evt::ResponseDone(None));
+    h.settle().await;
+    insta::assert_snapshot!("markdown_tables_done", h.screen_with_attrs());
+}
