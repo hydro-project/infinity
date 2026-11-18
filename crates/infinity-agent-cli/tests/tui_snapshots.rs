@@ -261,3 +261,32 @@ async fn markdown_streams_rendered() {
     h.settle().await;
     insta::assert_snapshot!("markdown_response_done", h.screen());
 }
+
+/// Inline styles must switch off again where the Markdown closes them —
+/// checked on the attribute grid, not just the text.
+#[tokio::test(start_paused = true)]
+async fn markdown_styles_switch_off() {
+    let h = TuiHarness::spawn(60, 24).await;
+
+    h.display(Evt::UserInput("styles?".to_owned()));
+    h.display(Evt::StartOutput);
+    for chunk in [
+        "Some *italic* then plain, **bold** then plain.\n",
+        "A line with _underscores_ and plain after.\n",
+        "*Unclosed italic\n",
+        "Plain line after unclosed.\n",
+        "- *item* plain\n",
+        "> *quoted* `code` plain\n",
+        "# Heading *i*\n",
+        "After heading.\n",
+        "Link [*it*](u) plain.\n",
+        "End *i",
+    ] {
+        h.display(Evt::TextChunk {
+            chunk: chunk.to_owned(),
+        });
+    }
+    h.display(Evt::ResponseDone(None));
+    h.settle().await;
+    insta::assert_snapshot!("markdown_styles_switch_off", h.screen_with_attrs());
+}

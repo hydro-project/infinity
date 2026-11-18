@@ -147,6 +147,12 @@ impl Command for ResetScrollRegion {
     }
 }
 
+/// Write spans with minimal SGR transitions between them, resetting all
+/// styling at the end.
+///
+/// Each span's style is absolute (as if patched onto a plain base), matching
+/// how ratatui renders a `Line` without a style of its own: modifiers from
+/// one span do not carry over into the next.
 fn write_spans<'a>(
     w: &mut impl Write,
     spans: impl Iterator<Item = &'a Span<'a>>,
@@ -156,9 +162,7 @@ fn write_spans<'a>(
     let mut mods = Modifier::empty();
 
     for span in spans {
-        let mut next = mods;
-        next.insert(span.style.add_modifier);
-        next.remove(span.style.sub_modifier);
+        let next = span.style.add_modifier - span.style.sub_modifier;
         if next != mods {
             ModifierDiff {
                 from: mods,
@@ -829,5 +833,43 @@ impl<'a> ViewportFrame<'a> {
 
     pub fn set_cursor_position(&mut self, position: Position) {
         self.cursor_position = Some(position);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::{Modifier, Style};
+
+    fn spans_bytes(spans: &[Span<'_>]) -> String {
+        let mut buf = Vec::new();
+        write_spans(&mut buf, spans.iter()).expect("write to Vec");
+        String::from_utf8(buf).expect("valid utf-8")
+    }
+
+    /// A plain span after a styled one must switch the attribute off: span
+    /// styles are absolute, not deltas on the previous span.
+    #[test]
+    fn write_spans_turns_modifiers_off_between_spans() {
+        let out = spans_bytes(&[
+            Span::styled("a", Style::default().add_modifier(Modifier::ITALIC)),
+            Span::raw("b"),
+            Span::styled("c", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("d"),
+        ]);
+        // SGR 3 = italic, 23 = no italic, 1 = bold, 22 = normal intensity.
+        assert_eq!(
+            out,
+            "\x1b[3ma\x1b[23mb\x1b[1mc\x1b[22md\x1b[39m\x1b[49m\x1b[0m"
+        );
+    }
+
+    #[test]
+    fn write_spans_switches_between_modifiers() {
+        let out = spans_bytes(&[
+            Span::styled("a", Style::default().add_modifier(Modifier::ITALIC)),
+            Span::styled("b", Style::default().add_modifier(Modifier::BOLD)),
+        ]);
+        assert_eq!(out, "\x1b[3ma\x1b[23m\x1b[1mb\x1b[39m\x1b[49m\x1b[0m");
     }
 }

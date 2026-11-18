@@ -1,0 +1,58 @@
+---
+source: crates/infinity-agent-cli/tests/tui_snapshots.rs
+expression: h.screen_with_attrs()
+---
+┌────────────────────────────────────────────────────────────┐
+│                                                            │
+│                                                            │
+│Infinity Agent CLI                                          │
+│Type your messages below. /help for commands. Ctrl+C to exit│
+│.                                                           │
+│                                                            │
+│> styles?                                                   │
+│Some italic then plain, bold then plain.                    │
+│A line with underscores and plain after.                    │
+│Unclosed italic                                             │
+│Plain line after unclosed.                                  │
+│• item plain                                                │
+││ quoted code plain                                         │
+│Heading i                                                   │
+│After heading.                                              │
+│Link it (u) plain.                                          │
+│End i                                                       │
+│                                                            │
+│                                                            │
+│────────────────────────────────────────────────────────────│
+│                                                            │
+│                                                            │
+│                                                            │
+│/help for commands             mock: mock-model · 0% context│
+└────────────────────────────────────────────────────────────┘
+cursor: row=21 col=1
+attrs:
+┌────────────────────────────────────────────────────────────┐
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│BBBBBBBBB                                                   │
+│     IIIIII             BBBB                                │
+│            IIIIIIIIIII                                     │
+│IIIIIIIIIIIIIII                                             │
+│                                                            │
+│  IIII                                                      │
+│  IIIIIIIIIIIIIIIII                                         │
+│BBBBBBBBB                                                   │
+│                                                            │
+│     II                                                     │
+│    I                                                       │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│                                                            │
+│CCCCCCCCCCCCCCCCCC             CCCCCCCCCCCCCCCCCCCCCCCCCCCCC│
+└────────────────────────────────────────────────────────────┘
