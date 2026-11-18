@@ -3,7 +3,6 @@ source: crates/infinity-agent-cli/tests/tui_snapshots.rs
 expression: h.screen_with_attrs()
 ---
 ┌──────────────────────────────────────────────────┐
-│                                                  │
 │> compare                                         │
 │Here:                                             │
 │                                                  │
@@ -11,6 +10,7 @@ expression: h.screen_with_attrs()
 ││ Crate │    Purpose    │                 Notes │ │
 │├───────┼───────────────┼───────────────────────┤ │
 ││ serde │ serialization │           widely used │ │
+││       │               │                       │ │
 ││ tokio │ async runtime │  has a very long note │ │
 ││       │               │     that will need to │ │
 ││       │               │                  wrap │ │
@@ -33,7 +33,6 @@ expression: h.screen_with_attrs()
 cursor: row=23 col=1
 attrs:
 ┌──────────────────────────────────────────────────┐
-│                                                  │
 │BBBBBBBBB                                         │
 │                                                  │
 │                                                  │
@@ -41,6 +40,7 @@ attrs:
 │  BBBBB      BBBBBBB                      BBBBB   │
 │                                                  │
 │  CCCCC   BBBBBBBBBBBBB                           │
+│                                                  │
 │                                                  │
 │                                                  │
 │                                                  │

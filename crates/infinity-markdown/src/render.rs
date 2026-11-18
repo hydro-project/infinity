@@ -785,7 +785,12 @@ impl Renderer {
         line(self, &border(&widths, '┌', '┬', '┐'));
         self.emit_table_row(&header, &widths, &aligns, indent);
         line(self, &border(&widths, '├', '┼', '┤'));
-        for row in &body {
+        for (i, row) in body.iter().enumerate() {
+            if i > 0 {
+                // Blank row between body rows: wrapped cells make rows
+                // hard to tell apart otherwise.
+                self.emit_table_blank_row(&widths, indent);
+            }
             self.emit_table_row(row, &widths, &aligns, indent);
         }
         line(self, &border(&widths, '└', '┴', '┘'));
@@ -821,6 +826,17 @@ impl Renderer {
             }
             self.emit_newline();
         }
+    }
+
+    fn emit_table_blank_row(&mut self, widths: &[usize], indent: usize) {
+        let border_style = self.theme.table_border;
+        self.emit_indent(indent);
+        self.emit("│", border_style);
+        for &w in widths {
+            self.emit(&" ".repeat(w + 2), Style::PLAIN);
+            self.emit("│", border_style);
+        }
+        self.emit_newline();
     }
 
     // ----------------------------------------------------------------------

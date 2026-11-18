@@ -3,7 +3,6 @@ source: crates/infinity-agent-cli/tests/tui_snapshots.rs
 expression: h.screen()
 ---
 ┌──────────────────────────────────────────────────┐
-│                                                  │
 │Infinity Agent CLI                                │
 │Type your messages below. /help for commands. Ctrl│
 │+C to exit.                                       │
@@ -15,6 +14,7 @@ expression: h.screen()
 ││ Crate │    Purpose    │                 Notes │ │
 │├───────┼───────────────┼───────────────────────┤ │
 ││ serde │ serialization │           widely used │ │
+││       │               │                       │ │
 ││ tokio │ async runtime │  has a very long note │ │
 ││       │               │     that will need to │ │
 ││       │               │                  wrap │ │
