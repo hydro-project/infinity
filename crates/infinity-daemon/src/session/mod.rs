@@ -546,8 +546,21 @@ impl SessionManager {
     /// for unknown or stopped threads, while user text may create or resume a
     /// thread. A resulting `Live` lifecycle transition clears the root
     /// session's idle and stopped flags, including when a child thread wakes.
+    /// User text also clears the stopped flag directly: a session stopped
+    /// while its driver stayed live (e.g. parked in a passive wait) resumes
+    /// without a new `Live` transition, and would otherwise keep refusing
+    /// every later tool result and event.
     pub async fn send_input(&self, msg: (InputMessage, Option<String>)) -> bool {
         let (input, dedup) = msg;
+        if infinity_agent_core::system::is_user_text_input(&input) {
+            let session_id = self.conversation_store.get_root_thread_id(&input.group_id);
+            let mut store = self.session_store.lock().await;
+            if store.clear_shut_down(&session_id)
+                && let Err(error) = store.save()
+            {
+                tracing::warn!(%session_id, %error, "failed to persist resumed session");
+            }
+        }
         let dedup_id = dedup.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         self.sender
             .send_to_input_queue(input, &dedup_id)
