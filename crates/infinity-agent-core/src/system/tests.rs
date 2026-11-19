@@ -602,6 +602,69 @@ async fn subscription_event_deferred_during_async_tool_wait() {
         .await;
 }
 
+/// A non-associative subscription event only spawns a child thread, so it is
+/// handled right away instead of waiting for the parent's pending call (which
+/// may itself be waiting on the work the event asks for).
+#[tokio::test(flavor = "current_thread")]
+async fn threaded_subscription_event_not_deferred_during_async_tool_wait() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (running, mut rx, mut ctrl, _conv) = start_system(vec![Box::new(AsyncTool)], None);
+            running
+                .send_user_text(ThreadId::from_ref("t1"), "do async")
+                .await;
+            let _req = ctrl.next_request().await;
+            ctrl.send_tool_call("tc-async", "async_tool", serde_json::json!({}));
+            ctrl.finish();
+            collect_until_finished(&mut rx).await;
+
+            let (mut event, event_id) =
+                subscription_event_input("t1", "tc-async", "sub event data");
+            event.synthetic = Some(SyntheticKind::Tagged(
+                TaggedSyntheticKind::SubscriptionEvent {
+                    tool_call_id: "tc-async".into(),
+                    associative: false,
+                    r#final: false,
+                },
+            ));
+            running.send(event, &event_id).await;
+
+            // The child thread runs while the parent's call is still pending
+            // (a deferred event would never get here).
+            let child_req =
+                tokio::time::timeout(std::time::Duration::from_secs(5), ctrl.next_request())
+                    .await
+                    .expect("the event should spawn a child thread without waiting for the parent");
+            assert!(
+                tool_result_texts(&child_req)
+                    .iter()
+                    .any(|t| t.contains("sub event data")),
+                "the spawned child should see the event"
+            );
+            ctrl.send_text("handled");
+            ctrl.finish();
+
+            // The parent's pending call was not interrupted, and the event
+            // never entered the parent's history.
+            running
+                .send(tool_result_input("t1", "tc-async", "tool done").0, "res-1")
+                .await;
+            let parent_req = ctrl.next_request().await;
+            let texts = tool_result_texts(&parent_req);
+            assert!(texts.iter().any(|t| t.contains("tool done")), "{texts:?}");
+            assert!(
+                !texts
+                    .iter()
+                    .any(|t| t.contains("interrupted") || t.contains("sub event data")),
+                "{texts:?}"
+            );
+            ctrl.send_text("done");
+            ctrl.finish();
+        })
+        .await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn stale_result_does_not_flush_deferred_events_during_async_tool_wait() {
     let local = tokio::task::LocalSet::new();
