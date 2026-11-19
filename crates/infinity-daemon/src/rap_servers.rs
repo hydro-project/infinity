@@ -500,13 +500,20 @@ impl SessionRapManager {
             }
         }
 
-        // Boot each server once to discover its tools.
+        // Boot each server once to discover its tools and system-prompt fragment.
         let http_client = SimpleHttpClient::new();
         let mut tools: Vec<Rc<dyn Tool<ChannelSender>>> = Vec::new();
         let mut tool_count = 0usize;
+        let mut server_prompts = String::new();
         for server in &servers {
             match server.ensure_up().await {
                 Ok(manifest) => {
+                    if let Some(prompt) = &manifest.system_prompt {
+                        server_prompts.push_str(&format!(
+                            "\n\n## Instructions from the `{}` tool server\n\n{prompt}",
+                            manifest.name
+                        ));
+                    }
                     for def in manifest.tools {
                         tool_count += 1;
                         tools.push(Rc::new(ManagedRapTool {
@@ -537,7 +544,7 @@ impl SessionRapManager {
              Use the `set_title` tool to give the current thread a short, descriptive title. \
              Set it once at the start when the user's intent becomes clear, and update it only \
              when the overall scope of work changes significantly. Do not call it repeatedly \
-             for minor follow-ups within the same task."
+             for minor follow-ups within the same task.{server_prompts}"
         );
 
         let toolset = Rc::new(SessionToolset {
