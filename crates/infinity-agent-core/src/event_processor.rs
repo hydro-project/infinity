@@ -117,6 +117,20 @@ pub enum CompletionEvent {
     SyncToolResult(ToolResult),
     /// Some piece of information to log to the user.
     Info(String),
+    /// A completion attempt failed and will be retried; see
+    /// [`AgentEvent::CompletionRetrying`](crate::system::AgentEvent::CompletionRetrying).
+    Retrying {
+        error: String,
+        attempt: u32,
+        delay: Duration,
+    },
+    /// The completion gave up; see
+    /// [`AgentEvent::CompletionFailed`](crate::system::AgentEvent::CompletionFailed).
+    Failed {
+        error: String,
+        retries: u32,
+        discarded_user_messages: usize,
+    },
 }
 
 // ── HistoryManager (unchanged from before) ──
@@ -515,6 +529,16 @@ impl<C: ConversationStore, S: StateStore> HistoryManager<C, S> {
     /// Number of inputs still awaiting model validation.
     pub fn unvalidated_len(&self) -> usize {
         self.unvalidated_items.borrow().len()
+    }
+
+    /// Number of user messages among the inputs still awaiting model
+    /// validation.
+    pub fn unvalidated_user_messages(&self) -> usize {
+        self.unvalidated_items
+            .borrow()
+            .iter()
+            .filter(|item| matches!(item.message, InfinityMessage::User { .. }))
+            .count()
     }
 
     /// Drop all unvalidated *user* inputs: items that are neither tool
@@ -1408,6 +1432,29 @@ const THROTTLED_RETRY_DELAY: Duration = Duration::from_secs(30);
 /// error.
 const TRANSIENT_RETRY_DELAY: Duration = Duration::from_secs(5);
 
+/// A retry notice for the failure that ended attempt `retry_count`.
+fn retrying(retry_count: u32, error: impl std::fmt::Display, delay: Duration) -> CompletionEvent {
+    CompletionEvent::Retrying {
+        error: error.to_string(),
+        attempt: retry_count + 1,
+        delay,
+    }
+}
+
+/// The give-up notice. The round's unvalidated inputs are not persisted
+/// (nothing shows they are safe).
+fn give_up<C: ConversationStore, S: StateStore>(
+    history: &HistoryManager<C, S>,
+    retry_count: u32,
+    error: impl std::fmt::Display,
+) -> CompletionEvent {
+    CompletionEvent::Failed {
+        error: error.to_string(),
+        retries: retry_count,
+        discarded_user_messages: history.unvalidated_user_messages(),
+    }
+}
+
 /// How [`run_completion`] recovered from a provider-declared context
 /// overflow (see [`ErrorClass::ContextOverflow`]).
 enum OverflowRecovery {
@@ -1555,10 +1602,7 @@ where
                     match e.class() {
                         ErrorClass::Throttled if retry_count < MAX_COMPLETION_RETRIES => {
                             tracing::warn!("Stream error (rate limit), retrying...");
-                            yield CompletionEvent::Info(format!(
-                                "Stream error (rate limit), retrying after {} seconds...",
-                                THROTTLED_RETRY_DELAY.as_secs()
-                            ));
+                            yield retrying(retry_count, &e, THROTTLED_RETRY_DELAY);
                             tokio::select! {
                                 _ = tokio::time::sleep(THROTTLED_RETRY_DELAY) => {}
                                 _ = &mut cancel_rx => {
@@ -1571,7 +1615,7 @@ where
                         }
                         ErrorClass::Transient if retry_count < MAX_COMPLETION_RETRIES => {
                             tracing::warn!("Stream error ({e}), retrying...");
-                            yield CompletionEvent::Info(format!("Stream error ({e}), retrying..."));
+                            yield retrying(retry_count, &e, TRANSIENT_RETRY_DELAY);
                             tokio::select! {
                                 _ = tokio::time::sleep(TRANSIENT_RETRY_DELAY) => {}
                                 _ = &mut cancel_rx => {
@@ -1601,6 +1645,7 @@ where
                             }
                         }
                         _ => {
+                            yield give_up(history, retry_count, &e);
                             Err(Into::<BoxError>::into(e))?;
                             unreachable!()
                         }
@@ -1656,7 +1701,9 @@ where
                     } else {
                         // Giving up: keep visible text, trim trailing reasoning
                         // (the next appended message is a user turn).
+                        let error = give_up(history, retry_count, "the model stream ended unexpectedly");
                         history.flush_turn_trimming_reasoning();
+                        yield error;
                         Err(Into::<BoxError>::into("Stream ended unexpectedly"))?;
                         unreachable!()
                     }
@@ -1681,18 +1728,16 @@ where
                             ErrorClass::Transient if retry_count < MAX_COMPLETION_RETRIES => {
                                 // Retry rebuilds from committed history.
                                 history.discard_turn();
-                                yield CompletionEvent::Info(format!("Stream error ({e}), retrying..."));
+                                let delay = Duration::from_secs(1);
+                                yield retrying(retry_count, &e, delay);
                                 tracing::warn!("Stream error (transient), discarding partial turn and retrying...");
-                                tokio::time::sleep(Duration::from_secs(1)).await;
+                                tokio::time::sleep(delay).await;
                                 retry_count += 1;
                                 continue 'outer;
                             }
                             ErrorClass::Throttled if retry_count < MAX_COMPLETION_RETRIES => {
                                 history.discard_turn();
-                                yield CompletionEvent::Info(format!(
-                                    "Stream error (rate limit), retrying after {} seconds...",
-                                    THROTTLED_RETRY_DELAY.as_secs()
-                                ));
+                                yield retrying(retry_count, &e, THROTTLED_RETRY_DELAY);
                                 tokio::select! {
                                     _ = tokio::time::sleep(THROTTLED_RETRY_DELAY) => {}
                                     _ = &mut cancel_rx => {
@@ -1727,7 +1772,9 @@ where
                             _ => {
                                 // Giving up: keep visible text, trim trailing reasoning
                                 // (the next appended message is a user turn).
+                                let error = give_up(history, retry_count, &e);
                                 history.flush_turn_trimming_reasoning();
+                                yield error;
                                 Err(Into::<BoxError>::into(e))?;
                                 unreachable!()
                             }
@@ -3636,6 +3683,8 @@ mod tests {
                     while let Some(ev) = stream.next().await {
                         tags.push(match ev.expect("receive stream event") {
                             CompletionEvent::Info(_) => "Info",
+                            CompletionEvent::Retrying { .. } => "Retrying",
+                            CompletionEvent::Failed { .. } => "Failed",
                             CompletionEvent::TextChunk(_) => "Text",
                             CompletionEvent::ThinkingStart => "ThinkingStart",
                             CompletionEvent::ThinkingEnd => "ThinkingEnd",
