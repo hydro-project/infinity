@@ -24,6 +24,9 @@ pub enum ToolSetConfig {
         git: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
+        /// How long the spawned process lives. See [`ServerLifetime`].
+        #[serde(default, skip_serializing_if = "ServerLifetime::is_session")]
+        lifetime: ServerLifetime,
     },
     /// MCP server proxied behind RAP. The CLI spawns the command as a stdio
     /// subprocess and runs an in-process RAP server that translates between
@@ -56,6 +59,30 @@ impl ToolSetConfig {
             | ToolSetConfig::McpServer { id, .. }
             | ToolSetConfig::HttpMcpServer { id, .. } => id.as_deref(),
         }
+    }
+}
+
+/// How long a command-based RAP server process lives.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServerLifetime {
+    /// One process per session, spawned in the session's `<cwd>/.infinity`
+    /// and stopped whenever the session goes idle.
+    #[default]
+    Session,
+    /// One process for the whole daemon, shared by every session that uses
+    /// it. Booted when the daemon starts (for user-level entries), never
+    /// stopped on session idle, and spawned in the daemon's state directory
+    /// with `RAP_SERVER_LIFETIME=daemon` and `RAP_CALLBACK_URL` set. Its
+    /// stdin is a pipe that reaches EOF when the daemon exits (even by
+    /// crashing); the server should exit then. Meant for servers that must
+    /// keep receiving events while every session is idle.
+    Daemon,
+}
+
+impl ServerLifetime {
+    pub fn is_session(&self) -> bool {
+        *self == ServerLifetime::Session
     }
 }
 
@@ -99,6 +126,7 @@ impl ToolsConfig {
         crate_name: String,
         git: Option<String>,
         path: Option<String>,
+        lifetime: ServerLifetime,
     ) {
         self.tool_sets.push(ToolSetConfig::ToolsetCommand {
             id: Some(crate_name.clone()),
@@ -106,6 +134,7 @@ impl ToolsConfig {
             crate_name: Some(crate_name),
             git,
             path,
+            lifetime,
         });
     }
 

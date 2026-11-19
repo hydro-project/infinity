@@ -20,6 +20,12 @@
 //! session) via [`boot_migration_servers`], pairing source and destination
 //! servers by config id and consulting each manifest's `needsMigration`
 //! flag.
+//!
+//! Command servers configured with `"lifetime": "daemon"` are the exception
+//! to all of the above: [`DaemonServers`] runs one shared process per
+//! command for the daemon's whole lifetime (booted at daemon start for
+//! user-level entries), session idles never stop it, and migrations leave it
+//! alone.
 
 use infinity_agent_core::ThreadId;
 use std::collections::HashMap;
@@ -31,7 +37,7 @@ use async_trait::async_trait;
 use infinity_agent_core::system::local::ChannelSender;
 use infinity_agent_core::system::{ThreadConfig, ThreadConfigSource};
 use infinity_agent_core::tools::Tool;
-use infinity_agent_core::tools::config::ToolSetConfig;
+use infinity_agent_core::tools::config::{ServerLifetime, ToolSetConfig};
 use infinity_agent_core::tools::rap_tool::{
     RapInvocationParams, RapToolDescriptor, invoke_rap_tool,
 };
@@ -51,8 +57,13 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// How to bring a configured RAP server up.
 enum ServerSpec {
-    /// A command spawned as a child process (`RAP_EMBEDDED=1`).
-    Command { command: String, cwd: PathBuf },
+    /// A command spawned as a child process (`RAP_EMBEDDED=1`) in
+    /// `working_dir`, with `extra_env` added to its environment.
+    Command {
+        command: String,
+        working_dir: PathBuf,
+        extra_env: Vec<(&'static str, String)>,
+    },
     /// A stdio MCP server proxied behind an in-process RAP server. The proxy
     /// owns the child process; it is booted once and kept for the daemon's
     /// lifetime.
@@ -78,7 +89,6 @@ enum ServerSpec {
 enum ServerState {
     Down,
     Up {
-        base_url: String,
         /// The server's manifest, fetched once per boot. (The invocation
         /// endpoint changes across reboots since command servers get a
         /// fresh port.)
@@ -107,7 +117,13 @@ pub struct ManagedRapServer {
     pub config_id: Option<String>,
     session_id: ThreadId,
     spec: ServerSpec,
+    /// Daemon-lifetime servers ignore [`shutdown`](Self::shutdown); only
+    /// [`stop`](Self::stop) (daemon exit) ends them.
+    lifetime: ServerLifetime,
     state: tokio::sync::Mutex<ServerState>,
+    /// The base URL while `Up`, readable without waiting on `state` (which
+    /// a boot holds for as long as it takes).
+    live_url: std::sync::Mutex<Option<String>>,
 }
 
 impl ManagedRapServer {
@@ -116,35 +132,55 @@ impl ManagedRapServer {
             config_id,
             session_id,
             spec,
+            lifetime: ServerLifetime::Session,
             state: tokio::sync::Mutex::new(ServerState::Down),
+            live_url: Default::default(),
         }
     }
 
     /// The server's base URL if it is currently up.
-    pub async fn current_base_url(&self) -> Option<String> {
-        match &*self.state.lock().await {
-            ServerState::Up { base_url, .. } => Some(base_url.clone()),
-            ServerState::Down => None,
-        }
+    pub fn current_base_url(&self) -> Option<String> {
+        self.live_url.lock().expect("bug: poisoned").clone()
     }
 
-    /// Boot the server if it is down and return its manifest (cached for the
-    /// lifetime of the boot). If the server boots but its manifest cannot be
-    /// fetched, the boot is torn down and the server stays down, so `Up`
-    /// always has a usable manifest.
+    fn set_live_url(&self, url: Option<String>) {
+        *self.live_url.lock().expect("bug: poisoned") = url;
+    }
+
+    /// Boot the server if it is down (or its process has died) and return
+    /// its manifest (cached for the lifetime of the boot). If the server
+    /// boots but its manifest cannot be fetched, the boot is torn down and
+    /// the server stays down, so `Up` always has a usable manifest.
     pub async fn ensure_up(&self) -> Result<ToolsetManifest, BoxError> {
         let mut state = self.state.lock().await;
+        if let ServerState::Up {
+            child: Some(child), ..
+        } = &mut *state
+            && let Ok(Some(status)) = child.try_wait()
+        {
+            tracing::warn!(
+                "RAP server for session {} exited ({status}); restarting it",
+                self.session_id
+            );
+            *state = ServerState::Down;
+            self.set_live_url(None);
+        }
         if let ServerState::Up { manifest, .. } = &*state {
             return Ok(manifest.clone());
         }
 
         let (base_url, mut child, task) = match &self.spec {
-            ServerSpec::Command { command, cwd } => {
+            ServerSpec::Command {
+                command,
+                working_dir,
+                extra_env,
+            } => {
                 tracing::info!(
                     "Booting RAP server for session {}: {command}",
                     self.session_id
                 );
-                let (child, port) = spawn_rap_server(command, cwd).await?;
+                let (child, port) =
+                    spawn_rap_server(command, working_dir, extra_env, self.lifetime).await?;
                 (format!("http://127.0.0.1:{port}"), Some(child), None)
             }
             ServerSpec::Mcp { name, command, env } => {
@@ -161,10 +197,20 @@ impl ManagedRapServer {
             ServerSpec::External { url } => (url.clone(), None, None),
         };
 
-        match fetch_manifest(&base_url).await {
+        // Like the startup line, a server that never answers must not hold
+        // the boot lock forever.
+        let fetched = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            fetch_manifest(&base_url),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(format!("toolset manifest fetch from {base_url} timed out").into())
+        });
+        match fetched {
             Ok(manifest) => {
+                self.set_live_url(Some(base_url));
                 *state = ServerState::Up {
-                    base_url,
                     manifest: manifest.clone(),
                     child,
                     task,
@@ -195,8 +241,17 @@ impl ManagedRapServer {
     /// are stopped — RAP servers persist their state keyed by thread ID, so
     /// a restart is transparent. MCP servers have no such contract (one may
     /// hold state that lives only as long as its process), so MCP proxies
-    /// are left running; external servers are not ours to stop.
+    /// are left running; external servers are not ours to stop. Neither are
+    /// daemon-lifetime servers: they outlive every session.
     pub async fn shutdown(&self) {
+        if self.lifetime == ServerLifetime::Daemon {
+            return;
+        }
+        self.stop().await;
+    }
+
+    /// Stop a command server's process regardless of its lifetime.
+    async fn stop(&self) {
         let mut state = self.state.lock().await;
         match &self.spec {
             ServerSpec::Command { .. } => {
@@ -220,6 +275,7 @@ impl ManagedRapServer {
                     tracing::info!("Stopped RAP server for session {}", self.session_id);
                 }
                 *state = ServerState::Down;
+                self.set_live_url(None);
             }
             // In-process proxies and external servers are not ours to stop.
             ServerSpec::Mcp { .. } | ServerSpec::HttpMcp { .. } | ServerSpec::External { .. } => {}
@@ -269,14 +325,20 @@ pub struct MigrationServer {
 /// Boot every server in `cwd`'s merged RAP config and fetch its manifest.
 /// Servers that fail to boot are skipped with a warning, matching the
 /// session runtime's tolerance for individual server failures.
+/// Daemon-lifetime servers are skipped: they are shared by every session on
+/// this daemon, so there is no per-session state to migrate, and booting a
+/// second instance would fight the shared one.
 pub async fn boot_migration_servers(
     cwd: &Path,
     user_config_path: Option<&Path>,
 ) -> Result<Vec<MigrationServer>, BoxError> {
-    let (_source_info, specs) =
-        collect_server_specs(&ThreadId::from("migration"), cwd, user_config_path)?;
+    let (_source_info, configured) = collect_server_specs(cwd, user_config_path)?;
     let mut servers = Vec::new();
-    for server in specs {
+    for configured in configured {
+        let ConfiguredServer::Session { config_id, spec } = configured else {
+            continue;
+        };
+        let server = ManagedRapServer::new(ThreadId::from("migration"), config_id, spec);
         let manifest = match server.ensure_up().await {
             Ok(m) => m,
             Err(e) => {
@@ -286,7 +348,6 @@ pub async fn boot_migration_servers(
         };
         let url = server
             .current_base_url()
-            .await
             .expect("bug: server is up right after ensure_up");
         // Only servers we booted ourselves have a meaningful local port
         // (external toolset_server URLs are excluded from port maps, since
@@ -321,24 +382,35 @@ pub fn migration_server_ports(servers: &[MigrationServer]) -> HashMap<String, u1
 /// Spawn a command-based RAP server (`RAP_EMBEDDED=1`) and wait for it to
 /// report its port on stdout. Used both by the lazy per-session server
 /// management and by the eager migration boots above.
+///
+/// A daemon-lifetime server's stdin is a pipe whose write end lives as long
+/// as the returned child handle (so as long as this daemon): the server
+/// sees EOF when the daemon exits, even by crashing, and should exit then
+/// instead of lingering as an orphan.
 async fn spawn_rap_server(
     command: &str,
-    cwd: &Path,
+    working_dir: &Path,
+    extra_env: &[(&'static str, String)],
+    lifetime: ServerLifetime,
 ) -> Result<(tokio::process::Child, u16), BoxError> {
     use infinity_agent_core::tools::config::CommandServerReady;
     use std::process::Stdio;
     use tokio::io::AsyncBufReadExt;
 
-    let working_dir = cwd.join(".infinity");
-    std::fs::create_dir_all(&working_dir).ok();
+    std::fs::create_dir_all(working_dir).ok();
 
     let mut child = tokio::process::Command::new("sh")
         .args(["-c", command])
         .env("RAP_EMBEDDED", "1")
-        .current_dir(&working_dir)
+        .envs(extra_env.iter().map(|(k, v)| (*k, v)))
+        .current_dir(working_dir)
         // Ensure all children are in the the same process group. We will send SIGINT to the entire
         // group during shutdown.
         .process_group(0)
+        .stdin(match lifetime {
+            ServerLifetime::Daemon => Stdio::piped(),
+            ServerLifetime::Session => Stdio::inherit(),
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true)
@@ -348,10 +420,22 @@ async fn spawn_rap_server(
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let mut reader = tokio::io::BufReader::new(stdout);
     let mut line = String::new();
-    reader
-        .read_line(&mut line)
-        .await
-        .map_err(|e| format!("failed to read startup line: {e}"))?;
+    // A server that never reports its port would otherwise hold its boot
+    // lock (and every caller waiting on it) forever.
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        reader.read_line(&mut line),
+    )
+    .await
+    {
+        Ok(read) => {
+            read.map_err(|e| format!("failed to read startup line: {e}"))?;
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            return Err(format!("'{command}' did not report its port within 60s").into());
+        }
+    }
 
     if line.is_empty() {
         let _ = child.kill().await;
@@ -415,6 +499,155 @@ impl Tool<ChannelSender> for ManagedRapTool {
     }
 }
 
+// ── DaemonServers ────────────────────────────────────────────────────────────
+
+/// The daemon's shared `lifetime: daemon` command servers, one per command
+/// string. Each process is spawned in the daemon's state directory with
+/// `RAP_SERVER_LIFETIME=daemon` and `RAP_CALLBACK_URL` (the daemon's callback
+/// URL, which changes on every daemon restart, so long-lived servers learn
+/// the current one without waiting for an invocation).
+#[derive(Clone)]
+pub struct DaemonServers {
+    state_dir: PathBuf,
+    callback_url: String,
+    servers: Rc<std::cell::RefCell<HashMap<String, Arc<ManagedRapServer>>>>,
+    /// Set by [`stop_all`](Self::stop_all) so [`supervise`](Self::supervise)
+    /// does not restart servers while the daemon exits.
+    stopped: Rc<std::cell::Cell<bool>>,
+}
+
+impl DaemonServers {
+    pub fn new(state_dir: PathBuf, callback_url: String) -> Self {
+        Self {
+            state_dir,
+            callback_url,
+            servers: Default::default(),
+            stopped: Default::default(),
+        }
+    }
+
+    /// The shared server for `command`, created (un-booted) on first use.
+    fn get_or_create(&self, config_id: Option<String>, command: String) -> Arc<ManagedRapServer> {
+        let mut servers = self.servers.borrow_mut();
+        servers
+            .entry(command.clone())
+            .or_insert_with(|| {
+                Arc::new(ManagedRapServer {
+                    config_id,
+                    session_id: ThreadId::from("daemon"),
+                    spec: ServerSpec::Command {
+                        command,
+                        working_dir: self.state_dir.clone(),
+                        extra_env: vec![
+                            ("RAP_SERVER_LIFETIME", "daemon".to_owned()),
+                            ("RAP_CALLBACK_URL", self.callback_url.clone()),
+                        ],
+                    },
+                    lifetime: ServerLifetime::Daemon,
+                    state: tokio::sync::Mutex::new(ServerState::Down),
+                    live_url: Default::default(),
+                })
+            })
+            .clone()
+    }
+
+    /// Boot the daemon-lifetime servers in the user-level RAP config, so they
+    /// receive events before any session runs. (Daemon-lifetime entries in a
+    /// project-level config boot when a session in that project first runs.)
+    pub async fn boot_user_servers(&self, user_config_path: &Path) {
+        if !user_config_path.exists() {
+            return;
+        }
+        let config = match config::load_config(user_config_path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("failed to read {}: {e}", user_config_path.display());
+                return;
+            }
+        };
+        for entry in config.tool_sets {
+            if let ToolSetConfig::ToolsetCommand {
+                command,
+                id,
+                lifetime: ServerLifetime::Daemon,
+                ..
+            } = entry
+                && let Err(e) = self.get_or_create(id, command.clone()).ensure_up().await
+            {
+                tracing::warn!("failed to boot daemon-lifetime RAP server '{command}': {e}");
+            }
+        }
+    }
+
+    /// Keep the shared servers running: every interval, restart any whose
+    /// process has died (they must keep receiving events even when no
+    /// session invokes them). Runs forever.
+    pub async fn supervise(&self, interval: std::time::Duration) {
+        loop {
+            tokio::time::sleep(interval).await;
+            if self.stopped.get() {
+                return;
+            }
+            let servers: Vec<_> = self.servers.borrow().values().cloned().collect();
+            for server in servers {
+                if let Err(e) = server.ensure_up().await {
+                    tracing::warn!("failed to restart daemon-lifetime RAP server: {e}");
+                }
+            }
+        }
+    }
+
+    /// Tell every shared server that `session_id` will not be used again
+    /// (it was stopped, archived, or migrated away), so it can drop
+    /// per-session state such as event subscriptions. Runs in the
+    /// background, starting any server that is down first (a server that
+    /// misses this keeps the session's state forever), so a slow boot never
+    /// holds up the caller.
+    fn notify_session_closed(&self, session_id: &ThreadId<str>) {
+        let servers: Vec<_> = self.servers.borrow().values().cloned().collect();
+        let stopped = self.stopped.clone();
+        let session_id = session_id.to_owned();
+        tokio::task::spawn_local(rap_protocol::log_panic(
+            "notify_session_closed",
+            async move {
+                // Each server is told as soon as it is up, concurrently, so
+                // one slow boot does not delay the others (a close arriving
+                // after the session is resumed would close inboxes it
+                // reopened).
+                futures_util::future::join_all(servers.into_iter().map(|server| {
+                    let stopped = stopped.clone();
+                    let session_id = session_id.clone();
+                    async move {
+                        if stopped.get() {
+                            return;
+                        }
+                        if let Err(e) = server.ensure_up().await {
+                            tracing::warn!(
+                                "cannot tell a daemon-lifetime server {session_id} closed: {e}"
+                            );
+                            return;
+                        }
+                        let urls: Vec<String> = server.current_base_url().into_iter().collect();
+                        RapNotifier::new(urls, SimpleHttpClient::new())
+                            .notify_thread_closed(&session_id)
+                            .await;
+                    }
+                }))
+                .await;
+            },
+        ));
+    }
+
+    /// Stop every shared server (daemon exit).
+    async fn stop_all(&self) {
+        self.stopped.set(true);
+        let servers: Vec<_> = self.servers.borrow().values().cloned().collect();
+        for server in servers {
+            server.stop().await;
+        }
+    }
+}
+
 // ── SessionRapManager ────────────────────────────────────────────────────────
 
 /// A session's resolved toolset: the tool instances shared by all of the
@@ -434,6 +667,9 @@ pub struct SessionRapManager {
     conversation_store: PersistentConversationStore,
     session_store: SessionStoreHandle,
     user_rap_config: Option<PathBuf>,
+    /// Shared daemon-lifetime servers, referenced by every session's toolset
+    /// that configures them.
+    pub daemon_servers: DaemonServers,
     /// Used to surface boot progress to the session's subscribers.
     subscriber_map: SubscriberMap,
     /// Sessions whose servers have been shut down at least once (observable
@@ -447,12 +683,14 @@ impl SessionRapManager {
         session_store: SessionStoreHandle,
         user_rap_config: Option<PathBuf>,
         subscriber_map: SubscriberMap,
+        daemon_servers: DaemonServers,
     ) -> Self {
         Self {
             toolsets: Rc::new(tokio::sync::Mutex::new(HashMap::new())),
             conversation_store,
             session_store,
             user_rap_config,
+            daemon_servers,
             subscriber_map,
             shutdown_log: Rc::new(std::cell::RefCell::new(Vec::new())),
         }
@@ -485,11 +723,18 @@ impl SessionRapManager {
         };
 
         let mut servers: Vec<Arc<ManagedRapServer>> = Vec::new();
-        match collect_server_specs(session_id, &cwd, self.user_rap_config.as_deref()) {
-            Ok((source_info, specs)) => {
+        match collect_server_specs(&cwd, self.user_rap_config.as_deref()) {
+            Ok((source_info, configured)) => {
                 self.info(session_id, source_info);
-                for server in specs {
-                    servers.push(Arc::new(server));
+                for configured in configured {
+                    servers.push(match configured {
+                        ConfiguredServer::Session { config_id, spec } => Arc::new(
+                            ManagedRapServer::new(session_id.to_owned(), config_id, spec),
+                        ),
+                        ConfiguredServer::Daemon { config_id, command } => {
+                            self.daemon_servers.get_or_create(config_id, command)
+                        }
+                    });
                 }
             }
             Err(e) => {
@@ -566,18 +811,22 @@ impl SessionRapManager {
 
     /// Stop the session's servers and drop its cached toolset entirely, so
     /// the next use re-reads the RAP config and re-fetches manifests. Used
-    /// when a session is explicitly shut down.
+    /// when a session is explicitly shut down, archived, or migrated away;
+    /// daemon-lifetime servers (which keep running) are told the session is
+    /// closed.
     pub async fn evict_session(&self, session_id: &ThreadId<str>) {
         self.shutdown_session(session_id).await;
         self.toolsets.lock().await.remove(session_id);
+        self.daemon_servers.notify_session_closed(session_id);
     }
 
-    /// Stop every managed server (daemon exit).
+    /// Stop every managed server, daemon-lifetime ones included (daemon exit).
     pub async fn shutdown_all(&self) {
         let session_ids: Vec<ThreadId> = self.toolsets.lock().await.keys().cloned().collect();
         for session_id in session_ids {
             self.shutdown_session(&session_id).await;
         }
+        self.daemon_servers.stop_all().await;
     }
 
     /// How many times [`shutdown_session`](Self::shutdown_session) has been
@@ -600,30 +849,49 @@ impl ThreadConfigSource<ChannelSender, SimpleHttpClient> for SessionRapManager {
         let session_id = self.conversation_store.get_root_thread_id(thread_id);
         let toolset = self.get_or_init(&session_id).await?;
 
-        // Best-effort lifecycle notifications go to the servers that are
-        // currently up (a server that is down has nothing in flight).
-        let mut urls = Vec::new();
-        for server in &toolset.servers {
-            if let Some(url) = server.current_base_url().await {
-                urls.push(url);
-            }
-        }
+        // Best-effort lifecycle notifications go to the servers that are up
+        // when they are sent (a server that is down has nothing in flight),
+        // at their address then: threads hold this config while they live,
+        // and a daemon-lifetime server may restart on a new port meanwhile.
+        let servers = toolset.servers.clone();
+        let notifier = RapNotifier::new_live(
+            move || {
+                servers
+                    .iter()
+                    .filter_map(|s| s.current_base_url())
+                    .collect()
+            },
+            SimpleHttpClient::new(),
+        );
         Ok(ThreadConfig {
             tools: toolset.tools.clone(),
             extra_system_prompt: Some(toolset.extra_system_prompt.clone()),
-            rap_notifier: Some(RapNotifier::new(urls, SimpleHttpClient::new())),
+            rap_notifier: Some(notifier),
         })
     }
 }
 
-/// Read the merged RAP config for `cwd` and build the (un-booted) server
-/// handles. Also returns a human-readable line describing which config
-/// source(s) were used, for display to the session's subscribers.
+/// A configured server, not yet booted.
+enum ConfiguredServer {
+    /// A server owned by one session (or one migration flow).
+    Session {
+        config_id: Option<String>,
+        spec: ServerSpec,
+    },
+    /// A `lifetime: daemon` command, resolved through [`DaemonServers`].
+    Daemon {
+        config_id: Option<String>,
+        command: String,
+    },
+}
+
+/// Read the merged RAP config for `cwd` into (un-booted) server specs. Also
+/// returns a human-readable line describing which config source(s) were
+/// used, for display to the session's subscribers.
 fn collect_server_specs(
-    session_id: &ThreadId<str>,
     cwd: &Path,
     user_config_path: Option<&Path>,
-) -> Result<(String, Vec<ManagedRapServer>), BoxError> {
+) -> Result<(String, Vec<ConfiguredServer>), BoxError> {
     let (source_info, merged) = config::load_merged_rap_config(cwd, user_config_path)?;
     let Some(merged) = merged else {
         return Ok((source_info, Vec::new()));
@@ -631,15 +899,33 @@ fn collect_server_specs(
 
     let mut servers = Vec::new();
     for entry in merged.tool_sets {
-        let (id, spec) = match entry {
+        let (config_id, spec) = match entry {
             ToolSetConfig::ToolsetServer { server_url, id } => {
                 (id, ServerSpec::External { url: server_url })
             }
-            ToolSetConfig::ToolsetCommand { command, id, .. } => (
+            ToolSetConfig::ToolsetCommand {
+                command,
+                id,
+                lifetime: ServerLifetime::Daemon,
+                ..
+            } => {
+                servers.push(ConfiguredServer::Daemon {
+                    config_id: id,
+                    command,
+                });
+                continue;
+            }
+            ToolSetConfig::ToolsetCommand {
+                command,
+                id,
+                lifetime: ServerLifetime::Session,
+                ..
+            } => (
                 id,
                 ServerSpec::Command {
                     command,
-                    cwd: cwd.to_path_buf(),
+                    working_dir: cwd.join(".infinity"),
+                    extra_env: Vec::new(),
                 },
             ),
             ToolSetConfig::McpServer {
@@ -655,7 +941,7 @@ fn collect_server_specs(
                 id,
             } => (id, ServerSpec::HttpMcp { name, url, headers }),
         };
-        servers.push(ManagedRapServer::new(session_id.to_owned(), id, spec));
+        servers.push(ConfiguredServer::Session { config_id, spec });
     }
     Ok((source_info, servers))
 }

@@ -226,6 +226,7 @@ impl SessionManager {
             session_store.clone(),
             user_rap_config,
             subscriber_map.clone(),
+            crate::rap_servers::DaemonServers::new(state_dir.clone(), callback_url.clone()),
         );
 
         let state_store_for_system = state_store.clone();
