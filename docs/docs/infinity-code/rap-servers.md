@@ -50,6 +50,14 @@ Set `GITHUB_TOKEN` in the daemon's environment; without it, GitHub's unauthentic
 infinity rap install --user --crate rap-github-event-poller
 ```
 
+## Agent Mail
+
+Lets agents message agents in other Infinity daemons, such as one on a [remote](./configuring-remotes.md) dev server: `open_inbox`, `list_agents`, `send_message`, `ask_agent` (waits for the answer) and `reply`. It must run once per daemon, so install it with `--daemon-lifetime`, on every participating host. See [Agent Mail](./agent-mail.md).
+
+```bash
+infinity rap install --user --daemon-lifetime --git https://github.com/hydro-project/infinity --crate rap-agent-mail
+```
+
 ## Connecting a Running RAP Server
 
 `infinity rap install` registers a command that the daemon spawns and manages. If you already have a RAP toolset server running somewhere (it serves `/.well-known/rap-toolset`), you can point the daemon at it directly by adding a `toolset_server` entry to your user-level (`~/.infinity/rap.json`) or project-level (`.infinity/rap.json`) config:

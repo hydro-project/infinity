@@ -4163,6 +4163,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "rap-agent-mail"
+version = "0.2.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "clap",
+ "dirs",
+ "futures-util",
+ "nix",
+ "rap-client",
+ "rap-protocol",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "rap-client"
 version = "0.2.0"
 dependencies = [
