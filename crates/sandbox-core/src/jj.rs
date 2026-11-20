@@ -112,9 +112,17 @@ pub async fn jj_git_clone(
     // Edit (checkout) the bookmark, creating it if it doesn't yet exist.
     tracing::info!(bookmark_name, "Edit bookmark");
     if run_jj(dest, &["edit", bookmark_name]).await.is_err() {
-        tracing::info!(bookmark_name, revision, "Bookmark not found, creating new");
+        tracing::info!(
+            bookmark_name,
+            revision,
+            "Bookmark not found or not editable, creating new change"
+        );
         run_jj(dest, &["new", revision]).await?;
-        run_jj(dest, &["bookmark", "set", bookmark_name]).await?;
+        // `jj edit` can fail even when the bookmark exists (e.g. it points at
+        // an immutable or conflicted commit). In that case the bookmark must be
+        // moved sideways/backwards to the fresh change, which jj refuses
+        // without `-B` (`--allow-backwards`).
+        run_jj(dest, &["bookmark", "set", bookmark_name, "-B"]).await?;
     }
 
     Ok(())
@@ -338,4 +346,116 @@ pub async fn diff_files(
         });
     }
     Ok(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Point jj's user config at a writable temp dir so the test neither
+    /// depends on nor modifies the host's jj config (jj also stores per-repo
+    /// "secure config" markers under `XDG_CONFIG_HOME`).
+    fn isolate_jj_config() {
+        let xdg = std::env::temp_dir().join("xdg-config-home");
+        let jj_dir = xdg.join("jj");
+        std::fs::create_dir_all(&jj_dir).expect("create jj config dir");
+        let cfg = jj_dir.join("config.toml");
+        if !cfg.exists() {
+            std::fs::write(&cfg, "[user]\nname = \"t\"\nemail = \"t@t\"\n")
+                .expect("write jj config");
+        }
+        // SAFETY: tests in this module are the only readers of this variable
+        // and set it to the same value.
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", &xdg);
+        }
+    }
+
+    fn jj_ok(dir: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("jj")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("spawn jj");
+        assert!(
+            output.status.success(),
+            "jj {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    fn change_id(dir: &Path, rev: &str) -> String {
+        jj_ok(dir, &["log", "--no-graph", "-r", rev, "-T", "change_id"])
+    }
+
+    fn commit_id(dir: &Path, rev: &str) -> String {
+        jj_ok(dir, &["log", "--no-graph", "-r", rev, "-T", "commit_id"])
+    }
+
+    /// `jj_git_clone` must still succeed when the sandbox bookmark already
+    /// exists but cannot be checked out with `jj edit` (here: the bookmark is
+    /// conflicted). The fallback path re-points the bookmark to a fresh
+    /// change, which is a sideways/backwards move that jj refuses without
+    /// `--allow-backwards`:
+    ///
+    /// ```text
+    /// Error: Refusing to move bookmark backwards or sideways: sandbox-x
+    /// Hint: Use --allow-backwards to allow it.
+    /// ```
+    #[tokio::test]
+    async fn clone_repoints_existing_uneditable_bookmark() {
+        isolate_jj_config();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).expect("mkdir repo");
+        jj_ok(&repo, &["git", "init"]);
+        std::fs::write(repo.join("f"), "base\n").expect("write");
+        jj_ok(&repo, &["commit", "-m", "base"]);
+        let base = change_id(&repo, "@-");
+
+        // Two sibling commits A and B on top of base.
+        std::fs::write(repo.join("f"), "A\n").expect("write");
+        jj_ok(&repo, &["commit", "-m", "A"]);
+        let a = change_id(&repo, "@-");
+        jj_ok(&repo, &["new", &base]);
+        std::fs::write(repo.join("f"), "B\n").expect("write");
+        jj_ok(&repo, &["commit", "-m", "B"]);
+        let b = change_id(&repo, "@-");
+
+        // Set the bookmark to A and B in two concurrent operations so that it
+        // becomes conflicted, making `jj edit sandbox-x` fail.
+        let op = jj_ok(
+            &repo,
+            &["op", "log", "--no-graph", "-n1", "-T", "id.short()"],
+        );
+        jj_ok(
+            &repo,
+            &["bookmark", "set", "sandbox-x", "-r", &a, "--at-op", &op],
+        );
+        jj_ok(
+            &repo,
+            &["bookmark", "set", "sandbox-x", "-r", &b, "--at-op", &op],
+        );
+        let list = jj_ok(&repo, &["bookmark", "list", "sandbox-x"]);
+        assert!(
+            list.contains("conflicted"),
+            "expected conflicted bookmark, got: {list}"
+        );
+
+        let ws = tmp.path().join("ws");
+        jj_git_clone(repo.to_str().expect("utf-8 path"), &ws, "sandbox-x", &base)
+            .await
+            .expect("jj_git_clone should re-point an uneditable bookmark");
+
+        // The bookmark now points at the workspace's fresh working copy, whose
+        // parent is the requested base revision.
+        assert_eq!(commit_id(&ws, "sandbox-x"), commit_id(&ws, "@"));
+        assert_eq!(change_id(&ws, "@-"), base);
+        let list = jj_ok(&ws, &["bookmark", "list", "sandbox-x"]);
+        assert!(
+            !list.contains("conflicted"),
+            "bookmark should be resolved, got: {list}"
+        );
+    }
 }
