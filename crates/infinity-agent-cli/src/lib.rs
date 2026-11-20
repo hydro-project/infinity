@@ -4,6 +4,7 @@ pub mod daemon_client;
 pub mod display;
 pub mod inline_viewport;
 pub mod install;
+pub mod markdown;
 pub mod model_picker;
 pub mod modifier_diff;
 pub mod quit_picker;

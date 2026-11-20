@@ -233,3 +233,87 @@ async fn spinner_states_animate_over_time() {
     advance_and_redraw(&h, Duration::from_millis(700)).await;
     insta::assert_snapshot!("spinner_waiting_tool_call", h.screen());
 }
+
+/// Streamed Markdown is rendered as it arrives: markers are dropped, list
+/// bullets, rules and code-fence frames are drawn, and chunk boundaries
+/// falling inside delimiters (`**`, `](`) don't affect the result.
+#[tokio::test(start_paused = true)]
+async fn markdown_streams_rendered() {
+    let h = TuiHarness::spawn(60, 20).await;
+
+    h.display(Evt::UserInput("plan?".to_owned()));
+    h.display(Evt::StartOutput);
+    for chunk in [
+        "## The *",
+        "plan*\n\n- **Fir",
+        "st** step with `code`\n- [x] done, see [docs](https://e.io/d)\n\n--",
+        "-\n```sh\necho **raw**\n``",
+        "`\nTrailing **bold",
+    ] {
+        h.display(Evt::TextChunk {
+            chunk: chunk.to_owned(),
+        });
+    }
+    h.settle().await;
+    insta::assert_snapshot!("markdown_mid_stream", h.screen());
+
+    h.display(Evt::ResponseDone(None));
+    h.settle().await;
+    insta::assert_snapshot!("markdown_response_done", h.screen());
+}
+
+/// Inline styles must switch off again where the Markdown closes them —
+/// checked on the attribute grid, not just the text.
+#[tokio::test(start_paused = true)]
+async fn markdown_styles_switch_off() {
+    let h = TuiHarness::spawn(60, 24).await;
+
+    h.display(Evt::UserInput("styles?".to_owned()));
+    h.display(Evt::StartOutput);
+    for chunk in [
+        "Some *italic* then plain, **bold** then plain.\n",
+        "A line with _underscores_ and plain after.\n",
+        "*Unclosed italic\n",
+        "Plain line after unclosed.\n",
+        "- *item* plain\n",
+        "> *quoted* `code` plain\n",
+        "# Heading *i*\n",
+        "After heading.\n",
+        "Link [*it*](u) plain.\n",
+        "End *i",
+    ] {
+        h.display(Evt::TextChunk {
+            chunk: chunk.to_owned(),
+        });
+    }
+    h.display(Evt::ResponseDone(None));
+    h.settle().await;
+    insta::assert_snapshot!("markdown_styles_switch_off", h.screen_with_attrs());
+}
+
+/// Markdown tables are held until complete and drawn with box characters;
+/// wide tables wrap cell contents to fit the terminal.
+#[tokio::test(start_paused = true)]
+async fn markdown_tables() {
+    let h = TuiHarness::spawn(50, 26).await;
+
+    h.display(Evt::UserInput("compare".to_owned()));
+    h.display(Evt::StartOutput);
+    for chunk in [
+        "Here:\n\n| Crate | Purpose | Notes |\n|---|:-:|--:|\n| `ser",
+        "de` | **serialization** | widely used |\n| tokio | async runt",
+        "ime | has a very long note that will need to wrap |\n\nThen a tiny one:\n",
+        "| a |\n|-|\n| 1 |",
+    ] {
+        h.display(Evt::TextChunk {
+            chunk: chunk.to_owned(),
+        });
+    }
+    h.settle().await;
+    // The last table has no trailing newline yet, so it is still held.
+    insta::assert_snapshot!("markdown_tables_mid_stream", h.screen());
+
+    h.display(Evt::ResponseDone(None));
+    h.settle().await;
+    insta::assert_snapshot!("markdown_tables_done", h.screen_with_attrs());
+}
