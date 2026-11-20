@@ -77,6 +77,23 @@ pub async fn run_daemon(
         session_manager.lock().await.init_remotes(remote_configs);
     }
 
+    // Boot user-level daemon-lifetime RAP servers now, so they can deliver
+    // events (and accept peers) before any session runs, and restart any
+    // that die.
+    let daemon_servers = session_manager
+        .lock()
+        .await
+        .rap_manager
+        .daemon_servers
+        .clone();
+    let user_rap_config = config::user_config_path()?;
+    tokio::task::spawn_local(rap_protocol::log_panic("daemon_servers", async move {
+        daemon_servers.boot_user_servers(&user_rap_config).await;
+        daemon_servers
+            .supervise(std::time::Duration::from_secs(30))
+            .await;
+    }));
+
     // Start WebSocket server
     let ws_port: u16 = std::env::var("INFINITY_WS_PORT")
         .ok()

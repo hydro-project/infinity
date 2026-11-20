@@ -50,6 +50,14 @@ Set `GITHUB_TOKEN` in the daemon's environment; without it, GitHub's unauthentic
 infinity rap install --user --crate rap-github-event-poller
 ```
 
+## Agent Mail
+
+Lets agents message agents in other Infinity daemons, such as one on a [remote](./configuring-remotes.md) dev server: `open_inbox`, `list_agents`, `send_message`, `ask_agent` (waits for the answer) and `reply`. It must run once per daemon, so install it with `--daemon-lifetime`, on every participating host. See [Agent Mail](./agent-mail.md).
+
+```bash
+infinity rap install --user --daemon-lifetime --git https://github.com/hydro-project/infinity --crate rap-agent-mail
+```
+
 ## Connecting a Running RAP Server
 
 `infinity rap install` registers a command that the daemon spawns and manages. If you already have a RAP toolset server running somewhere (it serves `/.well-known/rap-toolset`), you can point the daemon at it directly by adding a `toolset_server` entry to your user-level (`~/.infinity/rap.json`) or project-level (`.infinity/rap.json`) config:
@@ -66,3 +74,18 @@ infinity rap install --user --crate rap-github-event-poller
 ```
 
 Installed servers appear in the same file as `toolset_command` entries, which spawn the server binary on demand and read its port from stdout. [MCP servers](./configuring-mcp.md) use the `mcp_server` and `http_mcp_server` entry types in the same `tool_sets` array.
+
+## Server Lifetime
+
+By default a `toolset_command` server runs per session: each session spawns its own process in `<cwd>/.infinity`, and the process stops whenever the session goes idle. A server that must keep receiving events while every session is idle can instead declare `"lifetime": "daemon"` (which `infinity rap install --daemon-lifetime` writes):
+
+```json
+{
+  "type": "toolset_command",
+  "command": "rap-agent-mail",
+  "id": "rap-agent-mail",
+  "lifetime": "daemon"
+}
+```
+
+A daemon-lifetime server is one process shared by every session. The daemon starts it at startup (for entries in `~/.infinity/rap.json`), restarts it if it exits, and stops it only when the daemon exits. It runs in `~/.infinity` with `RAP_SERVER_LIFETIME=daemon` and `RAP_CALLBACK_URL` (the daemon's current callback URL, which changes on every daemon restart) in its environment. Its stdin reaches end-of-file when the daemon exits, even by crashing, and the server should exit then. When a session is stopped, archived, or migrated away, the daemon sends the server `/close_thread` for the session's root thread.

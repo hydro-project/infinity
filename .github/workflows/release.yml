@@ -85,7 +85,7 @@ jobs:
           # All published crates are listed here explicitly (every one is a
           # primary release target, no secondaries). Keep this list in sync
           # with RELEASING.md.
-          CRATES="rap-protocol rap-client rap-steering-server rap-github-event-poller infinity-protocol infinity-provider-protocol infinity-provider-bedrock infinity-provider-rig infinity-agent-core infinity-mcp-bridge infinity-rap-bridge infinity-daemon infinity-agent-cli sandbox-core sandbox-local sandbox-remote"
+          CRATES="rap-protocol rap-client rap-steering-server rap-github-event-poller rap-agent-mail infinity-protocol infinity-provider-protocol infinity-provider-bedrock infinity-provider-rig infinity-agent-core infinity-mcp-bridge infinity-rap-bridge infinity-daemon infinity-agent-cli sandbox-core sandbox-local sandbox-remote"
           echo "list=$CRATES" >> "$GITHUB_OUTPUT"
 
       - name: Run cargo smart-release

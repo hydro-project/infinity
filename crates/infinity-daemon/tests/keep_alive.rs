@@ -234,6 +234,64 @@ async fn user_input_restarts_stopped_session() {
         .await;
 }
 
+/// A session stopped while its driver is parked in a passive wait gets no
+/// new `Live` transition when the user resumes it; the user text itself must
+/// clear the stopped flag, or every later tool result and event for the
+/// session would be refused as belonging to a stopped thread.
+#[tokio::test(flavor = "current_thread")]
+async fn user_input_restarts_session_stopped_while_live() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let mut h = start_harness().await.expect("start harness");
+            let session_id = create_session_and_chat(&mut h, true).await;
+            let session_ref = infinity_protocol::ThreadRef::local(session_id.clone());
+
+            h.client_tx
+                .send(ClientMessage::UserInput {
+                    thread_id: session_ref.clone(),
+                    text: "wait for events".to_owned(),
+                })
+                .expect("send user input");
+            let _req = h.ctrl.next_request().await;
+            h.ctrl.send_tool_call(
+                "tc-sleep",
+                "sleep_until_event_or_input",
+                serde_json::json!({}),
+            );
+            h.ctrl.finish();
+            wait_for_message(&mut h.daemon_rx, |m| {
+                matches!(m, DaemonMessage::ToolCall { name, .. } if name == "sleep_until_event_or_input")
+            })
+            .await;
+
+            {
+                let mgr = h.manager.lock().await;
+                mgr.cleanup_session(&session_id).await;
+                assert!(mgr.session_store.lock().await.is_shut_down(&session_id));
+            }
+            h.client_tx
+                .send(ClientMessage::UserInput {
+                    thread_id: session_ref,
+                    text: "resume".to_owned(),
+                })
+                .expect("send user input");
+            let _req = h.ctrl.next_request().await;
+            h.ctrl.send_text("resumed");
+            h.ctrl.finish();
+            wait_for_message(&mut h.daemon_rx, |m| {
+                matches!(m, DaemonMessage::ResponseDone { .. })
+            })
+            .await;
+            let mgr = h.manager.lock().await;
+            assert!(
+                !mgr.session_store.lock().await.is_shut_down(&session_id),
+                "resuming with user text must clear the stopped flag"
+            );
+        })
+        .await;
+}
+
 /// A normal connection (`keeps_session_alive: true`) keeps the session warm
 /// while it stays connected: its RAP servers are never stopped.
 #[tokio::test(flavor = "current_thread")]

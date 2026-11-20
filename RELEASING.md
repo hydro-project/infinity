@@ -42,7 +42,7 @@ To (dry) run the command locally to spot-check for errors and warnings:
 cargo smart-release --update-crates-index \
    --no-changelog-preview --allow-fully-generated-changelogs \
    --bump-dependencies auto --bump minor \
-   rap-protocol rap-client rap-steering-server rap-github-event-poller \
+   rap-protocol rap-client rap-steering-server rap-github-event-poller rap-agent-mail \
    infinity-protocol infinity-provider-protocol \
    infinity-provider-bedrock infinity-provider-rig \
    infinity-agent-core infinity-mcp-bridge infinity-rap-bridge \

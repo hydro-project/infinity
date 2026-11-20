@@ -1,12 +1,23 @@
 /// Best-effort lifecycle notifications to RAP tool servers.
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::http::HttpClient;
+
+/// Where a notifier finds the servers to notify.
+#[derive(Clone)]
+enum ServerUrls {
+    Fixed(Vec<String>),
+    /// Looked up per notification, for servers whose address can change
+    /// while a notifier is held (a long-lived server restarted on a new
+    /// port).
+    Live(Arc<dyn Fn() -> Vec<String> + Send + Sync>),
+}
 
 /// Sends best-effort notifications to all configured RAP tool servers.
 #[derive(Clone)]
 pub struct RapNotifier<H: HttpClient> {
-    server_urls: Vec<String>,
+    server_urls: ServerUrls,
     client: H,
 }
 
@@ -14,15 +25,34 @@ impl<H: HttpClient> RapNotifier<H> {
     /// Create a notifier for the given server URLs.
     pub fn new(server_urls: Vec<String>, client: H) -> Self {
         Self {
-            server_urls,
+            server_urls: ServerUrls::Fixed(server_urls),
             client,
+        }
+    }
+
+    /// Create a notifier that asks `server_urls` for the current server URLs
+    /// each time it notifies.
+    pub fn new_live(
+        server_urls: impl Fn() -> Vec<String> + Send + Sync + 'static,
+        client: H,
+    ) -> Self {
+        Self {
+            server_urls: ServerUrls::Live(Arc::new(server_urls)),
+            client,
+        }
+    }
+
+    fn urls(&self) -> Vec<String> {
+        match &self.server_urls {
+            ServerUrls::Fixed(urls) => urls.clone(),
+            ServerUrls::Live(source) => source(),
         }
     }
 
     /// Best-effort notification that a thread has been closed.
     pub async fn notify_thread_closed(&self, thread_id: &rap_protocol::ThreadId<str>) {
         let payload = serde_json::json!({ "thread_id": thread_id }).to_string();
-        for url in &self.server_urls {
+        for url in &self.urls() {
             let endpoint = format!("{}/close_thread", url.trim_end_matches('/'));
             match self.client.post(&endpoint, &payload).await {
                 Ok(status) => {
@@ -46,7 +76,7 @@ impl<H: HttpClient> RapNotifier<H> {
             "tool_call_id": tool_call_id,
         })
         .to_string();
-        for url in &self.server_urls {
+        for url in &self.urls() {
             let endpoint = format!("{}/cancel_tool_call", url.trim_end_matches('/'));
             match self.client.post(&endpoint, &payload).await {
                 Ok(status) => {
