@@ -634,7 +634,7 @@ where
                         end_stream(&mut viewport, &mut mid_stream)?;
                         let pfx = if !is_root {
                             let rendered = child_tid.to_string();
-                            format!("[{}] ", &rendered[..rendered.len().min(8)])
+                            format!("[{}] ", &rendered[..rendered.floor_char_boundary(8)])
                         } else {
                             String::new()
                         };
@@ -1138,11 +1138,7 @@ fn draw_viewport<T: TermOut>(
         UiMode::Normal { .. } => {
             if let Some(tid) = thread_id {
                 let tid = tid.to_string();
-                let short_id = if tid.len() > 8 {
-                    &tid[..8]
-                } else {
-                    tid.as_str()
-                };
+                let short_id = &tid[..tid.floor_char_boundary(8)];
                 format!("{} | /help for commands", short_id)
             } else {
                 "/help for commands".to_owned()
