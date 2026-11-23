@@ -142,40 +142,32 @@ impl SessionPicker {
                 .as_ref()
                 .map(|r| format!(" [{}]", r))
                 .unwrap_or_default();
-            let remote_len = remote_label.len();
+            let remote_len = remote_label.chars().count();
             let extra_len = suffix_len + remote_len;
 
-            let name = if let Some(ref title) = info.title {
-                if title.len() + extra_len > name_width {
-                    let trunc = name_width.saturating_sub(extra_len + 1);
-                    format!(
-                        "{}…{}{}",
-                        &title[..title.floor_char_boundary(trunc)],
-                        remote_label,
-                        current_suffix
-                    )
-                } else {
-                    format!("{}{}{}", title, remote_label, current_suffix)
+            let id_str;
+            let label = match &info.title {
+                Some(title) => title.as_str(),
+                None => {
+                    id_str = id.to_string();
+                    &id_str
                 }
+            };
+            let name = if label.chars().count() + extra_len > name_width {
+                let trunc = name_width.saturating_sub(extra_len + 1);
+                let head = label
+                    .char_indices()
+                    .nth(trunc)
+                    .map_or(label, |(i, _)| &label[..i]);
+                format!("{head}…{remote_label}{current_suffix}")
             } else {
-                let id = id.to_string();
-                if id.len() + extra_len > name_width {
-                    let trunc = name_width.saturating_sub(extra_len + 1);
-                    format!(
-                        "{}…{}{}",
-                        &id[..id.floor_char_boundary(trunc)],
-                        remote_label,
-                        current_suffix
-                    )
-                } else {
-                    format!("{}{}{}", id, remote_label, current_suffix)
-                }
+                format!("{label}{remote_label}{current_suffix}")
             };
             // Column ranges for the "(current)" and "[remote]" labels (1 for leading space)
             let name_char_len = name.chars().count();
             let current_label_start = 1 + name_char_len - suffix_len;
             let current_label_end = 1 + name_char_len;
-            let remote_label_start = current_label_start - remote_label.chars().count();
+            let remote_label_start = current_label_start - remote_len;
             let remote_label_end = current_label_start;
 
             let status_str = match info.status {
@@ -284,15 +276,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unicode_session_names_and_remote_labels_render_without_panicking() {
-        for (id, title, remote, expected) in [
-            ("local", Some("123456é-session"), None, " 123456…"),
-            ("123456é/root", None, None, " 123456…"),
+    fn unicode_names_and_remote_labels_truncate_by_char() {
+        // The name column is `width - 33` cells wide (minimum 8).
+        for (id, title, remote, width, expected) in [
+            ("local", Some("123456é-session"), None, 41, " 123456é…"),
+            ("123456é/root", None, None, 41, " 123456é…"),
             (
                 "local",
-                Some("a"),
+                Some("abcdefghij"),
                 Some("日本語日本語"),
-                " a [日本語日本語]",
+                53,
+                " abcdefghij [日本語日本語]",
             ),
         ] {
             let picker = SessionPicker::new(
@@ -309,7 +303,7 @@ mod tests {
                 )],
                 None,
             );
-            let area = Rect::new(0, 0, if remote.is_some() { 80 } else { 41 }, 1);
+            let area = Rect::new(0, 0, width, 1);
             let mut buf = Buffer::empty(area);
             picker.render(area, &mut buf);
             let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
