@@ -10,6 +10,6 @@ expression: hm.pending_items.borrow().clone()
         "text": "Hello, world"
       }
     },
-    "message_id": "c-1"
+    "dedup_id": null
   }
 ]

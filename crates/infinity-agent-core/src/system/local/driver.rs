@@ -195,13 +195,11 @@ pub(crate) async fn drive_thread<C, S, H, O>(
                             .into_iter()
                             .partition(|(msg, _)| is_user_text_input(msg));
 
-                        if let InputMessageContent::User(UserContent::Text(text)) =
-                            &mut user_inputs[0].0.content
-                        {
-                            text.text = format!("<interrupt>{}", text.text);
-                        } else {
-                            panic!("bug: user_inputs should only contain user text");
-                        }
+                        // The marker records the interruption and settles a
+                        // trailing tool call (see `render_history`).
+                        let marker_id = format!("{}-interrupt", user_inputs[0].1);
+                        let marker = (InputMessage::interrupt(thread_id.to_owned()), marker_id);
+                        user_inputs.insert(0, marker);
 
                         pending_batch.extend(non_user_inputs);
                         user_inputs

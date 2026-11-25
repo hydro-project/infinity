@@ -143,12 +143,11 @@ pub(crate) fn history_message_to_daemon(
         }
         InfinityMessage::User { content } => {
             if let UserContent::Text(text) = content {
-                // Interrupting inputs are stored with the `<interrupt>`
-                // prefix the model sees; strip it for display exactly like
-                // the live `AgentEvent::UserInput` echo does.
+                // Older histories stored interrupting text with the
+                // `<interrupt>` prefix; hide it on replay.
                 let display_text = text
                     .text
-                    .strip_prefix("<interrupt>")
+                    .strip_prefix(infinity_agent_core::message::INTERRUPT_TOKEN)
                     .unwrap_or(&text.text)
                     .to_owned();
                 Some(DaemonMessage::UserInputEcho {
@@ -169,5 +168,6 @@ pub(crate) fn history_message_to_daemon(
                 None
             }
         }
+        InfinityMessage::Interrupt => None,
     }
 }

@@ -3,7 +3,6 @@ use aws_sdk_dynamodb::{Client as DynamoDbClient, types::AttributeValue};
 use infinity_agent_core::ThreadId;
 use infinity_agent_core::system::UserChoice;
 use infinity_agent_core::traits::StateStore;
-use std::collections::HashSet;
 
 #[derive(Clone)]
 pub struct DynamoDbStateStore {
@@ -29,52 +28,6 @@ impl DynamoDbStateStore {
 #[async_trait]
 impl StateStore for DynamoDbStateStore {
     type Error = DynamoError;
-
-    async fn get_processed_ids(
-        &self,
-        thread_id: &ThreadId<str>,
-    ) -> Result<HashSet<String>, DynamoError> {
-        let result = self
-            .client
-            .get_item()
-            .table_name(&self.table_name)
-            .key("session", AttributeValue::S(thread_id.as_str().to_owned()))
-            .send()
-            .await
-            .map_err(|e| DynamoError(format!("Failed to get processed IDs: {}", e)))?;
-
-        if let Some(item) = result.item {
-            let processed_ids =
-                if let Some(AttributeValue::Ss(ids)) = item.get("processed_message_ids") {
-                    ids.iter().cloned().collect()
-                } else {
-                    HashSet::new()
-                };
-            Ok(processed_ids)
-        } else {
-            Ok(HashSet::new())
-        }
-    }
-
-    async fn add_processed_message_ids(
-        &self,
-        thread_id: &ThreadId<str>,
-        message_ids: Vec<String>,
-    ) -> Result<(), DynamoError> {
-        if message_ids.is_empty() {
-            return Ok(());
-        }
-        self.client
-            .update_item()
-            .table_name(&self.table_name)
-            .key("session", AttributeValue::S(thread_id.as_str().to_owned()))
-            .update_expression("ADD processed_message_ids :ids")
-            .expression_attribute_values(":ids", AttributeValue::Ss(message_ids))
-            .send()
-            .await
-            .map_err(|e| DynamoError(format!("Failed to add processed message IDs: {}", e)))?;
-        Ok(())
-    }
 
     async fn get_metadata(
         &self,

@@ -23,18 +23,6 @@ expression: hm.history.into_inner()
     }
   },
   {
-    "kind": "tool_result",
-    "result": {
-      "id": "tc-cmd",
-      "content": [
-        {
-          "type": "text",
-          "text": "Tool call interrupted by user"
-        }
-      ]
-    }
-  },
-  {
     "kind": "subscription_event",
     "result": {
       "id": "[uuid]",

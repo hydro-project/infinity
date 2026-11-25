@@ -10,7 +10,7 @@ expression: hm.pending_items.borrow().clone()
         "text": "before"
       }
     },
-    "message_id": "c-1"
+    "dedup_id": null
   },
   {
     "message": {
@@ -23,7 +23,7 @@ expression: hm.pending_items.borrow().clone()
         }
       }
     },
-    "message_id": "c-2"
+    "dedup_id": null
   },
   {
     "message": {
@@ -32,6 +32,6 @@ expression: hm.pending_items.borrow().clone()
         "text": "after"
       }
     },
-    "message_id": "c-3"
+    "dedup_id": null
   }
 ]

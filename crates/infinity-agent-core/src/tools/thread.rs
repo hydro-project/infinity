@@ -161,10 +161,7 @@ impl<M: InputSender + 'static, C: ConversationStore + 'static> Tool<M> for Spawn
         };
         if let Err(e) = self
             .conversation_store
-            .append_messages(
-                &new_thread_id,
-                vec![(spawn_tool_call, format!("{}-spawn-call", id))],
-            )
+            .append_messages(&new_thread_id, vec![(spawn_tool_call, None)])
             .await
         {
             tracing::error!("failed to seed child thread with spawn call: {e}");
