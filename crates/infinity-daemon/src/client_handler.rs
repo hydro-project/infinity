@@ -294,7 +294,6 @@ pub async fn handle_client_channels(
 ) {
     let (mut client_tx, mut client_tx_rx) = mpsc::unbounded_channel::<DaemonMessage>();
     let mut attached_session_id: Option<ThreadId> = None;
-    let mut attached_thread_id: Option<ThreadId> = None;
     let mut remote_proxy_tx: Option<mpsc::UnboundedSender<ClientMessage>> = None;
     let mut remote_proxy_rx: Option<mpsc::UnboundedReceiver<DaemonMessage>> = None;
     let mut active_remote_name: Option<RemoteName> = None;
@@ -376,7 +375,6 @@ pub async fn handle_client_channels(
                             remote_proxy_rx = None;
                             active_remote_name = None;
                             attached_session_id = None;
-                            attached_thread_id = None;
                         }
                         ClientMessage::Connect { .. } => {
                             // Switching sessions: tear down current remote proxy first
@@ -421,7 +419,6 @@ pub async fn handle_client_channels(
                                             remote_proxy_rx = Some(rx);
                                             active_remote_name = Some(rname);
                                             attached_session_id = None;
-                                            attached_thread_id = None;
                                         }
                                         Err(e) => {
                                             let _ = daemon_tx.send(DaemonMessage::Error {
@@ -445,7 +442,6 @@ pub async fn handle_client_channels(
                                 match mgr.create_session(&cwd, model, &mut emit).await {
                                     Ok(sid) => {
                                         mgr.attach_client(&sid, client_tx.clone(), false, keeps_session_alive).await;
-                                        attached_thread_id = Some(sid.clone());
                                         attached_session_id = Some(sid);
                                     }
                                     Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error { thread_id: None, text: format!("failed to create session: {e}") }); }
@@ -491,7 +487,6 @@ pub async fn handle_client_channels(
                             match mgr.resume_session(&session_tid, &target, &mut emit).await {
                                 Ok(()) => {
                                     mgr.attach_client(&target, client_tx.clone(), true, keeps_session_alive).await;
-                                    attached_thread_id = Some(target);
                                     attached_session_id = Some(session_tid);
                                 }
                                 Err(e) => { let _ = daemon_tx.send(DaemonMessage::Error { thread_id: Some(root_thread_id), text: format!("failed to resume session: {e}") }); }
@@ -533,7 +528,6 @@ pub async fn handle_client_channels(
                             mgr.send_idle_ping(sid);
                         }
                         attached_session_id = None;
-                        attached_thread_id = None;
                     }
                     ClientMessage::SoftDetach { root_thread_id } => {
                         let session_id = root_thread_id.id;
@@ -546,7 +540,6 @@ pub async fn handle_client_channels(
                             client_tx_rx = new_rx;
                             mgr.send_idle_ping(&session_id);
                             attached_session_id = None;
-                            attached_thread_id = None;
                             let _ = daemon_tx.send(DaemonMessage::DetachedIdle);
                         } else {
                             let _ = daemon_tx.send(DaemonMessage::DisconnectNotIdle);
@@ -557,7 +550,6 @@ pub async fn handle_client_channels(
                         let mgr = session_manager.lock().await;
                         mgr.cleanup_session(&session_id).await;
                         attached_session_id = None;
-                        attached_thread_id = None;
                     }
                     ClientMessage::ArchiveSession { root_thread_id } => {
                         let session_id = root_thread_id.id;
@@ -569,7 +561,6 @@ pub async fn handle_client_channels(
                             tracing::error!("Failed to save session store after archiving {session_id}: {e}");
                         }
                         attached_session_id = None;
-                        attached_thread_id = None;
                     }
                     ClientMessage::TriggerCompaction { root_thread_id } => {
                         let mgr = session_manager.lock().await;
@@ -601,21 +592,25 @@ pub async fn handle_client_channels(
                         }
                     }
                     ClientMessage::UserChoiceAnswered { choice_id, selected } => {
-                        if let Some(ref thread_id) = attached_thread_id {
+                        if let Some(session_id) = &attached_session_id {
                             let mgr = session_manager.lock().await;
-                            if let Some(pending) = mgr.state_store().pending_choice(thread_id, &choice_id) {
+                            if let Some(pending) = mgr.state_store().pending_choice_for_session(session_id, &choice_id) {
                                 let url = pending.response_url;
                                 let id = pending.id;
                                 tokio::spawn(rap_protocol::log_panic("user_choice_post", async move {
                                     let client = reqwest::Client::new();
-                                    let _ = client
+                                    if let Err(error) = client
                                         .post(&url)
                                         .json(&serde_json::json!({
                                             "id": id,
                                             "selected": selected
                                         }))
                                         .send()
-                                        .await;
+                                        .await
+                                        .and_then(reqwest::Response::error_for_status)
+                                    {
+                                        tracing::warn!(%error, %id, "failed to post user choice response");
+                                    }
                                 }));
                             }
                         }
