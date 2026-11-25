@@ -2821,6 +2821,7 @@ name = "infinity-daemon"
 version = "0.2.0"
 dependencies = [
  "async-trait",
+ "axum",
  "bytes",
  "chrono",
  "chrono-tz",

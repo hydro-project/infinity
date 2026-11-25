@@ -56,6 +56,7 @@ nix = { version = "0.31", features = ["signal"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+axum = { workspace = true }
 rap-test-servers = { path = "../rap-test-servers" }
 tempfile = { workspace = true }
 infinity-provider-protocol = { path = "../infinity-provider-protocol", version = "^0.2.0", features = ["mock"] }

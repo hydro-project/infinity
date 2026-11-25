@@ -6,9 +6,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use http_body_util::{BodyExt, Full};
-use hyper::service::service_fn;
-use hyper_util::rt::TokioIo;
 use infinity_agent_core::traits::{ConversationStore, SpawnContext};
 use infinity_daemon::client_handler::handle_client_channels;
 use infinity_daemon::ids::SequentialIdSource;
@@ -317,38 +314,17 @@ async fn session_choice_answers(attached_to_child: bool) {
         listener.local_addr().expect("listener address")
     );
     let (responses_tx, mut responses_rx) = mpsc::unbounded_channel();
+    let app = axum::Router::new().route(
+        "/choice",
+        axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+            let responses_tx = responses_tx.clone();
+            async move { responses_tx.send(body).expect("record choice response") }
+        }),
+    );
     let server = tokio::task::spawn_local(async move {
-        loop {
-            let (stream, _) = listener.accept().await.expect("accept choice response");
-            let tx = responses_tx.clone();
-            tokio::task::spawn_local(async move {
-                hyper::server::conn::http1::Builder::new()
-                    .serve_connection(
-                        TokioIo::new(stream),
-                        service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
-                            let tx = tx.clone();
-                            async move {
-                                assert_eq!(request.method(), hyper::Method::POST);
-                                assert_eq!(request.uri().path(), "/choice");
-                                let body = request
-                                    .into_body()
-                                    .collect()
-                                    .await
-                                    .expect("read choice response")
-                                    .to_bytes();
-                                let body: serde_json::Value =
-                                    serde_json::from_slice(&body).expect("decode choice response");
-                                tx.send(body).expect("record choice response");
-                                Ok::<_, std::convert::Infallible>(hyper::Response::new(Full::new(
-                                    bytes::Bytes::new(),
-                                )))
-                            }
-                        }),
-                    )
-                    .await
-                    .expect("serve choice response");
-            });
-        }
+        axum::serve(listener, app)
+            .await
+            .expect("serve choice responses")
     });
 
     for (thread_id, choice_id) in [
