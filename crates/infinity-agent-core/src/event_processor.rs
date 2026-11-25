@@ -79,13 +79,19 @@ pub enum PrepareResult {
     CompactionApplied,
 }
 
-/// What the model wants to do after a completion stream finishes.
+/// What the model wants to do, as surfaced by the completion stream.
 pub enum CompletionAction {
-    /// Model produced text and is done (no tool call).
+    /// Model produced text and is done (no tool call). Carries the round's
+    /// final response (including usage, if the provider reported it).
     Done(FinalResponse),
     /// Model wants to execute a tool call. Under the RAP protocol tools are
     /// fire-and-forget: the agent loop stops after dispatching the call and
     /// the result arrives as a new input message later.
+    ///
+    /// By the time this action is yielded, [`run_completion`] has already
+    /// flushed the turn and synced the history, so the call is durable and
+    /// may be dispatched **immediately** — the consumer does not have to
+    /// wait for the stream to finish (see [`execute_action`]).
     ExecuteToolCall {
         tool_name: String,
         tool_args: serde_json::Value,
@@ -99,7 +105,9 @@ pub enum CompletionAction {
 pub enum CompletionEvent {
     /// A chunk of text from the model.
     TextChunk(String),
-    /// The terminal event — what to do next.
+    /// Something the model decided to do. `ExecuteToolCall` is yielded as
+    /// soon as the call is complete and durable, which may be well before
+    /// the model's stream ends; `Done` is yielded once per model response.
     Action(CompletionAction),
     /// A tool call that was synchronously processed.
     SyncToolCall {
@@ -1905,6 +1913,18 @@ where
                                 })?;
                                 should_loop_back = true;
                             } else {
+                                // Make the call durable *before* handing it
+                                // out: the consumer may dispatch it the moment
+                                // it is yielded, while this stream is still
+                                // draining the model's tail (the `Final` chunk
+                                // and any ignored post-call content). The
+                                // inputs that led to this call were validated
+                                // by the first chunk of this request (see
+                                // above); re-asserting that here is idempotent
+                                // and keeps the durability precondition local.
+                                history.mark_inputs_model_validated();
+                                history.sync().await?;
+
                                 yield CompletionEvent::Action(CompletionAction::ExecuteToolCall {
                                     tool_name: call.function.name.clone(),
                                     tool_args: call.function.arguments.clone(),
@@ -1965,6 +1985,15 @@ where
 //     or emit output).
 // ═══════════════════════════════════════════════════════════════════════
 
+/// Dispatch a [`CompletionAction`]. `Done` is a no-op; `ExecuteToolCall`
+/// invokes the tool's fire-and-forget `execute`.
+///
+/// Durability: the tool call must be persisted before this is called, so a
+/// crash between persist and dispatch leaves a history the result can still
+/// attach to. [`run_completion`] syncs the history *before* yielding an
+/// `ExecuteToolCall`, so a consumer of its stream may call this as soon as
+/// the action arrives — concurrently with draining the rest of the stream —
+/// without any additional barrier.
 pub async fn execute_action<M>(
     action: CompletionAction,
     tool_registry: &HashMap<String, &dyn Tool<M>>,
