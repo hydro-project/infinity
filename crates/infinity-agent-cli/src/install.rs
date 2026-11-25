@@ -3,7 +3,7 @@
 use crate::inline_viewport::InlineViewport;
 use crate::term_io::{CrosstermEvents, CrosstermTerm, EventSource, TermOut as _};
 use crate::terminal;
-use infinity_agent_core::tools::config::ToolsConfig;
+use infinity_agent_core::tools::config::{ServerLifetime, ToolSetConfig, ToolsConfig};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::{
     crossterm::event::{Event, KeyCode, KeyModifiers},
@@ -21,6 +21,9 @@ pub struct InstallArgs {
     pub crate_name: String,
     pub git: Option<String>,
     pub path: Option<String>,
+    /// `Some` to set the server's lifetime; `None` keeps the lifetime of an
+    /// existing entry being replaced (or the default for a new one).
+    pub lifetime: Option<ServerLifetime>,
 }
 
 /// Arguments for `infinity provider install <id> --crate ...`.
@@ -178,6 +181,15 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
     };
 
     // Remove existing entry with same id, then re-add with source info
+    // (keeping its lifetime unless one was requested explicitly).
+    let existing_lifetime = config.tool_sets.iter().find_map(|ts| match ts {
+        ToolSetConfig::ToolsetCommand { id, lifetime, .. }
+            if id.as_deref() == Some(&args.crate_name) =>
+        {
+            Some(*lifetime)
+        }
+        _ => None,
+    });
     let had_existing = config
         .tool_sets
         .iter()
@@ -201,6 +213,7 @@ pub async fn run_install(args: InstallArgs) -> Result<(), BoxError> {
                 .to_string_lossy()
                 .to_string()
         }),
+        args.lifetime.or(existing_lifetime).unwrap_or_default(),
     );
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
 

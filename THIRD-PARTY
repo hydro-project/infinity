@@ -8859,6 +8859,7 @@ Used by:
   infinity-rap-bridge 0.2.0
   infinity-slack-bot 0.1.0
   infinity-slack-dataflow 0.1.0
+  rap-agent-mail 0.2.0
   rap-client 0.2.0
   rap-github-event-poller 0.2.0
   rap-protocol 0.2.0

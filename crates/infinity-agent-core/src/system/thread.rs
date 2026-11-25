@@ -58,18 +58,29 @@ pub fn is_user_text_input(msg: &InputMessage) -> bool {
 }
 
 /// Whether this input is a synthetic event that can be deferred while the
-/// thread waits on a pending tool call (subscription events, thread reports,
-/// parent messages).
+/// thread waits on a pending tool call: inline (associative) subscription
+/// events, thread reports, and parent messages, all of which land in this
+/// thread's history and would interrupt the pending call.
+///
+/// Non-associative subscription events are not deferred: they only spawn a
+/// child thread (at a spawn point that excludes the pending call) and leave
+/// this thread's history alone, so handling them right away interrupts
+/// nothing. Deferring them would hold independent work hostage to an
+/// unrelated tool call (two agents waiting on answers from each other would
+/// deadlock) and lose it on restart, since deferred inputs are not durable.
 pub fn is_deferrable_synthetic_event(msg: &InputMessage) -> bool {
-    msg.synthetic.as_ref().is_some_and(|s| {
-        matches!(
-            s,
-            SyntheticKind::Tagged(
-                TaggedSyntheticKind::SubscriptionEvent { .. }
-                    | TaggedSyntheticKind::ThreadReport { .. }
-                    | TaggedSyntheticKind::ParentMessage { .. }
-            ) | SyntheticKind::SubscriptionEvent(_)
-        )
+    msg.synthetic.as_ref().is_some_and(|s| match s {
+        SyntheticKind::Tagged(TaggedSyntheticKind::SubscriptionEvent { associative, .. }) => {
+            *associative
+        }
+        SyntheticKind::Tagged(
+            TaggedSyntheticKind::ThreadReport { .. } | TaggedSyntheticKind::ParentMessage { .. },
+        ) => true,
+        // Legacy bare-string events are non-associative.
+        SyntheticKind::SubscriptionEvent(_) => false,
+        SyntheticKind::Tagged(
+            TaggedSyntheticKind::Compaction | TaggedSyntheticKind::CompactionComplete,
+        ) => false,
     })
 }
 

@@ -103,6 +103,13 @@ enum RapCommands {
         /// Local path (passed to cargo install --path)
         #[arg(long)]
         path: Option<String>,
+
+        /// Run one instance of the server for the whole daemon instead of
+        /// one per session (required by servers such as `rap-agent-mail`
+        /// that receive events while sessions are idle). Re-installing an
+        /// existing entry keeps its lifetime unless this flag is given.
+        #[arg(long)]
+        daemon_lifetime: bool,
     },
     /// Re-install all RAP tools that have a recorded source
     Update {
@@ -194,6 +201,7 @@ async fn async_main(cli: Cli) -> Result<(), BoxError> {
                     crate_name,
                     git,
                     path,
+                    daemon_lifetime,
                 } => {
                     if !user {
                         return Err("--user is currently required for rap install".into());
@@ -202,6 +210,8 @@ async fn async_main(cli: Cli) -> Result<(), BoxError> {
                         crate_name,
                         git,
                         path,
+                        lifetime: daemon_lifetime
+                            .then_some(infinity_agent_core::tools::config::ServerLifetime::Daemon),
                     })
                     .await
                 }
