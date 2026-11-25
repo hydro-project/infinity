@@ -234,3 +234,50 @@ async fn sandboxed_command_can_write_sccache_cache_dir() {
         std::env::remove_var("SCCACHE_DIR");
     }
 }
+
+#[tokio::test]
+async fn deleting_last_added_file_clears_diff_view() {
+    let repo = jj_init_with_file("README.md", "hello\n");
+    let metadata = tempfile::tempdir().expect("create metadata directory");
+    let server_url = start_test_server(metadata.path()).await;
+    let (callback_url, mut rx) = start_callback_channel()
+        .await
+        .expect("start callback channel");
+    let group = "empty-diff-test";
+    let result = invoke(
+        &server_url,
+        &callback_url,
+        group,
+        "clone_repo",
+        serde_json::json!({ "repo": repo.path().to_str().expect("repository path") }),
+        &mut rx,
+        None,
+    )
+    .await;
+    assert!(result.contains("Repository initialized"), "{result}");
+
+    let (_, created_views) = invoke_collecting_views(
+        &server_url,
+        &callback_url,
+        group,
+        "create_file",
+        serde_json::json!({ "path": "added.txt", "content": "new content\n" }),
+        &mut rx,
+        1,
+    )
+    .await;
+    assert_eq!(created_views[0].content["files"][0]["path"], "added.txt");
+
+    let (_, deleted_views) = invoke_collecting_views(
+        &server_url,
+        &callback_url,
+        group,
+        "execute_command",
+        serde_json::json!({ "command": "rm added.txt" }),
+        &mut rx,
+        1,
+    )
+    .await;
+    assert_eq!(deleted_views[0].view_type, "diff");
+    assert_eq!(deleted_views[0].content["files"], serde_json::json!([]));
+}

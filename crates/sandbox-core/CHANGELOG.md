@@ -1,3 +1,9 @@
+## Unreleased
+
+### Fixes
+
+- Send empty sandbox diff snapshots after the final change is removed, clearing stale diff views.
+
 
 
 ## v0.1.0 (2026-09-03)

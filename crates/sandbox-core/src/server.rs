@@ -1921,7 +1921,7 @@ async fn push_diff_view<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
     };
 
     let files: Vec<serde_json::Value> = match &repo_state.mode {
-        SandboxMode::Direct => Vec::new(),
+        SandboxMode::Direct => return,
         _ => {
             let Ok(changed) = state.backend.diff_files(sandbox_dir, &repo_state).await else {
                 return;
@@ -1940,16 +1940,14 @@ async fn push_diff_view<B: SandboxBackend, M: MetadataStore, C: CallbackClient>(
         }
     };
 
-    if !files.is_empty() {
-        rap_protocol::send_view_update(
-            &state.callback_client,
-            &invocation.callback_url,
-            invocation.group_id.clone(),
-            "diff",
-            serde_json::json!({ "files": files }),
-        )
-        .await;
-    }
+    rap_protocol::send_view_update(
+        &state.callback_client,
+        &invocation.callback_url,
+        invocation.group_id.clone(),
+        "diff",
+        serde_json::json!({ "files": files }),
+    )
+    .await;
 }
 
 /// Build a pretty-printed unified diff for display in the CLI.
