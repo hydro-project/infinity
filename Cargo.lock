@@ -2734,6 +2734,7 @@ dependencies = [
  "hyper-util",
  "infinity-agent-core",
  "infinity-daemon",
+ "infinity-markdown",
  "infinity-protocol",
  "infinity-provider-protocol",
  "infinity-rap-bridge",
@@ -2851,6 +2852,13 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "infinity-markdown"
+version = "0.2.0"
+dependencies = [
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

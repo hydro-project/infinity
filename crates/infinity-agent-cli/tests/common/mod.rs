@@ -70,6 +70,11 @@ pub trait Emulator: Send {
     /// columns wide: `' '` for the default background, `'#'` for any
     /// explicitly set background color.
     fn row_bg(&self, row: u16) -> String;
+    /// Attribute markers of a visible screen row, exactly `cols` display
+    /// columns wide: `' '` for plain cells, otherwise the first applicable
+    /// of `'B'`old, `'I'`talic, `'U'`nderline, `'S'`trikethrough, `'D'`im,
+    /// `'C'`olored foreground.
+    fn row_attrs(&self, row: u16) -> String;
     /// Number of rows currently in scrollback history.
     fn history_len(&self) -> usize;
     /// Text of a scrollback row; index 0 is the oldest row.
@@ -155,6 +160,40 @@ impl Emulator for Vt100Emulator {
                         ' '
                     } else {
                         '#'
+                    };
+                    let width = if cell.is_wide() { 2 } else { 1 };
+                    for _ in 0..width {
+                        out.push(marker);
+                    }
+                    col += width;
+                }
+                None => {
+                    out.push(' ');
+                    col += 1;
+                }
+            }
+        }
+        out
+    }
+
+    fn row_attrs(&self, row: u16) -> String {
+        let screen = self.parser.screen();
+        let (_, cols) = screen.size();
+        let mut out = String::new();
+        let mut col = 0;
+        while col < cols {
+            match screen.cell(row, col) {
+                Some(cell) => {
+                    let marker = if cell.bold() {
+                        'B'
+                    } else if cell.italic() {
+                        'I'
+                    } else if cell.underline() {
+                        'U'
+                    } else if cell.fgcolor() != vt100::Color::Default {
+                        'C'
+                    } else {
+                        ' '
                     };
                     let width = if cell.is_wide() { 2 } else { 1 };
                     for _ in 0..width {
@@ -282,6 +321,33 @@ impl Emulator for AlacrittyEmulator {
                     ' '
                 } else {
                     '#'
+                }
+            })
+            .collect()
+    }
+
+    fn row_attrs(&self, row: u16) -> String {
+        use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
+        let grid = self.term.grid();
+        let cols = grid.columns();
+        let line = &grid[Line(row as i32)];
+        (0..cols)
+            .map(|col| {
+                let cell = &line[Column(col)];
+                if cell.flags.contains(Flags::BOLD) {
+                    'B'
+                } else if cell.flags.contains(Flags::ITALIC) {
+                    'I'
+                } else if cell.flags.intersects(Flags::ALL_UNDERLINES) {
+                    'U'
+                } else if cell.flags.contains(Flags::STRIKEOUT) {
+                    'S'
+                } else if cell.flags.contains(Flags::DIM) {
+                    'D'
+                } else if cell.fg != AnsiColor::Named(NamedColor::Foreground) {
+                    'C'
+                } else {
+                    ' '
                 }
             })
             .collect()
@@ -629,6 +695,17 @@ impl TuiHarness {
     /// per-cell background markers (`#` where a cell has an explicitly set
     /// background color). Catches styling corruption that is invisible in
     /// the character grid, like a widget background leaking into blank rows.
+    /// Like [`TuiHarness::screen`], but followed by a second frame showing
+    /// per-cell attribute markers (see [`Emulator::row_attrs`]). Verifies
+    /// that styling is switched on *and off* where expected.
+    pub fn screen_with_attrs(&self) -> String {
+        let emu = lock_emu(&self.emu);
+        let mut out = render_screen(&**emu, false);
+        out.push_str("attrs:\n");
+        out.push_str(&render_frame(&**emu, |row| emu.row_attrs(row)));
+        out
+    }
+
     pub fn screen_with_bg(&self) -> String {
         let emu = lock_emu(&self.emu);
         let mut out = render_screen(&**emu, false);
@@ -678,14 +755,19 @@ pub fn render_screen(emu: &dyn Emulator, with_scrollback: bool) -> String {
 /// Render a frame of per-cell background markers for the visible screen:
 /// `#` where a cell has a non-default background color, ` ` otherwise.
 pub fn render_bg_frame(emu: &dyn Emulator) -> String {
+    render_frame(emu, |row| emu.row_bg(row))
+}
+
+/// A framed grid with one marker row per screen row.
+pub fn render_frame(emu: &dyn Emulator, row: impl Fn(u16) -> String) -> String {
     let (cols, rows) = emu.size();
     let mut out = String::new();
     out.push('┌');
     out.push_str(&"─".repeat(cols as usize));
     out.push_str("┐\n");
-    for row in 0..rows {
+    for r in 0..rows {
         out.push('│');
-        out.push_str(&emu.row_bg(row));
+        out.push_str(&row(r));
         out.push_str("│\n");
     }
     out.push('└');

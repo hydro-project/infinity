@@ -1,0 +1,15 @@
+[package]
+name = "infinity-markdown"
+publish = true
+version = "0.2.0"
+documentation = "https://docs.rs/infinity-markdown/"
+description = "Streaming Markdown renderer producing styled text segments for terminals."
+edition = "2024"
+repository = { workspace = true }
+license = "Apache-2.0"
+
+[dependencies]
+unicode-width = "0.2"
+
+[lints]
+workspace = true
