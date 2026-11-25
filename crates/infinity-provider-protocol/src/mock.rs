@@ -6,6 +6,7 @@
 //! drives it from the test.
 
 use async_trait::async_trait;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use crate::{
@@ -27,11 +28,21 @@ struct StreamRound {
 #[derive(Clone)]
 pub struct MockCompletionModel {
     round_tx: mpsc::UnboundedSender<StreamRound>,
+    /// Set by [`MockModelController::fail_next_stream`].
+    init_failure: Arc<Mutex<Option<CompletionError>>>,
 }
 
 #[async_trait]
 impl CompletionModel for MockCompletionModel {
     async fn stream(&self, request: CompletionRequest) -> Result<ModelStream, CompletionError> {
+        if let Some(err) = self
+            .init_failure
+            .lock()
+            .expect("bug: mock mutex poisoned")
+            .take()
+        {
+            return Err(err);
+        }
         let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel();
 
         // Notify controller of this round.
@@ -55,9 +66,17 @@ pub struct MockModelController {
     round_rx: mpsc::UnboundedReceiver<StreamRound>,
     /// Sender for the current active round (set after `next_request`).
     current_tx: Option<mpsc::UnboundedSender<Result<StreamChunk, CompletionError>>>,
+    /// Shared with the model: the pending initiation failure.
+    init_failure: Arc<Mutex<Option<CompletionError>>>,
 }
 
 impl MockModelController {
+    /// The next `stream()` call returns this error instead of a stream (no
+    /// round reaches the controller).
+    pub fn fail_next_stream(&self, err: CompletionError) {
+        *self.init_failure.lock().expect("bug: mock mutex poisoned") = Some(err);
+    }
+
     /// Wait for the next `stream()` call and return the request.
     pub async fn next_request(&mut self) -> CompletionRequest {
         let round = self.round_rx.recv().await.expect("model dropped");
@@ -122,11 +141,16 @@ impl MockModelController {
 /// Create a mock model / controller pair.
 pub fn mock_model() -> (MockCompletionModel, MockModelController) {
     let (round_tx, round_rx) = mpsc::unbounded_channel();
+    let init_failure = Arc::new(Mutex::new(None));
     (
-        MockCompletionModel { round_tx },
+        MockCompletionModel {
+            round_tx,
+            init_failure: init_failure.clone(),
+        },
         MockModelController {
             round_rx,
             current_tx: None,
+            init_failure,
         },
     )
 }

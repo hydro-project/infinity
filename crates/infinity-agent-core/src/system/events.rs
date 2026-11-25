@@ -66,6 +66,27 @@ pub enum AgentEvent {
     UserChoiceDismissed { choice_id: rap_protocol::ChoiceId },
     /// Human-readable progress/diagnostic information (retries, warnings).
     Info { text: String },
+    /// A completion attempt failed and will be retried after `delay`.
+    /// `attempt` counts retries from 1; `error` is the failure's message.
+    /// Clients should surface the first retry prominently, so a failing
+    /// completion is never a silent retry loop.
+    CompletionRetrying {
+        error: String,
+        attempt: u32,
+        delay: std::time::Duration,
+    },
+    /// A completion gave up after `retries` retries; `error` is the failure's
+    /// message. The round's inputs had not been validated by model output,
+    /// so none were persisted; `discarded_user_messages` counts the user
+    /// messages among them, which are not re-sent on the next round either.
+    CompletionFailed {
+        error: String,
+        retries: u32,
+        discarded_user_messages: usize,
+    },
+    /// A thread operation outside a completion failed (loading the thread,
+    /// a step, dispatching a tool call); `error` is the failure's message.
+    Error { error: String },
 }
 
 /// A live view of a thread, used to bring a newly attached subscriber up to
