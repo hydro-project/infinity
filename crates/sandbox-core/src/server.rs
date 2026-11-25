@@ -511,7 +511,8 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
 
     // Reject re-initialization unless upgrading from Direct mode.
-    if let Some(existing) = state.metadata.get(&invocation.group_id).await?
+    let existing = state.metadata.get(&invocation.group_id).await?;
+    if let Some(existing) = &existing
         && !matches!(existing.mode, SandboxMode::Direct)
     {
         return Err(SandboxError::Other(
@@ -542,6 +543,14 @@ async fn handle_clone_repo<B: SandboxBackend, M: MetadataStore, C: CallbackClien
             "No sandbox mode provider claimed this repository.".to_owned(),
         ));
     };
+
+    // Keep Direct usable if detection fails, then discard its cached directory.
+    if existing.is_some() {
+        state
+            .backend
+            .cleanup_sandbox_permanently(&invocation.group_id)
+            .await?;
+    }
 
     // The provider resolved the repo root itself; it is authoritative.
     let remote_uri = init.repo_root.to_string_lossy().into_owned();
@@ -600,6 +609,14 @@ async fn handle_open_sandbox_direct<B: SandboxBackend, M: MetadataStore, C: Call
 ) -> Result<String, SandboxError> {
     let args: OpenSandboxDirectArgs = serde_json::from_value(invocation.arguments.clone())
         .map_err(|e| SandboxError::Other(format!("invalid arguments: {e}")))?;
+
+    if state.metadata.get(&invocation.group_id).await?.is_some() {
+        return Err(SandboxError::Other(
+            "A repository has already been initialized for this thread. \
+             Direct mode can only be opened on an uninitialized thread."
+                .to_owned(),
+        ));
+    }
 
     let remote_uri = state.backend.init_direct(&args.repo).await?;
 
@@ -2283,7 +2300,7 @@ fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
         tools: vec![
             ToolDef {
                 name: "clone_repo".to_owned(),
-                description: "Initialize a repository for sandboxed execution. Provide a local path to a git repo (local mode) or a git remote URI (remote mode). This must be called before execute_command.".to_owned(),
+                description: "Initialize a repository for sandboxed execution. Provide a local path to a git repo (local mode) or a git remote URI (remote mode). This must be called before execute_command. An existing Direct sandbox can be upgraded with this tool; re-initializing a sandboxed repository is not supported.".to_owned(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -2303,13 +2320,13 @@ fn build_manifest(endpoint: &str, needs_migration: bool) -> ToolsetManifest {
             },
             ToolDef {
                 name: "open_sandbox_direct".to_owned(),
-                description: "Open a repository in Direct mode (regular clone_repo is always preferred). Direct mode operates on the original directory with no worktrees — file edits and creation require user approval, and commands run without file write access unless write-orig is granted. Use this only when clone_repo fails (e.g. the repository has no commits yet).".to_owned(),
+                description: "Open a directory in Direct mode (regular clone_repo is always preferred). Direct mode operates on the original directory with no worktrees — file edits and creation require user approval, and commands run without file write access unless write-orig is granted. Use this only when clone_repo fails (e.g. the repository has no commits yet). Only available on an uninitialized thread; use clone_repo to upgrade an existing Direct sandbox.".to_owned(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "repo": {
                             "type": "string",
-                            "description": "Local path to a git repository"
+                            "description": "Local path to a directory, with or without a git repository"
                         }
                     },
                     "required": ["repo"]

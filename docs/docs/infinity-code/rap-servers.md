@@ -21,7 +21,8 @@ A few behaviors worth knowing:
 
 - **Streaming output**: `execute_command` streams the output of long-running commands back to the agent as subscription events, so the agent can react to logs while the command is still running, and commands can be cancelled mid-flight.
 - **Permission approvals**: the sandbox restricts writes to the sandbox workspace. When the agent requests extra permissions (`write-orig` to write to your original repo directory, e.g. for `git push`, or `write:/some/path` for a specific path), you get an approve/deny prompt in the TUI or web UI before anything runs.
-- **Direct mode**: `open_sandbox_direct` operates on the original directory without a worktree, for repos where sandboxing is not possible (e.g. no commits yet). In this mode every file edit requires your approval.
+- **Direct mode**: `open_sandbox_direct` operates on the original directory without a worktree, including directories with no version control, for repos where sandboxing is not possible (e.g. no commits yet). In this mode every file edit requires your approval. It can only initialize a thread that has no repository yet; an existing sandbox cannot be switched to Direct mode or reopened with this tool.
+- **Upgrading Direct mode**: call `clone_repo` to upgrade a Direct thread to a sandboxed repository. Once the new repository is accepted, subsequent file operations and commands use a new isolated workspace without deleting the original Direct directory. If repository detection fails, the existing Direct sandbox stays usable. Re-initializing an already sandboxed repository is not supported.
 
 ## Steering
 
