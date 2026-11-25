@@ -522,34 +522,38 @@ where
 {
     // Read Welcome
     let welcome = from_daemon.recv().await.ok_or("daemon disconnected")?;
-    let (model_name, context_window, sessions, available_models, provider_name) = match welcome {
-        DaemonMessage::Welcome {
-            default_model_name,
-            default_context_window,
-            sessions,
-            available_models,
-            provider_name,
-            ..
-        } => (
-            default_model_name,
-            default_context_window,
-            sessions,
-            available_models,
-            provider_name,
-        ),
-        DaemonMessage::Error { text, .. } => return Err(text.into()),
-        _ => return Err("expected Welcome from daemon".into()),
-    };
+    let (model_name, context_window, sessions, available_models, provider_name, remotes) =
+        match welcome {
+            DaemonMessage::Welcome {
+                default_model_name,
+                default_context_window,
+                sessions,
+                available_models,
+                provider_name,
+                remotes,
+            } => (
+                default_model_name,
+                default_context_window,
+                sessions,
+                available_models,
+                provider_name,
+                remotes,
+            ),
+            DaemonMessage::Error { text, .. } => return Err(text.into()),
+            _ => return Err("expected Welcome from daemon".into()),
+        };
 
     let (display_tx, display_rx) = mpsc::unbounded_channel::<(Option<ThreadRef>, DisplayEvent)>();
     let (input_tx, input_rx) = mpsc::unbounded_channel::<String>();
     let (load_session_tx, load_session_rx) = mpsc::unbounded_channel::<(Option<ThreadRef>, bool)>();
-    let (model_switch_tx, model_switch_rx) = mpsc::unbounded_channel::<usize>();
+    let (model_switch_tx, model_switch_rx) = mpsc::unbounded_channel::<ModelRef>();
     let (session_tx, session_rx) = mpsc::unbounded_channel::<SessionChanged>();
     let (model_switched_tx, model_switched_rx) =
         mpsc::unbounded_channel::<crate::terminal::ModelSwitched>();
     let (sessions_updated_tx, sessions_updated_rx) =
         mpsc::unbounded_channel::<HashMap<ThreadRef, SessionInfo>>();
+    let (remotes_updated_tx, remotes_updated_rx) =
+        mpsc::unbounded_channel::<Vec<infinity_protocol::RemoteInfo>>();
     let (soft_detach_tx, soft_detach_rx) = mpsc::unbounded_channel::<()>();
     let (detach_result_tx, detach_result_rx) = mpsc::unbounded_channel::<DetachResult>();
     let (choice_answered_tx, choice_answered_rx) =
@@ -588,8 +592,6 @@ where
         })?;
     }
 
-    let models_for_switch = available_models.clone();
-
     let mut terminal_handle = tokio::task::spawn_local(crate::terminal::run(
         term,
         events,
@@ -602,10 +604,12 @@ where
         load_session_tx,
         model_switch_tx,
         available_models,
+        remotes,
         initial_message,
         session_rx,
         model_switched_rx,
         sessions_updated_rx,
+        remotes_updated_rx,
         soft_detach_tx,
         detach_result_rx,
         choice_answered_tx,
@@ -627,6 +631,7 @@ where
         let mut model_switch_rx = model_switch_rx;
         let session_tx = session_tx;
         let sessions_updated_tx = sessions_updated_tx;
+        let remotes_updated_tx = remotes_updated_tx;
         let mut soft_detach_rx = soft_detach_rx;
         let detach_result_tx = detach_result_tx;
         let mut choice_answered_rx = choice_answered_rx;
@@ -676,6 +681,9 @@ where
                         }
                         DaemonMessage::SessionsUpdated { sessions } => {
                             let _ = sessions_updated_tx.send(sessions);
+                        }
+                        DaemonMessage::RemotesUpdated { remotes } => {
+                            let _ = remotes_updated_tx.send(remotes);
                         }
                         DaemonMessage::DisconnectNotIdle => {
                             if pending_soft_detach {
@@ -728,20 +736,14 @@ where
                     } // if none, will be created on next user input
                 }
 
-                idx = model_switch_rx.recv() => {
-                    let Some(idx) = idx else { break };
-                    if let Some(entry) = models_for_switch.get(idx) {
-                        let model = ModelRef {
-                            provider_id: entry.provider_id.clone(),
-                            model_id: entry.model_id.clone(),
-                        };
-                        // Remember the selection locally so new sessions use it.
-                        selected_model = Some(model.clone());
-                        if let Some(sid) = &active_session {
-                            let _ = to_daemon.send(ClientMessage::SwitchModel {
-                                thread_id: sid.clone(), model,
-                            });
-                        }
+                model = model_switch_rx.recv() => {
+                    let Some(model) = model else { break };
+                    // Remember the selection locally so new sessions use it.
+                    selected_model = Some(model.clone());
+                    if let Some(sid) = &active_session {
+                        let _ = to_daemon.send(ClientMessage::SwitchModel {
+                            thread_id: sid.clone(), model,
+                        });
                     }
                 }
 

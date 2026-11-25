@@ -16,8 +16,8 @@ pub const MAX_VISIBLE_ROWS: u16 = 5;
 
 /// Result of the model picker interaction.
 pub enum ModelPickerResult {
-    /// User selected a model (index into `available_models()`).
-    Selected(usize),
+    /// User selected a model.
+    Selected(ModelInfo),
     /// User cancelled (Escape).
     Cancelled,
 }
@@ -78,8 +78,8 @@ impl ModelPicker {
     }
 
     fn confirm(&mut self) {
-        if self.selected < self.models.len() {
-            self.result = Some(ModelPickerResult::Selected(self.selected));
+        if let Some(model) = self.models.get(self.selected) {
+            self.result = Some(ModelPickerResult::Selected(model.clone()));
         }
     }
 

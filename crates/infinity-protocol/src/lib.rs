@@ -566,10 +566,24 @@ pub struct ModelRef {
     pub model_id: String,
 }
 
+/// Connection state of a configured remote daemon, as seen by the local
+/// daemon's control connection to it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RemoteStatus {
+    /// The control connection is being (re)established.
+    Connecting,
+    /// Connected; the remote's model catalog (from its `Welcome`) is known.
+    /// Clients should present this list — rather than the local daemon's
+    /// `available_models` — when the active session lives on this remote.
+    Connected { available_models: Vec<ModelInfo> },
+    /// The control connection failed or dropped; `reason` is the last error.
+    Disconnected { reason: String },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteInfo {
     pub name: RemoteName,
-    pub status: String,
+    pub status: RemoteStatus,
 }
 
 #[cfg(test)]

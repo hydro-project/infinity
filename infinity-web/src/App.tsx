@@ -14,6 +14,7 @@ import {
   SunIcon,
   MoonIcon,
   MonitorIcon,
+  remoteModels,
 } from "infinity-ui";
 import type {
   ClientMessage,
@@ -782,6 +783,15 @@ export function App() {
   const currentHost =
     (sessionRef.current && sessions[sessionRef.current]?.remote) ?? null;
 
+  // The model picker must list the models of the daemon that actually runs
+  // the active session: a remote daemon may have a different provider/model
+  // catalog than the local one.
+  const currentModels: ModelInfo[] = (() => {
+    if (!currentHost) return models;
+    const remote = remotes.find((r) => r.name === currentHost);
+    return remote ? remoteModels(remote.status) : [];
+  })();
+
   const handleMigrateConfirm = useCallback(
     (destination: string | null, cwd: string) => {
       setMigratePickerOpen(false);
@@ -1012,10 +1022,10 @@ export function App() {
             {modelName && " \u00b7 "}
             {Math.round(contextPct)}% context
           </span>
-          {modelMenuOpen && models.length > 0 && (
+          {modelMenuOpen && currentModels.length > 0 && (
             <div className={css.modelDropdown}>
               <div className={css.modelDropdownPanel}>
-                {models.map((m) => {
+                {currentModels.map((m) => {
                   const selected =
                     m.provider_id === providerName &&
                     m.display_name === modelName;

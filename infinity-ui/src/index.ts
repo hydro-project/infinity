@@ -31,6 +31,8 @@ export type {
   ModelInfo,
   ModelRef,
   RemoteInfo,
+  RemoteStatus,
+  RemoteStatusKind,
   TokenUsage,
   DisplaySegment,
   DaemonMessage,
@@ -39,6 +41,7 @@ export type {
   SpinnerState,
   MessageItem as MessageItemType,
 } from "./types";
+export { remoteStatusKind, remoteStatusLabel, remoteModels } from "./types";
 
 // Protocol helpers
 export {
