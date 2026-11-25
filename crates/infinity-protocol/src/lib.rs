@@ -259,6 +259,26 @@ pub enum ClientMessage {
         thread_id: ThreadRef,
         text: String,
     },
+    /// Fork a session into a NEW session that holds its conversation before
+    /// one of its user turns; the original session is not modified.
+    ///
+    /// `user_turn` is the 0-based index of a user-text turn in the session's
+    /// own history, matching the [`DaemonMessage::UserInputEcho`] entries in
+    /// its [`DaemonMessage::Replay`] (turns behind a compaction summary still
+    /// count). The fork inherits everything before that turn, the working
+    /// directory and the model; `user_turn: 0` forks an empty conversation.
+    ///
+    /// Like [`ClientMessage::CreateSession`], the requesting connection is
+    /// attached to the fork and receives [`DaemonMessage::Connected`]; send
+    /// the (possibly edited) turn as `UserInput` afterwards. Errors (not a
+    /// session, turn out of range) are reported via [`DaemonMessage::Error`].
+    ForkSession {
+        thread_id: ThreadRef,
+        user_turn: usize,
+        /// Same meaning as for `CreateSession`.
+        #[serde(default = "default_true")]
+        keeps_session_alive: bool,
+    },
     /// Disconnect from the session while letting the agent continue to run in the background.
     Disconnect,
     /// Immediately attempt to detach. If the agent is idle, the daemon shuts
