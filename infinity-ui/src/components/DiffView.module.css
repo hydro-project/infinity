@@ -42,10 +42,12 @@
   border-radius: 16px;
 }
 
-.sidebar file-tree-container {
-  --trees-bg: transparent;
-  --trees-bg-muted: transparent;
-  --trees-fg: inherit;
+.fileTree {
+  flex: 1;
+  min-height: 0;
+  --trees-bg-override: transparent;
+  --trees-bg-muted-override: transparent;
+  --trees-fg-override: inherit;
 }
 
 .empty {

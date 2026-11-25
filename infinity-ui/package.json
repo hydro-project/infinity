@@ -9,8 +9,8 @@
     "format:check": "prettier --check \"src/**/*.{tsx,ts,css}\""
   },
   "dependencies": {
-    "@pierre/diffs": "^1.2.1",
-    "@pierre/trees": "^0.0.1-beta.4",
+    "@pierre/diffs": "^1.5.2",
+    "@pierre/trees": "^1.0.0-beta.6",
     "streamdown": "^2.5.0"
   },
   "peerDependencies": {
