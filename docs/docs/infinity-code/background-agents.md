@@ -16,6 +16,8 @@ Each time you start a conversation with the agent, it creates a session. You can
 
 Each session has its own conversation history and thread tree. The session picker shows all your sessions sorted by last activity, so you can quickly jump back to whatever you were working on.
 
+Activity timestamps update when user input is processed, before the model finishes responding, and again when a response completes.
+
 ## Backgrounding a Busy Agent
 
 When you try to quit (`/quit`, Ctrl+C, or Ctrl+D) while the agent is busy (running tools, waiting for results, etc.), a picker appears with two options:

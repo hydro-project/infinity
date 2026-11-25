@@ -207,6 +207,114 @@ impl Tool<ChannelSender> for AsyncStubTool {
     }
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn user_input_updates_timestamp_before_completion() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let root = ThreadId::from_ref("t1");
+            let (conv, state, dir) = tmp_stores(model1_ref());
+            conv.ensure_root_thread(root).await.expect("ensure root");
+            let old = "2000-01-01T00:00:00+00:00";
+            conv.set_last_updated(root, old);
+            let (model1, mut ctrl1) = mock_model();
+            let (model2, _ctrl2) = mock_model();
+            let catalog = two_model_catalog(model1, model2).await;
+            let (running, mut display_rx, _smap) =
+                start_daemon_system(root, conv.clone(), state, catalog, vec![]);
+
+            running.send_user_text(root, "hello").await;
+            loop {
+                let event =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), display_rx.recv())
+                        .await
+                        .expect("input echo should arrive")
+                        .expect("display channel should stay open");
+                if matches!(event, DaemonMessage::UserInputEcho { .. }) {
+                    break;
+                }
+            }
+            let updated = conv.get_last_updated(root);
+            assert!(updated.as_str() > old, "{updated}");
+            let reloaded = PersistentConversationStore::new_with_dir(
+                dir.path().join("threads"),
+                model1_ref(),
+                Arc::new(crate::ids::UuidIdSource),
+            );
+            assert_eq!(reloaded.get_last_updated(root), updated);
+            let _request = ctrl1.next_request().await;
+            ctrl1.send_text("done");
+            ctrl1.finish();
+            collect_until_done(&mut display_rx).await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn user_input_broadcasts_updated_session_timestamp() {
+    use infinity_agent_core::system::{AgentEvent, ThreadObserver};
+
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let dir = tempfile::tempdir().expect("create state directory");
+            let (model, _ctrl) = mock_model();
+            let entry = ModelEntry {
+                model_id: "model1".to_owned(),
+                display_name: "model1".to_owned(),
+                context_window: 100_000,
+                max_output_tokens: None,
+                supports_image_input: false,
+            };
+            let manager = SessionManager::with_providers(
+                SessionManagerConfig {
+                    state_dir: dir.path().to_path_buf(),
+                    callback_url: "http://127.0.0.1:0".to_owned(),
+                    user_rap_config: None,
+                    id_source: Arc::new(SequentialIdSource::new()),
+                },
+                vec![(
+                    "provider1".to_owned(),
+                    Arc::new(SingleModelProvider::new(entry, model)) as Arc<dyn ModelProvider>,
+                )],
+                vec![],
+            )
+            .await
+            .expect("create manager");
+            let root = manager
+                .create_session(dir.path(), model1_ref(), &mut |_| async {})
+                .await
+                .expect("create session");
+            let old = "2000-01-01T00:00:00+00:00";
+            manager.conversation_store.set_last_updated(&root, old);
+            tokio::task::yield_now().await;
+            let (updates_tx, mut updates_rx) = mpsc::unbounded_channel();
+            manager.list_sessions(Some(updates_tx)).await;
+            let observer = DaemonObserver {
+                subscribers: Default::default(),
+                conversation_store: manager.conversation_store.clone(),
+            };
+            observer.on_event(
+                &root,
+                &AgentEvent::UserInput {
+                    text: "hello".to_owned(),
+                },
+            );
+            let update = tokio::time::timeout(std::time::Duration::from_secs(2), updates_rx.recv())
+                .await
+                .expect("input must notify session list without a completion")
+                .expect("session update channel stays open");
+            let DaemonMessage::SessionsUpdated { sessions } = update else {
+                panic!("expected session metadata update");
+            };
+            assert!(
+                sessions[&infinity_protocol::ThreadRef::local(root)]
+                    .last_updated
+                    .as_str()
+                    > old
+            );
+        })
+        .await;
+}
+
 /// A model switch persisted while the thread waits for an async tool result
 /// is applied to the next completion round.
 #[tokio::test(flavor = "current_thread")]

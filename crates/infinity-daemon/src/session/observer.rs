@@ -118,6 +118,10 @@ impl ThreadObserver for DaemonObserver {
                 self.conversation_store
                     .set_last_updated(thread_id, &chrono::Utc::now().to_rfc3339());
             }
+            AgentEvent::UserInput { .. } => {
+                self.conversation_store
+                    .set_last_updated(thread_id, &chrono::Utc::now().to_rfc3339());
+            }
             // Reset the persisted context usage once compaction is applied:
             // the stored pre-compaction total is stale and would otherwise be
             // shown (and replayed on reconnect) until the next response
